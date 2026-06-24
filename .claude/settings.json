@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat)",
+      "Bash(node /tmp/cc.cjs)",
+      "Bash(grep -oE '.{0,60}\\\\\\)\\\\\\) \\\\* state.nodeRelSize' node_modules/force-graph/dist/force-graph.js)",
+      "PowerShell(npx tsc --noEmit -p client/tsconfig.json 2>&1 | Select-Object -First 30; \"client typecheck exit=$LASTEXITCODE\")",
+      "Bash(python -c ' *)",
+      "PowerShell(npm run build -w client 2>&1 | Select-Object -Last 8; \"build exit=$LASTEXITCODE\")",
+      "PowerShell(npx tsc --noEmit -p client/tsconfig.json 2>&1 | Select-Object -First 30; \"typecheck exit=$LASTEXITCODE\"; npm run build -w client 2>&1 | Select-Object -Last 5; \"build exit=$LASTEXITCODE\")",
+      "PowerShell(npm run build -w client 2>&1 | Select-Object -Last 5; \"build exit=$LASTEXITCODE\")",
+      "PowerShell(npm run build -w client 2>&1 | Select-Object -Last 4; \"build exit=$LASTEXITCODE\")",
+      "PowerShell(npx tsc --noEmit -p client/tsconfig.json 2>&1 | Select-Object -First 30; \"typecheck exit=$LASTEXITCODE\"; npm run build -w client 2>&1 | Select-Object -Last 4; \"build exit=$LASTEXITCODE\")"
+    ]
+  }
+}

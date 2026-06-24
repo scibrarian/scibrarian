@@ -38,3 +38,20 @@ export interface Settings {
   ncbi_email: string;
   poll_cron: string;
 }
+
+export interface GraphNode {
+  pmid: string;
+  title: string;
+  url: string;
+  citationCount: number;
+}
+
+export interface GraphEdge {
+  source: string; // citing paper
+  target: string; // cited paper
+}
+
+export interface GraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}

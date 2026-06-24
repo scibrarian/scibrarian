@@ -2,6 +2,7 @@ import type {
   AppSettings,
   ArticlesResponse,
   Disease,
+  GraphResponse,
   Journal,
   RefreshResponse,
 } from "./types";
@@ -42,6 +43,8 @@ export const api = {
     if (q) params.set("q", q);
     return req<ArticlesResponse>(`/api/articles?${params.toString()}`);
   },
+
+  getGraph: (diseaseId: number) => req<GraphResponse>(`/api/graph?disease=${diseaseId}`),
 
   refresh: (diseaseId?: number) => {
     const suffix = diseaseId ? `?disease=${diseaseId}` : "";

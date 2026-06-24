@@ -52,6 +52,13 @@ db.exec(`
     value TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS paper_citations (
+    pmid TEXT PRIMARY KEY,
+    citation_count INTEGER NOT NULL DEFAULT 0,
+    references_json TEXT NOT NULL DEFAULT '[]', -- PMIDs this paper cites
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_article_diseases_disease ON article_diseases(disease_id);
   CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
 `);
@@ -266,6 +273,99 @@ function safeParseAuthors(raw: string): string[] {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// ---------- citations (for the graph view) ----------
+
+export interface CitationInfo {
+  citation_count: number;
+  references: string[]; // PMIDs this paper cites
+}
+
+export interface GraphPaper {
+  pmid: string;
+  title: string;
+  url: string;
+}
+
+// The papers that make up one disease's graph (green nodes).
+export function graphPapers(diseaseId: number): GraphPaper[] {
+  return db
+    .prepare(
+      `SELECT a.pmid, a.title, a.url FROM articles a
+       JOIN article_diseases ad ON ad.pmid = a.pmid
+       WHERE ad.disease_id = ?`
+    )
+    .all(diseaseId) as GraphPaper[];
+}
+
+// PMIDs that have no cached citation row, or whose row is older than maxAgeDays.
+export function missingOrStaleCitations(pmids: string[], maxAgeDays = 14): string[] {
+  const fresh = new Set<string>();
+  const cutoff = `-${maxAgeDays} days`;
+  for (let i = 0; i < pmids.length; i += 900) {
+    const batch = pmids.slice(i, i + 900);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT pmid FROM paper_citations
+         WHERE pmid IN (${placeholders}) AND fetched_at >= datetime('now', ?)`
+      )
+      .all(...batch, cutoff) as { pmid: string }[];
+    for (const r of rows) fresh.add(r.pmid);
+  }
+  return pmids.filter((p) => !fresh.has(p));
+}
+
+export function getCitations(pmids: string[]): Map<string, CitationInfo> {
+  const out = new Map<string, CitationInfo>();
+  for (let i = 0; i < pmids.length; i += 900) {
+    const batch = pmids.slice(i, i + 900);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT pmid, citation_count, references_json FROM paper_citations
+         WHERE pmid IN (${placeholders})`
+      )
+      .all(...batch) as { pmid: string; citation_count: number; references_json: string }[];
+    for (const r of rows) {
+      out.set(r.pmid, {
+        citation_count: r.citation_count,
+        references: safeParseRefs(r.references_json),
+      });
+    }
+  }
+  return out;
+}
+
+const upsertCitationStmt = db.prepare(`
+  INSERT INTO paper_citations (pmid, citation_count, references_json, fetched_at)
+  VALUES (@pmid, @citation_count, @references_json, datetime('now'))
+  ON CONFLICT(pmid) DO UPDATE SET
+    citation_count = excluded.citation_count,
+    references_json = excluded.references_json,
+    fetched_at = excluded.fetched_at
+`);
+
+export const upsertCitations = db.transaction(
+  (rows: { pmid: string; info: CitationInfo }[]) => {
+    for (const { pmid, info } of rows) {
+      upsertCitationStmt.run({
+        pmid,
+        citation_count: info.citation_count,
+        references_json: JSON.stringify(info.references),
+      });
+    }
+  }
+);
+
+function safeParseRefs(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
   } catch {
     return [];
   }

@@ -5,15 +5,20 @@ import {
   deleteDisease,
   deleteJournal,
   diseaseArticleCounts,
+  getCitations,
   getSettings,
+  graphPapers,
   journalsForDisease,
   listArticles,
   listDiseases,
   listJournals,
+  missingOrStaleCitations,
   setSetting,
+  upsertCitations,
 } from "./db.js";
+import { fetchCitations } from "./icite.js";
 import { pollAll, pollDisease, rescheduleFromSettings } from "./poller.js";
-import type { Settings } from "./types.js";
+import type { GraphEdge, GraphNode, GraphResponse, Settings } from "./types.js";
 
 export const api = Router();
 
@@ -72,6 +77,52 @@ api.get("/articles", (req, res) => {
     articles: listArticles({ diseaseId, journal, q }),
     journals: journalsForDisease(diseaseId),
   });
+});
+
+// ---------- citation graph ----------
+
+api.get("/graph", async (req, res) => {
+  const diseaseId = Number(req.query.disease);
+  if (!diseaseId) return res.status(400).json({ error: "'disease' query param is required." });
+  try {
+    const papers = graphPapers(diseaseId);
+    const pmids = papers.map((p) => p.pmid);
+    const inSet = new Set(pmids);
+
+    // Lazily fetch + cache any missing/stale citation rows from iCite.
+    const stale = missingOrStaleCitations(pmids);
+    if (stale.length > 0) {
+      const fetched = await fetchCitations(stale);
+      const rows = [...fetched].map(([pmid, info]) => ({ pmid, info }));
+      // Cache a zeroed row even when iCite has nothing for a (very new) PMID,
+      // so we don't re-request it on every graph load.
+      for (const pmid of stale) {
+        if (!fetched.has(pmid)) rows.push({ pmid, info: { citation_count: 0, references: [] } });
+      }
+      upsertCitations(rows);
+    }
+
+    const cites = getCitations(pmids);
+    const nodes: GraphNode[] = papers.map((p) => ({
+      pmid: p.pmid,
+      title: p.title,
+      url: p.url,
+      citationCount: cites.get(p.pmid)?.citation_count ?? 0,
+    }));
+
+    // Edge P -> R means P cites R; keep only edges where both ends are in the dataset.
+    const edges: GraphEdge[] = [];
+    for (const p of papers) {
+      for (const ref of cites.get(p.pmid)?.references ?? []) {
+        if (inSet.has(ref)) edges.push({ source: p.pmid, target: ref });
+      }
+    }
+
+    const body: GraphResponse = { nodes, edges };
+    res.json(body);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // ---------- refresh / status ----------

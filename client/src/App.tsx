@@ -3,11 +3,15 @@ import { api } from "./api";
 import type { Disease } from "./types";
 import { TabBar } from "./components/TabBar";
 import { Timeline } from "./components/Timeline";
+import { CitationGraph } from "./components/CitationGraph";
 import { Settings } from "./components/Settings";
+
+type ViewMode = "timeline" | "graph";
 
 export default function App() {
   const [diseases, setDiseases] = useState<Disease[]>([]);
   const [active, setActive] = useState<number | "settings">("settings");
+  const [viewMode, setViewMode] = useState<ViewMode>("timeline");
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -67,6 +71,22 @@ export default function App() {
           <h1>Research Timeline</h1>
         </div>
         <div className="header-actions">
+          {typeof active === "number" && (
+            <div className="view-toggle" role="group" aria-label="View mode">
+              <button
+                className={viewMode === "timeline" ? "active" : ""}
+                onClick={() => setViewMode("timeline")}
+              >
+                Timeline
+              </button>
+              <button
+                className={viewMode === "graph" ? "active" : ""}
+                onClick={() => setViewMode("graph")}
+              >
+                Graph
+              </button>
+            </div>
+          )}
           {activeDisease?.last_polled_at && (
             <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
           )}
@@ -90,7 +110,11 @@ export default function App() {
         ) : active === "settings" ? (
           <Settings onDataChanged={loadDiseases} />
         ) : activeDisease ? (
-          <Timeline diseaseId={activeDisease.id} reloadToken={reloadToken} />
+          viewMode === "graph" ? (
+            <CitationGraph diseaseId={activeDisease.id} reloadToken={reloadToken} />
+          ) : (
+            <Timeline diseaseId={activeDisease.id} reloadToken={reloadToken} />
+          )
         ) : (
           <div className="empty">
             No diseases yet. Open <strong>⚙ Settings</strong> to add journals and diseases.

@@ -49,3 +49,20 @@ export interface AppSettings {
   poll_cron: string;
   has_api_key: boolean;
 }
+
+export interface GraphNode {
+  pmid: string;
+  title: string;
+  url: string;
+  citationCount: number;
+}
+
+export interface GraphEdge {
+  source: string; // citing paper
+  target: string; // cited paper
+}
+
+export interface GraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}

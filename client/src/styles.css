@@ -483,3 +483,168 @@ code {
   font-weight: 700;
   margin-left: 6px;
 }
+
+/* ---------- view toggle ---------- */
+
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.view-toggle button {
+  background: transparent;
+  border: none;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.view-toggle button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---------- citation graph ---------- */
+
+.graph-wrap .toolbar {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.graph-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Fixed-width number box so editing/sliding never reflows the toolbar and
+   shifts the slider under the cursor. Wide enough for 5 digits; spinner arrows
+   removed (the slider handles increment/decrement) so they don't clip the value. */
+.graph-filter .min-input {
+  flex: none;
+  width: 8ch;
+  padding: 5px 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.graph-filter .min-input::-webkit-outer-spin-button,
+.graph-filter .min-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.graph-filter input[type="range"] {
+  width: 180px;
+  padding: 0;
+}
+
+.graph-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.graph-check input {
+  width: auto;
+  padding: 0;
+}
+
+.graph-count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.graph-canvas {
+  position: relative;
+  height: 70vh;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.graph-canvas .empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- modal / popup ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+
+.modal {
+  position: relative;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 40px rgba(16, 24, 40, 0.25);
+  padding: 22px 24px;
+  max-width: 520px;
+  width: 100%;
+}
+
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: none;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.modal-meta {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--success);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.modal-title {
+  display: block;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  line-height: 1.35;
+  margin-bottom: 10px;
+}
+
+.modal-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
