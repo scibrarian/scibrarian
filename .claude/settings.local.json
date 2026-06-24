@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s --get https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi --data-urlencode db=pubmed --data-urlencode retmode=json --data-urlencode retmax=0 --data-urlencode 'term=\\(\"diabetes mellitus, type 2\"[MeSH]\\) AND \\(\"New England Journal of Medicine\"[Journal] OR \"Lancet\"[Journal] OR \"JAMA\"[Journal] OR \"Nature Medicine\"[Journal]\\)')",
+      "Bash(python -c \"import sys,json;print\\('count =', json.load\\(sys.stdin\\)['esearchresult']['count']\\)\")"
+    ]
+  }
+}
