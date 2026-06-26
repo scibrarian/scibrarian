@@ -1,24 +1,33 @@
 import { Router } from "express";
 import {
+  countJournalArticles,
   createDisease,
   createJournal,
   deleteDisease,
-  deleteJournal,
   diseaseArticleCounts,
   getCitations,
   getSettings,
   graphPapers,
+  journalByNlmId,
   journalsForDisease,
   listArticles,
   listDiseases,
   listJournals,
   missingOrStaleCitations,
+  removeJournalWithArticles,
+  searchCatalog,
   setSetting,
   upsertCitations,
 } from "./db.js";
 import { fetchCitations } from "./icite.js";
+import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
+import { resolveJournal } from "./pubmed.js";
 import { pollAll, pollDisease, rescheduleFromSettings } from "./poller.js";
 import type { GraphEdge, GraphNode, GraphResponse, Settings } from "./types.js";
+
+function round1(n: number | null): number | null {
+  return n == null ? null : Math.round(n * 10) / 10;
+}
 
 export const api = Router();
 
@@ -50,20 +59,70 @@ api.get("/journals", (_req, res) => {
   res.json(listJournals());
 });
 
-api.post("/journals", (req, res) => {
-  const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+// Autocomplete against the local NLM catalog, with OpenAlex metrics attached.
+api.get("/journals/search", async (req, res) => {
+  const q = String(req.query.q ?? "").trim();
+  if (q.length < 2) return res.json({ results: [] });
   try {
-    res.status(201).json(createJournal(name));
+    await ensureCatalogLoaded();
+    // Pull a wider name-matched pool, then surface the highest-impact journals
+    // first (a metric of 0 or no data sinks to the bottom) so obscure/defunct
+    // titles don't crowd out the ones worth watching. Sort is stable, so ties
+    // keep the catalog's name-relevance order.
+    const rows = await attachMetrics(searchCatalog(q, 30));
+    const score = (m: number | null) => (m == null ? -1 : m);
+    rows.sort((a, b) => score(b.metric) - score(a.metric));
+    res.json({
+      results: rows.slice(0, 10).map((r) => ({
+        title: r.title,
+        abbr: r.med_abbr || r.iso_abbr,
+        issn: r.issn_print || r.issn_online,
+        metric: round1(r.metric),
+      })),
+    });
   } catch (err) {
-    // UNIQUE constraint -> journal already exists
-    res.status(409).json({ error: "That journal is already in the list." });
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
+api.post("/journals", async (req, res) => {
+  const raw = String(req.body?.name ?? "").trim();
+  if (!raw) return res.status(400).json({ error: "'name' is required." });
+  try {
+    await ensureCatalogLoaded();
+    // Resolve to the stable NLM id + display abbreviation; null means PubMed
+    // doesn't recognize the name, so we never add a journal that returns nothing.
+    const resolved = await resolveJournal(raw);
+    if (!resolved) {
+      return res.status(422).json({
+        error: `PubMed doesn't recognize "${raw}" as a journal name. Use its official title or NLM abbreviation.`,
+        suggestions: searchCatalog(raw, 5).map((c) => c.med_abbr || c.title),
+      });
+    }
+    const existing = journalByNlmId(resolved.nlmId);
+    if (existing) {
+      return res
+        .status(409)
+        .json({ error: `That journal is already in the list (${existing.name}).` });
+    }
+    res.status(201).json(createJournal(resolved.name, resolved.nlmId));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/UNIQUE/i.test(msg)) {
+      return res.status(409).json({ error: "That journal is already in the list." });
+    }
+    res.status(500).json({ error: msg });
+  }
+});
+
+// How many stored papers removing this journal would delete (for the confirm).
+api.get("/journals/:id/article-count", (req, res) => {
+  res.json({ count: countJournalArticles(Number(req.params.id)) });
+});
+
 api.delete("/journals/:id", (req, res) => {
-  deleteJournal(Number(req.params.id));
-  res.status(204).end();
+  const deletedArticles = removeJournalWithArticles(Number(req.params.id));
+  res.json({ deletedArticles });
 });
 
 // ---------- articles (timeline) ----------

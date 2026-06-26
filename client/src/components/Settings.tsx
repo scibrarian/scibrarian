@@ -1,6 +1,25 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api";
-import type { AppSettings, Disease, Journal } from "../types";
+import type { AppSettings, Disease, Journal, JournalSearchResult } from "../types";
+
+const SMALL_WORDS = new Set([
+  "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor",
+  "of", "on", "or", "the", "to", "via", "vs", "with",
+]);
+
+// NLM stores titles in sentence case ("Cell metabolism"); show them title-cased
+// ("Cell Metabolism"). Words that already contain a capital (acronyms like HIV,
+// JAMA, or "(London,") are left untouched; small words stay lowercase mid-title.
+function titleCaseJournal(s: string): string {
+  return s
+    .split(" ")
+    .map((w, i) => {
+      if (!w || /[A-Z]/.test(w)) return w;
+      if (i > 0 && SMALL_WORDS.has(w.replace(/[^a-z]/g, ""))) return w;
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(" ");
+}
 
 export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
   const [journals, setJournals] = useState<Journal[]>([]);
@@ -8,6 +27,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
   const [journalName, setJournalName] = useState("");
+  const [journalResults, setJournalResults] = useState<JournalSearchResult[]>([]);
   const [diseaseName, setDiseaseName] = useState("");
   const [diseaseTerm, setDiseaseTerm] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -26,14 +46,30 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
 
   useEffect(reload, []);
 
-  async function addJournal(e: FormEvent) {
-    e.preventDefault();
+  // Debounced journal autocomplete against the local NLM catalog.
+  useEffect(() => {
+    const q = journalName.trim();
+    if (q.length < 2) {
+      setJournalResults([]);
+      return;
+    }
+    const t = setTimeout(() => {
+      api
+        .searchJournals(q)
+        .then((r) => setJournalResults(r.results))
+        .catch(() => setJournalResults([]));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [journalName]);
+
+  async function addJournal(name: string) {
     setError(null);
-    const name = journalName.trim();
-    if (!name) return;
+    const n = name.trim();
+    if (!n) return;
     try {
-      await api.createJournal(name);
+      await api.createJournal(n);
       setJournalName("");
+      setJournalResults([]);
       reload();
       onDataChanged();
     } catch (err) {
@@ -41,10 +77,28 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
     }
   }
 
-  async function removeJournal(id: number) {
-    await api.deleteJournal(id);
-    reload();
-    onDataChanged();
+  async function removeJournal(j: Journal) {
+    setError(null);
+    let count = 0;
+    try {
+      count = (await api.journalArticleCount(j.id)).count;
+    } catch {
+      /* if the count lookup fails, fall through with a generic warning */
+    }
+    const warning =
+      count > 0
+        ? `Remove "${j.name}"?\n\nThis will also permanently delete ${count} stored paper${
+            count === 1 ? "" : "s"
+          } from this journal, across all diseases. This cannot be undone.`
+        : `Remove "${j.name}"? No stored papers are linked to it.`;
+    if (!window.confirm(warning)) return;
+    try {
+      await api.deleteJournal(j.id);
+      reload();
+      onDataChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function addDisease(e: FormEvent) {
@@ -103,22 +157,58 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       <section className="panel">
         <h2>Journals</h2>
         <p className="hint">
-          Journals to watch. Type the journal name or its standard abbreviation (PubMed
-          recognizes both), e.g. <em>New England Journal of Medicine</em> or <em>Lancet</em>.
+          Start typing to search journals, then pick one to add it by its official NLM
+          abbreviation (what PubMed reliably matches). The number is OpenAlex 2-yr citations
+          per article — an open stand-in for impact factor.
         </p>
-        <form className="inline-form" onSubmit={addJournal}>
-          <input
-            value={journalName}
-            onChange={(e) => setJournalName(e.target.value)}
-            placeholder="Add a journal…"
-          />
+        <form
+          className="inline-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            addJournal(journalName);
+          }}
+        >
+          <div className="typeahead">
+            <input
+              value={journalName}
+              onChange={(e) => setJournalName(e.target.value)}
+              placeholder="Search journals (e.g. lancet, n engl j med)…"
+              autoComplete="off"
+            />
+            {journalResults.length > 0 && (
+              <ul className="typeahead-list">
+                {journalResults.map((r) => (
+                  <li key={r.issn || r.title}>
+                    <button
+                      type="button"
+                      className="typeahead-item"
+                      onClick={() => addJournal(r.abbr || r.title)}
+                    >
+                      <span className="ta-title">{titleCaseJournal(r.title)}</span>
+                      <span className="ta-meta">
+                        {r.abbr && <span className="ta-abbr">{r.abbr}</span>}
+                        {r.metric != null && (
+                          <span
+                            className={`ta-metric${r.metric === 0 ? " zero" : ""}`}
+                            title="OpenAlex 2-yr citations per article"
+                          >
+                            {r.metric}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <button type="submit">Add</button>
         </form>
         <ul className="list">
           {journals.map((j) => (
             <li key={j.id}>
               <span>{j.name}</span>
-              <button className="link-btn danger" onClick={() => removeJournal(j.id)}>
+              <button className="link-btn danger" onClick={() => removeJournal(j)}>
                 Remove
               </button>
             </li>

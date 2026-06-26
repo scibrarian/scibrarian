@@ -33,7 +33,7 @@ export interface ClusteringResult {
 }
 
 export const SINGLETON_KEY = -1;
-const BLACK = "#111111";
+export const NEUTRAL_COLOR = "#111111";
 const TOP_N = 100;
 
 // Curated, maximally-distinct colors for the largest clusters.
@@ -150,7 +150,7 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
 
   real.forEach(([id, pmids], rank) => {
     const colored = rank < TOP_N;
-    const color = colored ? rankColor(rank) : BLACK;
+    const color = colored ? rankColor(rank) : NEUTRAL_COLOR;
     const label = labelFor(pmids, titleTokens, globalDf, totalDocs);
     result.clusters.push({ id, label, color, size: pmids.length, colored });
     for (const pmid of pmids) result.byPmid.set(pmid, { community: id, color, label });
@@ -164,13 +164,13 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
     result.clusters.push({
       id: SINGLETON_KEY,
       label,
-      color: BLACK,
+      color: NEUTRAL_COLOR,
       size: singletons.length,
       colored: false,
       singletons: true,
     });
     for (const pmid of singletons)
-      result.byPmid.set(pmid, { community: SINGLETON_KEY, color: BLACK, label });
+      result.byPmid.set(pmid, { community: SINGLETON_KEY, color: NEUTRAL_COLOR, label });
   }
 
   return result;

@@ -23,6 +23,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    nlm_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -31,6 +32,7 @@ db.exec(`
     title TEXT NOT NULL,
     abstract TEXT NOT NULL DEFAULT '',
     journal_name TEXT NOT NULL DEFAULT '',
+    nlm_id TEXT,
     authors TEXT NOT NULL DEFAULT '[]',
     pub_date TEXT NOT NULL DEFAULT '',
     pub_date_display TEXT NOT NULL DEFAULT '',
@@ -59,9 +61,38 @@ db.exec(`
     fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Reference list of journals (from NLM's J_Medline.txt) for autocomplete and
+  -- validation. metric = OpenAlex 2yr mean citedness, fetched + cached lazily.
+  CREATE TABLE IF NOT EXISTS journal_catalog (
+    nlm_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    med_abbr TEXT NOT NULL DEFAULT '',
+    iso_abbr TEXT NOT NULL DEFAULT '',
+    issn_print TEXT NOT NULL DEFAULT '',
+    issn_online TEXT NOT NULL DEFAULT '',
+    metric REAL,
+    metric_fetched_at TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_article_diseases_disease ON article_diseases(disease_id);
   CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
+  CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
+  CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
 `);
+
+// ---------- migrations (add columns to pre-existing databases) ----------
+// The CREATE TABLEs above use IF NOT EXISTS, so new columns must be added
+// separately for databases created before this change.
+function ensureColumn(table: string, column: string, type: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+ensureColumn("articles", "nlm_id", "TEXT");
+ensureColumn("journals", "nlm_id", "TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id)");
 
 // ---------- settings ----------
 
@@ -103,10 +134,10 @@ if (!seedFlag) {
   if (journalCount === 0 && diseaseCount === 0) {
     const insJ = db.prepare("INSERT OR IGNORE INTO journals (name) VALUES (?)");
     for (const name of [
-      "New England Journal of Medicine",
+      "N Engl J Med", // NLM abbreviation; the full title PubMed registers is "The New England journal of medicine"
       "Lancet",
       "JAMA",
-      "Nature Medicine",
+      "Nat Med",
     ]) {
       insJ.run(name);
     }
@@ -153,16 +184,48 @@ export function listJournals(): Journal[] {
     .all() as Journal[];
 }
 
-export function createJournal(name: string): Journal {
-  const info = db.prepare("INSERT INTO journals (name) VALUES (?)").run(name);
+export function createJournal(name: string, nlmId: string | null): Journal {
+  const info = db.prepare("INSERT INTO journals (name, nlm_id) VALUES (?, ?)").run(name, nlmId);
   return db
     .prepare("SELECT id, name, created_at FROM journals WHERE id = ?")
     .get(Number(info.lastInsertRowid)) as Journal;
 }
 
+// Used to reject adding the same journal twice (identity is the NLM id).
+export function journalByNlmId(nlmId: string): Journal | undefined {
+  return db
+    .prepare("SELECT id, name, created_at FROM journals WHERE nlm_id = ?")
+    .get(nlmId) as Journal | undefined;
+}
+
 export function deleteJournal(id: number): void {
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
 }
+
+// How many stored articles a journal removal would delete (for the confirmation).
+export function countJournalArticles(id: number): number {
+  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
+    | { nlm_id: string | null }
+    | undefined;
+  if (!j || !j.nlm_id) return 0;
+  return (
+    db.prepare("SELECT COUNT(*) AS c FROM articles WHERE nlm_id = ?").get(j.nlm_id) as { c: number }
+  ).c;
+}
+
+// Remove a journal and permanently delete its stored articles (matched by NLM id;
+// article_diseases rows cascade via the foreign key). Returns the count deleted.
+export const removeJournalWithArticles = db.transaction((id: number): number => {
+  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
+    | { nlm_id: string | null }
+    | undefined;
+  let deleted = 0;
+  if (j && j.nlm_id) {
+    deleted = db.prepare("DELETE FROM articles WHERE nlm_id = ?").run(j.nlm_id).changes;
+  }
+  db.prepare("DELETE FROM journals WHERE id = ?").run(id);
+  return deleted;
+});
 
 // ---------- articles ----------
 
@@ -182,12 +245,13 @@ export function existingPmids(pmids: string[]): Set<string> {
 }
 
 const upsertArticleStmt = db.prepare(`
-  INSERT INTO articles (pmid, title, abstract, journal_name, authors, pub_date, pub_date_display, doi, url)
-  VALUES (@pmid, @title, @abstract, @journal_name, @authors, @pub_date, @pub_date_display, @doi, @url)
+  INSERT INTO articles (pmid, title, abstract, journal_name, nlm_id, authors, pub_date, pub_date_display, doi, url)
+  VALUES (@pmid, @title, @abstract, @journal_name, @nlm_id, @authors, @pub_date, @pub_date_display, @doi, @url)
   ON CONFLICT(pmid) DO UPDATE SET
     title = excluded.title,
     abstract = excluded.abstract,
     journal_name = excluded.journal_name,
+    nlm_id = excluded.nlm_id,
     authors = excluded.authors,
     pub_date = excluded.pub_date,
     pub_date_display = excluded.pub_date_display,
@@ -209,6 +273,7 @@ export const saveArticles = db.transaction((articles: ArticleInsert[], diseaseId
       title: a.title,
       abstract: a.abstract,
       journal_name: a.journal_name,
+      nlm_id: a.nlm_id || null,
       authors: JSON.stringify(a.authors),
       pub_date: a.pub_date,
       pub_date_display: a.pub_date_display,
@@ -225,11 +290,18 @@ export interface ArticleQuery {
   q?: string;
 }
 
+// The journal name shown to the user: the watched journal's abbreviation (or the
+// catalog abbreviation), resolved by NLM id, falling back to the stored title.
+const JOURNAL_DISPLAY = "COALESCE(j.name, jc.med_abbr, a.journal_name)";
+const ARTICLE_JOINS = `JOIN article_diseases ad ON ad.pmid = a.pmid
+       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
+       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id`;
+
 export function listArticles({ diseaseId, journal, q }: ArticleQuery): Article[] {
   const clauses = ["ad.disease_id = ?"];
   const params: unknown[] = [diseaseId];
   if (journal) {
-    clauses.push("a.journal_name = ?");
+    clauses.push(`${JOURNAL_DISPLAY} = ?`);
     params.push(journal);
   }
   if (q) {
@@ -238,8 +310,10 @@ export function listArticles({ diseaseId, journal, q }: ArticleQuery): Article[]
   }
   const rows = db
     .prepare(
-      `SELECT a.* FROM articles a
-       JOIN article_diseases ad ON ad.pmid = a.pmid
+      `SELECT a.pmid, a.title, a.abstract, ${JOURNAL_DISPLAY} AS journal_name, a.nlm_id,
+              a.authors, a.pub_date, a.pub_date_display, a.doi, a.url, a.first_seen_at
+       FROM articles a
+       ${ARTICLE_JOINS}
        WHERE ${clauses.join(" AND ")}
        ORDER BY a.pub_date DESC, a.pmid DESC`
     )
@@ -256,13 +330,13 @@ export function diseaseArticleCounts(): Record<number, number> {
   return out;
 }
 
-// Distinct journal names that actually have articles for a disease (for filter chips).
+// Distinct journal display names that have articles for a disease (filter chips).
 export function journalsForDisease(diseaseId: number): string[] {
   const rows = db
     .prepare(
-      `SELECT DISTINCT a.journal_name AS j FROM articles a
-       JOIN article_diseases ad ON ad.pmid = a.pmid
-       WHERE ad.disease_id = ? AND a.journal_name <> ''
+      `SELECT DISTINCT ${JOURNAL_DISPLAY} AS j FROM articles a
+       ${ARTICLE_JOINS}
+       WHERE ad.disease_id = ? AND ${JOURNAL_DISPLAY} <> ''
        ORDER BY j ASC`
     )
     .all(diseaseId) as { j: string }[];
@@ -369,4 +443,63 @@ function safeParseRefs(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+// ---------- journal catalog (NLM J_Medline) ----------
+
+export interface CatalogRow {
+  nlm_id: string;
+  title: string;
+  med_abbr: string;
+  iso_abbr: string;
+  issn_print: string;
+  issn_online: string;
+  metric: number | null;
+  metric_fetched_at: string | null;
+}
+
+export type CatalogSeed = Omit<CatalogRow, "metric" | "metric_fetched_at">;
+
+export function journalCatalogCount(): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM journal_catalog").get() as { c: number }).c;
+}
+
+const insertCatalogStmt = db.prepare(`
+  INSERT OR IGNORE INTO journal_catalog (nlm_id, title, med_abbr, iso_abbr, issn_print, issn_online)
+  VALUES (@nlm_id, @title, @med_abbr, @iso_abbr, @issn_print, @issn_online)
+`);
+
+export const bulkInsertCatalog = db.transaction((rows: CatalogSeed[]) => {
+  for (const r of rows) insertCatalogStmt.run(r);
+});
+
+// Autocomplete: match title/abbreviation, prefix matches first, then shortest title.
+export function searchCatalog(q: string, limit = 10): CatalogRow[] {
+  const like = `%${q}%`;
+  const prefix = `${q}%`;
+  return db
+    .prepare(
+      `SELECT * FROM journal_catalog
+       WHERE title LIKE ? OR med_abbr LIKE ? OR iso_abbr LIKE ?
+       ORDER BY CASE WHEN title LIKE ? OR med_abbr LIKE ? THEN 0 ELSE 1 END, length(title)
+       LIMIT ?`
+    )
+    .all(like, like, like, prefix, prefix, limit) as CatalogRow[];
+}
+
+// Validation: exact (case-insensitive) match on title or either abbreviation.
+export function findCatalogByName(name: string): CatalogRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM journal_catalog
+       WHERE title = ? COLLATE NOCASE OR med_abbr = ? COLLATE NOCASE OR iso_abbr = ? COLLATE NOCASE
+       LIMIT 1`
+    )
+    .get(name, name, name) as CatalogRow | undefined;
+}
+
+export function setCatalogMetric(nlmId: string, metric: number | null): void {
+  db.prepare(
+    "UPDATE journal_catalog SET metric = ?, metric_fetched_at = datetime('now') WHERE nlm_id = ?"
+  ).run(metric, nlmId);
 }

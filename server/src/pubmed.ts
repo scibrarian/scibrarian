@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import { getSettings } from "./db.js";
+import { findCatalogByName, getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
 
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
@@ -10,6 +10,9 @@ const xml = new XMLParser({
   attributeNamePrefix: "@_",
   textNodeName: "#text",
   trimValues: true,
+  // Keep everything as strings — otherwise an id like "0255562" (NlmUniqueID)
+  // is parsed as the number 255562 and loses its leading zero.
+  parseTagValue: false,
 });
 
 // ---------- request throttling ----------
@@ -19,7 +22,9 @@ let chain: Promise<void> = Promise.resolve();
 let lastRequest = 0;
 
 function throttle(): Promise<void> {
-  const minGap = getSettings().ncbi_api_key ? 110 : 350;
+  // NCBI allows ~3 req/s without a key; 400ms (~2.5/s) leaves margin so we trip
+  // the 429 limiter less often. With a key the cap is ~10/s.
+  const minGap = getSettings().ncbi_api_key ? 110 : 400;
   const run = chain.then(async () => {
     const wait = minGap - (Date.now() - lastRequest);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
@@ -38,14 +43,54 @@ function withCommonParams(params: URLSearchParams): URLSearchParams {
   return params;
 }
 
+// Transient failures (dropped connections, NCBI 429/5xx) are common across the
+// many requests an all-time poll makes. Retry them a few times with exponential
+// backoff — honoring Retry-After on 429 — before giving up.
+const MAX_RETRIES = 4;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function backoffMs(attempt: number): number {
+  return Math.min(500 * 2 ** attempt, 8000) + Math.floor(Math.random() * 250);
+}
+
+function retryAfterMs(res: Response): number | null {
+  const h = res.headers.get("retry-after");
+  if (!h) return null;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const when = Date.parse(h);
+  return Number.isFinite(when) ? Math.max(0, when - Date.now()) : null;
+}
+
 async function eutilsFetch(endpoint: string, params: URLSearchParams): Promise<Response> {
-  await throttle();
   const url = `${EUTILS}/${endpoint}?${withCommonParams(params).toString()}`;
-  const res = await fetch(url);
-  if (!res.ok) {
+  for (let attempt = 0; ; attempt++) {
+    await throttle();
+    let res: Response;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      // Network-level failure (e.g. "terminated", ECONNRESET, timeout).
+      if (attempt >= MAX_RETRIES) throw err;
+      await sleep(backoffMs(attempt));
+      continue;
+    }
+    if (res.ok) return res;
+    if (isRetryableStatus(res.status) && attempt < MAX_RETRIES) {
+      const wait = retryAfterMs(res) ?? backoffMs(attempt);
+      await res.arrayBuffer().catch(() => {}); // drain the body to free the socket
+      await sleep(wait);
+      continue;
+    }
     throw new Error(`NCBI ${endpoint} returned ${res.status} ${res.statusText}`);
   }
-  return res;
 }
 
 // ---------- query building ----------
@@ -91,6 +136,20 @@ export async function search(term: string): Promise<string[]> {
     retstart += idlist.length;
   }
   return ids.slice(0, MAX_RESULTS);
+}
+
+// Count of PubMed articles in a journal — used to validate a free-typed journal
+// name that isn't in the local catalog.
+export async function journalCount(journalName: string): Promise<number> {
+  const params = new URLSearchParams({
+    db: "pubmed",
+    retmode: "json",
+    retmax: "0",
+    term: `"${journalName.replace(/"/g, "")}"[Journal]`,
+  });
+  const res = await eutilsFetch("esearch.fcgi", params);
+  const data = (await res.json()) as { esearchresult?: { count?: string } };
+  return Number(data.esearchresult?.count ?? 0);
 }
 
 // ---------- esummary (metadata) ----------
@@ -149,10 +208,18 @@ export async function fetchSummaries(pmids: string[]): Promise<Map<string, Artic
   return out;
 }
 
-// ---------- efetch (abstracts) ----------
+// ---------- efetch (abstract + journal identity) ----------
 
-export async function fetchAbstracts(pmids: string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+interface ArticleXml {
+  abstract: string;
+  nlmId: string; // NLM Unique journal ID — the stable journal identity
+  medlineTa: string; // NLM journal abbreviation
+}
+
+// The efetch XML carries the journal's NlmUniqueID/MedlineTA per article, so we
+// get a rock-solid journal identifier for free alongside the abstract.
+export async function fetchArticleXml(pmids: string[]): Promise<Map<string, ArticleXml>> {
+  const out = new Map<string, ArticleXml>();
   if (pmids.length === 0) return out;
   const params = new URLSearchParams({
     db: "pubmed",
@@ -165,11 +232,15 @@ export async function fetchAbstracts(pmids: string[]): Promise<Map<string, strin
   const parsed = xml.parse(text);
   const set = parsed?.PubmedArticleSet;
   if (!set) return out;
-  const articles = asArray(set.PubmedArticle);
-  for (const art of articles) {
+  for (const art of asArray(set.PubmedArticle)) {
     const pmid = getPmid(art);
     if (!pmid) continue;
-    out.set(pmid, parseAbstract(art));
+    const info = art?.MedlineCitation?.MedlineJournalInfo;
+    out.set(pmid, {
+      abstract: parseAbstract(art),
+      nlmId: nodeValue(info?.NlmUniqueID),
+      medlineTa: nodeValue(info?.MedlineTA),
+    });
   }
   return out;
 }
@@ -177,16 +248,18 @@ export async function fetchAbstracts(pmids: string[]): Promise<Map<string, strin
 // ---------- combine: fetch full article records for new PMIDs ----------
 
 export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
-  const [meta, abstracts] = await Promise.all([fetchSummaries(pmids), fetchAbstracts(pmids)]);
+  const [meta, xmlData] = await Promise.all([fetchSummaries(pmids), fetchArticleXml(pmids)]);
   const articles: ArticleInsert[] = [];
   for (const pmid of pmids) {
     const m = meta.get(pmid);
     if (!m) continue; // no metadata -> skip
+    const x = xmlData.get(pmid);
     articles.push({
       pmid,
       title: m.title,
-      abstract: abstracts.get(pmid) ?? "",
+      abstract: x?.abstract ?? "",
       journal_name: m.journal_name,
+      nlm_id: x?.nlmId || null,
       authors: m.authors,
       pub_date: m.pub_date,
       pub_date_display: m.pub_date_display,
@@ -195,6 +268,30 @@ export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
     });
   }
   return articles;
+}
+
+// Resolve a user-entered journal name to its stable NLM id + display abbreviation.
+// Prefers the local catalog; otherwise a one-shot PubMed lookup (which also
+// validates — no article means PubMed doesn't recognize the name).
+export async function resolveJournal(
+  rawName: string
+): Promise<{ nlmId: string; name: string } | null> {
+  const cat = findCatalogByName(rawName);
+  if (cat) return { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
+
+  const params = new URLSearchParams({
+    db: "pubmed",
+    retmode: "json",
+    retmax: "1",
+    term: `"${rawName.replace(/"/g, "")}"[Journal]`,
+  });
+  const res = await eutilsFetch("esearch.fcgi", params);
+  const data = (await res.json()) as { esearchresult?: { idlist?: string[] } };
+  const pmid = data.esearchresult?.idlist?.[0];
+  if (!pmid) return null; // PubMed doesn't recognize this journal name
+  const x = (await fetchArticleXml([pmid])).get(pmid);
+  if (!x?.nlmId) return null;
+  return { nlmId: x.nlmId, name: x.medlineTa || rawName };
 }
 
 // ---------- helpers ----------
@@ -209,6 +306,13 @@ function getPmid(article: any): string {
   if (node == null) return "";
   if (typeof node === "object") return String(node["#text"] ?? "");
   return String(node);
+}
+
+// Text of a possibly-attributed XML node (fast-xml-parser stores text as #text).
+function nodeValue(node: any): string {
+  if (node == null) return "";
+  if (typeof node === "object") return String(node["#text"] ?? "").trim();
+  return String(node).trim();
 }
 
 function nodeText(node: any): string {

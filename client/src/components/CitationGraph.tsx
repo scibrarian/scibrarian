@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import type { GraphNode, GraphResponse } from "../types";
-import { clusterGraph, type ClusteringResult } from "../lib/clustering";
+import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -12,7 +12,20 @@ interface FGLink {
   target: string | FGNode;
 }
 
-const FALLBACK_COLOR = "#111111";
+// Tracks the system light/dark preference so the canvas (which isn't styled by
+// CSS variables) can recolor its neutral nodes/links to stay visible.
+function usePrefersDark(): boolean {
+  const [dark, setDark] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return dark;
+}
 
 // force-graph draws each node with radius = sqrt(nodeVal) * nodeRelSize. With
 // nodeRelSize=1, feeding val = r² makes the radius exactly r. We want radius to
@@ -41,6 +54,7 @@ export function CitationGraph({
   const [selected, setSelected] = useState<GraphNode | null>(null);
   // Custom tooltip for cluster names (native title has an un-tunable delay).
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const dark = usePrefersDark();
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
@@ -212,6 +226,13 @@ export function CitationGraph({
 
   const selectedCluster = selected ? clustering.byPmid.get(selected.pmid) : undefined;
 
+  // The neutral (uncolored/singleton) color must flip for dark mode so those
+  // nodes don't disappear against the dark canvas. Cluster palette colors are
+  // already vivid on both backgrounds.
+  const neutralColor = dark ? "#9aa3af" : NEUTRAL_COLOR;
+  const clusterColor = (c: string): string => (c === NEUTRAL_COLOR ? neutralColor : c);
+  const linkCol = dark ? "rgba(170,176,188,0.3)" : "rgba(110,110,110,0.35)";
+
   return (
     <div className="graph-wrap">
       <div className="toolbar">
@@ -268,11 +289,13 @@ export function CitationGraph({
                 graphData={graphData}
                 nodeId="pmid"
                 nodeLabel={(n) => String((n as FGNode).title ?? "")}
-                nodeColor={(n) => clustering.byPmid.get((n as FGNode).pmid)?.color ?? FALLBACK_COLOR}
+                nodeColor={(n) =>
+                  clusterColor(clustering.byPmid.get((n as FGNode).pmid)?.color ?? NEUTRAL_COLOR)
+                }
                 nodeRelSize={1}
                 nodeVal={(n) => nodeValFromCount((n as FGNode).citationCount as number)}
                 nodeVisibility={(n) => isVisible((n as FGNode).pmid)}
-                linkColor={() => "rgba(110,110,110,0.35)"}
+                linkColor={() => linkCol}
                 linkVisibility={(l) =>
                   isVisible(endpointId((l as FGLink).source)) &&
                   isVisible(endpointId((l as FGLink).target))
@@ -325,7 +348,7 @@ export function CitationGraph({
                     onMouseMove={(e) => setTip({ text: c.label, x: e.clientX, y: e.clientY })}
                     onMouseLeave={() => setTip(null)}
                   >
-                    <span className="swatch" style={{ backgroundColor: c.color }} />
+                    <span className="swatch" style={{ backgroundColor: clusterColor(c.color) }} />
                     <span className="cluster-label">{c.label}</span>
                     <span className="cluster-size">{c.size}</span>
                   </button>
@@ -355,7 +378,7 @@ export function CitationGraph({
             {/* <p className="hint">Opens on PubMed ↗</p> */}
             {selectedCluster && (
               <p className="modal-cluster">
-                <span className="swatch" style={{ backgroundColor: selectedCluster.color }} />
+                <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
                 {selectedCluster.label}
               </p>
             )}

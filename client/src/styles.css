@@ -10,6 +10,9 @@
   --success: #16a34a;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+  /* Let native controls (inputs, scrollbars, slider, checkbox) follow the theme. */
+  color-scheme: light dark;
+  accent-color: var(--accent);
 }
 
 * {
@@ -382,6 +385,104 @@ body {
   flex: 1;
 }
 
+/* ---------- journal typeahead ---------- */
+
+.typeahead {
+  position: relative;
+  flex: 1;
+}
+
+.typeahead input {
+  width: 100%;
+}
+
+.typeahead-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.16);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Scoped under .typeahead-list to outweigh the generic .inline-form button style. */
+.typeahead-list .typeahead-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  background: var(--panel);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  padding: 9px 12px;
+  text-align: left;
+  font: inherit;
+  font-weight: 400;
+}
+
+.typeahead-list li:last-child .typeahead-item {
+  border-bottom: none;
+}
+
+.typeahead-list .typeahead-item:hover,
+.typeahead-list .typeahead-item:focus-visible {
+  background: var(--accent-soft);
+  color: var(--text);
+  outline: none;
+}
+
+.ta-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ta-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ta-abbr {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.ta-metric {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Zero-impact (likely defunct/obscure) journals: keep them, but de-emphasize. */
+.ta-metric.zero {
+  color: var(--muted);
+  background: var(--border);
+}
+
 .stacked-form {
   display: flex;
   flex-direction: column;
@@ -409,6 +510,8 @@ input {
   border-radius: 8px;
   font-size: 14px;
   font-family: inherit;
+  background: var(--panel);
+  color: var(--text);
 }
 
 input:focus {
@@ -792,4 +895,49 @@ code {
   font-size: 13px;
   color: var(--muted);
   margin: 0 0 10px;
+}
+
+/* ---------- dark mode (follows the OS setting) ---------- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1420;
+    --panel: #171c28;
+    --border: #2a3140;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --accent: #4b8bff;
+    --accent-soft: #1e2940;
+    --danger: #f06b6b;
+    --success: #43c06a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+
+  /* A few rules use literal light tints that variables don't cover. */
+  code {
+    background: #222a38;
+  }
+
+  .banner.error {
+    background: #3a1f22;
+    color: #f3a3a3;
+  }
+
+  .banner.success {
+    background: #16301f;
+    color: #82d79a;
+  }
+
+  .pill {
+    background: #16301f;
+    color: #82d79a;
+  }
+
+  .swatch {
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+
+  .hover-tip {
+    background: #283142;
+  }
 }

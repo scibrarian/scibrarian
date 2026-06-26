@@ -16,7 +16,8 @@ export interface Article {
   pmid: string;
   title: string;
   abstract: string;
-  journal_name: string;
+  journal_name: string; // display name (abbreviation) as surfaced by the API
+  nlm_id: string | null; // NLM Unique journal ID (the journal identity key)
   authors: string[]; // parsed from JSON column
   pub_date: string; // sortable YYYY-MM-DD
   pub_date_display: string; // human-readable, as PubMed reports it

@@ -13,6 +13,17 @@ export interface Journal {
   created_at: string;
 }
 
+export interface JournalSearchResult {
+  title: string;
+  abbr: string;
+  issn: string;
+  metric: number | null; // OpenAlex 2-yr mean citedness
+}
+
+export interface JournalSearchResponse {
+  results: JournalSearchResult[];
+}
+
 export interface Article {
   pmid: string;
   title: string;

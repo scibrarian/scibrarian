@@ -4,6 +4,7 @@ import type {
   Disease,
   GraphResponse,
   Journal,
+  JournalSearchResponse,
   RefreshResponse,
 } from "./types";
 
@@ -33,9 +34,14 @@ export const api = {
   deleteDisease: (id: number) => req<void>(`/api/diseases/${id}`, { method: "DELETE" }),
 
   getJournals: () => req<Journal[]>("/api/journals"),
+  searchJournals: (q: string) =>
+    req<JournalSearchResponse>(`/api/journals/search?q=${encodeURIComponent(q)}`),
   createJournal: (name: string) =>
     req<Journal>("/api/journals", { method: "POST", body: JSON.stringify({ name }) }),
-  deleteJournal: (id: number) => req<void>(`/api/journals/${id}`, { method: "DELETE" }),
+  journalArticleCount: (id: number) =>
+    req<{ count: number }>(`/api/journals/${id}/article-count`),
+  deleteJournal: (id: number) =>
+    req<{ deletedArticles: number }>(`/api/journals/${id}`, { method: "DELETE" }),
 
   getArticles: (diseaseId: number, journal?: string, q?: string) => {
     const params = new URLSearchParams({ disease: String(diseaseId) });

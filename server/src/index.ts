@@ -5,6 +5,7 @@ import { CLIENT_DIST, PORT } from "./config.js";
 import "./db.js"; // initialize schema + seed on startup
 import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
+import { ensureCatalogLoaded } from "./journal-catalog.js";
 
 const app = express();
 app.use(cors());
@@ -23,4 +24,5 @@ if (fs.existsSync(CLIENT_DIST)) {
 app.listen(PORT, () => {
   console.log(`[server] API listening on http://localhost:${PORT}`);
   startScheduler();
+  void ensureCatalogLoaded(); // warm the journal catalog in the background
 });
