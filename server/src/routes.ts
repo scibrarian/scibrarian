@@ -167,6 +167,7 @@ api.get("/graph", async (req, res) => {
       title: p.title,
       url: p.url,
       citationCount: cites.get(p.pmid)?.citation_count ?? 0,
+      year: /^\d{4}/.test(p.pub_date) ? Number(p.pub_date.slice(0, 4)) : null,
     }));
 
     // Edge P -> R means P cites R; keep only edges where both ends are in the dataset.

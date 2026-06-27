@@ -363,13 +363,14 @@ export interface GraphPaper {
   pmid: string;
   title: string;
   url: string;
+  pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
 }
 
 // The papers that make up one disease's graph (green nodes).
 export function graphPapers(diseaseId: number): GraphPaper[] {
   return db
     .prepare(
-      `SELECT a.pmid, a.title, a.url FROM articles a
+      `SELECT a.pmid, a.title, a.url, a.pub_date FROM articles a
        JOIN article_diseases ad ON ad.pmid = a.pmid
        WHERE ad.disease_id = ?`
     )
