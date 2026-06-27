@@ -66,6 +66,7 @@ export interface GraphNode {
   title: string;
   url: string;
   citationCount: number;
+  year: number | null; // publication year, null when unknown
 }
 
 export interface GraphEdge {

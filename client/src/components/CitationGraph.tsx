@@ -371,6 +371,7 @@ export function CitationGraph({
             </button>
             <p className="modal-meta">
               {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
+              {selected.year != null && ` · ${selected.year}`}
             </p>
             <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
               {selected.title || "(untitled)"}

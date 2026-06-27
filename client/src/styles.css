@@ -914,6 +914,10 @@ code {
   }
 
   /* A few rules use literal light tints that variables don't cover. */
+  .card-abstract {
+    color: #c4ccd9;
+  }
+
   code {
     background: #222a38;
   }

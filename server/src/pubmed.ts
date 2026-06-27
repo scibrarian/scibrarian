@@ -374,22 +374,20 @@ function parsePubDate(raw: string | undefined): string {
   return "";
 }
 
-// Choose the date a paper actually became available. Journals routinely stamp a
-// *future* print-issue date (pubdate/sortpubdate) on a paper that is already out
-// online (epubdate); using that date pushes the paper to the top of the timeline
-// with a date in the future. We take the earliest real date and report the
-// matching human-readable string — which is also what PubMed itself displays.
+// Choose the date a paper actually became available. We prefer the electronic
+// (online) publication date — epubdate — which is when the research first
+// appeared, and fall back to the print/issue date only when there's no e-pub
+// date. This also dodges a trap: journals routinely stamp a *future* print-issue
+// date (pubdate/sortpubdate) on a paper that is already out online, which would
+// otherwise push it to the top of the timeline with a date in the future.
 // (e.g. PMID 41275875: print "2026 Dec 20" vs online "2025 Nov 20".)
 function pickPubDate(doc: ESummaryDoc): { sort: string; display: string } {
-  const candidates = [
-    { sort: parsePubDate(doc.epubdate), display: (doc.epubdate ?? "").trim() },
-    {
-      sort: parsePubDate(doc.sortpubdate) || parsePubDate(doc.pubdate),
-      display: (doc.pubdate ?? "").trim(),
-    },
-  ].filter((c) => c.sort);
-  candidates.sort((a, b) => a.sort.localeCompare(b.sort));
-  const chosen = candidates[0];
+  const epub = { sort: parsePubDate(doc.epubdate), display: (doc.epubdate ?? "").trim() };
+  const print = {
+    sort: parsePubDate(doc.sortpubdate) || parsePubDate(doc.pubdate),
+    display: (doc.pubdate ?? "").trim(),
+  };
+  const chosen = epub.sort ? epub : print.sort ? print : null;
   return {
     sort: chosen?.sort ?? "",
     display: chosen?.display || (doc.pubdate ?? "").trim() || (doc.epubdate ?? "").trim(),
