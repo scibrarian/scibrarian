@@ -134,8 +134,8 @@ export default function App() {
             // Reserve the controls' space during the first load so they don't
             // pop in and shift the header once data arrives.
             <>
-              <SkeletonBar w={150} h={34} style={{ borderRadius: "var(--radius)" }} />
-              <SkeletonBar w={108} h={38} style={{ borderRadius: "var(--radius)" }} />
+              <SkeletonBar w={150} h={32} style={{ borderRadius: "var(--radius)" }} />
+              <SkeletonBar w={108} h={35} style={{ borderRadius: "var(--radius)" }} />
             </>
           ) : (
             <>

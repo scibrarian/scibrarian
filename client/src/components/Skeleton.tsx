@@ -31,6 +31,9 @@ export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolea
             aria-hidden="true"
             tabIndex={-1}
           />
+          <div className="filter-row">
+            <FilterSkeleton />
+          </div>
         </div>
       )}
       <div className="timeline">
@@ -57,6 +60,12 @@ export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolea
       </div>
     </div>
   );
+}
+
+// Placeholder for the journal-filter dropdown trigger — a fixed size so the
+// real dropdown drops in without shifting the toolbar.
+export function FilterSkeleton() {
+  return <SkeletonBar w={160} h={32} style={{ borderRadius: "var(--radius)" }} />;
 }
 
 // Mirrors the collection papers table: real headers, shimmering rows.
