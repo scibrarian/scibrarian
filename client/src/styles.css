@@ -897,32 +897,178 @@ code {
   margin: 0 0 10px;
 }
 
-/* ---------- collections ---------- */
+/* ---------- workspace nav (Discover / My Papers) ---------- */
 
-.tab-divider {
-  width: 1px;
-  align-self: stretch;
-  margin: 6px 4px;
-  background: var(--border);
-}
-
-.collection-tab .tab-glyph {
-  font-size: 13px;
-  opacity: 0.85;
-}
-
-.collection-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-.add-tab {
+.gear-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   color: var(--muted);
-  font-weight: 600;
+  font-size: 16px;
+  line-height: 1;
+  padding: 7px 10px;
+  cursor: pointer;
 }
 
-.add-tab:hover {
+.gear-btn:hover {
+  color: var(--text);
+}
+
+.gear-btn.active {
   color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.workspace-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+}
+
+.workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.mode-switch button {
+  background: transparent;
+  border: none;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mode-switch button:hover {
+  color: var(--text);
+}
+
+.mode-switch button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.ws-picker {
+  position: relative;
+}
+
+.ws-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 320px;
+}
+
+.ws-trigger:hover {
+  border-color: var(--accent);
+}
+
+.ws-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-caret {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ws-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 260px;
+  max-width: 360px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(16, 24, 40, 0.2);
+  padding: 6px;
+  z-index: 40;
+}
+
+.ws-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ws-option:hover {
+  background: var(--accent-soft);
+}
+
+.ws-option.active {
+  color: var(--accent);
+  font-weight: 700;
+  background: var(--accent-soft);
+}
+
+.ws-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ws-add {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.ws-add:hover {
+  background: var(--accent-soft);
 }
 
 .collection-view {

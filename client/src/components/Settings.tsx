@@ -220,7 +220,8 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       <section className="panel">
         <h2>Diseases</h2>
         <p className="hint">
-          Each disease becomes a tab. The <strong>PubMed term</strong> can be a MeSH heading
+          Each disease becomes a topic in <strong>🔍 Discover</strong>. The{" "}
+          <strong>PubMed term</strong> can be a MeSH heading
           like <code>"diabetes mellitus, type 2"[MeSH]</code> or plain keywords like{" "}
           <code>alzheimer disease</code>. MeSH terms are more precise.
         </p>

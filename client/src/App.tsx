@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { Collection, Disease } from "./types";
-import { TabBar } from "./components/TabBar";
+import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
 import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
 import { CollectionView } from "./components/CollectionView";
@@ -9,13 +9,13 @@ import { Settings } from "./components/Settings";
 
 type ViewMode = "timeline" | "graph";
 
-// The selected tab: a disease, a collection, or the settings pane.
-export type ActiveTab = { kind: "disease" | "collection"; id: number } | "settings";
-
 export default function App() {
   const [diseases, setDiseases] = useState<Disease[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [active, setActive] = useState<ActiveTab>("settings");
+  const [mode, setMode] = useState<Mode>("discover");
+  const [showSettings, setShowSettings] = useState(false);
+  const [activeDiseaseId, setActiveDiseaseId] = useState<number | null>(null);
+  const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("timeline");
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -44,34 +44,65 @@ export default function App() {
 
   useEffect(() => {
     Promise.all([loadDiseases(), loadCollections()]).then(([ds, cs]) => {
-      if (ds.length > 0) setActive({ kind: "disease", id: ds[0].id });
-      else if (cs.length > 0) setActive({ kind: "collection", id: cs[0].id });
+      // Land in whichever workspace actually has something in it.
+      if (ds.length > 0) {
+        setMode("discover");
+        setActiveDiseaseId(ds[0].id);
+      } else if (cs.length > 0) {
+        setMode("papers");
+        setActiveCollectionId(cs[0].id);
+      }
       setLoaded(true);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isDisease = active !== "settings" && active.kind === "disease";
-  const isCollection = active !== "settings" && active.kind === "collection";
+  const activeDisease = diseases.find((d) => d.id === activeDiseaseId) ?? null;
+  const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
-  const activeDisease = useMemo(
-    () => (isDisease ? diseases.find((d) => d.id === (active as { id: number }).id) ?? null : null),
-    [active, diseases, isDisease]
-  );
-  const activeCollection = useMemo(
-    () =>
-      isCollection
-        ? collections.find((c) => c.id === (active as { id: number }).id) ?? null
-        : null,
-    [active, collections, isCollection]
-  );
+  function changeMode(m: Mode) {
+    setShowSettings(false);
+    setMode(m);
+    if (m === "discover" && activeDiseaseId == null && diseases.length > 0) {
+      setActiveDiseaseId(diseases[0].id);
+    }
+    if (m === "papers" && activeCollectionId == null && collections.length > 0) {
+      setActiveCollectionId(collections[0].id);
+    }
+  }
+
+  function selectDisease(id: number) {
+    setShowSettings(false);
+    setMode("discover");
+    setActiveDiseaseId(id);
+  }
+
+  function selectCollection(id: number) {
+    setShowSettings(false);
+    setMode("papers");
+    setActiveCollectionId(id);
+  }
+
+  async function handleCreateCollection() {
+    const name = window.prompt("Name this collection:");
+    if (!name || !name.trim()) return;
+    try {
+      const created = await api.createCollection(name.trim());
+      await loadCollections();
+      setShowSettings(false);
+      setMode("papers");
+      setActiveCollectionId(created.id);
+      setViewMode("timeline");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function handleRefresh() {
     setRefreshing(true);
     setStatus(null);
     try {
-      const diseaseId = isDisease ? (active as { id: number }).id : undefined;
-      const res = await api.refresh(diseaseId);
+      const res = await api.refresh(activeDiseaseId ?? undefined);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
       let msg = `Added ${added} new paper${added === 1 ? "" : "s"}.`;
@@ -86,22 +117,9 @@ export default function App() {
     }
   }
 
-  async function handleCreateCollection() {
-    const name = window.prompt("Name this collection:");
-    if (!name || !name.trim()) return;
-    try {
-      const created = await api.createCollection(name.trim());
-      await loadCollections();
-      setActive({ kind: "collection", id: created.id });
-      setViewMode("timeline");
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  // Label the view toggle per tab kind: collections show "Papers", diseases
-  // show "Timeline"; both reuse the "timeline" mode slot for their list view.
-  const primaryLabel = isCollection ? "Papers" : "Timeline";
+  const inDiscover = mode === "discover";
+  const primaryLabel = inDiscover ? "Timeline" : "Papers";
+  const showViewControls = !showSettings && (inDiscover ? !!activeDisease : !!activeCollection);
 
   return (
     <div className="app">
@@ -111,7 +129,7 @@ export default function App() {
           <h1>SciLuminate</h1>
         </div>
         <div className="header-actions">
-          {active !== "settings" && (
+          {showViewControls && (
             <div className="view-toggle" role="group" aria-label="View mode">
               <button
                 className={viewMode === "timeline" ? "active" : ""}
@@ -127,34 +145,65 @@ export default function App() {
               </button>
             </div>
           )}
-          {isDisease && activeDisease?.last_polled_at && (
-            <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
+          {/* Refresh polls PubMed for the active topic; irrelevant to My Papers. */}
+          {!showSettings && inDiscover && activeDisease && (
+            <>
+              {activeDisease.last_polled_at && (
+                <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
+              )}
+              <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+                {refreshing ? "Refreshing…" : "Refresh now"}
+              </button>
+            </>
           )}
-          {/* Refresh polls PubMed for diseases; collections are user-imported. */}
-          {isDisease && (
-            <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-              {refreshing ? "Refreshing…" : "Refresh now"}
-            </button>
-          )}
+          <button
+            className={`gear-btn ${showSettings ? "active" : ""}`}
+            onClick={() => setShowSettings((s) => !s)}
+            aria-label="Settings"
+            title="Settings"
+          >
+            ⚙
+          </button>
         </div>
       </header>
 
-      <TabBar
-        diseases={diseases}
-        collections={collections}
-        active={active}
-        onSelect={setActive}
-        onCreateCollection={handleCreateCollection}
-      />
+      <div className="workspace-bar">
+        <WorkspaceNav
+          mode={mode}
+          onModeChange={changeMode}
+          diseases={diseases}
+          collections={collections}
+          activeDiseaseId={activeDiseaseId}
+          activeCollectionId={activeCollectionId}
+          settingsActive={showSettings}
+          onSelectDisease={selectDisease}
+          onSelectCollection={selectCollection}
+          onCreateCollection={handleCreateCollection}
+          onAddTopic={() => setShowSettings(true)}
+        />
+      </div>
 
       {status && <div className="banner info">{status}</div>}
 
       <main className="app-main">
         {!loaded ? (
           <div className="empty">Loading…</div>
-        ) : active === "settings" ? (
+        ) : showSettings ? (
           <Settings onDataChanged={loadDiseases} />
-        ) : isCollection && activeCollection ? (
+        ) : inDiscover ? (
+          activeDisease ? (
+            viewMode === "graph" ? (
+              <CitationGraph source={{ disease: activeDisease.id }} reloadToken={reloadToken} />
+            ) : (
+              <Timeline diseaseId={activeDisease.id} reloadToken={reloadToken} />
+            )
+          ) : (
+            <div className="empty">
+              No topics yet. Open <strong>⚙ Settings</strong> to add a journal and a MeSH topic to
+              watch, or switch to <strong>📁 My Papers</strong> to import your own PDFs.
+            </div>
+          )
+        ) : activeCollection ? (
           viewMode === "graph" ? (
             <CitationGraph source={{ collection: activeCollection.id }} reloadToken={reloadToken} />
           ) : (
@@ -164,23 +213,15 @@ export default function App() {
               onChanged={loadCollections}
               onDeleted={async () => {
                 const cs = await loadCollections();
-                const ds = diseases;
-                if (ds.length > 0) setActive({ kind: "disease", id: ds[0].id });
-                else if (cs.length > 0) setActive({ kind: "collection", id: cs[0].id });
-                else setActive("settings");
+                if (cs.length > 0) setActiveCollectionId(cs[0].id);
+                else setActiveCollectionId(null);
               }}
             />
           )
-        ) : activeDisease ? (
-          viewMode === "graph" ? (
-            <CitationGraph source={{ disease: activeDisease.id }} reloadToken={reloadToken} />
-          ) : (
-            <Timeline diseaseId={activeDisease.id} reloadToken={reloadToken} />
-          )
         ) : (
           <div className="empty">
-            No diseases or collections yet. Open <strong>⚙ Settings</strong> to add journals and
-            diseases, or click <strong>+ Collection</strong> to import your own papers.
+            No collections yet. Click <strong>📁 My Papers → ＋ New collection</strong> to import a
+            folder of your own PDFs.
           </div>
         )}
       </main>
