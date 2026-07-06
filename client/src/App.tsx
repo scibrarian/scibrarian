@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { Disease } from "./types";
+import type { Collection, Disease } from "./types";
 import { TabBar } from "./components/TabBar";
 import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
+import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 
 type ViewMode = "timeline" | "graph";
 
+// The selected tab: a disease, a collection, or the settings pane.
+export type ActiveTab = { kind: "disease" | "collection"; id: number } | "settings";
+
 export default function App() {
   const [diseases, setDiseases] = useState<Disease[]>([]);
-  const [active, setActive] = useState<number | "settings">("settings");
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [active, setActive] = useState<ActiveTab>("settings");
   const [viewMode, setViewMode] = useState<ViewMode>("timeline");
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -22,32 +27,50 @@ export default function App() {
       .getDiseases()
       .then((ds) => {
         setDiseases(ds);
-        setLoaded(true);
         return ds;
       })
-      .catch(() => {
-        setLoaded(true);
-        return [];
-      });
+      .catch(() => []);
+  }
+
+  function loadCollections(): Promise<Collection[]> {
+    return api
+      .getCollections()
+      .then((cs) => {
+        setCollections(cs);
+        return cs;
+      })
+      .catch(() => []);
   }
 
   useEffect(() => {
-    loadDiseases().then((ds) => {
-      if (ds.length > 0) setActive(ds[0].id);
+    Promise.all([loadDiseases(), loadCollections()]).then(([ds, cs]) => {
+      if (ds.length > 0) setActive({ kind: "disease", id: ds[0].id });
+      else if (cs.length > 0) setActive({ kind: "collection", id: cs[0].id });
+      setLoaded(true);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const isDisease = active !== "settings" && active.kind === "disease";
+  const isCollection = active !== "settings" && active.kind === "collection";
+
   const activeDisease = useMemo(
-    () => (typeof active === "number" ? diseases.find((d) => d.id === active) ?? null : null),
-    [active, diseases]
+    () => (isDisease ? diseases.find((d) => d.id === (active as { id: number }).id) ?? null : null),
+    [active, diseases, isDisease]
+  );
+  const activeCollection = useMemo(
+    () =>
+      isCollection
+        ? collections.find((c) => c.id === (active as { id: number }).id) ?? null
+        : null,
+    [active, collections, isCollection]
   );
 
   async function handleRefresh() {
     setRefreshing(true);
     setStatus(null);
     try {
-      const diseaseId = typeof active === "number" ? active : undefined;
+      const diseaseId = isDisease ? (active as { id: number }).id : undefined;
       const res = await api.refresh(diseaseId);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
@@ -63,6 +86,23 @@ export default function App() {
     }
   }
 
+  async function handleCreateCollection() {
+    const name = window.prompt("Name this collection:");
+    if (!name || !name.trim()) return;
+    try {
+      const created = await api.createCollection(name.trim());
+      await loadCollections();
+      setActive({ kind: "collection", id: created.id });
+      setViewMode("timeline");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // Label the view toggle per tab kind: collections show "Papers", diseases
+  // show "Timeline"; both reuse the "timeline" mode slot for their list view.
+  const primaryLabel = isCollection ? "Papers" : "Timeline";
+
   return (
     <div className="app">
       <header className="app-header">
@@ -71,13 +111,13 @@ export default function App() {
           <h1>SciLuminate</h1>
         </div>
         <div className="header-actions">
-          {typeof active === "number" && (
+          {active !== "settings" && (
             <div className="view-toggle" role="group" aria-label="View mode">
               <button
                 className={viewMode === "timeline" ? "active" : ""}
                 onClick={() => setViewMode("timeline")}
               >
-                Timeline
+                {primaryLabel}
               </button>
               <button
                 className={viewMode === "graph" ? "active" : ""}
@@ -87,20 +127,25 @@ export default function App() {
               </button>
             </div>
           )}
-          {activeDisease?.last_polled_at && (
+          {isDisease && activeDisease?.last_polled_at && (
             <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
           )}
-          <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-            {refreshing
-              ? "Refreshing…"
-              : typeof active === "number"
-                ? "Refresh now"
-                : "Refresh all"}
-          </button>
+          {/* Refresh polls PubMed for diseases; collections are user-imported. */}
+          {isDisease && (
+            <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+              {refreshing ? "Refreshing…" : "Refresh now"}
+            </button>
+          )}
         </div>
       </header>
 
-      <TabBar diseases={diseases} active={active} onSelect={setActive} />
+      <TabBar
+        diseases={diseases}
+        collections={collections}
+        active={active}
+        onSelect={setActive}
+        onCreateCollection={handleCreateCollection}
+      />
 
       {status && <div className="banner info">{status}</div>}
 
@@ -109,6 +154,23 @@ export default function App() {
           <div className="empty">Loading…</div>
         ) : active === "settings" ? (
           <Settings onDataChanged={loadDiseases} />
+        ) : isCollection && activeCollection ? (
+          viewMode === "graph" ? (
+            <CitationGraph source={{ collection: activeCollection.id }} reloadToken={reloadToken} />
+          ) : (
+            <CollectionView
+              key={activeCollection.id}
+              collectionId={activeCollection.id}
+              onChanged={loadCollections}
+              onDeleted={async () => {
+                const cs = await loadCollections();
+                const ds = diseases;
+                if (ds.length > 0) setActive({ kind: "disease", id: ds[0].id });
+                else if (cs.length > 0) setActive({ kind: "collection", id: cs[0].id });
+                else setActive("settings");
+              }}
+            />
+          )
         ) : activeDisease ? (
           viewMode === "graph" ? (
             <CitationGraph source={{ disease: activeDisease.id }} reloadToken={reloadToken} />
@@ -117,7 +179,8 @@ export default function App() {
           )
         ) : (
           <div className="empty">
-            No diseases yet. Open <strong>⚙ Settings</strong> to add journals and diseases.
+            No diseases or collections yet. Open <strong>⚙ Settings</strong> to add journals and
+            diseases, or click <strong>+ Collection</strong> to import your own papers.
           </div>
         )}
       </main>
