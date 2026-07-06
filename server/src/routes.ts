@@ -1,28 +1,42 @@
+import fs from "node:fs";
 import { Router } from "express";
 import {
+  collectionCounts,
+  collectionGraphPapers,
+  collectionPapers,
   countJournalArticles,
+  createCollection,
   createDisease,
   createJournal,
+  deleteCollection,
+  deleteCollectionFile,
   deleteDisease,
   diseaseArticleCounts,
   getCitations,
+  getCollection,
+  getCollectionFile,
   getSettings,
   graphPapers,
   journalByNlmId,
   journalsForDisease,
   listArticles,
+  listCollectionFiles,
+  listCollections,
   listDiseases,
   listJournals,
   missingOrStaleCitations,
   removeJournalWithArticles,
+  renameCollection,
   searchCatalog,
+  setFileMatched,
   setSetting,
+  upsertArticles,
   upsertCitations,
 } from "./db.js";
 import { fetchCitations } from "./icite.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
-import { resolveJournal } from "./pubmed.js";
-import { pollAll, pollDisease, rescheduleFromSettings } from "./poller.js";
+import { fetchArticles, resolveJournal } from "./pubmed.js";
+import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
 import type { GraphEdge, GraphNode, GraphResponse, Settings } from "./types.js";
 
 function round1(n: number | null): number | null {
@@ -142,9 +156,12 @@ api.get("/articles", (req, res) => {
 
 api.get("/graph", async (req, res) => {
   const diseaseId = Number(req.query.disease);
-  if (!diseaseId) return res.status(400).json({ error: "'disease' query param is required." });
+  const collectionId = Number(req.query.collection);
+  if (!diseaseId && !collectionId) {
+    return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
+  }
   try {
-    const papers = graphPapers(diseaseId);
+    const papers = diseaseId ? graphPapers(diseaseId) : collectionGraphPapers(collectionId);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
@@ -183,6 +200,81 @@ api.get("/graph", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// ---------- collections (local PDF libraries) ----------
+
+api.get("/collections", (_req, res) => {
+  const counts = collectionCounts();
+  res.json(
+    listCollections().map((c) => ({
+      ...c,
+      fileCount: counts[c.id]?.files ?? 0,
+      matchedCount: counts[c.id]?.matched ?? 0,
+    }))
+  );
+});
+
+api.post("/collections", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "'name' is required." });
+  res.status(201).json(createCollection(name));
+});
+
+api.put("/collections/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  renameCollection(id, name);
+  res.json(getCollection(id));
+});
+
+api.delete("/collections/:id", (req, res) => {
+  // collection_files cascade; cached articles/citations stay (shared globally).
+  deleteCollection(Number(req.params.id));
+  res.status(204).end();
+});
+
+// Papers (matched, deduped by pmid) + every file row, so the client can show
+// unmatched/error files and flag files that have moved on disk.
+api.get("/collections/:id/papers", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  const files = listCollectionFiles(id).map((f) => ({
+    ...f,
+    exists: fs.existsSync(f.file_path),
+  }));
+  res.json({ papers: collectionPapers(id), files });
+});
+
+// Manually assign a PMID to a file the scanner couldn't match. The PMID is
+// validated by actually fetching its metadata from PubMed.
+api.post("/collections/files/:fileId/pmid", async (req, res) => {
+  const fileId = Number(req.params.fileId);
+  const file = getCollectionFile(fileId);
+  if (!file) return res.status(404).json({ error: "File not found." });
+  const pmid = String(req.body?.pmid ?? "").trim();
+  if (!/^\d{1,8}$/.test(pmid)) {
+    return res.status(400).json({ error: "A PMID is 1–8 digits." });
+  }
+  try {
+    const articles = await fetchArticles([pmid]);
+    if (articles.length === 0) {
+      return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
+    }
+    upsertArticles(articles);
+    await warmCitations([pmid], "manual match");
+    setFileMatched(fileId, pmid, "manual");
+    res.json(getCollectionFile(fileId));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.delete("/collections/files/:fileId", (req, res) => {
+  deleteCollectionFile(Number(req.params.fileId));
+  res.status(204).end();
 });
 
 // ---------- refresh / status ----------

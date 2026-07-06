@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
-import type { GraphNode, GraphResponse } from "../types";
+import type { GraphNode, GraphResponse, GraphSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
@@ -37,10 +37,10 @@ function nodeValFromCount(count: number): number {
 }
 
 export function CitationGraph({
-  diseaseId,
+  source,
   reloadToken,
 }: {
-  diseaseId: number;
+  source: GraphSource;
   reloadToken: number;
 }) {
   const [data, setData] = useState<GraphResponse | null>(null);
@@ -60,20 +60,24 @@ export function CitationGraph({
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
+  // Stable effect key: the same source object is re-created each render.
+  const sourceKey = "disease" in source ? `d${source.disease}` : `c${source.collection}`;
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     setSelected(null);
     api
-      .getGraph(diseaseId)
+      .getGraph(source)
       .then((res) => !cancelled && setData(res))
       .catch((e) => !cancelled && setError(e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [diseaseId, reloadToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
@@ -276,7 +280,7 @@ export function CitationGraph({
           {loading ? (
             <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
           ) : !data || data.nodes.length === 0 ? (
-            <div className="empty">No papers yet for this disease.</div>
+            <div className="empty">No papers yet.</div>
           ) : (
             <>
               {shown.nodes === 0 && (

@@ -111,7 +111,7 @@ export default function App() {
           <Settings onDataChanged={loadDiseases} />
         ) : activeDisease ? (
           viewMode === "graph" ? (
-            <CitationGraph diseaseId={activeDisease.id} reloadToken={reloadToken} />
+            <CitationGraph source={{ disease: activeDisease.id }} reloadToken={reloadToken} />
           ) : (
             <Timeline diseaseId={activeDisease.id} reloadToken={reloadToken} />
           )

@@ -1,8 +1,16 @@
 import type {
   AppSettings,
   ArticlesResponse,
+  Collection,
+  CollectionFile,
+  CollectionPapersResponse,
   Disease,
+  FsListing,
+  FsRootsResponse,
   GraphResponse,
+  GraphSource,
+  ImportStartResponse,
+  ImportStatus,
   Journal,
   JournalSearchResponse,
   RefreshResponse,
@@ -50,7 +58,37 @@ export const api = {
     return req<ArticlesResponse>(`/api/articles?${params.toString()}`);
   },
 
-  getGraph: (diseaseId: number) => req<GraphResponse>(`/api/graph?disease=${diseaseId}`),
+  getGraph: (source: GraphSource) => {
+    const qs =
+      "disease" in source ? `disease=${source.disease}` : `collection=${source.collection}`;
+    return req<GraphResponse>(`/api/graph?${qs}`);
+  },
+
+  getCollections: () => req<Collection[]>("/api/collections"),
+  createCollection: (name: string) =>
+    req<Collection>("/api/collections", { method: "POST", body: JSON.stringify({ name }) }),
+  renameCollection: (id: number, name: string) =>
+    req<Collection>(`/api/collections/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
+  deleteCollection: (id: number) => req<void>(`/api/collections/${id}`, { method: "DELETE" }),
+  getCollectionPapers: (id: number) =>
+    req<CollectionPapersResponse>(`/api/collections/${id}/papers`),
+  importIntoCollection: (id: number, paths: string[], recursive: boolean) =>
+    req<ImportStartResponse>(`/api/collections/${id}/import`, {
+      method: "POST",
+      body: JSON.stringify({ paths, recursive }),
+    }),
+  getImportStatus: (id: number) => req<ImportStatus>(`/api/collections/${id}/import/status`),
+  setFilePmid: (fileId: number, pmid: string) =>
+    req<CollectionFile>(`/api/collections/files/${fileId}/pmid`, {
+      method: "POST",
+      body: JSON.stringify({ pmid }),
+    }),
+  deleteCollectionFile: (fileId: number) =>
+    req<void>(`/api/collections/files/${fileId}`, { method: "DELETE" }),
+  openFile: (fileId: number) =>
+    req<void>("/api/open", { method: "POST", body: JSON.stringify({ fileId }) }),
+  fsRoots: () => req<FsRootsResponse>("/api/fs/roots"),
+  fsList: (path: string) => req<FsListing>(`/api/fs/list?path=${encodeURIComponent(path)}`),
 
   refresh: (diseaseId?: number) => {
     const suffix = diseaseId ? `?disease=${diseaseId}` : "";

@@ -61,6 +61,88 @@ export interface AppSettings {
   has_api_key: boolean;
 }
 
+export interface Collection {
+  id: number;
+  name: string;
+  created_at: string;
+  fileCount: number;
+  matchedCount: number;
+}
+
+export type CollectionFileStatus = "pending" | "matched" | "unmatched" | "error";
+
+export interface CollectionFile {
+  id: number;
+  collection_id: number;
+  file_path: string;
+  file_name: string;
+  pmid: string | null;
+  match_status: CollectionFileStatus;
+  match_method: string; // pmid | doi | manual | ''
+  match_error: string;
+  added_at: string;
+  exists: boolean; // whether the file is still on disk
+}
+
+export interface CollectionPaper {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  authors: string[];
+  pub_date: string;
+  pub_date_display: string;
+  doi: string;
+  url: string;
+  citation_count: number;
+}
+
+export interface CollectionPapersResponse {
+  papers: CollectionPaper[];
+  files: CollectionFile[];
+}
+
+export interface ImportStartResponse {
+  jobId: string;
+  added: number; // new file rows inserted
+  skipped: number; // already in the collection
+  total: number; // pending files the job will scan
+}
+
+export interface ImportStatus {
+  state: "idle" | "running" | "done" | "error";
+  jobId?: string;
+  total?: number;
+  processed?: number;
+  matched?: number;
+  unmatched?: number;
+  errors?: number;
+  currentFile?: string | null;
+  startedAt?: string;
+  finishedAt?: string | null;
+  error?: string; // fatal job error only
+}
+
+export interface FsPlace {
+  label: string;
+  path: string;
+}
+
+export interface FsRootsResponse {
+  roots: FsPlace[];
+  home: string;
+  shortcuts: FsPlace[];
+}
+
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  dirs: { name: string; path: string }[];
+  files: { name: string; path: string; size: number; mtime: string }[];
+}
+
+// Which paper set a graph is built from.
+export type GraphSource = { disease: number } | { collection: number };
+
 export interface GraphNode {
   pmid: string;
   title: string;
