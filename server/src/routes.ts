@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { Router } from "express";
 import {
+  addCollectionFiles,
   collectionCounts,
   collectionGraphPapers,
   collectionPapers,
@@ -33,8 +34,9 @@ import {
   upsertArticles,
   upsertCitations,
 } from "./db.js";
-import { FsError, listDir, listRoots } from "./fsbrowse.js";
+import { collectPdfs, FsError, listDir, listRoots } from "./fsbrowse.js";
 import { fetchCitations } from "./icite.js";
+import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
 import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
@@ -247,6 +249,39 @@ api.get("/collections/:id/papers", (req, res) => {
     exists: fs.existsSync(f.file_path),
   }));
   res.json({ papers: collectionPapers(id), files });
+});
+
+// Add folders/files to a collection and start the scan/match job. Only
+// 'pending' rows are scanned, so re-importing a folder picks up new files
+// without redoing the ones already matched.
+api.post("/collections/:id/import", async (req, res) => {
+  const id = Number(req.params.id);
+  const collection = getCollection(id);
+  if (!collection) return res.status(404).json({ error: "Collection not found." });
+  if (isImportRunning(id)) {
+    return res.status(409).json({ error: "An import is already running for this collection." });
+  }
+  const paths = Array.isArray(req.body?.paths) ? req.body.paths.map(String) : [];
+  if (paths.length === 0) return res.status(400).json({ error: "'paths' is required." });
+  const recursive = Boolean(req.body?.recursive);
+  try {
+    const found = await collectPdfs(paths, recursive);
+    const added = addCollectionFiles(id, found);
+    const status = startImport(id, collection.name);
+    res.status(202).json({
+      jobId: status.jobId,
+      added,
+      skipped: found.length - added,
+      total: status.total,
+    });
+  } catch (err) {
+    const status = err instanceof FsError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.get("/collections/:id/import/status", (req, res) => {
+  res.json(getImportStatus(Number(req.params.id)) ?? { state: "idle" });
 });
 
 // Manually assign a PMID to a file the scanner couldn't match. The PMID is
