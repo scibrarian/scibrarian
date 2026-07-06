@@ -33,6 +33,7 @@ import {
   upsertArticles,
   upsertCitations,
 } from "./db.js";
+import { FsError, listDir, listRoots } from "./fsbrowse.js";
 import { fetchCitations } from "./icite.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
@@ -275,6 +276,25 @@ api.post("/collections/files/:fileId/pmid", async (req, res) => {
 api.delete("/collections/files/:fileId", (req, res) => {
   deleteCollectionFile(Number(req.params.fileId));
   res.status(204).end();
+});
+
+// ---------- filesystem browsing (for the folder picker) ----------
+
+api.get("/fs/roots", async (_req, res) => {
+  try {
+    res.json(await listRoots());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.get("/fs/list", async (req, res) => {
+  try {
+    res.json(await listDir(String(req.query.path ?? "")));
+  } catch (err) {
+    const status = err instanceof FsError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // ---------- refresh / status ----------
