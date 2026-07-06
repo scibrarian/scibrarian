@@ -207,7 +207,7 @@ export default function App() {
 
       <main className="app-main">
         {!loaded ? (
-          <TimelineSkeleton />
+          <TimelineSkeleton withToolbar />
         ) : showSettings ? (
           <Settings onDataChanged={loadDiseases} />
         ) : inDiscover ? (

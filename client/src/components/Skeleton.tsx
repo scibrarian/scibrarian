@@ -14,30 +14,47 @@ export function SkeletonBar({
 }
 
 // Mirrors the timeline layout (month label + dotted rows of article cards) so
-// the page doesn't jump when real content arrives.
-export function TimelineSkeleton() {
+// the page doesn't jump when real content arrives. `withToolbar` also renders
+// the search bar the way <Timeline> does — needed for the App-level pre-load
+// skeleton, which sits where <Timeline> (toolbar included) will render, so the
+// search bar doesn't pop in and shove the cards down on that handoff.
+export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolean }) {
   return (
-    <div className="timeline" aria-busy="true" aria-label="Loading papers">
-      <section className="month-group">
-        <h2 className="month-label">
-          <SkeletonBar w={150} h={16} />
-        </h2>
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="timeline-row">
-            <div className="timeline-dot" />
-            <article className="card">
-              <div className="card-meta">
-                <SkeletonBar w={90} h={20} />
-                <SkeletonBar w={70} h={12} />
-              </div>
-              <SkeletonBar w={["82%", "64%", "74%"][i]} h={18} style={{ marginBottom: 10 }} />
-              <SkeletonBar w="38%" h={12} style={{ marginBottom: 12 }} />
-              <SkeletonBar w="100%" h={12} style={{ marginBottom: 6 }} />
-              <SkeletonBar w={["88%", "94%", "70%"][i]} h={12} />
-            </article>
-          </div>
-        ))}
-      </section>
+    <div className="timeline-wrap" aria-busy="true" aria-label="Loading papers">
+      {withToolbar && (
+        <div className="toolbar">
+          <input
+            className="search"
+            type="search"
+            placeholder="Search titles & abstracts…"
+            readOnly
+            aria-hidden="true"
+            tabIndex={-1}
+          />
+        </div>
+      )}
+      <div className="timeline">
+        <section className="month-group">
+          <h2 className="month-label">
+            <SkeletonBar w={150} h={16} />
+          </h2>
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="timeline-row">
+              <div className="timeline-dot" />
+              <article className="card">
+                <div className="card-meta">
+                  <SkeletonBar w={90} h={20} />
+                  <SkeletonBar w={70} h={12} />
+                </div>
+                <SkeletonBar w={["82%", "64%", "74%"][i]} h={18} style={{ marginBottom: 10 }} />
+                <SkeletonBar w="38%" h={12} style={{ marginBottom: 12 }} />
+                <SkeletonBar w="100%" h={12} style={{ marginBottom: 6 }} />
+                <SkeletonBar w={["88%", "94%", "70%"][i]} h={12} />
+              </article>
+            </div>
+          ))}
+        </section>
+      </div>
     </div>
   );
 }
