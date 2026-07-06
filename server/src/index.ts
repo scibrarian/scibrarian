@@ -8,7 +8,10 @@ import { startScheduler } from "./poller.js";
 import { ensureCatalogLoaded } from "./journal-catalog.js";
 
 const app = express();
-app.use(cors());
+// The API can browse the local filesystem and launch the PDF viewer, so it must
+// only be reachable from this machine: bind to loopback (below) and refuse
+// cross-origin browser requests from anything but localhost.
+app.use(cors({ origin: [/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/] }));
 app.use(express.json());
 
 app.use("/api", api);
@@ -21,7 +24,7 @@ if (fs.existsSync(CLIENT_DIST)) {
   });
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, "127.0.0.1", () => {
   console.log(`[server] API listening on http://localhost:${PORT}`);
   startScheduler();
   void ensureCatalogLoaded(); // warm the journal catalog in the background
