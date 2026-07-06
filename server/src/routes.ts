@@ -34,6 +34,7 @@ import {
   upsertArticles,
   upsertCitations,
 } from "./db.js";
+import open from "open";
 import { collectPdfs, FsError, listDir, listRoots } from "./fsbrowse.js";
 import { fetchCitations } from "./icite.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
@@ -329,6 +330,27 @@ api.get("/fs/list", async (req, res) => {
   } catch (err) {
     const status = err instanceof FsError ? err.status : 500;
     res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ---------- open a file in the OS default viewer ----------
+
+// Takes a fileId (never a raw path), so it can only ever launch a PDF the user
+// has already added to a collection. `open` spawns the handler without a shell,
+// so filenames can't inject commands.
+api.post("/open", async (req, res) => {
+  const fileId = Number(req.body?.fileId);
+  if (!fileId) return res.status(400).json({ error: "'fileId' is required." });
+  const file = getCollectionFile(fileId);
+  if (!file) return res.status(404).json({ error: "File not found." });
+  if (!fs.existsSync(file.file_path)) {
+    return res.status(410).json({ error: "That file is no longer at its saved location." });
+  }
+  try {
+    await open(file.file_path);
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
