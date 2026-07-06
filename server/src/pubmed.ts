@@ -138,6 +138,23 @@ export async function search(term: string): Promise<string[]> {
   return ids.slice(0, MAX_RESULTS);
 }
 
+// Resolve a DOI to its PMID via a field-tagged esearch (covers all of PubMed,
+// unlike the PMC-only idconv service, and inherits the shared throttle/retry/
+// API-key plumbing). Returns null unless PubMed has exactly one match — 0 or
+// 2+ hits mean the id can't be trusted.
+export async function resolveDoiToPmid(doi: string): Promise<string | null> {
+  const params = new URLSearchParams({
+    db: "pubmed",
+    retmode: "json",
+    retmax: "2",
+    term: `"${doi.replace(/"/g, "")}"[doi]`,
+  });
+  const res = await eutilsFetch("esearch.fcgi", params);
+  const data = (await res.json()) as { esearchresult?: { idlist?: string[] } };
+  const ids = data.esearchresult?.idlist ?? [];
+  return ids.length === 1 ? ids[0] : null;
+}
+
 // Count of PubMed articles in a journal — used to validate a free-typed journal
 // name that isn't in the local catalog.
 export async function journalCount(journalName: string): Promise<number> {
@@ -156,6 +173,7 @@ export async function journalCount(journalName: string): Promise<number> {
 
 interface ESummaryDoc {
   uid: string;
+  error?: string; // present when PubMed has no such PMID
   title?: string;
   fulljournalname?: string;
   source?: string;
@@ -192,6 +210,9 @@ export async function fetchSummaries(pmids: string[]): Promise<Map<string, Artic
   for (const pmid of pmids) {
     const doc = result[pmid] as ESummaryDoc | undefined;
     if (!doc || typeof doc !== "object") continue;
+    // PubMed returns an error stub ({uid, error}) for ids it doesn't have; skip
+    // it so a nonexistent/garbage PMID never becomes an empty article record.
+    if (doc.error) continue;
     const { sort: pubDate, display: pubDateDisplay } = pickPubDate(doc);
     out.set(pmid, {
       pmid,
