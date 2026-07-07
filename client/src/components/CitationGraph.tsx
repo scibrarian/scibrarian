@@ -36,6 +36,21 @@ function nodeValFromCount(count: number): number {
   return r * r;
 }
 
+// Cache the last successful graph fetch per source. Remounting the graph — e.g.
+// flipping the Timeline/Graph toggle back to Graph — then paints from cache
+// instead of refetching and re-showing the "Loading citation data…" state.
+// reloadToken is bumped when the data actually changes ("Refresh now"), which
+// invalidates the entry. Only the raw server response is cached; the settled
+// node positions still recompute on remount (the layout re-runs from scratch).
+const keyOf = (source: GraphSource) =>
+  "disease" in source ? `d${source.disease}` : `c${source.collection}`;
+type CachedGraph = { token: number; data: GraphResponse };
+const graphCache = new Map<string, CachedGraph>();
+function cachedGraph(sourceKey: string, token: number): GraphResponse | undefined {
+  const hit = graphCache.get(sourceKey);
+  return hit && hit.token === token ? hit.data : undefined;
+}
+
 export function CitationGraph({
   source,
   reloadToken,
@@ -43,8 +58,12 @@ export function CitationGraph({
   source: GraphSource;
   reloadToken: number;
 }) {
-  const [data, setData] = useState<GraphResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Seed from cache so returning to the graph paints instantly with no fetch or
+  // loading flash (the force layout still re-settles, which is acceptable).
+  const [data, setData] = useState<GraphResponse | null>(
+    () => cachedGraph(keyOf(source), reloadToken) ?? null
+  );
+  const [loading, setLoading] = useState(() => cachedGraph(keyOf(source), reloadToken) === undefined);
   const [error, setError] = useState<string | null>(null);
   const [minCitations, setMinCitations] = useState(0); // instant: slider + box
   const [minText, setMinText] = useState("0"); // controlled string for the number box
@@ -61,16 +80,29 @@ export function CitationGraph({
   const [size, setSize] = useState({ width: 800, height: 600 });
 
   // Stable effect key: the same source object is re-created each render.
-  const sourceKey = "disease" in source ? `d${source.disease}` : `c${source.collection}`;
+  const sourceKey = keyOf(source);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
     setError(null);
     setSelected(null);
+
+    // Serve an unchanged (same reloadToken) graph from cache without a refetch.
+    const cached = cachedGraph(sourceKey, reloadToken);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
     api
       .getGraph(source)
-      .then((res) => !cancelled && setData(res))
+      .then((res) => {
+        if (cancelled) return;
+        graphCache.set(sourceKey, { token: reloadToken, data: res });
+        setData(res);
+      })
       .catch((e) => !cancelled && setError(e.message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
