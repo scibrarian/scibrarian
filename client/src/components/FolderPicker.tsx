@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { FsListing, FsRootsResponse } from "../types";
+import { PickerListSkeleton } from "./Skeleton";
 
 // Native-like folder dialog backed by the server's /api/fs endpoints. The user
 // either adds a whole folder (optionally recursively) or ticks individual PDFs.
@@ -98,7 +99,7 @@ export function FolderPicker({
 
         <div className="picker-body">
           {loading ? (
-            <div className="empty">Loading…</div>
+            <PickerListSkeleton />
           ) : (
             <>
               {listing && listing.dirs.length === 0 && listing.files.length === 0 && (

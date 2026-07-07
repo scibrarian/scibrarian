@@ -6,6 +6,7 @@ import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
+import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 
 type ViewMode = "timeline" | "graph";
 
@@ -129,31 +130,42 @@ export default function App() {
           <h1>SciLuminate</h1>
         </div>
         <div className="header-actions">
-          {showViewControls && (
-            <div className="view-toggle" role="group" aria-label="View mode">
-              <button
-                className={viewMode === "timeline" ? "active" : ""}
-                onClick={() => setViewMode("timeline")}
-              >
-                {primaryLabel}
-              </button>
-              <button
-                className={viewMode === "graph" ? "active" : ""}
-                onClick={() => setViewMode("graph")}
-              >
-                Graph
-              </button>
-            </div>
-          )}
-          {/* Refresh polls PubMed for the active topic; irrelevant to My Papers. */}
-          {!showSettings && inDiscover && activeDisease && (
+          {!loaded ? (
+            // Reserve the controls' space during the first load so they don't
+            // pop in and shift the header once data arrives.
             <>
-              {activeDisease.last_polled_at && (
-                <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
+              <SkeletonBar w={150} h={32} style={{ borderRadius: "var(--radius)" }} />
+              <SkeletonBar w={108} h={35} style={{ borderRadius: "var(--radius)" }} />
+            </>
+          ) : (
+            <>
+              {showViewControls && (
+                <div className="view-toggle" role="group" aria-label="View mode">
+                  <button
+                    className={viewMode === "timeline" ? "active" : ""}
+                    onClick={() => setViewMode("timeline")}
+                  >
+                    {primaryLabel}
+                  </button>
+                  <button
+                    className={viewMode === "graph" ? "active" : ""}
+                    onClick={() => setViewMode("graph")}
+                  >
+                    Graph
+                  </button>
+                </div>
               )}
-              <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-                {refreshing ? "Refreshing…" : "Refresh now"}
-              </button>
+              {/* Refresh polls PubMed for the active topic; irrelevant to My Papers. */}
+              {!showSettings && inDiscover && activeDisease && (
+                <>
+                  {activeDisease.last_polled_at && (
+                    <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
+                  )}
+                  <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+                    {refreshing ? "Refreshing…" : "Refresh now"}
+                  </button>
+                </>
+              )}
             </>
           )}
           <button
@@ -176,6 +188,7 @@ export default function App() {
           activeDiseaseId={activeDiseaseId}
           activeCollectionId={activeCollectionId}
           settingsActive={showSettings}
+          loaded={loaded}
           onSelectDisease={selectDisease}
           onSelectCollection={selectCollection}
           onCreateCollection={handleCreateCollection}
@@ -183,11 +196,18 @@ export default function App() {
         />
       </div>
 
-      {status && <div className="banner info">{status}</div>}
+      {status && (
+        <div className="banner info dismissible">
+          <span>{status}</span>
+          <button className="banner-close" onClick={() => setStatus(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
 
       <main className="app-main">
         {!loaded ? (
-          <div className="empty">Loading…</div>
+          <TimelineSkeleton withToolbar />
         ) : showSettings ? (
           <Settings onDataChanged={loadDiseases} />
         ) : inDiscover ? (

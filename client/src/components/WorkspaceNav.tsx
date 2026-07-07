@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Collection, Disease } from "../types";
+import { SkeletonBar } from "./Skeleton";
 
 export type Mode = "discover" | "papers";
 
@@ -14,6 +15,7 @@ export function WorkspaceNav({
   activeDiseaseId,
   activeCollectionId,
   settingsActive,
+  loaded,
   onSelectDisease,
   onSelectCollection,
   onCreateCollection,
@@ -26,6 +28,7 @@ export function WorkspaceNav({
   activeDiseaseId: number | null;
   activeCollectionId: number | null;
   settingsActive: boolean;
+  loaded: boolean;
   onSelectDisease: (id: number) => void;
   onSelectCollection: (id: number) => void;
   onCreateCollection: () => void;
@@ -67,18 +70,27 @@ export function WorkspaceNav({
       </div>
 
       <div className="ws-picker" ref={ref}>
-        <button
-          className="ws-trigger"
-          onClick={() => setOpen((o) => !o)}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-        >
-          <span className="ws-current">{label}</span>
-          {typeof count === "number" && <span className="count">{count}</span>}
-          <span className="ws-caret">▾</span>
-        </button>
+        {/* Until the first load resolves we don't yet know if there are any
+            topics/collections, so show a placeholder rather than flashing the
+            "No topics yet" empty state. */}
+        {!loaded ? (
+          <div className="ws-trigger ws-trigger-loading" aria-hidden="true">
+            <SkeletonBar w={128} h={14} />
+          </div>
+        ) : (
+          <button
+            className="ws-trigger"
+            onClick={() => setOpen((o) => !o)}
+            aria-haspopup="listbox"
+            aria-expanded={open}
+          >
+            <span className="ws-current">{label}</span>
+            {typeof count === "number" && <span className="count">{count}</span>}
+            <span className="ws-caret">▾</span>
+          </button>
+        )}
 
-        {open && (
+        {open && loaded && (
           <div className="ws-menu" role="listbox">
             {inDiscover ? (
               <>

@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Article } from "../types";
 import { ArticleCard } from "./ArticleCard";
+import { JournalFilter } from "./JournalFilter";
+import { FilterSkeleton, TimelineSkeleton } from "./Skeleton";
 
 interface MonthGroup {
   key: string;
@@ -9,18 +11,27 @@ interface MonthGroup {
   items: Article[];
 }
 
+// A topic can hold thousands of papers; render them incrementally so the first
+// paint stays cheap. The rest materialize as the user scrolls near the bottom.
+const PAGE_SIZE = 50;
+
 export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reloadToken: number }) {
   const [articles, setArticles] = useState<Article[]>([]);
   const [journals, setJournals] = useState<string[]>([]);
-  const [journalFilter, setJournalFilter] = useState("");
+  // Journals the user has turned off (empty = show all). Client-side, so
+  // toggling is instant and never refetches.
+  const [deselected, setDeselected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Reset filters whenever the active disease changes.
   useEffect(() => {
-    setJournalFilter("");
+    setDeselected(new Set());
+    setJournals([]);
     setQuery("");
     setSearch("");
   }, [diseaseId]);
@@ -31,12 +42,15 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
     return () => clearTimeout(t);
   }, [query]);
 
+  // Only the disease and free-text search hit the server; journal filtering is
+  // done client-side below.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setVisibleCount(PAGE_SIZE); // a new query starts from the top
     api
-      .getArticles(diseaseId, journalFilter || undefined, search || undefined)
+      .getArticles(diseaseId, undefined, search || undefined)
       .then((res) => {
         if (cancelled) return;
         setArticles(res.articles);
@@ -47,9 +61,31 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
     return () => {
       cancelled = true;
     };
-  }, [diseaseId, journalFilter, search, reloadToken]);
+  }, [diseaseId, search, reloadToken]);
 
-  const groups = groupByMonth(articles);
+  const visible = useMemo(
+    () => (deselected.size === 0 ? articles : articles.filter((a) => !deselected.has(a.journal_name))),
+    [articles, deselected]
+  );
+  const shown = useMemo(() => visible.slice(0, visibleCount), [visible, visibleCount]);
+  const groups = groupByMonth(shown);
+  const hasMore = visibleCount < visible.length;
+  const allDeselected = journals.length > 0 && deselected.size >= journals.length;
+
+  // Grow the rendered slice as the sentinel near the bottom scrolls into view.
+  // rootMargin preloads the next page before the user hits the very end.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) setVisibleCount((c) => c + PAGE_SIZE);
+      },
+      { rootMargin: "800px 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, visible.length]);
 
   return (
     <div className="timeline-wrap">
@@ -61,23 +97,15 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {journals.length > 0 && (
-          <div className="chips">
-            <button
-              className={`chip ${journalFilter === "" ? "active" : ""}`}
-              onClick={() => setJournalFilter("")}
-            >
-              All journals
-            </button>
-            {journals.map((j) => (
-              <button
-                key={j}
-                className={`chip ${journalFilter === j ? "active" : ""}`}
-                onClick={() => setJournalFilter(j)}
-              >
-                {j}
-              </button>
-            ))}
+        {/* Keep the filter row a fixed height: the real dropdown once journals
+            are known, a skeleton on first load, nothing for an empty topic. */}
+        {(journals.length > 0 || loading) && (
+          <div className="filter-row">
+            {journals.length > 0 ? (
+              <JournalFilter journals={journals} deselected={deselected} onChange={setDeselected} />
+            ) : (
+              <FilterSkeleton />
+            )}
           </div>
         )}
       </div>
@@ -85,12 +113,14 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
       {error && <div className="banner error">{error}</div>}
 
       {loading ? (
-        <div className="empty">Loading…</div>
-      ) : articles.length === 0 ? (
+        <TimelineSkeleton />
+      ) : visible.length === 0 ? (
         <div className="empty">
-          {search || journalFilter
-            ? "No papers match the current filters."
-            : "No papers yet. Add journals & diseases in Settings, then click “Refresh now”."}
+          {allDeselected
+            ? "No journals selected. Use the Journals filter to show papers."
+            : search || deselected.size > 0
+              ? "No papers match the current filters."
+              : "No papers yet. Add journals & diseases in Settings, then click “Refresh now”."}
         </div>
       ) : (
         <div className="timeline">
@@ -105,6 +135,12 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
               ))}
             </section>
           ))}
+          {hasMore && <div ref={sentinelRef} className="scroll-sentinel" aria-hidden="true" />}
+          <p className="timeline-footer">
+            {hasMore
+              ? `Showing ${shown.length} of ${visible.length} papers — scroll for more`
+              : `${visible.length} paper${visible.length === 1 ? "" : "s"}`}
+          </p>
         </div>
       )}
     </div>
