@@ -275,6 +275,17 @@ body {
 
 /* ---------- timeline ---------- */
 
+.scroll-sentinel {
+  height: 1px;
+}
+
+.timeline-footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px 0 8px;
+}
+
 .month-group {
   margin-bottom: 8px;
 }
