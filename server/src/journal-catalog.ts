@@ -1,5 +1,6 @@
 import {
   bulkInsertCatalog,
+  getSetting,
   journalCatalogCount,
   setCatalogMetric,
   type CatalogRow,
@@ -10,7 +11,6 @@ import {
 const J_MEDLINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt";
 // OpenAlex journal-level metrics (open, CC0). We use 2-yr mean citedness.
 const OPENALEX = "https://api.openalex.org/sources";
-const MAILTO = "everyonecast@gmail.com";
 const METRIC_TTL_DAYS = 180;
 
 // ---------- NLM catalog load ----------
@@ -76,9 +76,12 @@ function isFresh(ts: string | null): boolean {
 async function fetchOpenAlexByIssns(issns: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (issns.length === 0) return out;
+  // OpenAlex "polite pool": include the configured contact email when set.
+  const mailto = getSetting("ncbi_email");
   const url =
     `${OPENALEX}?filter=${encodeURIComponent(`issn:${issns.join("|")}`)}` +
-    `&select=issn,issn_l,summary_stats&per-page=${Math.min(issns.length, 50)}&mailto=${MAILTO}`;
+    `&select=issn,issn_l,summary_stats&per-page=${Math.min(issns.length, 50)}` +
+    (mailto ? `&mailto=${encodeURIComponent(mailto)}` : "");
   const res = await fetch(url);
   if (!res.ok) return out;
   const data = (await res.json()) as {

@@ -19,7 +19,7 @@ export const DB_PATH = path.isAbsolute(process.env.DB_PATH || "")
 // settings table win (so they can be changed in the UI).
 export const ENV_DEFAULTS = {
   ncbi_api_key: process.env.NCBI_API_KEY || "",
-  ncbi_email: process.env.NCBI_EMAIL || "everyonecast@gmail.com",
+  ncbi_email: process.env.NCBI_EMAIL || "changeme@website.com",
   poll_cron: process.env.POLL_CRON || "0 6 * * *", // daily at 06:00
 };
 
