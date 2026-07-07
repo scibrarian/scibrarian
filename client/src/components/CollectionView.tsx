@@ -1,11 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
 import { api } from "../api";
 import type { CollectionFile, CollectionPaper, ImportStatus } from "../types";
-import { FolderPicker } from "./FolderPicker";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
 type SortDir = "asc" | "desc";
+
+// Files per upload request, so huge folder selections don't become one
+// gigantic multipart body (the server also caps files-per-request).
+const UPLOAD_BATCH = 20;
+
+// webkitdirectory (folder selection) isn't in React's input typings.
+const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInputElement>;
+
+// Cache the last successful fetch per collection. Remounting the view — e.g.
+// clicking back into My Papers — then paints from cache instead of refetching.
+// Unlike Timeline's reloadToken, this data changes through the component's own
+// actions, which all reload via loadPapers(): every successful fetch writes
+// through here, and a running import drops the entry (the server-side job is
+// mutating the collection), so a stale list is never served.
+type CachedCollection = { papers: CollectionPaper[]; files: CollectionFile[] };
+const collectionCache = new Map<number, CachedCollection>();
 
 export function CollectionView({
   collectionId,
@@ -16,22 +31,29 @@ export function CollectionView({
   onChanged: () => void;
   onDeleted: () => void;
 }) {
-  const [papers, setPapers] = useState<CollectionPaper[]>([]);
-  const [files, setFiles] = useState<CollectionFile[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from cache so returning to a collection paints instantly.
+  const [papers, setPapers] = useState<CollectionPaper[]>(
+    () => collectionCache.get(collectionId)?.papers ?? []
+  );
+  const [files, setFiles] = useState<CollectionFile[]>(
+    () => collectionCache.get(collectionId)?.files ?? []
+  );
+  const [loading, setLoading] = useState(() => !collectionCache.has(collectionId));
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const filesInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadPapers = useCallback(() => {
     setLoading(true);
     return api
       .getCollectionPapers(collectionId)
       .then((res) => {
+        collectionCache.set(collectionId, { papers: res.papers, files: res.files });
         setPapers(res.papers);
         setFiles(res.files);
       })
@@ -40,8 +62,10 @@ export function CollectionView({
   }, [collectionId]);
 
   useEffect(() => {
+    // Cache hit: state was seeded above, so skip the redundant refetch.
+    if (collectionCache.has(collectionId)) return;
     loadPapers();
-  }, [loadPapers]);
+  }, [collectionId, loadPapers]);
 
   // Poll import status while a job runs; refresh papers + tab counts on finish.
   const stopPolling = useCallback(() => {
@@ -53,6 +77,10 @@ export function CollectionView({
 
   const startPolling = useCallback(() => {
     stopPolling();
+    // The import job is mutating this collection server-side; drop the cached
+    // entry so leaving and returning mid-import refetches rather than serving
+    // the pre-import list. loadPapers() re-caches when the job finishes.
+    collectionCache.delete(collectionId);
     pollRef.current = setInterval(async () => {
       try {
         const s = await api.getImportStatus(collectionId);
@@ -82,19 +110,33 @@ export function CollectionView({
     return stopPolling;
   }, [collectionId, startPolling, stopPolling]);
 
-  async function handleImport(paths: string[], recursive: boolean) {
-    setPicking(false);
+  // Upload the picked PDFs in batches, then kick off the scan/match job.
+  async function handleImport(list: FileList | null) {
+    const pdfs = Array.from(list ?? []).filter((f) => /\.pdf$/i.test(f.name));
     setError(null);
     setNotice(null);
+    if (pdfs.length === 0) {
+      setNotice("No PDFs found in the selection.");
+      return;
+    }
     try {
-      const res = await api.importIntoCollection(collectionId, paths, recursive);
+      let added = 0;
+      let skipped = 0;
+      for (let i = 0; i < pdfs.length; i += UPLOAD_BATCH) {
+        const batch = pdfs.slice(i, i + UPLOAD_BATCH);
+        setNotice(`Uploading ${i + batch.length} / ${pdfs.length}…`);
+        const res = await api.uploadFiles(collectionId, batch);
+        added += res.added;
+        skipped += res.skipped;
+      }
       setNotice(
-        res.added > 0
-          ? `Added ${res.added} file${res.added === 1 ? "" : "s"}; scanning for PubMed IDs…`
-          : res.skipped > 0
+        added > 0
+          ? `Added ${added} file${added === 1 ? "" : "s"}; scanning for PubMed IDs…`
+          : skipped > 0
             ? "Those files are already in this collection."
             : "No PDFs found in the selection."
       );
+      await api.startImport(collectionId);
       const s = await api.getImportStatus(collectionId);
       setImportStatus(s);
       if (s.state === "running") startPolling();
@@ -119,27 +161,24 @@ export function CollectionView({
   async function remove() {
     if (
       !window.confirm(
-        "Delete this collection? The imported PDFs stay on your disk; only the collection and its list are removed."
+        "Delete this collection? Its uploaded PDF copies are removed from the app (unless another collection also has them); your original files are untouched."
       )
     ) {
       return;
     }
     try {
       await api.deleteCollection(collectionId);
+      collectionCache.delete(collectionId);
       onDeleted();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function openPaper(pmid: string) {
+  function openPaper(pmid: string) {
     const file = files.find((f) => f.pmid === pmid && f.match_status === "matched");
     if (!file) return;
-    try {
-      await api.openFile(file.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    window.open(api.fileContentUrl(file.id), "_blank", "noopener");
   }
 
   // pmid -> its first matched file, for open-on-click and the missing badge.
@@ -198,13 +237,35 @@ export function CollectionView({
     <div className="collection-view">
       <div className="collection-head">
         <div className="collection-actions">
-          <button onClick={() => setPicking(true)}>+ Add folder / files</button>
+          <button onClick={() => filesInputRef.current?.click()}>+ Add files</button>
+          <button onClick={() => folderInputRef.current?.click()}>+ Add folder</button>
           <button className="link-btn" onClick={rename}>
             Rename
           </button>
           <button className="link-btn danger" onClick={remove}>
             Delete collection
           </button>
+          <input
+            ref={filesInputRef}
+            type="file"
+            multiple
+            accept=".pdf,application/pdf"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              void handleImport(e.target.files);
+              e.target.value = ""; // allow re-picking the same selection
+            }}
+          />
+          <input
+            ref={folderInputRef}
+            type="file"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              void handleImport(e.target.files);
+              e.target.value = "";
+            }}
+            {...folderInputProps}
+          />
         </div>
       </div>
 
@@ -229,9 +290,9 @@ export function CollectionView({
         <PapersTableSkeleton />
       ) : papers.length === 0 && unresolved.length === 0 ? (
         <div className="empty">
-          No papers yet. Click <strong>+ Add folder / files</strong> to import PDFs. The app scans
-          each PDF for its PubMed ID and pulls in the title, authors, journal, year, and citation
-          count.
+          No papers yet. Click <strong>+ Add files</strong> or <strong>+ Add folder</strong> to
+          upload PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors,
+          journal, year, and citation count.
         </div>
       ) : (
         <>
@@ -274,7 +335,7 @@ export function CollectionView({
                             {p.title || "(untitled)"}
                           </button>
                           {missing && (
-                            <span className="file-missing" title="The PDF has moved or been deleted">
+                            <span className="file-missing" title="The stored PDF is missing">
                               file missing
                             </span>
                           )}
@@ -312,10 +373,6 @@ export function CollectionView({
             />
           )}
         </>
-      )}
-
-      {picking && (
-        <FolderPicker onClose={() => setPicking(false)} onConfirm={handleImport} />
       )}
     </div>
   );

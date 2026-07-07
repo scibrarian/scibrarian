@@ -129,17 +129,3 @@ export function PapersTableSkeleton({ rows = 5 }: { rows?: number }) {
     </div>
   );
 }
-
-// Mirrors the folder picker's file/directory rows.
-export function PickerListSkeleton({ rows = 6 }: { rows?: number }) {
-  return (
-    <ul className="picker-list" aria-busy="true" aria-label="Loading folder">
-      {Array.from({ length: rows }).map((_, i) => (
-        <li key={i} className="picker-skeleton-row">
-          <SkeletonBar w={18} h={18} />
-          <SkeletonBar w={`${45 + ((i * 13) % 35)}%`} h={13} />
-        </li>
-      ))}
-    </ul>
-  );
-}

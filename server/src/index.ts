@@ -8,9 +8,9 @@ import { startScheduler } from "./poller.js";
 import { ensureCatalogLoaded } from "./journal-catalog.js";
 
 const app = express();
-// The API can browse the local filesystem and launch the PDF viewer, so it must
-// only be reachable from this machine: bind to loopback (below) and refuse
-// cross-origin browser requests from anything but localhost.
+// Single-user app with no auth, so the API must only be reachable from this
+// machine: bind to loopback (below) and refuse cross-origin browser requests
+// from anything but localhost.
 app.use(cors({ origin: [/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/] }));
 app.use(express.json());
 

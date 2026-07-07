@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { Router } from "express";
+import { NextFunction, Request, Response, Router } from "express";
+import multer from "multer";
 import {
   addCollectionFiles,
   collectionCounts,
@@ -18,6 +19,7 @@ import {
   getCollectionFile,
   getSettings,
   graphPapers,
+  hashesForCollection,
   journalByNlmId,
   journalsForDisease,
   listArticles,
@@ -34,8 +36,8 @@ import {
   upsertArticles,
   upsertCitations,
 } from "./db.js";
-import open from "open";
-import { collectPdfs, FsError, listDir, listRoots } from "./fsbrowse.js";
+import { blobExists, blobPath, deleteBlobsIfOrphaned, storeBlobFromTemp } from "./blobstore.js";
+import { UPLOAD_TMP_DIR } from "./config.js";
 import { fetchCitations } from "./icite.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
@@ -206,7 +208,44 @@ api.get("/graph", async (req, res) => {
   }
 });
 
-// ---------- collections (local PDF libraries) ----------
+// ---------- collections (uploaded PDF libraries) ----------
+
+// Uploads land in the blob store's temp dir; storeBlobFromTemp then hashes and
+// moves (or discards) each one.
+const upload = multer({
+  dest: UPLOAD_TMP_DIR,
+  limits: { fileSize: 100 * 1024 * 1024, files: 50 },
+});
+
+// Wrap multer so its errors (file too large, too many files) come back as the
+// JSON shape the client's error handling expects, not Express's HTML 500.
+function uploadFiles(req: Request, res: Response, next: NextFunction): void {
+  upload.array("files")(req, res, (err: unknown) => {
+    if (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+    next();
+  });
+}
+
+// A real PDF regardless of what the filename claims.
+async function isPdfFile(tmpPath: string): Promise<boolean> {
+  const fh = await fs.promises.open(tmpPath, "r");
+  try {
+    const buf = Buffer.alloc(5);
+    const { bytesRead } = await fh.read(buf, 0, 5, 0);
+    return bytesRead === 5 && buf.toString("latin1") === "%PDF-";
+  } finally {
+    await fh.close();
+  }
+}
+
+// Multer decodes originalname as latin1; also drop any path the browser or a
+// crafted request may have prepended.
+function cleanUploadName(raw: string): string {
+  const utf8 = Buffer.from(raw, "latin1").toString("utf8");
+  return utf8.replace(/^.*[\\/]/, "").trim() || "upload.pdf";
+}
 
 api.get("/collections", (_req, res) => {
   const counts = collectionCounts();
@@ -236,49 +275,87 @@ api.put("/collections/:id", (req, res) => {
 
 api.delete("/collections/:id", (req, res) => {
   // collection_files cascade; cached articles/citations stay (shared globally).
-  deleteCollection(Number(req.params.id));
+  // Blobs nothing else references go with the collection.
+  const id = Number(req.params.id);
+  const hashes = hashesForCollection(id);
+  deleteCollection(id);
+  deleteBlobsIfOrphaned(hashes);
   res.status(204).end();
 });
 
 // Papers (matched, deduped by pmid) + every file row, so the client can show
-// unmatched/error files and flag files that have moved on disk.
+// unmatched/error files and flag files whose blob has gone missing.
 api.get("/collections/:id/papers", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
   const files = listCollectionFiles(id).map((f) => ({
     ...f,
-    exists: fs.existsSync(f.file_path),
+    exists: blobExists(f.content_hash),
   }));
   res.json({ papers: collectionPapers(id), files });
 });
 
-// Add folders/files to a collection and start the scan/match job. Only
-// 'pending' rows are scanned, so re-importing a folder picks up new files
-// without redoing the ones already matched.
-api.post("/collections/:id/import", async (req, res) => {
+// Upload PDFs into a collection. Each file is verified by magic bytes, hashed
+// into the blob store, and recorded; re-uploads of content already in the
+// collection count as skipped. The client batches large selections across
+// several requests, then starts the scan job once.
+api.post("/collections/:id/files", uploadFiles, async (req, res) => {
+  const id = Number(req.params.id);
+  const files = (req.files ?? []) as Express.Multer.File[];
+  const discardTemps = () => Promise.allSettled(files.map((f) => fs.promises.unlink(f.path)));
+  if (!getCollection(id)) {
+    await discardTemps();
+    return res.status(404).json({ error: "Collection not found." });
+  }
+  if (files.length === 0) return res.status(400).json({ error: "No files were uploaded." });
+  const stored: { hash: string; name: string }[] = [];
+  try {
+    let skipped = 0;
+    for (const f of files) {
+      if (!(await isPdfFile(f.path))) {
+        skipped++;
+        await fs.promises.unlink(f.path);
+        continue;
+      }
+      const { hash } = await storeBlobFromTemp(f.path);
+      stored.push({ hash, name: cleanUploadName(f.originalname) });
+    }
+    const added = addCollectionFiles(id, stored);
+    skipped += stored.length - added;
+    res.status(201).json({ added, skipped });
+  } catch (err) {
+    await discardTemps();
+    // Blobs stored before the failure but never recorded would leak otherwise.
+    deleteBlobsIfOrphaned(stored.map((s) => s.hash));
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Start the scan/match job over this collection's 'pending' rows. Uploading
+// more files and re-running picks up just the new ones.
+api.post("/collections/:id/import", (req, res) => {
   const id = Number(req.params.id);
   const collection = getCollection(id);
   if (!collection) return res.status(404).json({ error: "Collection not found." });
   if (isImportRunning(id)) {
     return res.status(409).json({ error: "An import is already running for this collection." });
   }
-  const paths = Array.isArray(req.body?.paths) ? req.body.paths.map(String) : [];
-  if (paths.length === 0) return res.status(400).json({ error: "'paths' is required." });
-  const recursive = Boolean(req.body?.recursive);
-  try {
-    const found = await collectPdfs(paths, recursive);
-    const added = addCollectionFiles(id, found);
-    const status = startImport(id, collection.name);
-    res.status(202).json({
-      jobId: status.jobId,
-      added,
-      skipped: found.length - added,
-      total: status.total,
-    });
-  } catch (err) {
-    const status = err instanceof FsError ? err.status : 500;
-    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+  const status = startImport(id, collection.name);
+  res.status(202).json({ jobId: status.jobId, total: status.total });
+});
+
+// Stream a stored PDF for viewing in a browser tab.
+api.get("/collections/files/:fileId/content", (req, res) => {
+  const file = getCollectionFile(Number(req.params.fileId));
+  if (!file) return res.status(404).json({ error: "File not found." });
+  if (!blobExists(file.content_hash)) {
+    return res.status(410).json({ error: "That file's PDF is no longer stored." });
   }
+  // Header values must stay ASCII and quote-free; the name is display-only.
+  const filename = file.file_name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+  res.sendFile(blobPath(file.content_hash));
 });
 
 api.get("/collections/:id/import/status", (req, res) => {
@@ -310,48 +387,11 @@ api.post("/collections/files/:fileId/pmid", async (req, res) => {
 });
 
 api.delete("/collections/files/:fileId", (req, res) => {
-  deleteCollectionFile(Number(req.params.fileId));
-  res.status(204).end();
-});
-
-// ---------- filesystem browsing (for the folder picker) ----------
-
-api.get("/fs/roots", async (_req, res) => {
-  try {
-    res.json(await listRoots());
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-api.get("/fs/list", async (req, res) => {
-  try {
-    res.json(await listDir(String(req.query.path ?? "")));
-  } catch (err) {
-    const status = err instanceof FsError ? err.status : 500;
-    res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-// ---------- open a file in the OS default viewer ----------
-
-// Takes a fileId (never a raw path), so it can only ever launch a PDF the user
-// has already added to a collection. `open` spawns the handler without a shell,
-// so filenames can't inject commands.
-api.post("/open", async (req, res) => {
-  const fileId = Number(req.body?.fileId);
-  if (!fileId) return res.status(400).json({ error: "'fileId' is required." });
+  const fileId = Number(req.params.fileId);
   const file = getCollectionFile(fileId);
-  if (!file) return res.status(404).json({ error: "File not found." });
-  if (!fs.existsSync(file.file_path)) {
-    return res.status(410).json({ error: "That file is no longer at its saved location." });
-  }
-  try {
-    await open(file.file_path);
-    res.status(204).end();
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
+  deleteCollectionFile(fileId);
+  if (file) deleteBlobsIfOrphaned([file.content_hash]);
+  res.status(204).end();
 });
 
 // ---------- refresh / status ----------
