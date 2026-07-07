@@ -15,15 +15,33 @@ interface MonthGroup {
 // paint stays cheap. The rest materialize as the user scrolls near the bottom.
 const PAGE_SIZE = 50;
 
+// Cache the last successful fetch per (disease, search). Remounting the Timeline
+// — e.g. clicking back into Discover after visiting another tab — then paints
+// from cache instead of refetching. reloadToken is bumped whenever the data
+// actually changes ("Refresh now"), so a stale entry is never served.
+type CachedArticles = { token: number; articles: Article[]; journals: string[] };
+const articleCache = new Map<string, CachedArticles>();
+const cacheKey = (diseaseId: number, search: string) => `${diseaseId}:${search}`;
+function cachedArticles(diseaseId: number, search: string, token: number): CachedArticles | undefined {
+  const hit = articleCache.get(cacheKey(diseaseId, search));
+  return hit && hit.token === token ? hit : undefined;
+}
+
 export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reloadToken: number }) {
-  const [articles, setArticles] = useState<Article[]>([]);
-  const [journals, setJournals] = useState<string[]>([]);
+  // Seed from cache so returning to a topic paints instantly. On a fresh mount
+  // `search` is "", which is the key a tab switch would have cached under.
+  const [articles, setArticles] = useState<Article[]>(
+    () => cachedArticles(diseaseId, "", reloadToken)?.articles ?? []
+  );
+  const [journals, setJournals] = useState<string[]>(
+    () => cachedArticles(diseaseId, "", reloadToken)?.journals ?? []
+  );
   // Journals the user has turned off (empty = show all). Client-side, so
   // toggling is instant and never refetches.
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => cachedArticles(diseaseId, "", reloadToken) === undefined);
   const [error, setError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -45,14 +63,29 @@ export function Timeline({ diseaseId, reloadToken }: { diseaseId: number; reload
   // Only the disease and free-text search hit the server; journal filtering is
   // done client-side below.
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
     setError(null);
     setVisibleCount(PAGE_SIZE); // a new query starts from the top
+
+    // Serve an unchanged (same reloadToken) result from cache without a refetch.
+    const cached = cachedArticles(diseaseId, search, reloadToken);
+    if (cached) {
+      setArticles(cached.articles);
+      setJournals(cached.journals);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
     api
       .getArticles(diseaseId, undefined, search || undefined)
       .then((res) => {
         if (cancelled) return;
+        articleCache.set(cacheKey(diseaseId, search), {
+          token: reloadToken,
+          articles: res.articles,
+          journals: res.journals,
+        });
         setArticles(res.articles);
         setJournals(res.journals);
       })
