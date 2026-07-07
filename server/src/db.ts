@@ -74,7 +74,7 @@ db.exec(`
     metric_fetched_at TEXT
   );
 
-  -- User-created collections of local PDF files. Matched files soft-reference
+  -- User-created collections of uploaded PDFs. Matched files soft-reference
   -- articles.pmid (no FK: removeJournalWithArticles bulk-deletes articles, and
   -- paper_citations already sets the soft-reference precedent).
   CREATE TABLE IF NOT EXISTS collections (
@@ -83,41 +83,33 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Each row is one uploaded copy in one collection; the bytes live in the
+  -- blob store under content_hash (see blobstore.ts). The same content in two
+  -- collections is two rows sharing one blob.
   CREATE TABLE IF NOT EXISTS collection_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     collection_id INTEGER NOT NULL,
-    file_path TEXT NOT NULL,          -- absolute path (path.resolve output)
+    content_hash TEXT NOT NULL,       -- sha256 hex, key into the blob store
     file_name TEXT NOT NULL,
     pmid TEXT,                        -- soft ref to articles.pmid
     match_status TEXT NOT NULL DEFAULT 'pending',  -- pending|matched|unmatched|error
     match_method TEXT NOT NULL DEFAULT '',          -- pmid|doi|manual|''
     match_error TEXT NOT NULL DEFAULT '',
     added_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (collection_id, file_path),
+    UNIQUE (collection_id, content_hash),
     FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
   );
 
   CREATE INDEX IF NOT EXISTS idx_collection_files_collection ON collection_files(collection_id);
   CREATE INDEX IF NOT EXISTS idx_collection_files_pmid ON collection_files(pmid);
+  CREATE INDEX IF NOT EXISTS idx_collection_files_hash ON collection_files(content_hash);
   CREATE INDEX IF NOT EXISTS idx_article_diseases_disease ON article_diseases(disease_id);
   CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
+  CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id);
+  CREATE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id);
 `);
-
-// ---------- migrations (add columns to pre-existing databases) ----------
-// The CREATE TABLEs above use IF NOT EXISTS, so new columns must be added
-// separately for databases created before this change.
-function ensureColumn(table: string, column: string, type: string): void {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-  if (!cols.some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  }
-}
-ensureColumn("articles", "nlm_id", "TEXT");
-ensureColumn("journals", "nlm_id", "TEXT");
-db.exec("CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id)");
-db.exec("CREATE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id)");
 
 // ---------- settings ----------
 
@@ -513,22 +505,41 @@ export function collectionCounts(): Record<number, { files: number; matched: num
 }
 
 const insertFileStmt = db.prepare(
-  "INSERT OR IGNORE INTO collection_files (collection_id, file_path, file_name) VALUES (?, ?, ?)"
+  "INSERT OR IGNORE INTO collection_files (collection_id, content_hash, file_name) VALUES (?, ?, ?)"
 );
 
-// Add files to a collection, atomically. INSERT OR IGNORE + the
-// UNIQUE(collection_id, file_path) constraint make re-adding a folder a no-op
-// for files already present. Returns how many were actually inserted.
+// Add uploaded files to a collection, atomically. INSERT OR IGNORE + the
+// UNIQUE(collection_id, content_hash) constraint make re-uploading the same
+// PDFs a no-op. Returns how many were actually inserted.
 export const addCollectionFiles = db.transaction(
-  (collectionId: number, files: { path: string; name: string }[]): number => {
+  (collectionId: number, files: { hash: string; name: string }[]): number => {
     let added = 0;
-    for (const f of files) added += insertFileStmt.run(collectionId, f.path, f.name).changes;
+    for (const f of files) added += insertFileStmt.run(collectionId, f.hash, f.name).changes;
     return added;
   }
 );
 
+// How many rows (across all collections) still reference a blob — 0 means the
+// blob itself can be deleted.
+export function countFilesByHash(hash: string): number {
+  return (
+    db.prepare("SELECT COUNT(*) AS c FROM collection_files WHERE content_hash = ?").get(hash) as {
+      c: number;
+    }
+  ).c;
+}
+
+// Captured before deleting a collection so its blobs can be GC'd afterwards.
+export function hashesForCollection(collectionId: number): string[] {
+  return (
+    db
+      .prepare("SELECT DISTINCT content_hash FROM collection_files WHERE collection_id = ?")
+      .all(collectionId) as { content_hash: string }[]
+  ).map((r) => r.content_hash);
+}
+
 const FILE_COLS =
-  "id, collection_id, file_path, file_name, pmid, match_status, match_method, match_error, added_at";
+  "id, collection_id, content_hash, file_name, pmid, match_status, match_method, match_error, added_at";
 
 export function listCollectionFiles(collectionId: number): CollectionFile[] {
   return db

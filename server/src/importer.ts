@@ -7,6 +7,7 @@ import {
   setFileUnmatched,
   upsertArticles,
 } from "./db.js";
+import { blobPath } from "./blobstore.js";
 import { extractPdfText } from "./pdf-text.js";
 import { findDois, findPmid } from "./pdf-match.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
@@ -94,7 +95,7 @@ async function runImport(
         job.currentFile = f.file_name;
         let text: string;
         try {
-          text = await extractPdfText(f.file_path);
+          text = await extractPdfText(blobPath(f.content_hash));
         } catch (err) {
           setFileError(f.id, err instanceof Error ? err.message : String(err));
           job.errors++;
