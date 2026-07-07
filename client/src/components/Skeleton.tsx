@@ -68,11 +68,29 @@ export function FilterSkeleton() {
   return <SkeletonBar w={160} h={32} style={{ borderRadius: "var(--radius)" }} />;
 }
 
+// Shared column widths for the papers table. The table uses `table-layout:
+// fixed`, so these widths (not the cell content) determine the columns — which
+// is what keeps the skeleton and the loaded table pixel-identical instead of
+// reflowing when real titles arrive.
+export function PapersColgroup() {
+  return (
+    <colgroup>
+      <col style={{ width: "36%" }} />
+      <col style={{ width: "15%" }} />
+      <col style={{ width: "15%" }} />
+      <col style={{ width: "8%" }} />
+      <col style={{ width: "11%" }} />
+      <col style={{ width: "15%" }} />
+    </colgroup>
+  );
+}
+
 // Mirrors the collection papers table: real headers, shimmering rows.
 export function PapersTableSkeleton({ rows = 5 }: { rows?: number }) {
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
       <table className="papers-table">
+        <PapersColgroup />
         <thead>
           <tr>
             <th>Title</th>

@@ -1235,6 +1235,13 @@ code {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
+  /* Fixed layout: columns follow the colgroup widths, not their content, so the
+     skeleton and the loaded table have identical columns (no reflow on load). */
+  table-layout: fixed;
+}
+
+.papers-table td {
+  overflow-wrap: break-word;
 }
 
 .papers-table thead th {
@@ -1280,10 +1287,6 @@ code {
   background: var(--accent-soft);
 }
 
-.paper-title-cell {
-  max-width: 460px;
-}
-
 .paper-open {
   background: none;
   border: none;
@@ -1303,7 +1306,6 @@ code {
 
 .authors-cell {
   color: var(--muted);
-  max-width: 200px;
 }
 
 .links-cell {

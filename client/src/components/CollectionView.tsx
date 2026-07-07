@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { CollectionFile, CollectionPaper, ImportStatus } from "../types";
 import { FolderPicker } from "./FolderPicker";
-import { PapersTableSkeleton } from "./Skeleton";
+import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
 type SortDir = "asc" | "desc";
@@ -238,6 +238,7 @@ export function CollectionView({
           {papers.length > 0 && (
             <div className="papers-table-wrap">
               <table className="papers-table">
+                <PapersColgroup />
                 <thead>
                   <tr>
                     <th className="sortable" onClick={() => toggleSort("title")}>
