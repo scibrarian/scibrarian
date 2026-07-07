@@ -74,14 +74,14 @@ export type CollectionFileStatus = "pending" | "matched" | "unmatched" | "error"
 export interface CollectionFile {
   id: number;
   collection_id: number;
-  file_path: string;
+  content_hash: string; // sha256 of the stored PDF (blob store key)
   file_name: string;
   pmid: string | null;
   match_status: CollectionFileStatus;
   match_method: string; // pmid | doi | manual | ''
   match_error: string;
   added_at: string;
-  exists: boolean; // whether the file is still on disk
+  exists: boolean; // whether the stored PDF is still present
 }
 
 export interface CollectionPaper {
@@ -101,10 +101,13 @@ export interface CollectionPapersResponse {
   files: CollectionFile[];
 }
 
+export interface UploadResponse {
+  added: number; // new file rows inserted
+  skipped: number; // already in the collection (or not a PDF)
+}
+
 export interface ImportStartResponse {
   jobId: string;
-  added: number; // new file rows inserted
-  skipped: number; // already in the collection
   total: number; // pending files the job will scan
 }
 
@@ -120,24 +123,6 @@ export interface ImportStatus {
   startedAt?: string;
   finishedAt?: string | null;
   error?: string; // fatal job error only
-}
-
-export interface FsPlace {
-  label: string;
-  path: string;
-}
-
-export interface FsRootsResponse {
-  roots: FsPlace[];
-  home: string;
-  shortcuts: FsPlace[];
-}
-
-export interface FsListing {
-  path: string;
-  parent: string | null;
-  dirs: { name: string; path: string }[];
-  files: { name: string; path: string; size: number; mtime: string }[];
 }
 
 // Which paper set a graph is built from.

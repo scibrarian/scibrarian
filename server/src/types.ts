@@ -37,7 +37,7 @@ export type CollectionFileStatus = "pending" | "matched" | "unmatched" | "error"
 export interface CollectionFile {
   id: number;
   collection_id: number;
-  file_path: string; // absolute local path
+  content_hash: string; // sha256 hex, key into the blob store
   file_name: string;
   pmid: string | null; // soft ref to articles.pmid once matched
   match_status: CollectionFileStatus;

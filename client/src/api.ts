@@ -5,8 +5,6 @@ import type {
   CollectionFile,
   CollectionPapersResponse,
   Disease,
-  FsListing,
-  FsRootsResponse,
   GraphResponse,
   GraphSource,
   ImportStartResponse,
@@ -14,11 +12,13 @@ import type {
   Journal,
   JournalSearchResponse,
   RefreshResponse,
+  UploadResponse,
 } from "./types";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
+    // FormData bodies must set their own multipart boundary header.
+    headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
     ...init,
   });
   if (!res.ok) {
@@ -72,12 +72,15 @@ export const api = {
   deleteCollection: (id: number) => req<void>(`/api/collections/${id}`, { method: "DELETE" }),
   getCollectionPapers: (id: number) =>
     req<CollectionPapersResponse>(`/api/collections/${id}/papers`),
-  importIntoCollection: (id: number, paths: string[], recursive: boolean) =>
-    req<ImportStartResponse>(`/api/collections/${id}/import`, {
-      method: "POST",
-      body: JSON.stringify({ paths, recursive }),
-    }),
+  uploadFiles: (id: number, files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f, f.name);
+    return req<UploadResponse>(`/api/collections/${id}/files`, { method: "POST", body: form });
+  },
+  startImport: (id: number) =>
+    req<ImportStartResponse>(`/api/collections/${id}/import`, { method: "POST" }),
   getImportStatus: (id: number) => req<ImportStatus>(`/api/collections/${id}/import/status`),
+  fileContentUrl: (fileId: number) => `/api/collections/files/${fileId}/content`,
   setFilePmid: (fileId: number, pmid: string) =>
     req<CollectionFile>(`/api/collections/files/${fileId}/pmid`, {
       method: "POST",
@@ -85,11 +88,6 @@ export const api = {
     }),
   deleteCollectionFile: (fileId: number) =>
     req<void>(`/api/collections/files/${fileId}`, { method: "DELETE" }),
-  openFile: (fileId: number) =>
-    req<void>("/api/open", { method: "POST", body: JSON.stringify({ fileId }) }),
-  fsRoots: () => req<FsRootsResponse>("/api/fs/roots"),
-  fsList: (path: string) => req<FsListing>(`/api/fs/list?path=${encodeURIComponent(path)}`),
-
   refresh: (diseaseId?: number) => {
     const suffix = diseaseId ? `?disease=${diseaseId}` : "";
     return req<RefreshResponse>(`/api/refresh${suffix}`, { method: "POST" });

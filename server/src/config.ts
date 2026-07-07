@@ -15,6 +15,14 @@ export const DB_PATH = path.isAbsolute(process.env.DB_PATH || "")
   ? (process.env.DB_PATH as string)
   : path.join(PROJECT_ROOT, process.env.DB_PATH || "data/app.db");
 
+// Content-addressed PDF storage (uploads are hashed and kept here). The tmp dir
+// sits beside the blobs so the post-hash rename stays on one filesystem.
+export const BLOBS_DIR = path.isAbsolute(process.env.BLOBS_DIR || "")
+  ? (process.env.BLOBS_DIR as string)
+  : path.join(PROJECT_ROOT, process.env.BLOBS_DIR || "data/blobs");
+
+export const UPLOAD_TMP_DIR = path.join(path.dirname(BLOBS_DIR), "tmp-uploads");
+
 // Used to seed editable settings on first run; afterwards the values in the
 // settings table win (so they can be changed in the UI).
 export const ENV_DEFAULTS = {
