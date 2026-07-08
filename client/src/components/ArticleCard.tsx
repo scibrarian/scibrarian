@@ -1,10 +1,10 @@
 import { useState } from "react";
-import type { Article } from "../types";
+import type { Paper } from "../types";
 import { formatAuthors } from "../lib/format";
 
 const ABSTRACT_PREVIEW = 320;
 
-export function ArticleCard({ article }: { article: Article }) {
+export function ArticleCard({ article }: { article: Paper }) {
   const [expanded, setExpanded] = useState(false);
   const longAbstract = article.abstract.length > ABSTRACT_PREVIEW;
   const shown =

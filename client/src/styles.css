@@ -1048,6 +1048,18 @@ code {
   font-size: 11px;
 }
 
+/* Paper-count badge in the picker trigger and its options — the pill contrast
+   is what keeps the number from reading as part of the name. */
+.ws-trigger .count,
+.ws-option .count {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+}
+
 .ws-menu {
   position: absolute;
   top: calc(100% + 6px);

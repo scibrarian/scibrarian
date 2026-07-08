@@ -6,9 +6,9 @@ import type {
   Article,
   Collection,
   CollectionFile,
-  CollectionPaper,
   Disease,
   Journal,
+  Paper,
   Settings,
 } from "./types.js";
 
@@ -316,42 +316,12 @@ export const saveArticles = db.transaction((articles: ArticleInsert[], diseaseId
   }
 });
 
-export interface ArticleQuery {
-  diseaseId: number;
-  journal?: string;
-  q?: string;
-}
-
 // The journal name shown to the user: the watched journal's abbreviation (or the
 // catalog abbreviation), resolved by NLM id, falling back to the stored title.
 const JOURNAL_DISPLAY = "COALESCE(j.name, jc.med_abbr, a.journal_name)";
 const ARTICLE_JOINS = `JOIN article_diseases ad ON ad.pmid = a.pmid
        LEFT JOIN journals j ON j.nlm_id = a.nlm_id
        LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id`;
-
-export function listArticles({ diseaseId, journal, q }: ArticleQuery): Article[] {
-  const clauses = ["ad.disease_id = ?"];
-  const params: unknown[] = [diseaseId];
-  if (journal) {
-    clauses.push(`${JOURNAL_DISPLAY} = ?`);
-    params.push(journal);
-  }
-  if (q) {
-    clauses.push("(a.title LIKE ? OR a.abstract LIKE ?)");
-    params.push(`%${q}%`, `%${q}%`);
-  }
-  const rows = db
-    .prepare(
-      `SELECT a.pmid, a.title, a.abstract, ${JOURNAL_DISPLAY} AS journal_name, a.nlm_id,
-              a.authors, a.pub_date, a.pub_date_display, a.doi, a.url, a.first_seen_at
-       FROM articles a
-       ${ARTICLE_JOINS}
-       WHERE ${clauses.join(" AND ")}
-       ORDER BY a.pub_date DESC, a.pmid DESC`
-    )
-    .all(...params) as Array<Omit<Article, "authors"> & { authors: string }>;
-  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
-}
 
 export function diseaseArticleCounts(): Record<number, number> {
   const rows = db
@@ -373,6 +343,79 @@ export function journalsForDisease(diseaseId: number): string[] {
     )
     .all(diseaseId) as { j: string }[];
   return rows.map((r) => r.j);
+}
+
+// Which paper set /api/papers reads: a topic's articles or a collection's
+// matched uploads. Mirrors the client's PaperSource.
+export type PaperSourceQuery = { diseaseId: number } | { collectionId: number };
+
+// The unified rows behind the table and timeline views, for either source:
+// article metadata, cached citation count, and — for collections — the first
+// matched uploaded file per pmid (the copy a title click opens; same rule as
+// the old per-client fileByPmid). content_hash is returned so the route can
+// check the blob still exists; it is stripped before the response.
+export function listPapers(
+  source: PaperSourceQuery,
+  q?: string
+): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
+  const fromDisease = "diseaseId" in source;
+  const params: unknown[] = fromDisease
+    ? [source.diseaseId]
+    : [source.collectionId, source.collectionId];
+  // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
+  // and links the lowest-id 'matched' file for it, if any.
+  const membership = fromDisease
+    ? "JOIN article_diseases ad ON ad.pmid = a.pmid AND ad.disease_id = ?"
+    : `JOIN (SELECT DISTINCT pmid FROM collection_files
+             WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
+       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                  WHERE collection_id = ? AND match_status = 'matched'
+                  GROUP BY pmid) mf ON mf.pmid = a.pmid
+       LEFT JOIN collection_files cf ON cf.id = mf.file_id`;
+  const fileCols = fromDisease
+    ? "NULL AS file_id, NULL AS file_name, NULL AS content_hash"
+    : "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash";
+  let search = "";
+  if (q) {
+    search = "WHERE (a.title LIKE ? OR a.abstract LIKE ?)";
+    params.push(`%${q}%`, `%${q}%`);
+  }
+  const rows = db
+    .prepare(
+      `SELECT a.pmid, a.title, a.abstract, ${JOURNAL_DISPLAY} AS journal_name,
+              a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
+              COALESCE(pc.citation_count, 0) AS citation_count,
+              ${fileCols}
+       FROM articles a
+       ${membership}
+       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
+       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id
+       LEFT JOIN paper_citations pc ON pc.pmid = a.pmid
+       ${search}
+       ORDER BY a.pub_date DESC, a.pmid DESC`
+    )
+    .all(...params) as Array<
+    Omit<Paper, "file_exists" | "authors"> & { authors: string; content_hash: string | null }
+  >;
+  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
+}
+
+// Distinct journal display names present in a collection (filter chips) —
+// the collection-source counterpart of journalsForDisease.
+export function journalsForCollection(collectionId: number): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT ${JOURNAL_DISPLAY} AS jn
+       FROM (SELECT DISTINCT pmid FROM collection_files
+             WHERE collection_id = ? AND pmid IS NOT NULL) cp
+       JOIN articles a ON a.pmid = cp.pmid
+       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
+       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id
+       WHERE ${JOURNAL_DISPLAY} <> ''
+       ORDER BY jn ASC`
+    )
+    .all(collectionId) as { jn: string }[];
+  return rows.map((r) => r.jn);
 }
 
 function safeParseAuthors(raw: string): string[] {
@@ -609,24 +652,6 @@ export const upsertArticles = db.transaction((articles: ArticleInsert[]) => {
 
 // The papers-list rows for a collection. DISTINCT pmid collapses duplicate
 // copies of the same paper (two files, one PMID) into a single row.
-export function collectionPapers(collectionId: number): CollectionPaper[] {
-  const rows = db
-    .prepare(
-      `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name, a.authors,
-              a.pub_date, a.pub_date_display, a.doi, a.url,
-              COALESCE(pc.citation_count, 0) AS citation_count
-       FROM (SELECT DISTINCT pmid FROM collection_files
-             WHERE collection_id = ? AND pmid IS NOT NULL) cf
-       JOIN articles a ON a.pmid = cf.pmid
-       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
-       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id
-       LEFT JOIN paper_citations pc ON pc.pmid = a.pmid
-       ORDER BY a.pub_date DESC, a.pmid DESC`
-    )
-    .all(collectionId) as Array<Omit<CollectionPaper, "authors"> & { authors: string }>;
-  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
-}
-
 // The papers that make up one collection's citation graph (same shape as
 // graphPapers, so the /graph route works on either source).
 export function collectionGraphPapers(collectionId: number): GraphPaper[] {

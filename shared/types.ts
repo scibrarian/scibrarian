@@ -50,18 +50,29 @@ export interface CollectionFile {
   added_at: string;
 }
 
-// One row of a collection's papers table (a matched file joined to its
-// article metadata and cached citation count).
-export interface CollectionPaper {
+// One row of the unified papers view (/api/papers): article metadata plus the
+// cached citation count, for either paper source. The file_* fields carry the
+// first matched uploaded copy and are only populated for collection sources —
+// null for topics, which have no files.
+export interface Paper {
   pmid: string;
   title: string;
+  abstract: string;
   journal_name: string;
   authors: string[];
-  pub_date: string;
+  pub_date: string; // sortable YYYY-MM-DD
   pub_date_display: string;
   doi: string;
   url: string;
   citation_count: number;
+  file_id: number | null;
+  file_name: string | null;
+  file_exists: boolean; // false when file_id is null
+}
+
+export interface PapersResponse {
+  papers: Paper[];
+  journals: string[]; // distinct journal display names, for the filter chips
 }
 
 export interface PollResult {

@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type InputHTMLAttributes,
+  type ReactNode,
+} from "react";
 import { api } from "../api";
-import { errorMessage, formatAuthors } from "../lib/format";
-import type { CollectionFile, CollectionPaper, ImportStatus } from "../types";
-import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
-
-type SortKey = "title" | "authors" | "journal" | "year" | "citations";
-type SortDir = "asc" | "desc";
+import { errorMessage } from "../lib/format";
+import { useCachedFetch, type FetchCache } from "../lib/hooks";
+import type { CollectionFile, CollectionFilesResponse, ImportStatus } from "../types";
 
 // Files per upload request, so huge folder selections don't become one
 // gigantic multipart body (the server also caps files-per-request).
@@ -14,61 +18,48 @@ const UPLOAD_BATCH = 20;
 // webkitdirectory (folder selection) isn't in React's input typings.
 const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInputElement>;
 
-// Cache the last successful fetch per collection. Remounting the view — e.g.
-// clicking back into My Papers — then paints from cache instead of refetching.
-// Unlike Timeline's reloadToken, this data changes through the component's own
-// actions, which all reload via loadPapers(): every successful fetch writes
-// through here, and a running import drops the entry (the server-side job is
-// mutating the collection), so a stale list is never served.
-type CachedCollection = { papers: CollectionPaper[]; files: CollectionFile[] };
-const collectionCache = new Map<number, CachedCollection>();
+// Cache the last file listing per collection, same pattern as papersCache:
+// re-entering My Papers paints from cache instead of refetching. Every mutation
+// (upload, import, match, delete) reports through onChanged, which bumps
+// reloadToken and thereby invalidates this cache along with the modules'.
+const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 
+// The collection management shell: upload/import/rename/delete chrome and the
+// unmatched-files section, wrapped around whichever analysis module (table or
+// timeline) is active — those render as `children` and fetch their own paper
+// rows from /api/papers.
 export function CollectionView({
   collectionId,
+  reloadToken,
   onChanged,
   onDeleted,
+  children,
 }: {
   collectionId: number;
+  reloadToken: number;
   onChanged: () => void;
   onDeleted: () => void;
+  children: ReactNode;
 }) {
-  // Seed from cache so returning to a collection paints instantly.
-  const [papers, setPapers] = useState<CollectionPaper[]>(
-    () => collectionCache.get(collectionId)?.papers ?? []
-  );
-  const [files, setFiles] = useState<CollectionFile[]>(
-    () => collectionCache.get(collectionId)?.files ?? []
-  );
-  const [loading, setLoading] = useState(() => !collectionCache.has(collectionId));
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
-  const [sortKey, setSortKey] = useState<SortKey>("year");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const filesInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
-  const loadPapers = useCallback(() => {
-    setLoading(true);
-    return api
-      .getCollectionPapers(collectionId)
-      .then((res) => {
-        collectionCache.set(collectionId, { papers: res.papers, files: res.files });
-        setPapers(res.papers);
-        setFiles(res.files);
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [collectionId]);
+  // The file listing is fully derived: mutations never set it directly, they
+  // call onChanged() and the token bump refetches it here.
+  const { data: filesData, error: filesError } = useCachedFetch(
+    filesCache,
+    `files:${collectionId}`,
+    reloadToken,
+    () => api.getCollectionFiles(collectionId)
+  );
+  const files = filesData?.files ?? [];
 
-  useEffect(() => {
-    // Cache hit: state was seeded above, so skip the redundant refetch.
-    if (collectionCache.has(collectionId)) return;
-    loadPapers();
-  }, [collectionId, loadPapers]);
-
-  // Poll import status while a job runs; refresh papers + tab counts on finish.
+  // Poll import status while a job runs; refresh files + everything else
+  // (via onChanged) when it finishes.
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
       clearInterval(pollRef.current);
@@ -78,24 +69,19 @@ export function CollectionView({
 
   const startPolling = useCallback(() => {
     stopPolling();
-    // The import job is mutating this collection server-side; drop the cached
-    // entry so leaving and returning mid-import refetches rather than serving
-    // the pre-import list. loadPapers() re-caches when the job finishes.
-    collectionCache.delete(collectionId);
     pollRef.current = setInterval(async () => {
       try {
         const s = await api.getImportStatus(collectionId);
         setImportStatus(s);
         if (s.state === "done" || s.state === "error" || s.state === "idle") {
           stopPolling();
-          await loadPapers();
           onChanged();
         }
       } catch {
         stopPolling();
       }
     }, 1000);
-  }, [collectionId, loadPapers, onChanged, stopPolling]);
+  }, [collectionId, onChanged, stopPolling]);
 
   // Resume the progress UI if an import is already running for this collection.
   useEffect(() => {
@@ -141,7 +127,6 @@ export function CollectionView({
       const s = await api.getImportStatus(collectionId);
       setImportStatus(s);
       if (s.state === "running") startPolling();
-      else await loadPapers();
       onChanged();
     } catch (e) {
       setError(errorMessage(e));
@@ -169,64 +154,15 @@ export function CollectionView({
     }
     try {
       await api.deleteCollection(collectionId);
-      collectionCache.delete(collectionId);
       onDeleted();
     } catch (e) {
       setError(errorMessage(e));
     }
   }
 
-  function openPaper(pmid: string) {
-    const file = files.find((f) => f.pmid === pmid && f.match_status === "matched");
-    if (!file) return;
-    window.open(api.fileContentUrl(file.id), "_blank", "noopener");
-  }
-
-  // pmid -> its first matched file, for open-on-click and the missing badge.
-  const fileByPmid = useMemo(() => {
-    const m = new Map<string, CollectionFile>();
-    for (const f of files) if (f.pmid && f.match_status === "matched" && !m.has(f.pmid)) m.set(f.pmid, f);
-    return m;
-  }, [files]);
-
   const unresolved = files.filter(
     (f) => f.match_status === "unmatched" || f.match_status === "error" || f.match_status === "pending"
   );
-
-  const sortedPapers = useMemo(() => {
-    const dir = sortDir === "asc" ? 1 : -1;
-    const val = (p: CollectionPaper) => {
-      switch (sortKey) {
-        case "title":
-          return p.title.toLowerCase();
-        case "authors":
-          return (p.authors[0] ?? "").toLowerCase();
-        case "journal":
-          return p.journal_name.toLowerCase();
-        case "year":
-          return p.pub_date;
-        case "citations":
-          return p.citation_count;
-      }
-    };
-    return [...papers].sort((a, b) => {
-      const av = val(a);
-      const bv = val(b);
-      if (av < bv) return -1 * dir;
-      if (av > bv) return 1 * dir;
-      return 0;
-    });
-  }, [papers, sortKey, sortDir]);
-
-  function toggleSort(key: SortKey) {
-    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(key);
-      setSortDir(key === "title" || key === "authors" || key === "journal" ? "asc" : "desc");
-    }
-  }
-
-  const arrow = (key: SortKey) => (key === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "");
 
   const running = importStatus?.state === "running";
   const progressPct =
@@ -270,7 +206,7 @@ export function CollectionView({
         </div>
       </div>
 
-      {error && <div className="banner error">{error}</div>}
+      {(error ?? filesError) && <div className="banner error">{error ?? filesError}</div>}
       {notice && <div className="banner info">{notice}</div>}
 
       {running && (
@@ -287,93 +223,10 @@ export function CollectionView({
         </div>
       )}
 
-      {loading && papers.length === 0 ? (
-        <PapersTableSkeleton />
-      ) : papers.length === 0 && unresolved.length === 0 ? (
-        <div className="empty">
-          No papers yet. Click <strong>+ Add files</strong> or <strong>+ Add folder</strong> to
-          upload PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors,
-          journal, year, and citation count.
-        </div>
-      ) : (
-        <>
-          {papers.length > 0 && (
-            <div className="papers-table-wrap">
-              <table className="papers-table">
-                <PapersColgroup />
-                <thead>
-                  <tr>
-                    <th className="sortable" onClick={() => toggleSort("title")}>
-                      Title{arrow("title")}
-                    </th>
-                    <th className="sortable" onClick={() => toggleSort("authors")}>
-                      Authors{arrow("authors")}
-                    </th>
-                    <th className="sortable" onClick={() => toggleSort("journal")}>
-                      Journal{arrow("journal")}
-                    </th>
-                    <th className="sortable num" onClick={() => toggleSort("year")}>
-                      Year{arrow("year")}
-                    </th>
-                    <th className="sortable num" onClick={() => toggleSort("citations")}>
-                      Citations{arrow("citations")}
-                    </th>
-                    <th>Links</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedPapers.map((p) => {
-                    const file = fileByPmid.get(p.pmid);
-                    const missing = file && !file.exists;
-                    return (
-                      <tr key={p.pmid}>
-                        <td className="paper-title-cell">
-                          <button
-                            className="paper-open"
-                            onClick={() => openPaper(p.pmid)}
-                            title={file ? `Open ${file.file_name}` : "Open PDF"}
-                          >
-                            {p.title || "(untitled)"}
-                          </button>
-                          {missing && (
-                            <span className="file-missing" title="The stored PDF is missing">
-                              file missing
-                            </span>
-                          )}
-                        </td>
-                        <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>
-                        <td>{p.journal_name}</td>
-                        <td className="num">{year(p.pub_date)}</td>
-                        <td className="num">{p.citation_count}</td>
-                        <td className="links-cell">
-                          <a href={p.url} target="_blank" rel="noreferrer">
-                            PubMed ↗
-                          </a>
-                          {p.doi && (
-                            <a href={`https://doi.org/${p.doi}`} target="_blank" rel="noreferrer">
-                              DOI ↗
-                            </a>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+      {children}
 
-          {unresolved.length > 0 && (
-            <UnresolvedFiles
-              files={unresolved}
-              onChanged={async () => {
-                await loadPapers();
-                onChanged();
-              }}
-              onError={setError}
-            />
-          )}
-        </>
+      {unresolved.length > 0 && (
+        <UnresolvedFiles files={unresolved} onChanged={onChanged} onError={setError} />
       )}
     </div>
   );
@@ -474,8 +327,4 @@ function UnmatchedRow({
       </div>
     </li>
   );
-}
-
-function year(pubDate: string): string {
-  return /^\d{4}/.test(pubDate) ? pubDate.slice(0, 4) : "—";
 }
