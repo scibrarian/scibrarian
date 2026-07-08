@@ -1,11 +1,12 @@
 import fs from "node:fs";
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import { CLIENT_DIST, PORT } from "./config.js";
 import "./db.js"; // initialize schema + seed on startup
 import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
 import { ensureCatalogLoaded } from "./journal-catalog.js";
+import { errMessage } from "./util.js";
 
 const app = express();
 // Single-user app with no auth, so the API must only be reachable from this
@@ -23,6 +24,16 @@ if (fs.existsSync(CLIENT_DIST)) {
     res.sendFile(`${CLIENT_DIST}/index.html`);
   });
 }
+
+// Uncaught route errors land here as the JSON shape the client's error handling
+// expects, instead of Express's default HTML error page. Errors that carry an
+// HTTP status (e.g. body-parser's 400s) keep it; anything else is a 500.
+app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (res.headersSent) return next(err);
+  const status = (err as { status?: unknown } | null)?.status;
+  console.warn(`[server] ${errMessage(err)}`);
+  res.status(typeof status === "number" ? status : 500).json({ error: errMessage(err) });
+});
 
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`[server] API listening on http://localhost:${PORT}`);

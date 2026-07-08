@@ -8,10 +8,14 @@ A local web app that watches the top medical journals you choose and keeps a
 - A background scheduler polls daily; a **Refresh now** button polls on demand.
 - Papers (title, authors, journal, date, abstract, PubMed/DOI link) are stored locally
   in SQLite, so the timeline persists.
+- **Collections**: upload PDFs of papers you already have; they're matched against
+  PubMed and stored locally in a content-addressed blob store.
+- **Citation graph**: an interactive force-directed graph of any disease or collection,
+  with citation counts from NIH iCite and automatic cluster detection.
 
 ## Requirements
 
-- Node.js 18+ (built and tested on Node 22).
+- Node.js 20+ (built and tested on Node 22).
 
 ## Setup
 

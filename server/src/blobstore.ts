@@ -24,6 +24,25 @@ export function blobPath(hash: string): string {
   return path.join(BLOBS_DIR, `${hash}.pdf`);
 }
 
+// A real PDF regardless of what the filename claims.
+export async function isPdfFile(tmpPath: string): Promise<boolean> {
+  const fh = await fs.promises.open(tmpPath, "r");
+  try {
+    const buf = Buffer.alloc(5);
+    const { bytesRead } = await fh.read(buf, 0, 5, 0);
+    return bytesRead === 5 && buf.toString("latin1") === "%PDF-";
+  } finally {
+    await fh.close();
+  }
+}
+
+// Multer decodes originalname as latin1; also drop any path the browser or a
+// crafted request may have prepended.
+export function cleanUploadName(raw: string): string {
+  const utf8 = Buffer.from(raw, "latin1").toString("utf8");
+  return utf8.replace(/^.*[\\/]/, "").trim() || "upload.pdf";
+}
+
 export function blobExists(hash: string): boolean {
   return fs.existsSync(blobPath(hash));
 }

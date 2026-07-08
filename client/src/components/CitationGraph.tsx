@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
+import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import type { GraphNode, GraphResponse, GraphSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 
@@ -10,21 +11,6 @@ type FGNode = GraphNode & Record<string, unknown>;
 interface FGLink {
   source: string | FGNode;
   target: string | FGNode;
-}
-
-// Tracks the system light/dark preference so the canvas (which isn't styled by
-// CSS variables) can recolor its neutral nodes/links to stay visible.
-function usePrefersDark(): boolean {
-  const [dark, setDark] = useState(
-    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return dark;
 }
 
 // force-graph draws each node with radius = sqrt(nodeVal) * nodeRelSize. With
@@ -44,12 +30,7 @@ function nodeValFromCount(count: number): number {
 // node positions still recompute on remount (the layout re-runs from scratch).
 const keyOf = (source: GraphSource) =>
   "disease" in source ? `d${source.disease}` : `c${source.collection}`;
-type CachedGraph = { token: number; data: GraphResponse };
-const graphCache = new Map<string, CachedGraph>();
-function cachedGraph(sourceKey: string, token: number): GraphResponse | undefined {
-  const hit = graphCache.get(sourceKey);
-  return hit && hit.token === token ? hit.data : undefined;
-}
+const graphCache: FetchCache<GraphResponse> = new Map();
 
 export function CitationGraph({
   source,
@@ -58,16 +39,8 @@ export function CitationGraph({
   source: GraphSource;
   reloadToken: number;
 }) {
-  // Seed from cache so returning to the graph paints instantly with no fetch or
-  // loading flash (the force layout still re-settles, which is acceptable).
-  const [data, setData] = useState<GraphResponse | null>(
-    () => cachedGraph(keyOf(source), reloadToken) ?? null
-  );
-  const [loading, setLoading] = useState(() => cachedGraph(keyOf(source), reloadToken) === undefined);
-  const [error, setError] = useState<string | null>(null);
   const [minCitations, setMinCitations] = useState(0); // instant: slider + box
   const [minText, setMinText] = useState("0"); // controlled string for the number box
-  const [activeMin, setActiveMin] = useState(0); // debounced: drives graph + clustering
   const [hideUnconnected, setHideUnconnected] = useState(true);
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -79,37 +52,14 @@ export function CitationGraph({
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
-  // Stable effect key: the same source object is re-created each render.
+  // Stable fetch key: the same source object is re-created each render.
   const sourceKey = keyOf(source);
+  const { data, loading, error } = useCachedFetch(graphCache, sourceKey, reloadToken, () =>
+    api.getGraph(source)
+  );
 
-  useEffect(() => {
-    setError(null);
-    setSelected(null);
-
-    // Serve an unchanged (same reloadToken) graph from cache without a refetch.
-    const cached = cachedGraph(sourceKey, reloadToken);
-    if (cached) {
-      setData(cached);
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    api
-      .getGraph(source)
-      .then((res) => {
-        if (cancelled) return;
-        graphCache.set(sourceKey, { token: reloadToken, data: res });
-        setData(res);
-      })
-      .catch((e) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceKey, reloadToken]);
+  // Close the paper modal when the graph underneath it changes.
+  useEffect(() => setSelected(null), [sourceKey, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
@@ -124,10 +74,7 @@ export function CitationGraph({
 
   // Debounce the threshold that drives the graph + clustering, so dragging the
   // slider doesn't re-run Louvain on every tick (the box itself stays instant).
-  useEffect(() => {
-    const t = setTimeout(() => setActiveMin(minCitations), 250);
-    return () => clearTimeout(t);
-  }, [minCitations]);
+  const activeMin = useDebounced(minCitations, 250);
 
   // Stable node objects keyed by pmid. force-graph stores each node's x/y on the
   // object, so we reuse the same objects (never clone) across re-renders.
@@ -412,7 +359,6 @@ export function CitationGraph({
             <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
               {selected.title || "(untitled)"}
             </a>
-            {/* <p className="hint">Opens on PubMed ↗</p> */}
             {selectedCluster && (
               <p className="modal-cluster">
                 <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />

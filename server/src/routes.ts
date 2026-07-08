@@ -34,19 +34,30 @@ import {
   setFileMatched,
   setSetting,
   upsertArticles,
-  upsertCitations,
 } from "./db.js";
-import { blobExists, blobPath, deleteBlobsIfOrphaned, storeBlobFromTemp } from "./blobstore.js";
+import {
+  blobExists,
+  blobPath,
+  cleanUploadName,
+  deleteBlobsIfOrphaned,
+  isPdfFile,
+  storeBlobFromTemp,
+} from "./blobstore.js";
 import { UPLOAD_TMP_DIR } from "./config.js";
-import { fetchCitations } from "./icite.js";
+import { ensureCitations } from "./icite.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
 import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
 import type { GraphEdge, GraphNode, GraphResponse, Settings } from "./types.js";
+import { errMessage, round1 } from "./util.js";
 
-function round1(n: number | null): number | null {
-  return n == null ? null : Math.round(n * 10) / 10;
+// Express 4 doesn't forward a rejected promise to the error middleware, so
+// async handlers without their own catch are wrapped in this.
+function asyncHandler(fn: (req: Request, res: Response) => Promise<unknown>) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    fn(req, res).catch(next);
+  };
 }
 
 export const api = Router();
@@ -80,10 +91,11 @@ api.get("/journals", (_req, res) => {
 });
 
 // Autocomplete against the local NLM catalog, with OpenAlex metrics attached.
-api.get("/journals/search", async (req, res) => {
-  const q = String(req.query.q ?? "").trim();
-  if (q.length < 2) return res.json({ results: [] });
-  try {
+api.get(
+  "/journals/search",
+  asyncHandler(async (req, res) => {
+    const q = String(req.query.q ?? "").trim();
+    if (q.length < 2) return res.json({ results: [] });
     await ensureCatalogLoaded();
     // Pull a wider name-matched pool, then surface the highest-impact journals
     // first (a metric of 0 or no data sinks to the bottom) so obscure/defunct
@@ -100,10 +112,8 @@ api.get("/journals/search", async (req, res) => {
         metric: round1(r.metric),
       })),
     });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+  })
+);
 
 api.post("/journals", async (req, res) => {
   const raw = String(req.body?.name ?? "").trim();
@@ -127,7 +137,7 @@ api.post("/journals", async (req, res) => {
     }
     res.status(201).json(createJournal(resolved.name, resolved.nlmId));
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errMessage(err);
     if (/UNIQUE/i.test(msg)) {
       return res.status(409).json({ error: "That journal is already in the list." });
     }
@@ -160,29 +170,20 @@ api.get("/articles", (req, res) => {
 
 // ---------- citation graph ----------
 
-api.get("/graph", async (req, res) => {
-  const diseaseId = Number(req.query.disease);
-  const collectionId = Number(req.query.collection);
-  if (!diseaseId && !collectionId) {
-    return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
-  }
-  try {
+api.get(
+  "/graph",
+  asyncHandler(async (req, res) => {
+    const diseaseId = Number(req.query.disease);
+    const collectionId = Number(req.query.collection);
+    if (!diseaseId && !collectionId) {
+      return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
+    }
     const papers = diseaseId ? graphPapers(diseaseId) : collectionGraphPapers(collectionId);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
     // Lazily fetch + cache any missing/stale citation rows from iCite.
-    const stale = missingOrStaleCitations(pmids);
-    if (stale.length > 0) {
-      const fetched = await fetchCitations(stale);
-      const rows = [...fetched].map(([pmid, info]) => ({ pmid, info }));
-      // Cache a zeroed row even when iCite has nothing for a (very new) PMID,
-      // so we don't re-request it on every graph load.
-      for (const pmid of stale) {
-        if (!fetched.has(pmid)) rows.push({ pmid, info: { citation_count: 0, references: [] } });
-      }
-      upsertCitations(rows);
-    }
+    await ensureCitations(missingOrStaleCitations(pmids));
 
     const cites = getCitations(pmids);
     const nodes: GraphNode[] = papers.map((p) => ({
@@ -203,10 +204,8 @@ api.get("/graph", async (req, res) => {
 
     const body: GraphResponse = { nodes, edges };
     res.json(body);
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+  })
+);
 
 // ---------- collections (uploaded PDF libraries) ----------
 
@@ -222,29 +221,10 @@ const upload = multer({
 function uploadFiles(req: Request, res: Response, next: NextFunction): void {
   upload.array("files")(req, res, (err: unknown) => {
     if (err) {
-      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      return res.status(400).json({ error: errMessage(err) });
     }
     next();
   });
-}
-
-// A real PDF regardless of what the filename claims.
-async function isPdfFile(tmpPath: string): Promise<boolean> {
-  const fh = await fs.promises.open(tmpPath, "r");
-  try {
-    const buf = Buffer.alloc(5);
-    const { bytesRead } = await fh.read(buf, 0, 5, 0);
-    return bytesRead === 5 && buf.toString("latin1") === "%PDF-";
-  } finally {
-    await fh.close();
-  }
-}
-
-// Multer decodes originalname as latin1; also drop any path the browser or a
-// crafted request may have prepended.
-function cleanUploadName(raw: string): string {
-  const utf8 = Buffer.from(raw, "latin1").toString("utf8");
-  return utf8.replace(/^.*[\\/]/, "").trim() || "upload.pdf";
 }
 
 api.get("/collections", (_req, res) => {
@@ -299,37 +279,41 @@ api.get("/collections/:id/papers", (req, res) => {
 // into the blob store, and recorded; re-uploads of content already in the
 // collection count as skipped. The client batches large selections across
 // several requests, then starts the scan job once.
-api.post("/collections/:id/files", uploadFiles, async (req, res) => {
-  const id = Number(req.params.id);
-  const files = (req.files ?? []) as Express.Multer.File[];
-  const discardTemps = () => Promise.allSettled(files.map((f) => fs.promises.unlink(f.path)));
-  if (!getCollection(id)) {
-    await discardTemps();
-    return res.status(404).json({ error: "Collection not found." });
-  }
-  if (files.length === 0) return res.status(400).json({ error: "No files were uploaded." });
-  const stored: { hash: string; name: string }[] = [];
-  try {
-    let skipped = 0;
-    for (const f of files) {
-      if (!(await isPdfFile(f.path))) {
-        skipped++;
-        await fs.promises.unlink(f.path);
-        continue;
-      }
-      const { hash } = await storeBlobFromTemp(f.path);
-      stored.push({ hash, name: cleanUploadName(f.originalname) });
+api.post(
+  "/collections/:id/files",
+  uploadFiles,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const files = (req.files ?? []) as Express.Multer.File[];
+    const discardTemps = () => Promise.allSettled(files.map((f) => fs.promises.unlink(f.path)));
+    if (!getCollection(id)) {
+      await discardTemps();
+      return res.status(404).json({ error: "Collection not found." });
     }
-    const added = addCollectionFiles(id, stored);
-    skipped += stored.length - added;
-    res.status(201).json({ added, skipped });
-  } catch (err) {
-    await discardTemps();
-    // Blobs stored before the failure but never recorded would leak otherwise.
-    deleteBlobsIfOrphaned(stored.map((s) => s.hash));
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+    if (files.length === 0) return res.status(400).json({ error: "No files were uploaded." });
+    const stored: { hash: string; name: string }[] = [];
+    try {
+      let skipped = 0;
+      for (const f of files) {
+        if (!(await isPdfFile(f.path))) {
+          skipped++;
+          await fs.promises.unlink(f.path);
+          continue;
+        }
+        const { hash } = await storeBlobFromTemp(f.path);
+        stored.push({ hash, name: cleanUploadName(f.originalname) });
+      }
+      const added = addCollectionFiles(id, stored);
+      skipped += stored.length - added;
+      res.status(201).json({ added, skipped });
+    } catch (err) {
+      await discardTemps();
+      // Blobs stored before the failure but never recorded would leak otherwise.
+      deleteBlobsIfOrphaned(stored.map((s) => s.hash));
+      res.status(500).json({ error: errMessage(err) });
+    }
+  })
+);
 
 // Start the scan/match job over this collection's 'pending' rows. Uploading
 // more files and re-running picks up just the new ones.
@@ -364,15 +348,16 @@ api.get("/collections/:id/import/status", (req, res) => {
 
 // Manually assign a PMID to a file the scanner couldn't match. The PMID is
 // validated by actually fetching its metadata from PubMed.
-api.post("/collections/files/:fileId/pmid", async (req, res) => {
-  const fileId = Number(req.params.fileId);
-  const file = getCollectionFile(fileId);
-  if (!file) return res.status(404).json({ error: "File not found." });
-  const pmid = String(req.body?.pmid ?? "").trim();
-  if (!/^\d{1,8}$/.test(pmid)) {
-    return res.status(400).json({ error: "A PMID is 1–8 digits." });
-  }
-  try {
+api.post(
+  "/collections/files/:fileId/pmid",
+  asyncHandler(async (req, res) => {
+    const fileId = Number(req.params.fileId);
+    const file = getCollectionFile(fileId);
+    if (!file) return res.status(404).json({ error: "File not found." });
+    const pmid = String(req.body?.pmid ?? "").trim();
+    if (!/^\d{1,8}$/.test(pmid)) {
+      return res.status(400).json({ error: "A PMID is 1–8 digits." });
+    }
     const articles = await fetchArticles([pmid]);
     if (articles.length === 0) {
       return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
@@ -381,10 +366,8 @@ api.post("/collections/files/:fileId/pmid", async (req, res) => {
     await warmCitations([pmid], "manual match");
     setFileMatched(fileId, pmid, "manual");
     res.json(getCollectionFile(fileId));
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+  })
+);
 
 api.delete("/collections/files/:fileId", (req, res) => {
   const fileId = Number(req.params.fileId);
@@ -396,15 +379,14 @@ api.delete("/collections/files/:fileId", (req, res) => {
 
 // ---------- refresh / status ----------
 
-api.post("/refresh", async (req, res) => {
-  try {
+api.post(
+  "/refresh",
+  asyncHandler(async (req, res) => {
     const diseaseId = req.query.disease ? Number(req.query.disease) : undefined;
     const results = diseaseId ? [await pollDisease(diseaseId)] : await pollAll();
     res.json({ results, polledAt: new Date().toISOString() });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+  })
+);
 
 api.get("/status", (_req, res) => {
   const counts = diseaseArticleCounts();
@@ -420,14 +402,18 @@ api.get("/status", (_req, res) => {
 
 // ---------- settings ----------
 
-api.get("/settings", (_req, res) => {
+// Never echo the raw API key back; just whether one is set.
+function settingsResponse() {
   const s = getSettings();
-  // Never echo the raw API key back; just whether one is set.
-  res.json({
+  return {
     ncbi_email: s.ncbi_email,
     poll_cron: s.poll_cron,
     has_api_key: Boolean(s.ncbi_api_key),
-  });
+  };
+}
+
+api.get("/settings", (_req, res) => {
+  res.json(settingsResponse());
 });
 
 api.put("/settings", (req, res) => {
@@ -441,10 +427,5 @@ api.put("/settings", (req, res) => {
     setSetting("ncbi_api_key", body.ncbi_api_key.trim());
   }
   rescheduleFromSettings();
-  const s = getSettings();
-  res.json({
-    ncbi_email: s.ncbi_email,
-    poll_cron: s.poll_cron,
-    has_api_key: Boolean(s.ncbi_api_key),
-  });
+  res.json(settingsResponse());
 });
