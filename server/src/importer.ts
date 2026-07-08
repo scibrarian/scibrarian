@@ -13,6 +13,7 @@ import { findDois, findPmid } from "./pdf-match.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
 import type { CollectionFile } from "./types.js";
+import { chunk, errMessage } from "./util.js";
 
 // One import job per collection, in memory. Single-user app: a server restart
 // mid-import simply leaves rows in 'pending', and the next import resumes them
@@ -49,12 +50,6 @@ export function isImportRunning(collectionId: number): boolean {
 const RESOLVE_BATCH = 50;
 // PMIDs per esummary/efetch call (matches the poller's batch size).
 const FETCH_BATCH = 100;
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 export function startImport(collectionId: number, collectionName: string): ImportStatus {
   const pending = pendingCollectionFiles(collectionId);
@@ -97,7 +92,7 @@ async function runImport(
         try {
           text = await extractPdfText(blobPath(f.content_hash));
         } catch (err) {
-          setFileError(f.id, err instanceof Error ? err.message : String(err));
+          setFileError(f.id, errMessage(err));
           job.errors++;
           job.processed++;
           continue;
@@ -120,7 +115,7 @@ async function runImport(
     job.state = "done";
   } catch (err) {
     job.state = "error";
-    job.error = err instanceof Error ? err.message : String(err);
+    job.error = errMessage(err);
     console.warn(`[import] ${label}: failed: ${job.error}`);
   } finally {
     job.currentFile = null;

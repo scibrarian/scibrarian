@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { errorMessage } from "./lib/format";
 import type { Collection, Disease } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
 import { Timeline } from "./components/Timeline";
@@ -95,7 +96,7 @@ export default function App() {
       setActiveCollectionId(created.id);
       setViewMode("timeline");
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errorMessage(e));
     }
   }
 
@@ -112,7 +113,7 @@ export default function App() {
       await loadDiseases();
       setReloadToken((t) => t + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errorMessage(e));
     } finally {
       setRefreshing(false);
     }

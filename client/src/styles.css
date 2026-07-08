@@ -84,53 +84,6 @@ body {
   cursor: default;
 }
 
-/* ---------- tabs ---------- */
-
-.tabbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0;
-  margin-bottom: 16px;
-}
-
-.tab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 10px 14px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--muted);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.tab:hover {
-  color: var(--text);
-}
-
-.tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-.tab .count {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: 999px;
-  font-size: 11px;
-  padding: 1px 8px;
-  font-weight: 700;
-}
-
-.settings-tab {
-  margin-left: auto;
-}
-
 /* ---------- banners ---------- */
 
 .banner {

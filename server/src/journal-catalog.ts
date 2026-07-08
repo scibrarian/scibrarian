@@ -6,6 +6,7 @@ import {
   type CatalogRow,
   type CatalogSeed,
 } from "./db.js";
+import { errMessage } from "./util.js";
 
 // NLM's authoritative journals list (full title, MEDLINE abbreviation, ISSNs).
 const J_MEDLINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt";
@@ -57,7 +58,7 @@ export function ensureCatalogLoaded(): Promise<void> {
       bulkInsertCatalog(rows);
       console.log(`[journals] catalog loaded: ${rows.length} journals`);
     } catch (err) {
-      console.warn("[journals] catalog load failed:", err instanceof Error ? err.message : err);
+      console.warn("[journals] catalog load failed:", errMessage(err));
     } finally {
       loading = null;
     }

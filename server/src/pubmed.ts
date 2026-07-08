@@ -155,20 +155,6 @@ export async function resolveDoiToPmid(doi: string): Promise<string | null> {
   return ids.length === 1 ? ids[0] : null;
 }
 
-// Count of PubMed articles in a journal — used to validate a free-typed journal
-// name that isn't in the local catalog.
-export async function journalCount(journalName: string): Promise<number> {
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    retmax: "0",
-    term: `"${journalName.replace(/"/g, "")}"[Journal]`,
-  });
-  const res = await eutilsFetch("esearch.fcgi", params);
-  const data = (await res.json()) as { esearchresult?: { count?: string } };
-  return Number(data.esearchresult?.count ?? 0);
-}
-
 // ---------- esummary (metadata) ----------
 
 interface ESummaryDoc {

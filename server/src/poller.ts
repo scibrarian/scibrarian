@@ -1,4 +1,5 @@
 import cron, { ScheduledTask } from "node-cron";
+import { DEFAULT_POLL_CRON } from "./config.js";
 import {
   db,
   existingPmids,
@@ -8,19 +9,13 @@ import {
   listJournals,
   saveArticles,
   setDiseaseLastPolled,
-  upsertCitations,
 } from "./db.js";
-import { fetchCitations } from "./icite.js";
+import { ensureCitations } from "./icite.js";
 import { buildTerm, fetchArticles, search } from "./pubmed.js";
 import type { PollResult } from "./types.js";
+import { chunk, errMessage } from "./util.js";
 
 const BATCH_SIZE = 100;
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 // Link existing articles to a disease without refetching them from PubMed.
 const linkStmt = db.prepare(
@@ -30,24 +25,17 @@ const linkKnown = db.transaction((pmids: string[], diseaseId: number) => {
   for (const pmid of pmids) linkStmt.run(pmid, diseaseId);
 });
 
-// Fetch + cache citation rows for newly added papers so the graph view doesn't
-// have to fetch them on first load. Mirrors the lazy fill in the /graph route,
-// but scoped to the caller's delta (a poll or a collection import). Best-effort:
-// never throws, so a slow/failing iCite can't fail an otherwise successful run.
+// Warm the citation cache for newly added papers so the graph view doesn't
+// have to fetch them on first load. Scoped to the caller's delta (a poll or a
+// collection import). Best-effort: never throws, so a slow/failing iCite can't
+// fail an otherwise successful run.
 export async function warmCitations(pmids: string[], label: string): Promise<void> {
-  if (pmids.length === 0) return;
   try {
-    const fetched = await fetchCitations(pmids);
-    const rows = [...fetched].map(([pmid, info]) => ({ pmid, info }));
-    // Cache a zeroed row even when iCite has nothing for a (very new) PMID, so
-    // the graph view won't re-request it on every load.
-    for (const pmid of pmids) {
-      if (!fetched.has(pmid)) rows.push({ pmid, info: { citation_count: 0, references: [] } });
-    }
-    upsertCitations(rows);
+    await ensureCitations(pmids);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[warm] ${label}: citation warm-up failed (will backfill on graph load): ${msg}`);
+    console.warn(
+      `[warm] ${label}: citation warm-up failed (will backfill on graph load): ${errMessage(err)}`
+    );
   }
 }
 
@@ -88,7 +76,7 @@ export async function pollDisease(id: number): Promise<PollResult> {
 
     setDiseaseLastPolled(id, new Date().toISOString());
   } catch (err) {
-    result.error = err instanceof Error ? err.message : String(err);
+    result.error = errMessage(err);
   }
   return result;
 }
@@ -110,14 +98,14 @@ export function startScheduler(): void {
 }
 
 export function rescheduleFromSettings(): void {
-  const expr = getSettings().poll_cron || "0 6 * * *";
+  const expr = getSettings().poll_cron || DEFAULT_POLL_CRON;
   if (task) {
     task.stop();
     task = null;
   }
   if (!cron.validate(expr)) {
-    console.warn(`[scheduler] invalid cron "${expr}" — using daily 06:00`);
-    task = cron.schedule("0 6 * * *", runScheduled);
+    console.warn(`[scheduler] invalid cron "${expr}" — using default "${DEFAULT_POLL_CRON}"`);
+    task = cron.schedule(DEFAULT_POLL_CRON, runScheduled);
     return;
   }
   task = cron.schedule(expr, runScheduled);

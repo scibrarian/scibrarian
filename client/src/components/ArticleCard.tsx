@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Article } from "../types";
+import { formatAuthors } from "../lib/format";
 
 const ABSTRACT_PREVIEW = 320;
 
@@ -23,7 +24,7 @@ export function ArticleCard({ article }: { article: Article }) {
         </a>
       </h3>
       {article.authors.length > 0 && (
-        <p className="card-authors">{formatAuthors(article.authors)}</p>
+        <p className="card-authors">{formatAuthors(article.authors, 4)}</p>
       )}
       {article.abstract ? (
         <div className="card-abstract">
@@ -49,9 +50,4 @@ export function ArticleCard({ article }: { article: Article }) {
       </div>
     </article>
   );
-}
-
-function formatAuthors(authors: string[]): string {
-  if (authors.length <= 4) return authors.join(", ");
-  return authors.slice(0, 3).join(", ") + ", et al.";
 }

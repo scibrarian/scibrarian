@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api";
+import { errorMessage } from "../lib/format";
+import { useDebounced } from "../lib/hooks";
 import type { AppSettings, Disease, Journal, JournalSearchResult } from "../types";
 
 const SMALL_WORDS = new Set([
@@ -47,20 +49,17 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
   useEffect(reload, []);
 
   // Debounced journal autocomplete against the local NLM catalog.
+  const journalQuery = useDebounced(journalName.trim(), 200);
   useEffect(() => {
-    const q = journalName.trim();
-    if (q.length < 2) {
+    if (journalQuery.length < 2) {
       setJournalResults([]);
       return;
     }
-    const t = setTimeout(() => {
-      api
-        .searchJournals(q)
-        .then((r) => setJournalResults(r.results))
-        .catch(() => setJournalResults([]));
-    }, 200);
-    return () => clearTimeout(t);
-  }, [journalName]);
+    api
+      .searchJournals(journalQuery)
+      .then((r) => setJournalResults(r.results))
+      .catch(() => setJournalResults([]));
+  }, [journalQuery]);
 
   async function addJournal(name: string) {
     setError(null);
@@ -73,7 +72,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       reload();
       onDataChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     }
   }
 
@@ -97,7 +96,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       reload();
       onDataChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     }
   }
 
@@ -117,7 +116,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       reload();
       onDataChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     }
   }
 
@@ -146,7 +145,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       setApiKey("");
       setSavedMsg("Settings saved.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     }
   }
 

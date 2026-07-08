@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useClickOutside } from "../lib/hooks";
 
 // Multiselect journal filter. A fixed-height dropdown trigger (rather than a
 // wrapping row of chips) keeps the toolbar from cluttering — or shifting the
@@ -16,15 +17,7 @@ export function JournalFilter({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
+  useClickOutside(ref, open, () => setOpen(false));
 
   const selectedCount = journals.reduce((n, j) => n + (deselected.has(j) ? 0 : 1), 0);
   const label =

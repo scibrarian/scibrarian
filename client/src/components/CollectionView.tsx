@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
 import { api } from "../api";
+import { errorMessage, formatAuthors } from "../lib/format";
 import type { CollectionFile, CollectionPaper, ImportStatus } from "../types";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
@@ -143,7 +144,7 @@ export function CollectionView({
       else await loadPapers();
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -154,7 +155,7 @@ export function CollectionView({
       await api.renameCollection(collectionId, next.trim());
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -171,7 +172,7 @@ export function CollectionView({
       collectionCache.delete(collectionId);
       onDeleted();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -340,7 +341,7 @@ export function CollectionView({
                             </span>
                           )}
                         </td>
-                        <td className="authors-cell">{formatAuthors(p.authors)}</td>
+                        <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>
                         <td>{p.journal_name}</td>
                         <td className="num">{year(p.pub_date)}</td>
                         <td className="num">{p.citation_count}</td>
@@ -425,7 +426,7 @@ function UnmatchedRow({
       await api.setFilePmid(file.id, value);
       onChanged();
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e));
+      onError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -437,7 +438,7 @@ function UnmatchedRow({
       await api.deleteCollectionFile(file.id);
       onChanged();
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e));
+      onError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -473,12 +474,6 @@ function UnmatchedRow({
       </div>
     </li>
   );
-}
-
-function formatAuthors(authors: string[]): string {
-  if (authors.length === 0) return "—";
-  if (authors.length <= 3) return authors.join(", ");
-  return authors.slice(0, 3).join(", ") + ", et al.";
 }
 
 function year(pubDate: string): string {

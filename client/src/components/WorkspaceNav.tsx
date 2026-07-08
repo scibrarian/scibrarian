@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Collection, Disease } from "../types";
+import { useClickOutside } from "../lib/hooks";
 import { SkeletonBar } from "./Skeleton";
 
 export type Mode = "discover" | "papers";
@@ -36,15 +37,7 @@ export function WorkspaceNav({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
+  useClickOutside(ref, open, () => setOpen(false));
 
   // Collapse the menu whenever the mode changes out from under it.
   useEffect(() => setOpen(false), [mode]);

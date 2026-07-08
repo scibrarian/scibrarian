@@ -2,7 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { DB_PATH, ENV_DEFAULTS } from "./config.js";
-import type { Article, Collection, CollectionFile, Disease, Journal, Settings } from "./types.js";
+import type {
+  Article,
+  Collection,
+  CollectionFile,
+  CollectionPaper,
+  Disease,
+  Journal,
+  Settings,
+} from "./types.js";
 
 // Ensure the data directory exists before opening the database.
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -215,10 +223,6 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
     .get(nlmId) as Journal | undefined;
 }
 
-export function deleteJournal(id: number): void {
-  db.prepare("DELETE FROM journals WHERE id = ?").run(id);
-}
-
 // How many stored articles a journal removal would delete (for the confirmation).
 export function countJournalArticles(id: number): number {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
@@ -246,19 +250,30 @@ export const removeJournalWithArticles = db.transaction((id: number): number => 
 
 // ---------- articles ----------
 
-export function existingPmids(pmids: string[]): Set<string> {
-  const found = new Set<string>();
-  // Chunk to stay well under SQLite's bound-parameter limit: an all-time search
-  // can hand us thousands of PMIDs in a single call.
+// Run an IN (...) query over the PMIDs, chunked to stay well under SQLite's
+// bound-parameter limit (an all-time search can hand us thousands of PMIDs in
+// a single call). `sql` receives the placeholder list for each chunk; `extra`
+// params are appended after the chunk's PMIDs.
+function queryByPmids<T>(
+  pmids: string[],
+  sql: (placeholders: string) => string,
+  extra: unknown[] = []
+): T[] {
+  const out: T[] = [];
   for (let i = 0; i < pmids.length; i += 900) {
     const batch = pmids.slice(i, i + 900);
     const placeholders = batch.map(() => "?").join(",");
-    const rows = db
-      .prepare(`SELECT pmid FROM articles WHERE pmid IN (${placeholders})`)
-      .all(...batch) as { pmid: string }[];
-    for (const r of rows) found.add(r.pmid);
+    out.push(...(db.prepare(sql(placeholders)).all(...batch, ...extra) as T[]));
   }
-  return found;
+  return out;
+}
+
+export function existingPmids(pmids: string[]): Set<string> {
+  const rows = queryByPmids<{ pmid: string }>(
+    pmids,
+    (ph) => `SELECT pmid FROM articles WHERE pmid IN (${ph})`
+  );
+  return new Set(rows.map((r) => r.pmid));
 }
 
 const upsertArticleStmt = db.prepare(`
@@ -396,39 +411,28 @@ export function graphPapers(diseaseId: number): GraphPaper[] {
 
 // PMIDs that have no cached citation row, or whose row is older than maxAgeDays.
 export function missingOrStaleCitations(pmids: string[], maxAgeDays = 14): string[] {
-  const fresh = new Set<string>();
-  const cutoff = `-${maxAgeDays} days`;
-  for (let i = 0; i < pmids.length; i += 900) {
-    const batch = pmids.slice(i, i + 900);
-    const placeholders = batch.map(() => "?").join(",");
-    const rows = db
-      .prepare(
-        `SELECT pmid FROM paper_citations
-         WHERE pmid IN (${placeholders}) AND fetched_at >= datetime('now', ?)`
-      )
-      .all(...batch, cutoff) as { pmid: string }[];
-    for (const r of rows) fresh.add(r.pmid);
-  }
+  const rows = queryByPmids<{ pmid: string }>(
+    pmids,
+    (ph) =>
+      `SELECT pmid FROM paper_citations
+       WHERE pmid IN (${ph}) AND fetched_at >= datetime('now', ?)`,
+    [`-${maxAgeDays} days`]
+  );
+  const fresh = new Set(rows.map((r) => r.pmid));
   return pmids.filter((p) => !fresh.has(p));
 }
 
 export function getCitations(pmids: string[]): Map<string, CitationInfo> {
+  const rows = queryByPmids<{ pmid: string; citation_count: number; references_json: string }>(
+    pmids,
+    (ph) => `SELECT pmid, citation_count, references_json FROM paper_citations WHERE pmid IN (${ph})`
+  );
   const out = new Map<string, CitationInfo>();
-  for (let i = 0; i < pmids.length; i += 900) {
-    const batch = pmids.slice(i, i + 900);
-    const placeholders = batch.map(() => "?").join(",");
-    const rows = db
-      .prepare(
-        `SELECT pmid, citation_count, references_json FROM paper_citations
-         WHERE pmid IN (${placeholders})`
-      )
-      .all(...batch) as { pmid: string; citation_count: number; references_json: string }[];
-    for (const r of rows) {
-      out.set(r.pmid, {
-        citation_count: r.citation_count,
-        references: safeParseRefs(r.references_json),
-      });
-    }
+  for (const r of rows) {
+    out.set(r.pmid, {
+      citation_count: r.citation_count,
+      references: safeParseRefs(r.references_json),
+    });
   }
   return out;
 }
@@ -602,18 +606,6 @@ export const upsertArticles = db.transaction((articles: ArticleInsert[]) => {
     });
   }
 });
-
-export interface CollectionPaper {
-  pmid: string;
-  title: string;
-  journal_name: string;
-  authors: string[];
-  pub_date: string;
-  pub_date_display: string;
-  doi: string;
-  url: string;
-  citation_count: number;
-}
 
 // The papers-list rows for a collection. DISTINCT pmid collapses duplicate
 // copies of the same paper (two files, one PMID) into a single row.

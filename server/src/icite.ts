@@ -1,4 +1,5 @@
-import type { CitationInfo } from "./db.js";
+import { upsertCitations, type CitationInfo } from "./db.js";
+import { chunk } from "./util.js";
 
 // NIH iCite: free, no API key. Returns per-paper citation_count (for node size)
 // and references (PMIDs the paper cites, used to derive intra-dataset edges).
@@ -11,12 +12,6 @@ interface ICitePub {
   pmid?: number | string;
   citation_count?: number | null;
   references?: (number | string)[] | string | null;
-}
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
 }
 
 // iCite returns references as an int array, but tolerate a space/comma string too.
@@ -50,4 +45,17 @@ export async function fetchCitations(pmids: string[]): Promise<Map<string, Citat
     }
   }
   return out;
+}
+
+// Fetch and cache citation rows for these PMIDs. Caches a zeroed row even when
+// iCite has nothing for a (very new) PMID, so it isn't re-requested on every
+// graph load.
+export async function ensureCitations(pmids: string[]): Promise<void> {
+  if (pmids.length === 0) return;
+  const fetched = await fetchCitations(pmids);
+  const rows = [...fetched].map(([pmid, info]) => ({ pmid, info }));
+  for (const pmid of pmids) {
+    if (!fetched.has(pmid)) rows.push({ pmid, info: { citation_count: 0, references: [] } });
+  }
+  upsertCitations(rows);
 }

@@ -23,12 +23,16 @@ export const BLOBS_DIR = path.isAbsolute(process.env.BLOBS_DIR || "")
 
 export const UPLOAD_TMP_DIR = path.join(path.dirname(BLOBS_DIR), "tmp-uploads");
 
+// Fallback poll schedule (daily at 06:00) — used to seed the setting and as
+// the last resort when the saved cron expression is invalid.
+export const DEFAULT_POLL_CRON = "0 6 * * *";
+
 // Used to seed editable settings on first run; afterwards the values in the
 // settings table win (so they can be changed in the UI).
 export const ENV_DEFAULTS = {
   ncbi_api_key: process.env.NCBI_API_KEY || "",
   ncbi_email: process.env.NCBI_EMAIL || "changeme@website.com",
-  poll_cron: process.env.POLL_CRON || "0 6 * * *", // daily at 06:00
+  poll_cron: process.env.POLL_CRON || DEFAULT_POLL_CRON,
 };
 
 // Path to the built client (used in production / `npm start`)

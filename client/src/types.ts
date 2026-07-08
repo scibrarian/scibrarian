@@ -1,16 +1,33 @@
-export interface Disease {
-  id: number;
-  name: string;
-  term: string;
-  last_polled_at: string | null;
-  created_at: string;
-  articleCount?: number;
-}
+// Shapes shared with the server live in shared/types.ts. Some are re-exported
+// unchanged; others are extended below with the extra fields the API attaches
+// to its responses.
+import type {
+  Article,
+  Collection as CollectionRow,
+  CollectionFile as CollectionFileRow,
+  CollectionFileStatus,
+  CollectionPaper,
+  Disease as DiseaseRow,
+  GraphEdge,
+  GraphNode,
+  GraphResponse,
+  Journal,
+  PollResult,
+} from "../../shared/types";
 
-export interface Journal {
-  id: number;
-  name: string;
-  created_at: string;
+export type {
+  Article,
+  CollectionFileStatus,
+  CollectionPaper,
+  GraphEdge,
+  GraphNode,
+  GraphResponse,
+  Journal,
+  PollResult,
+};
+
+export interface Disease extends DiseaseRow {
+  articleCount?: number;
 }
 
 export interface JournalSearchResult {
@@ -24,30 +41,9 @@ export interface JournalSearchResponse {
   results: JournalSearchResult[];
 }
 
-export interface Article {
-  pmid: string;
-  title: string;
-  abstract: string;
-  journal_name: string;
-  authors: string[];
-  pub_date: string;
-  pub_date_display: string;
-  doi: string;
-  url: string;
-  first_seen_at: string;
-}
-
 export interface ArticlesResponse {
   articles: Article[];
   journals: string[];
-}
-
-export interface PollResult {
-  diseaseId: number;
-  diseaseName: string;
-  found: number;
-  added: number;
-  error?: string;
 }
 
 export interface RefreshResponse {
@@ -55,45 +51,20 @@ export interface RefreshResponse {
   polledAt: string;
 }
 
+// What /api/settings exposes: never the API key itself, just whether one is set.
 export interface AppSettings {
   ncbi_email: string;
   poll_cron: string;
   has_api_key: boolean;
 }
 
-export interface Collection {
-  id: number;
-  name: string;
-  created_at: string;
+export interface Collection extends CollectionRow {
   fileCount: number;
   matchedCount: number;
 }
 
-export type CollectionFileStatus = "pending" | "matched" | "unmatched" | "error";
-
-export interface CollectionFile {
-  id: number;
-  collection_id: number;
-  content_hash: string; // sha256 of the stored PDF (blob store key)
-  file_name: string;
-  pmid: string | null;
-  match_status: CollectionFileStatus;
-  match_method: string; // pmid | doi | manual | ''
-  match_error: string;
-  added_at: string;
+export interface CollectionFile extends CollectionFileRow {
   exists: boolean; // whether the stored PDF is still present
-}
-
-export interface CollectionPaper {
-  pmid: string;
-  title: string;
-  journal_name: string;
-  authors: string[];
-  pub_date: string;
-  pub_date_display: string;
-  doi: string;
-  url: string;
-  citation_count: number;
 }
 
 export interface CollectionPapersResponse {
@@ -127,21 +98,3 @@ export interface ImportStatus {
 
 // Which paper set a graph is built from.
 export type GraphSource = { disease: number } | { collection: number };
-
-export interface GraphNode {
-  pmid: string;
-  title: string;
-  url: string;
-  citationCount: number;
-  year: number | null; // publication year, null when unknown
-}
-
-export interface GraphEdge {
-  source: string; // citing paper
-  target: string; // cited paper
-}
-
-export interface GraphResponse {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
