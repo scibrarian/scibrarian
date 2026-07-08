@@ -5,12 +5,13 @@ export type {
   Collection,
   CollectionFile,
   CollectionFileStatus,
-  CollectionPaper,
   Disease,
   GraphEdge,
   GraphNode,
   GraphResponse,
   Journal,
+  Paper,
+  PapersResponse,
   PollResult,
 } from "../../shared/types.js";
 

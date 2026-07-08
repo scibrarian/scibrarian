@@ -5,7 +5,6 @@ import {
   addCollectionFiles,
   collectionCounts,
   collectionGraphPapers,
-  collectionPapers,
   countJournalArticles,
   createCollection,
   createDisease,
@@ -21,9 +20,10 @@ import {
   graphPapers,
   hashesForCollection,
   journalByNlmId,
+  journalsForCollection,
   journalsForDisease,
-  listArticles,
   listCollectionFiles,
+  listPapers,
   listCollections,
   listDiseases,
   listJournals,
@@ -49,7 +49,7 @@ import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
 import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
-import type { GraphEdge, GraphNode, GraphResponse, Settings } from "./types.js";
+import type { GraphEdge, GraphNode, GraphResponse, PapersResponse, Settings } from "./types.js";
 import { errMessage, round1 } from "./util.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -155,18 +155,38 @@ api.delete("/journals/:id", (req, res) => {
   res.json({ deletedArticles });
 });
 
-// ---------- articles (timeline) ----------
+// ---------- papers (unified rows for the table + timeline, either source) ----------
 
-api.get("/articles", (req, res) => {
-  const diseaseId = Number(req.query.disease);
-  if (!diseaseId) return res.status(400).json({ error: "'disease' query param is required." });
-  const journal = req.query.journal ? String(req.query.journal) : undefined;
-  const q = req.query.q ? String(req.query.q) : undefined;
-  res.json({
-    articles: listArticles({ diseaseId, journal, q }),
-    journals: journalsForDisease(diseaseId),
-  });
-});
+api.get(
+  "/papers",
+  asyncHandler(async (req, res) => {
+    const diseaseId = Number(req.query.disease);
+    const collectionId = Number(req.query.collection);
+    if (!diseaseId && !collectionId) {
+      return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
+    }
+    const q = req.query.q ? String(req.query.q) : undefined;
+    const source = diseaseId ? { diseaseId } : { collectionId };
+    let rows = listPapers(source, q);
+
+    // Backfill missing/stale citation counts, like /graph does. Poll and import
+    // pre-warm them, so this is usually a no-op; re-query only when it wasn't.
+    const stale = missingOrStaleCitations(rows.map((r) => r.pmid));
+    if (stale.length > 0) {
+      await ensureCitations(stale);
+      rows = listPapers(source, q);
+    }
+
+    const body: PapersResponse = {
+      papers: rows.map(({ content_hash, ...p }) => ({
+        ...p,
+        file_exists: content_hash != null && blobExists(content_hash),
+      })),
+      journals: diseaseId ? journalsForDisease(diseaseId) : journalsForCollection(collectionId),
+    };
+    res.json(body);
+  })
+);
 
 // ---------- citation graph ----------
 
@@ -263,16 +283,15 @@ api.delete("/collections/:id", (req, res) => {
   res.status(204).end();
 });
 
-// Papers (matched, deduped by pmid) + every file row, so the client can show
-// unmatched/error files and flag files whose blob has gone missing.
-api.get("/collections/:id/papers", (req, res) => {
+// Every file row of a collection (matched or not), for the management shell:
+// the unmatched-files section and flagging files whose blob has gone missing.
+// Paper rows themselves come from /api/papers.
+api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  const files = listCollectionFiles(id).map((f) => ({
-    ...f,
-    exists: blobExists(f.content_hash),
-  }));
-  res.json({ papers: collectionPapers(id), files });
+  res.json({
+    files: listCollectionFiles(id).map((f) => ({ ...f, exists: blobExists(f.content_hash) })),
+  });
 });
 
 // Upload PDFs into a collection. Each file is verified by magic bytes, hashed

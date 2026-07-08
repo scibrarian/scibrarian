@@ -2,27 +2,27 @@
 // unchanged; others are extended below with the extra fields the API attaches
 // to its responses.
 import type {
-  Article,
   Collection as CollectionRow,
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
-  CollectionPaper,
   Disease as DiseaseRow,
   GraphEdge,
   GraphNode,
   GraphResponse,
   Journal,
+  Paper,
+  PapersResponse,
   PollResult,
 } from "../../shared/types";
 
 export type {
-  Article,
   CollectionFileStatus,
-  CollectionPaper,
   GraphEdge,
   GraphNode,
   GraphResponse,
   Journal,
+  Paper,
+  PapersResponse,
   PollResult,
 };
 
@@ -39,11 +39,6 @@ export interface JournalSearchResult {
 
 export interface JournalSearchResponse {
   results: JournalSearchResult[];
-}
-
-export interface ArticlesResponse {
-  articles: Article[];
-  journals: string[];
 }
 
 export interface RefreshResponse {
@@ -67,8 +62,7 @@ export interface CollectionFile extends CollectionFileRow {
   exists: boolean; // whether the stored PDF is still present
 }
 
-export interface CollectionPapersResponse {
-  papers: CollectionPaper[];
+export interface CollectionFilesResponse {
   files: CollectionFile[];
 }
 
@@ -96,5 +90,6 @@ export interface ImportStatus {
   error?: string; // fatal job error only
 }
 
-// Which paper set a graph is built from.
-export type GraphSource = { disease: number } | { collection: number };
+// Which paper set a view reads from: a Discover topic or a My Papers
+// collection. Every analysis module (table, timeline, graph) takes one.
+export type PaperSource = { disease: number } | { collection: number };
