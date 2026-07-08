@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { errorMessage } from "./lib/format";
-import type { Collection, Disease } from "./types";
+import type { Collection, Disease, PaperSource } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
 import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
+import { PapersTable } from "./components/PapersTable";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 
-type ViewMode = "timeline" | "graph";
+type ViewMode = "table" | "timeline" | "graph";
 
 export default function App() {
   const [diseases, setDiseases] = useState<Disease[]>([]);
@@ -18,7 +19,12 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [activeDiseaseId, setActiveDiseaseId] = useState<number | null>(null);
   const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("timeline");
+  // Each workspace remembers its own view; the defaults match what each is
+  // usually for (reading new papers vs. managing a library).
+  const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
+    discover: "timeline",
+    papers: "table",
+  });
   const [reloadToken, setReloadToken] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -62,6 +68,13 @@ export default function App() {
   const activeDisease = diseases.find((d) => d.id === activeDiseaseId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
+  const inDiscover = mode === "discover";
+  const viewMode = viewByMode[mode];
+
+  function setViewMode(v: ViewMode) {
+    setViewByMode((prev) => ({ ...prev, [mode]: v }));
+  }
+
   function changeMode(m: Mode) {
     setShowSettings(false);
     setMode(m);
@@ -85,6 +98,12 @@ export default function App() {
     setActiveCollectionId(id);
   }
 
+  // Data under the papers views changed (poll, import, match, file delete):
+  // invalidate every module's cache so the active one refetches.
+  function bumpReloadToken() {
+    setReloadToken((t) => t + 1);
+  }
+
   async function handleCreateCollection() {
     const name = window.prompt("Name this collection:");
     if (!name || !name.trim()) return;
@@ -94,10 +113,15 @@ export default function App() {
       setShowSettings(false);
       setMode("papers");
       setActiveCollectionId(created.id);
-      setViewMode("timeline");
+      setViewByMode((prev) => ({ ...prev, papers: "table" }));
     } catch (e) {
       setStatus(errorMessage(e));
     }
+  }
+
+  async function handleCollectionChanged() {
+    await loadCollections();
+    bumpReloadToken();
   }
 
   async function handleRefresh() {
@@ -111,7 +135,7 @@ export default function App() {
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
       setStatus(msg);
       await loadDiseases();
-      setReloadToken((t) => t + 1);
+      bumpReloadToken();
     } catch (e) {
       setStatus(errorMessage(e));
     } finally {
@@ -119,9 +143,36 @@ export default function App() {
     }
   }
 
-  const inDiscover = mode === "discover";
-  const primaryLabel = inDiscover ? "Timeline" : "Papers";
-  const showViewControls = !showSettings && (inDiscover ? !!activeDisease : !!activeCollection);
+  // The active paper source, if a topic/collection is selected in this mode.
+  const source: PaperSource | null = inDiscover
+    ? activeDisease && { disease: activeDisease.id }
+    : activeCollection && { collection: activeCollection.id };
+  const showViewControls = !showSettings && source != null;
+
+  // The truly-empty message differs by source: topics fill from PubMed,
+  // collections fill from uploads.
+  const emptyState = inDiscover ? (
+    <>
+      No papers yet. Add journals &amp; diseases in <strong>⚙ Settings</strong>, then click
+      “Refresh now”.
+    </>
+  ) : (
+    <>
+      No papers yet. Click <strong>+ Add files</strong> or <strong>+ Add folder</strong> to upload
+      PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors, journal,
+      year, and citation count.
+    </>
+  );
+
+  const module =
+    source &&
+    (viewMode === "graph" ? (
+      <CitationGraph source={source} reloadToken={reloadToken} />
+    ) : viewMode === "timeline" ? (
+      <Timeline source={source} reloadToken={reloadToken} emptyState={emptyState} />
+    ) : (
+      <PapersTable source={source} reloadToken={reloadToken} emptyState={emptyState} />
+    ));
 
   return (
     <div className="app">
@@ -143,10 +194,16 @@ export default function App() {
               {showViewControls && (
                 <div className="view-toggle" role="group" aria-label="View mode">
                   <button
+                    className={viewMode === "table" ? "active" : ""}
+                    onClick={() => setViewMode("table")}
+                  >
+                    Papers
+                  </button>
+                  <button
                     className={viewMode === "timeline" ? "active" : ""}
                     onClick={() => setViewMode("timeline")}
                   >
-                    {primaryLabel}
+                    Timeline
                   </button>
                   <button
                     className={viewMode === "graph" ? "active" : ""}
@@ -211,39 +268,38 @@ export default function App() {
           <TimelineSkeleton withToolbar />
         ) : showSettings ? (
           <Settings onDataChanged={loadDiseases} />
-        ) : inDiscover ? (
-          activeDisease ? (
-            viewMode === "graph" ? (
-              <CitationGraph source={{ disease: activeDisease.id }} reloadToken={reloadToken} />
-            ) : (
-              <Timeline diseaseId={activeDisease.id} reloadToken={reloadToken} />
-            )
-          ) : (
-            <div className="empty">
-              No topics yet. Open <strong>⚙ Settings</strong> to add a journal and a MeSH topic to
-              watch, or switch to <strong>📁 My Papers</strong> to import your own PDFs.
-            </div>
-          )
-        ) : activeCollection ? (
-          viewMode === "graph" ? (
-            <CitationGraph source={{ collection: activeCollection.id }} reloadToken={reloadToken} />
-          ) : (
-            <CollectionView
-              key={activeCollection.id}
-              collectionId={activeCollection.id}
-              onChanged={loadCollections}
-              onDeleted={async () => {
-                const cs = await loadCollections();
-                if (cs.length > 0) setActiveCollectionId(cs[0].id);
-                else setActiveCollectionId(null);
-              }}
-            />
-          )
-        ) : (
+        ) : !source ? (
           <div className="empty">
-            No collections yet. Click <strong>📁 My Papers → ＋ New collection</strong> to import a
-            folder of your own PDFs.
+            {inDiscover ? (
+              <>
+                No topics yet. Open <strong>⚙ Settings</strong> to add a journal and a MeSH topic
+                to watch, or switch to <strong>📁 My Papers</strong> to import your own PDFs.
+              </>
+            ) : (
+              <>
+                No collections yet. Click <strong>📁 My Papers → ＋ New collection</strong> to
+                import a folder of your own PDFs.
+              </>
+            )}
           </div>
+        ) : inDiscover || viewMode === "graph" ? (
+          // The graph fills the main area itself; the collection shell wraps
+          // only the table/timeline, where its chrome belongs.
+          module
+        ) : (
+          <CollectionView
+            key={activeCollectionId}
+            collectionId={activeCollectionId!}
+            reloadToken={reloadToken}
+            onChanged={handleCollectionChanged}
+            onDeleted={async () => {
+              const cs = await loadCollections();
+              setActiveCollectionId(cs.length > 0 ? cs[0].id : null);
+              bumpReloadToken();
+            }}
+          >
+            {module}
+          </CollectionView>
         )}
       </main>
     </div>

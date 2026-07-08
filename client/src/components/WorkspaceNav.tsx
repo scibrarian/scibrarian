@@ -55,7 +55,7 @@ export function WorkspaceNav({
     <nav className="workspace-nav">
       <div className="mode-switch" role="group" aria-label="Workspace">
         <button className={inDiscover && !settingsActive ? "active" : ""} onClick={() => onModeChange("discover")}>
-          🔍 Discover
+          🔍 Interests
         </button>
         <button className={!inDiscover && !settingsActive ? "active" : ""} onClick={() => onModeChange("papers")}>
           📁 My Papers

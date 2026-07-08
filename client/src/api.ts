@@ -1,16 +1,16 @@
 import type {
   AppSettings,
-  ArticlesResponse,
   Collection,
   CollectionFile,
-  CollectionPapersResponse,
+  CollectionFilesResponse,
   Disease,
   GraphResponse,
-  GraphSource,
   ImportStartResponse,
   ImportStatus,
   Journal,
   JournalSearchResponse,
+  PaperSource,
+  PapersResponse,
   RefreshResponse,
   UploadResponse,
 } from "./types";
@@ -35,6 +35,11 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// The query param naming both source-driven endpoints share.
+function sourceQuery(source: PaperSource): string {
+  return "disease" in source ? `disease=${source.disease}` : `collection=${source.collection}`;
+}
+
 export const api = {
   getDiseases: () => req<Disease[]>("/api/diseases"),
   createDisease: (name: string, term: string) =>
@@ -51,18 +56,12 @@ export const api = {
   deleteJournal: (id: number) =>
     req<{ deletedArticles: number }>(`/api/journals/${id}`, { method: "DELETE" }),
 
-  getArticles: (diseaseId: number, journal?: string, q?: string) => {
-    const params = new URLSearchParams({ disease: String(diseaseId) });
-    if (journal) params.set("journal", journal);
-    if (q) params.set("q", q);
-    return req<ArticlesResponse>(`/api/articles?${params.toString()}`);
+  getPapers: (source: PaperSource, q?: string) => {
+    const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
+    return req<PapersResponse>(`/api/papers?${qs}`);
   },
 
-  getGraph: (source: GraphSource) => {
-    const qs =
-      "disease" in source ? `disease=${source.disease}` : `collection=${source.collection}`;
-    return req<GraphResponse>(`/api/graph?${qs}`);
-  },
+  getGraph: (source: PaperSource) => req<GraphResponse>(`/api/graph?${sourceQuery(source)}`),
 
   getCollections: () => req<Collection[]>("/api/collections"),
   createCollection: (name: string) =>
@@ -70,8 +69,8 @@ export const api = {
   renameCollection: (id: number, name: string) =>
     req<Collection>(`/api/collections/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
   deleteCollection: (id: number) => req<void>(`/api/collections/${id}`, { method: "DELETE" }),
-  getCollectionPapers: (id: number) =>
-    req<CollectionPapersResponse>(`/api/collections/${id}/papers`),
+  getCollectionFiles: (id: number) =>
+    req<CollectionFilesResponse>(`/api/collections/${id}/files`),
   uploadFiles: (id: number, files: File[]) => {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);

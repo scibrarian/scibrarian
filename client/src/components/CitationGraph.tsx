@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
-import type { GraphNode, GraphResponse, GraphSource } from "../types";
+import { sourceKey } from "../lib/papers";
+import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
@@ -23,20 +24,19 @@ function nodeValFromCount(count: number): number {
 }
 
 // Cache the last successful graph fetch per source. Remounting the graph — e.g.
-// flipping the Timeline/Graph toggle back to Graph — then paints from cache
-// instead of refetching and re-showing the "Loading citation data…" state.
-// reloadToken is bumped when the data actually changes ("Refresh now"), which
-// invalidates the entry. Only the raw server response is cached; the settled
-// node positions still recompute on remount (the layout re-runs from scratch).
-const keyOf = (source: GraphSource) =>
-  "disease" in source ? `d${source.disease}` : `c${source.collection}`;
+// flipping the view toggle back to Graph — then paints from cache instead of
+// refetching and re-showing the "Loading citation data…" state. reloadToken is
+// bumped when the data actually changes ("Refresh now", collection imports and
+// file edits), which invalidates the entry. Only the raw server response is
+// cached; the settled node positions still recompute on remount (the layout
+// re-runs from scratch).
 const graphCache: FetchCache<GraphResponse> = new Map();
 
 export function CitationGraph({
   source,
   reloadToken,
 }: {
-  source: GraphSource;
+  source: PaperSource;
   reloadToken: number;
 }) {
   const [minCitations, setMinCitations] = useState(0); // instant: slider + box
@@ -53,13 +53,13 @@ export function CitationGraph({
   const [size, setSize] = useState({ width: 800, height: 600 });
 
   // Stable fetch key: the same source object is re-created each render.
-  const sourceKey = keyOf(source);
-  const { data, loading, error } = useCachedFetch(graphCache, sourceKey, reloadToken, () =>
+  const key = sourceKey(source);
+  const { data, loading, error } = useCachedFetch(graphCache, key, reloadToken, () =>
     api.getGraph(source)
   );
 
   // Close the paper modal when the graph underneath it changes.
-  useEffect(() => setSelected(null), [sourceKey, reloadToken]);
+  useEffect(() => setSelected(null), [key, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
