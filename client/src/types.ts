@@ -90,6 +90,6 @@ export interface ImportStatus {
   error?: string; // fatal job error only
 }
 
-// Which paper set a view reads from: a Discover topic or a My Papers
+// Which paper set a view reads from: a Discover topic or a Library
 // collection. Every analysis module (table, timeline, graph) takes one.
 export type PaperSource = { disease: number } | { collection: number };

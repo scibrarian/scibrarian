@@ -9,6 +9,7 @@ import {
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { useCachedFetch, type FetchCache } from "../lib/hooks";
+import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import type { CollectionFile, CollectionFilesResponse, ImportStatus } from "../types";
 
 // Files per upload request, so huge folder selections don't become one
@@ -19,7 +20,7 @@ const UPLOAD_BATCH = 20;
 const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInputElement>;
 
 // Cache the last file listing per collection, same pattern as papersCache:
-// re-entering My Papers paints from cache instead of refetching. Every mutation
+// re-entering Library paints from cache instead of refetching. Every mutation
 // (upload, import, match, delete) reports through onChanged, which bumps
 // reloadToken and thereby invalidates this cache along with the modules'.
 const filesCache: FetchCache<CollectionFilesResponse> = new Map();
@@ -43,6 +44,8 @@ export function CollectionView({
 }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const filesInputRef = useRef<HTMLInputElement | null>(null);
@@ -133,11 +136,10 @@ export function CollectionView({
     }
   }
 
-  async function rename() {
-    const next = window.prompt("Rename collection:");
-    if (!next || !next.trim()) return;
+  async function rename(next: string) {
+    setRenaming(false);
     try {
-      await api.renameCollection(collectionId, next.trim());
+      await api.renameCollection(collectionId, next);
       onChanged();
     } catch (e) {
       setError(errorMessage(e));
@@ -145,13 +147,7 @@ export function CollectionView({
   }
 
   async function remove() {
-    if (
-      !window.confirm(
-        "Delete this collection? Its uploaded PDF copies are removed from the app (unless another collection also has them); your original files are untouched."
-      )
-    ) {
-      return;
-    }
+    setConfirmingDelete(false);
     try {
       await api.deleteCollection(collectionId);
       onDeleted();
@@ -176,10 +172,10 @@ export function CollectionView({
         <div className="collection-actions">
           <button onClick={() => filesInputRef.current?.click()}>+ Add files</button>
           <button onClick={() => folderInputRef.current?.click()}>+ Add folder</button>
-          <button className="link-btn" onClick={rename}>
+          <button className="link-btn" onClick={() => setRenaming(true)}>
             Rename
           </button>
-          <button className="link-btn danger" onClick={remove}>
+          <button className="link-btn danger" onClick={() => setConfirmingDelete(true)}>
             Delete collection
           </button>
           <input
@@ -228,6 +224,24 @@ export function CollectionView({
       {unresolved.length > 0 && (
         <UnresolvedFiles files={unresolved} onChanged={onChanged} onError={setError} />
       )}
+
+      <PromptDialog
+        open={renaming}
+        title="Rename collection"
+        placeholder="New name"
+        submitLabel="Rename"
+        onSubmit={rename}
+        onCancel={() => setRenaming(false)}
+      />
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Delete collection?"
+        message="Its uploaded PDF copies are removed from the app (unless another collection also has them); your original files are untouched."
+        confirmLabel="Delete"
+        danger
+        onConfirm={remove}
+        onCancel={() => setConfirmingDelete(false)}
+      />
     </div>
   );
 }

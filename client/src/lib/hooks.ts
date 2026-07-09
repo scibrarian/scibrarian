@@ -1,22 +1,5 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useState } from "react";
 import { errorMessage } from "./format";
-
-// Close a dropdown when a mousedown lands outside `ref`. `active` gates the
-// listener so it only exists while the dropdown is open.
-export function useClickOutside(
-  ref: RefObject<HTMLElement>,
-  active: boolean,
-  onOutside: () => void
-): void {
-  useEffect(() => {
-    if (!active) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onOutside();
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [ref, active, onOutside]);
-}
 
 // The given value, trailing `ms` behind its live counterpart.
 export function useDebounced<T>(value: T, ms: number): T {
