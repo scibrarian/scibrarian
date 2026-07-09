@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { DB_PATH, ENV_DEFAULTS } from "./config.js";
 import type {
   Article,
@@ -15,9 +15,27 @@ import type {
 // Ensure the data directory exists before opening the database.
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-export const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+export const db = new DatabaseSync(DB_PATH);
+// node:sqlite enables foreign_keys by default, but the schema relies on its
+// ON DELETE CASCADEs, so keep it explicit.
+db.exec("PRAGMA journal_mode = WAL");
+db.exec("PRAGMA foreign_keys = ON");
+
+// Run fn atomically: COMMIT on return, ROLLBACK on throw. Not reentrant —
+// a wrapped function must not call another wrapped function.
+export function transaction<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  return (...args: A): R => {
+    db.exec("BEGIN");
+    try {
+      const result = fn(...args);
+      db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  };
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS diseases (
@@ -179,7 +197,7 @@ if (!seedFlag) {
 export function listDiseases(): Disease[] {
   return db
     .prepare("SELECT id, name, term, last_polled_at, created_at FROM diseases ORDER BY id ASC")
-    .all() as Disease[];
+    .all() as unknown as Disease[];
 }
 
 export function getDisease(id: number): Disease | undefined {
@@ -206,14 +224,14 @@ export function setDiseaseLastPolled(id: number, iso: string): void {
 export function listJournals(): Journal[] {
   return db
     .prepare("SELECT id, name, created_at FROM journals ORDER BY name ASC")
-    .all() as Journal[];
+    .all() as unknown as Journal[];
 }
 
 export function createJournal(name: string, nlmId: string | null): Journal {
   const info = db.prepare("INSERT INTO journals (name, nlm_id) VALUES (?, ?)").run(name, nlmId);
   return db
     .prepare("SELECT id, name, created_at FROM journals WHERE id = ?")
-    .get(Number(info.lastInsertRowid)) as Journal;
+    .get(Number(info.lastInsertRowid)) as unknown as Journal;
 }
 
 // Used to reject adding the same journal twice (identity is the NLM id).
@@ -236,13 +254,13 @@ export function countJournalArticles(id: number): number {
 
 // Remove a journal and permanently delete its stored articles (matched by NLM id;
 // article_diseases rows cascade via the foreign key). Returns the count deleted.
-export const removeJournalWithArticles = db.transaction((id: number): number => {
+export const removeJournalWithArticles = transaction((id: number): number => {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
     | { nlm_id: string | null }
     | undefined;
   let deleted = 0;
   if (j && j.nlm_id) {
-    deleted = db.prepare("DELETE FROM articles WHERE nlm_id = ?").run(j.nlm_id).changes;
+    deleted = Number(db.prepare("DELETE FROM articles WHERE nlm_id = ?").run(j.nlm_id).changes);
   }
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
   return deleted;
@@ -257,7 +275,7 @@ export const removeJournalWithArticles = db.transaction((id: number): number => 
 function queryByPmids<T>(
   pmids: string[],
   sql: (placeholders: string) => string,
-  extra: unknown[] = []
+  extra: (string | number)[] = []
 ): T[] {
   const out: T[] = [];
   for (let i = 0; i < pmids.length; i += 900) {
@@ -298,7 +316,7 @@ const linkArticleStmt = db.prepare(
 export type ArticleInsert = Omit<Article, "authors" | "first_seen_at"> & { authors: string[] };
 
 // Insert/refresh a batch of articles and link them to a disease, atomically.
-export const saveArticles = db.transaction((articles: ArticleInsert[], diseaseId: number) => {
+export const saveArticles = transaction((articles: ArticleInsert[], diseaseId: number) => {
   for (const a of articles) {
     upsertArticleStmt.run({
       pmid: a.pmid,
@@ -359,7 +377,7 @@ export function listPapers(
   q?: string
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
   const fromDisease = "diseaseId" in source;
-  const params: unknown[] = fromDisease
+  const params: (string | number)[] = fromDisease
     ? [source.diseaseId]
     : [source.collectionId, source.collectionId];
   // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
@@ -449,7 +467,7 @@ export function graphPapers(diseaseId: number): GraphPaper[] {
        JOIN article_diseases ad ON ad.pmid = a.pmid
        WHERE ad.disease_id = ?`
     )
-    .all(diseaseId) as GraphPaper[];
+    .all(diseaseId) as unknown as GraphPaper[];
 }
 
 // PMIDs that have no cached citation row, or whose row is older than maxAgeDays.
@@ -489,7 +507,7 @@ const upsertCitationStmt = db.prepare(`
     fetched_at = excluded.fetched_at
 `);
 
-export const upsertCitations = db.transaction(
+export const upsertCitations = transaction(
   (rows: { pmid: string; info: CitationInfo }[]) => {
     for (const { pmid, info } of rows) {
       upsertCitationStmt.run({
@@ -515,7 +533,7 @@ function safeParseRefs(raw: string): string[] {
 export function listCollections(): Collection[] {
   return db
     .prepare("SELECT id, name, created_at FROM collections ORDER BY id ASC")
-    .all() as Collection[];
+    .all() as unknown as Collection[];
 }
 
 export function getCollection(id: number): Collection | undefined {
@@ -558,10 +576,10 @@ const insertFileStmt = db.prepare(
 // Add uploaded files to a collection, atomically. INSERT OR IGNORE + the
 // UNIQUE(collection_id, content_hash) constraint make re-uploading the same
 // PDFs a no-op. Returns how many were actually inserted.
-export const addCollectionFiles = db.transaction(
+export const addCollectionFiles = transaction(
   (collectionId: number, files: { hash: string; name: string }[]): number => {
     let added = 0;
-    for (const f of files) added += insertFileStmt.run(collectionId, f.hash, f.name).changes;
+    for (const f of files) added += Number(insertFileStmt.run(collectionId, f.hash, f.name).changes);
     return added;
   }
 );
@@ -591,7 +609,7 @@ const FILE_COLS =
 export function listCollectionFiles(collectionId: number): CollectionFile[] {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? ORDER BY file_name ASC`)
-    .all(collectionId) as CollectionFile[];
+    .all(collectionId) as unknown as CollectionFile[];
 }
 
 export function pendingCollectionFiles(collectionId: number): CollectionFile[] {
@@ -600,7 +618,7 @@ export function pendingCollectionFiles(collectionId: number): CollectionFile[] {
       `SELECT ${FILE_COLS} FROM collection_files
        WHERE collection_id = ? AND match_status = 'pending' ORDER BY file_name ASC`
     )
-    .all(collectionId) as CollectionFile[];
+    .all(collectionId) as unknown as CollectionFile[];
 }
 
 export function getCollectionFile(fileId: number): CollectionFile | undefined {
@@ -633,7 +651,7 @@ export function deleteCollectionFile(fileId: number): void {
 
 // Insert/refresh articles without linking them to a disease (collections track
 // membership in collection_files instead of article_diseases).
-export const upsertArticles = db.transaction((articles: ArticleInsert[]) => {
+export const upsertArticles = transaction((articles: ArticleInsert[]) => {
   for (const a of articles) {
     upsertArticleStmt.run({
       pmid: a.pmid,
@@ -661,7 +679,7 @@ export function collectionGraphPapers(collectionId: number): GraphPaper[] {
        JOIN collection_files cf ON cf.pmid = a.pmid
        WHERE cf.collection_id = ?`
     )
-    .all(collectionId) as GraphPaper[];
+    .all(collectionId) as unknown as GraphPaper[];
 }
 
 // ---------- journal catalog (NLM J_Medline) ----------
@@ -688,7 +706,7 @@ const insertCatalogStmt = db.prepare(`
   VALUES (@nlm_id, @title, @med_abbr, @iso_abbr, @issn_print, @issn_online)
 `);
 
-export const bulkInsertCatalog = db.transaction((rows: CatalogSeed[]) => {
+export const bulkInsertCatalog = transaction((rows: CatalogSeed[]) => {
   for (const r of rows) insertCatalogStmt.run(r);
 });
 
@@ -703,7 +721,7 @@ export function searchCatalog(q: string, limit = 10): CatalogRow[] {
        ORDER BY CASE WHEN title LIKE ? OR med_abbr LIKE ? THEN 0 ELSE 1 END, length(title)
        LIMIT ?`
     )
-    .all(like, like, like, prefix, prefix, limit) as CatalogRow[];
+    .all(like, like, like, prefix, prefix, limit) as unknown as CatalogRow[];
 }
 
 // Validation: exact (case-insensitive) match on title or either abbreviation.

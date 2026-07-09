@@ -9,6 +9,7 @@ import {
   listJournals,
   saveArticles,
   setDiseaseLastPolled,
+  transaction,
 } from "./db.js";
 import { ensureCitations } from "./icite.js";
 import { buildTerm, fetchArticles, search } from "./pubmed.js";
@@ -21,7 +22,7 @@ const BATCH_SIZE = 100;
 const linkStmt = db.prepare(
   "INSERT OR IGNORE INTO article_diseases (pmid, disease_id) VALUES (?, ?)"
 );
-const linkKnown = db.transaction((pmids: string[], diseaseId: number) => {
+const linkKnown = transaction((pmids: string[], diseaseId: number) => {
   for (const pmid of pmids) linkStmt.run(pmid, diseaseId);
 });
 

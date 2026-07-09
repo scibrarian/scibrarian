@@ -15,7 +15,8 @@ A local web app that watches the top medical journals you choose and keeps a
 
 ## Requirements
 
-- Node.js 20+ (built and tested on Node 22).
+- Node.js 22.13+ (built and tested on Node 24). Storage uses Node's built-in
+  `node:sqlite` module, so there are no native dependencies to compile.
 
 ## Setup
 

@@ -8,10 +8,9 @@
     "client"
   ],
   "engines": {
-    "node": ">=20 <27"
+    "node": ">=22.13"
   },
   "scripts": {
-    "preinstall": "node scripts/check-node.cjs",
     "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client",
     "start": "npm run build -w client && npm run start -w server"
