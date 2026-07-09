@@ -1,7 +1,8 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
+import { ConfirmDialog } from "./Dialogs";
 import type { AppSettings, Disease, Journal, JournalSearchResult } from "../types";
 
 const SMALL_WORDS = new Set([
@@ -30,11 +31,20 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
 
   const [journalName, setJournalName] = useState("");
   const [journalResults, setJournalResults] = useState<JournalSearchResult[]>([]);
+  // The results list is a combobox popup: it hides on Escape/blur (dismissed)
+  // without discarding the fetched results, and reopens on typing or refocus.
+  const [listDismissed, setListDismissed] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listRef = useRef<HTMLUListElement>(null);
   const [diseaseName, setDiseaseName] = useState("");
   const [diseaseTerm, setDiseaseTerm] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  // The journal warning depends on an article count fetched *before* the
+  // dialog opens, so the pending removal carries its message along.
+  const [journalToRemove, setJournalToRemove] = useState<{ journal: Journal; message: string } | null>(null);
+  const [diseaseToRemove, setDiseaseToRemove] = useState<number | null>(null);
 
   function reload() {
     Promise.all([api.getJournals(), api.getDiseases(), api.getSettings()])
@@ -51,6 +61,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
   // Debounced journal autocomplete against the local NLM catalog.
   const journalQuery = useDebounced(journalName.trim(), 200);
   useEffect(() => {
+    setActiveIndex(-1);
     if (journalQuery.length < 2) {
       setJournalResults([]);
       return;
@@ -61,6 +72,44 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       .catch(() => setJournalResults([]));
   }, [journalQuery]);
 
+  const listOpen = !listDismissed && journalResults.length > 0;
+
+  // Keep the keyboard-highlighted option visible in the scrolling list.
+  useEffect(() => {
+    listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  function handleTypeaheadKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") {
+      if (listOpen) {
+        e.preventDefault();
+        setListDismissed(true);
+        setActiveIndex(-1);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (journalResults.length === 0) return;
+      e.preventDefault();
+      if (!listOpen) {
+        setListDismissed(false);
+        setActiveIndex(e.key === "ArrowDown" ? 0 : journalResults.length - 1);
+        return;
+      }
+      setActiveIndex((i) => {
+        const n = journalResults.length;
+        return e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n;
+      });
+      return;
+    }
+    if (e.key === "Enter" && listOpen && activeIndex >= 0) {
+      // Add the highlighted result, not the raw typed text the form would submit.
+      e.preventDefault();
+      const r = journalResults[activeIndex];
+      addJournal(r.abbr || r.title);
+    }
+  }
+
   async function addJournal(name: string) {
     setError(null);
     const n = name.trim();
@@ -69,6 +118,8 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       await api.createJournal(n);
       setJournalName("");
       setJournalResults([]);
+      setActiveIndex(-1);
+      setListDismissed(false);
       reload();
       onDataChanged();
     } catch (err) {
@@ -76,7 +127,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
     }
   }
 
-  async function removeJournal(j: Journal) {
+  async function askRemoveJournal(j: Journal) {
     setError(null);
     let count = 0;
     try {
@@ -84,15 +135,20 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
     } catch {
       /* if the count lookup fails, fall through with a generic warning */
     }
-    const warning =
+    const message =
       count > 0
-        ? `Remove "${j.name}"?\n\nThis will also permanently delete ${count} stored paper${
+        ? `This will also permanently delete ${count} stored paper${
             count === 1 ? "" : "s"
           } from this journal, across all diseases. This cannot be undone.`
-        : `Remove "${j.name}"? No stored papers are linked to it.`;
-    if (!window.confirm(warning)) return;
+        : "No stored papers are linked to it.";
+    setJournalToRemove({ journal: j, message });
+  }
+
+  async function removeJournal() {
+    if (!journalToRemove) return;
+    setJournalToRemove(null);
     try {
-      await api.deleteJournal(j.id);
+      await api.deleteJournal(journalToRemove.journal.id);
       reload();
       onDataChanged();
     } catch (err) {
@@ -120,13 +176,16 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
     }
   }
 
-  async function removeDisease(id: number) {
-    if (!confirm("Remove this disease and its timeline links? (Papers stay in the database.)")) {
-      return;
+  async function removeDisease() {
+    if (diseaseToRemove == null) return;
+    setDiseaseToRemove(null);
+    try {
+      await api.deleteDisease(diseaseToRemove);
+      reload();
+      onDataChanged();
+    } catch (err) {
+      setError(errorMessage(err));
     }
-    await api.deleteDisease(id);
-    reload();
-    onDataChanged();
   }
 
   async function saveSettings(e: FormEvent) {
@@ -167,20 +226,55 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
             addJournal(journalName);
           }}
         >
-          <div className="typeahead">
+          <div
+            className="typeahead"
+            onBlur={(e) => {
+              // focusout bubbles; only dismiss when focus leaves the whole
+              // combobox (input + list), not when it moves between them.
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setListDismissed(true);
+                setActiveIndex(-1);
+              }
+            }}
+          >
             <input
               value={journalName}
-              onChange={(e) => setJournalName(e.target.value)}
+              onChange={(e) => {
+                setJournalName(e.target.value);
+                setListDismissed(false);
+                setActiveIndex(-1);
+              }}
+              onKeyDown={handleTypeaheadKey}
+              onFocus={() => setListDismissed(false)}
               placeholder="Search journals (e.g. lancet, n engl j med)…"
               autoComplete="off"
+              role="combobox"
+              aria-expanded={listOpen}
+              aria-controls="journal-typeahead-list"
+              aria-autocomplete="list"
+              aria-activedescendant={
+                listOpen && activeIndex >= 0 ? `journal-option-${activeIndex}` : undefined
+              }
             />
-            {journalResults.length > 0 && (
-              <ul className="typeahead-list">
-                {journalResults.map((r) => (
-                  <li key={r.issn || r.title}>
+            {listOpen && (
+              <ul
+                className="typeahead-list"
+                id="journal-typeahead-list"
+                role="listbox"
+                ref={listRef}
+                // Keep the input focused while clicking a result, so the blur
+                // handler above can't unmount the list before the click lands.
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                {journalResults.map((r, i) => (
+                  <li key={r.issn || r.title} role="presentation">
                     <button
                       type="button"
-                      className="typeahead-item"
+                      role="option"
+                      id={`journal-option-${i}`}
+                      aria-selected={i === activeIndex}
+                      tabIndex={-1}
+                      className={`typeahead-item${i === activeIndex ? " active" : ""}`}
                       onClick={() => addJournal(r.abbr || r.title)}
                     >
                       <span className="ta-title">{titleCaseJournal(r.title)}</span>
@@ -207,7 +301,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
           {journals.map((j) => (
             <li key={j.id}>
               <span>{j.name}</span>
-              <button className="link-btn danger" onClick={() => removeJournal(j)}>
+              <button className="link-btn danger" onClick={() => askRemoveJournal(j)}>
                 Remove
               </button>
             </li>
@@ -219,7 +313,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
       <section className="panel">
         <h2>Diseases</h2>
         <p className="hint">
-          Each disease becomes a topic in <strong>🔍 Discover</strong>. The{" "}
+          Each disease becomes a topic in <strong>🔍 Interests</strong>. The{" "}
           <strong>PubMed term</strong> can be a MeSH heading
           like <code>"diabetes mellitus, type 2"[MeSH]</code> or plain keywords like{" "}
           <code>alzheimer disease</code>. MeSH terms are more precise.
@@ -244,7 +338,7 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
                 <strong>{d.name}</strong>
                 <code className="term">{d.term}</code>
               </span>
-              <button className="link-btn danger" onClick={() => removeDisease(d.id)}>
+              <button className="link-btn danger" onClick={() => setDiseaseToRemove(d.id)}>
                 Remove
               </button>
             </li>
@@ -291,6 +385,25 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
           </form>
         )}
       </section>
+
+      <ConfirmDialog
+        open={journalToRemove != null}
+        title={journalToRemove ? `Remove "${journalToRemove.journal.name}"?` : ""}
+        message={journalToRemove?.message ?? ""}
+        confirmLabel="Remove"
+        danger
+        onConfirm={removeJournal}
+        onCancel={() => setJournalToRemove(null)}
+      />
+      <ConfirmDialog
+        open={diseaseToRemove != null}
+        title="Remove this disease?"
+        message="Its timeline links are removed too. Papers stay in the database."
+        confirmLabel="Remove"
+        danger
+        onConfirm={removeDisease}
+        onCancel={() => setDiseaseToRemove(null)}
+      />
     </div>
   );
 }

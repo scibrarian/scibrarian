@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
@@ -343,30 +344,32 @@ export function CitationGraph({
       </div>
 
       {selected && (
-        <div className="modal-backdrop" onClick={() => setSelected(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="modal-close"
-              onClick={() => setSelected(null)}
-              aria-label="Close"
-            >
-              ×
-            </button>
-            <p className="modal-meta">
-              {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
-              {selected.year != null && ` · ${selected.year}`}
-            </p>
-            <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
-              {selected.title || "(untitled)"}
-            </a>
-            {selectedCluster && (
-              <p className="modal-cluster">
-                <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
-                {selectedCluster.label}
-              </p>
-            )}
-          </div>
-        </div>
+        <Dialog.Root open onOpenChange={(o) => !o && setSelected(null)}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="modal-backdrop">
+              <Dialog.Content className="modal" aria-describedby={undefined}>
+                <Dialog.Close className="modal-close" aria-label="Close">
+                  ×
+                </Dialog.Close>
+                <p className="modal-meta">
+                  {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
+                  {selected.year != null && ` · ${selected.year}`}
+                </p>
+                <Dialog.Title asChild>
+                  <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
+                    {selected.title || "(untitled)"}
+                  </a>
+                </Dialog.Title>
+                {selectedCluster && (
+                  <p className="modal-cluster">
+                    <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
+                    {selectedCluster.label}
+                  </p>
+                )}
+              </Dialog.Content>
+            </Dialog.Overlay>
+          </Dialog.Portal>
+        </Dialog.Root>
       )}
 
       {tip && (

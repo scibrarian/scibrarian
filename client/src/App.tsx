@@ -9,6 +9,7 @@ import { PapersTable } from "./components/PapersTable";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
+import { PromptDialog } from "./components/Dialogs";
 
 type ViewMode = "table" | "timeline" | "graph";
 
@@ -26,6 +27,7 @@ export default function App() {
     papers: "table",
   });
   const [reloadToken, setReloadToken] = useState(0);
+  const [namingCollection, setNamingCollection] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -104,11 +106,10 @@ export default function App() {
     setReloadToken((t) => t + 1);
   }
 
-  async function handleCreateCollection() {
-    const name = window.prompt("Name this collection:");
-    if (!name || !name.trim()) return;
+  async function createCollection(name: string) {
+    setNamingCollection(false);
     try {
-      const created = await api.createCollection(name.trim());
+      const created = await api.createCollection(name);
       await loadCollections();
       setShowSettings(false);
       setMode("papers");
@@ -213,7 +214,7 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {/* Refresh polls PubMed for the active topic; irrelevant to My Papers. */}
+              {/* Refresh polls PubMed for the active topic; irrelevant to Library. */}
               {!showSettings && inDiscover && activeDisease && (
                 <>
                   {activeDisease.last_polled_at && (
@@ -249,7 +250,7 @@ export default function App() {
           loaded={loaded}
           onSelectDisease={selectDisease}
           onSelectCollection={selectCollection}
-          onCreateCollection={handleCreateCollection}
+          onCreateCollection={() => setNamingCollection(true)}
           onAddTopic={() => setShowSettings(true)}
         />
       </div>
@@ -273,12 +274,12 @@ export default function App() {
             {inDiscover ? (
               <>
                 No topics yet. Open <strong>⚙ Settings</strong> to add a journal and a MeSH topic
-                to watch, or switch to <strong>📁 My Papers</strong> to import your own PDFs.
+                to watch, or switch to <strong>📚 Library</strong> to import your own PDFs.
               </>
             ) : (
               <>
-                No collections yet. Click <strong>📁 My Papers → ＋ New collection</strong> to
-                import a folder of your own PDFs.
+                No collections yet. Click <strong>＋ New collection</strong> in the collections dropdown to
+                import your own PDFs.
               </>
             )}
           </div>
@@ -302,6 +303,15 @@ export default function App() {
           </CollectionView>
         )}
       </main>
+
+      <PromptDialog
+        open={namingCollection}
+        title="New collection"
+        placeholder="Collection name"
+        submitLabel="Create"
+        onSubmit={createCollection}
+        onCancel={() => setNamingCollection(false)}
+      />
     </div>
   );
 }
