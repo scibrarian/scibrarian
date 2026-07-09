@@ -10,6 +10,7 @@ export type {
   GraphNode,
   GraphResponse,
   Journal,
+  JournalRemovalResult,
   Paper,
   PapersResponse,
   PollResult,

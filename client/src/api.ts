@@ -8,6 +8,7 @@ import type {
   ImportStartResponse,
   ImportStatus,
   Journal,
+  JournalRemovalResult,
   JournalSearchResponse,
   PaperSource,
   PapersResponse,
@@ -54,7 +55,7 @@ export const api = {
   journalArticleCount: (id: number) =>
     req<{ count: number }>(`/api/journals/${id}/article-count`),
   deleteJournal: (id: number) =>
-    req<{ deletedArticles: number }>(`/api/journals/${id}`, { method: "DELETE" }),
+    req<JournalRemovalResult>(`/api/journals/${id}`, { method: "DELETE" }),
 
   getPapers: (source: PaperSource, q?: string) => {
     const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
