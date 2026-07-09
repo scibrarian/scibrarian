@@ -83,6 +83,11 @@ export interface PollResult {
   error?: string;
 }
 
+export interface JournalRemovalResult {
+  deletedArticles: number; // permanently deleted (kept when a collection file references them)
+  removedFromInterests: number; // distinct papers unlinked from the disease feeds
+}
+
 export interface GraphNode {
   pmid: string;
   title: string;

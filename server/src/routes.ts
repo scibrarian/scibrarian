@@ -151,8 +151,7 @@ api.get("/journals/:id/article-count", (req, res) => {
 });
 
 api.delete("/journals/:id", (req, res) => {
-  const deletedArticles = removeJournalWithArticles(Number(req.params.id));
-  res.json({ deletedArticles });
+  res.json(removeJournalWithArticles(Number(req.params.id)));
 });
 
 // ---------- papers (unified rows for the table + timeline, either source) ----------

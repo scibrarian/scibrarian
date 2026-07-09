@@ -8,6 +8,7 @@ import type {
   CollectionFile,
   Disease,
   Journal,
+  JournalRemovalResult,
   Paper,
   Settings,
 } from "./types.js";
@@ -101,8 +102,8 @@ db.exec(`
   );
 
   -- User-created collections of uploaded PDFs. Matched files soft-reference
-  -- articles.pmid (no FK: removeJournalWithArticles bulk-deletes articles, and
-  -- paper_citations already sets the soft-reference precedent).
+  -- articles.pmid (no FK, following the paper_citations precedent);
+  -- removeJournalWithArticles preserves any article a collection file points to.
   CREATE TABLE IF NOT EXISTS collections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -170,19 +171,25 @@ for (const [key, value] of Object.entries(ENV_DEFAULTS)) {
 
 // ---------- first-run example data ----------
 
+// Names are NLM abbreviations (e.g. the full title PubMed registers for the
+// first is "The New England journal of medicine"). The nlm_id must be present:
+// journal removal matches articles by it, so a journal without one can never
+// clean up its papers.
+const SEED_JOURNALS: ReadonlyArray<[name: string, nlmId: string]> = [
+  ["N Engl J Med", "0255562"],
+  ["Lancet", "2985213R"],
+  ["JAMA", "7501160"],
+  ["Nat Med", "9502015"],
+];
+
 const seedFlag = getSettingStmt.get("seeded") as { value: string } | undefined;
 if (!seedFlag) {
   const journalCount = (db.prepare("SELECT COUNT(*) AS c FROM journals").get() as { c: number }).c;
   const diseaseCount = (db.prepare("SELECT COUNT(*) AS c FROM diseases").get() as { c: number }).c;
   if (journalCount === 0 && diseaseCount === 0) {
-    const insJ = db.prepare("INSERT OR IGNORE INTO journals (name) VALUES (?)");
-    for (const name of [
-      "N Engl J Med", // NLM abbreviation; the full title PubMed registers is "The New England journal of medicine"
-      "Lancet",
-      "JAMA",
-      "Nat Med",
-    ]) {
-      insJ.run(name);
+    const insJ = db.prepare("INSERT OR IGNORE INTO journals (name, nlm_id) VALUES (?, ?)");
+    for (const [name, nlmId] of SEED_JOURNALS) {
+      insJ.run(name, nlmId);
     }
     db.prepare("INSERT INTO diseases (name, term) VALUES (?, ?)").run(
       "Type 2 Diabetes",
@@ -241,29 +248,59 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
     .get(nlmId) as Journal | undefined;
 }
 
-// How many stored articles a journal removal would delete (for the confirmation).
+// How many stored articles a journal removal would permanently delete (for the
+// confirmation). Articles referenced by a collection file are kept, so they
+// are excluded from the count.
 export function countJournalArticles(id: number): number {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
     | { nlm_id: string | null }
     | undefined;
   if (!j || !j.nlm_id) return 0;
   return (
-    db.prepare("SELECT COUNT(*) AS c FROM articles WHERE nlm_id = ?").get(j.nlm_id) as { c: number }
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM articles
+         WHERE nlm_id = ?
+           AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`
+      )
+      .get(j.nlm_id) as { c: number }
   ).c;
 }
 
-// Remove a journal and permanently delete its stored articles (matched by NLM id;
-// article_diseases rows cascade via the foreign key). Returns the count deleted.
-export const removeJournalWithArticles = transaction((id: number): number => {
+// Remove a journal (matched by NLM id): its articles leave every disease feed,
+// but articles referenced by a collection file survive so the user's library is
+// untouched. Unreferenced articles are permanently deleted (article_diseases
+// rows cascade via the foreign key).
+export const removeJournalWithArticles = transaction((id: number): JournalRemovalResult => {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
     | { nlm_id: string | null }
     | undefined;
-  let deleted = 0;
+  let deletedArticles = 0;
+  let removedFromInterests = 0;
   if (j && j.nlm_id) {
-    deleted = Number(db.prepare("DELETE FROM articles WHERE nlm_id = ?").run(j.nlm_id).changes);
+    removedFromInterests = (
+      db
+        .prepare(
+          `SELECT COUNT(DISTINCT pmid) AS c FROM article_diseases
+           WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)`
+        )
+        .get(j.nlm_id) as { c: number }
+    ).c;
+    db.prepare(
+      "DELETE FROM article_diseases WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)"
+    ).run(j.nlm_id);
+    deletedArticles = Number(
+      db
+        .prepare(
+          `DELETE FROM articles
+           WHERE nlm_id = ?
+             AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`
+        )
+        .run(j.nlm_id).changes
+    );
   }
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
-  return deleted;
+  return { deletedArticles, removedFromInterests };
 });
 
 // ---------- articles ----------
