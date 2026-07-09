@@ -24,7 +24,15 @@ function titleCaseJournal(s: string): string {
     .join(" ");
 }
 
-export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
+export function Settings({
+  onDataChanged,
+  onPapersRemoved,
+}: {
+  onDataChanged: () => void;
+  // Papers left the Interests feeds (journal removal): the app refreshes the
+  // paper views and reports the count.
+  onPapersRemoved: (count: number) => void;
+}) {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [diseases, setDiseases] = useState<Disease[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -137,10 +145,10 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
     }
     const message =
       count > 0
-        ? `This will also permanently delete ${count} stored paper${
+        ? `This will remove its papers from Interests and permanently delete ${count} stored paper${
             count === 1 ? "" : "s"
-          } from this journal, across all diseases. This cannot be undone.`
-        : "No stored papers are linked to it.";
+          }. Papers saved in your Library are kept. This cannot be undone.`
+        : "Its papers will be removed from Interests. Papers saved in your Library are kept.";
     setJournalToRemove({ journal: j, message });
   }
 
@@ -148,9 +156,10 @@ export function Settings({ onDataChanged }: { onDataChanged: () => void }) {
     if (!journalToRemove) return;
     setJournalToRemove(null);
     try {
-      await api.deleteJournal(journalToRemove.journal.id);
+      const res = await api.deleteJournal(journalToRemove.journal.id);
       reload();
       onDataChanged();
+      onPapersRemoved(res.removedFromInterests);
     } catch (err) {
       setError(errorMessage(err));
     }

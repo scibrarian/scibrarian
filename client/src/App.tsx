@@ -129,13 +129,19 @@ export default function App() {
     setRefreshing(true);
     setStatus(null);
     try {
+      const countPapers = (ds: Disease[]) => ds.reduce((s, d) => s + (d.articleCount ?? 0), 0);
+      const before = countPapers(diseases);
       const res = await api.refresh(activeDiseaseId ?? undefined);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
+      const after = countPapers(await loadDiseases());
+      // Polling only adds, but papers can leave the feeds between refreshes
+      // (e.g. a journal removal); surface that instead of just "Added 0".
+      const removed = Math.max(0, before + added - after);
       let msg = `Added ${added} new paper${added === 1 ? "" : "s"}.`;
+      if (removed > 0) msg += ` Removed ${removed} paper${removed === 1 ? "" : "s"}.`;
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
       setStatus(msg);
-      await loadDiseases();
       bumpReloadToken();
     } catch (e) {
       setStatus(errorMessage(e));
@@ -268,7 +274,13 @@ export default function App() {
         {!loaded ? (
           <TimelineSkeleton withToolbar />
         ) : showSettings ? (
-          <Settings onDataChanged={loadDiseases} />
+          <Settings
+            onDataChanged={loadDiseases}
+            onPapersRemoved={(count) => {
+              setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
+              bumpReloadToken();
+            }}
+          />
         ) : !source ? (
           <div className="empty">
             {inDiscover ? (
