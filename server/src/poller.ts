@@ -99,11 +99,16 @@ export function startScheduler(): void {
 }
 
 export function rescheduleFromSettings(): void {
-  const expr = getSettings().poll_cron || DEFAULT_POLL_CRON;
+  const { poll_cron, poll_enabled } = getSettings();
   if (task) {
     task.stop();
     task = null;
   }
+  if (poll_enabled !== "1") {
+    console.log("[scheduler] scheduled polling is off");
+    return;
+  }
+  const expr = poll_cron || DEFAULT_POLL_CRON;
   if (!cron.validate(expr)) {
     console.warn(`[scheduler] invalid cron "${expr}" — using default "${DEFAULT_POLL_CRON}"`);
     task = cron.schedule(DEFAULT_POLL_CRON, runScheduled);

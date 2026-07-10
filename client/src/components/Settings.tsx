@@ -226,6 +226,7 @@ export function Settings({
       const payload: Partial<AppSettings> & { ncbi_api_key?: string } = {
         ncbi_email: settings.ncbi_email,
         poll_cron: settings.poll_cron,
+        poll_enabled: settings.poll_enabled,
       };
       if (apiKey.trim()) payload.ncbi_api_key = apiKey.trim();
       const updated = await api.updateSettings(payload);
@@ -382,21 +383,43 @@ export function Settings({
         {settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
             <label>
+              Scheduled polling
+              <span className="switch-row">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  className="switch"
+                  checked={settings.poll_enabled}
+                  onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
+                />
+                <span className="hint">
+                  When on, every topic is checked for new papers on the schedule below.
+                  “Refresh now” works either way.
+                </span>
+              </span>
+            </label>
+            <label>
               Poll schedule (cron)
               <input
                 value={settings.poll_cron}
                 onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
+                disabled={!settings.poll_enabled}
               />
               <span className="hint">
                 Default <code>0 6 * * *</code> = daily at 6am. Format: min hour day month weekday.
               </span>
             </label>
             <label>
-              Contact email (sent to NCBI per their usage policy)
+              Contact email
               <input
                 value={settings.ncbi_email}
                 onChange={(e) => setSettings({ ...settings, ncbi_email: e.target.value })}
+                placeholder="optional"
               />
+              <span className="hint">
+                Optional but recommended. Sent to NCBI and OpenAlex so they can contact you
+                before blocking access if requests ever exceed their limits.
+              </span>
             </label>
             <label>
               NCBI API key {settings.has_api_key && <span className="pill">set ✓</span>}
