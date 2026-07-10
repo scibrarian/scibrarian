@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
 import type { Collection, Disease, PaperSource } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
@@ -31,6 +31,11 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Whether this browser's requests count as admin (verified server-side via
+  // /api/auth — the stored token alone proves nothing). Viewers get a
+  // read-only UI; the server enforces the same split regardless.
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
 
   function loadDiseases(): Promise<Disease[]> {
     return api
@@ -53,7 +58,14 @@ export default function App() {
   }
 
   useEffect(() => {
-    Promise.all([loadDiseases(), loadCollections()]).then(([ds, cs]) => {
+    // A 401 on any later call means the stored token was rotated/revoked;
+    // api.ts drops the token, this demotes the UI to viewer mode.
+    setAuthRejectedHandler(() => setIsAdmin(false));
+    // Admin state resolves with the same `loaded` flip so the admin controls
+    // don't pop in after the skeletons clear.
+    const auth = api.getAuth().catch(() => ({ admin: false }));
+    Promise.all([loadDiseases(), loadCollections(), auth]).then(([ds, cs, { admin }]) => {
+      setIsAdmin(admin);
       // Land in whichever workspace actually has something in it.
       if (ds.length > 0) {
         setMode("discover");
@@ -125,6 +137,23 @@ export default function App() {
     bumpReloadToken();
   }
 
+  // Try a pasted admin token: store it, then let the server judge it.
+  async function unlock(token: string) {
+    setUnlocking(false);
+    setAdminToken(token.trim());
+    const { admin } = await api.getAuth().catch(() => ({ admin: false }));
+    setIsAdmin(admin);
+    if (!admin) {
+      setAdminToken(null);
+      setStatus("That admin token wasn't accepted.");
+    }
+  }
+
+  function lock() {
+    setAdminToken(null);
+    setIsAdmin(false);
+  }
+
   async function handleRefresh() {
     setRefreshing(true);
     setStatus(null);
@@ -157,8 +186,11 @@ export default function App() {
   const showViewControls = !showSettings && source != null;
 
   // The truly-empty message differs by source: topics fill from PubMed,
-  // collections fill from uploads.
-  const emptyState = inDiscover ? (
+  // collections fill from uploads. Viewers get a variant that doesn't point
+  // at controls they don't have.
+  const emptyState = !isAdmin ? (
+    <>No papers here yet. The site owner hasn’t added any.</>
+  ) : inDiscover ? (
     <>
       No papers yet. Add journals &amp; diseases in <strong>⚙ Settings</strong>, then click
       “Refresh now”.
@@ -226,27 +258,54 @@ export default function App() {
                   {activeDisease.last_polled_at && (
                     <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
                   )}
-                  <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-                    {refreshing ? "Refreshing…" : "Refresh now"}
-                  </button>
+                  {isAdmin && (
+                    <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+                      {refreshing ? "Refreshing…" : "Refresh now"}
+                    </button>
+                  )}
                 </>
+              )}
+              {isAdmin && (
+                <button
+                  className={`gear-btn ${showSettings ? "active" : ""}`}
+                  onClick={() => setShowSettings((s) => !s)}
+                  aria-label="Settings"
+                  title="Settings"
+                >
+                  ⚙
+                </button>
+              )}
+              {/* Padlock: viewers can unlock admin mode; an unlocked admin can
+                  relock. In tokenless single-user mode neither renders. */}
+              {!isAdmin && (
+                <button
+                  className="gear-btn"
+                  onClick={() => setUnlocking(true)}
+                  aria-label="Admin unlock"
+                  title="Admin unlock"
+                >
+                  🔒
+                </button>
+              )}
+              {isAdmin && getAdminToken() != null && (
+                <button
+                  className="gear-btn"
+                  onClick={lock}
+                  aria-label="Leave admin mode"
+                  title="Leave admin mode"
+                >
+                  🔓
+                </button>
               )}
             </>
           )}
-          <button
-            className={`gear-btn ${showSettings ? "active" : ""}`}
-            onClick={() => setShowSettings((s) => !s)}
-            aria-label="Settings"
-            title="Settings"
-          >
-            ⚙
-          </button>
         </div>
       </header>
 
       <div className="workspace-bar">
         <WorkspaceNav
           mode={mode}
+          isAdmin={isAdmin}
           onModeChange={changeMode}
           diseases={diseases}
           collections={collections}
@@ -283,7 +342,12 @@ export default function App() {
           />
         ) : !source ? (
           <div className="empty">
-            {inDiscover ? (
+            {!isAdmin ? (
+              <>
+                Nothing here yet. The site owner hasn’t added any{" "}
+                {inDiscover ? "topics" : "collections"}.
+              </>
+            ) : inDiscover ? (
               <>
                 No topics yet. Open <strong>⚙ Settings</strong> to add a journal and a MeSH topic
                 to watch, or switch to <strong>📚 Library</strong> to import your own PDFs.
@@ -303,6 +367,7 @@ export default function App() {
           <CollectionView
             key={activeCollectionId}
             collectionId={activeCollectionId!}
+            isAdmin={isAdmin}
             reloadToken={reloadToken}
             onChanged={handleCollectionChanged}
             onDeleted={async () => {
@@ -323,6 +388,16 @@ export default function App() {
         submitLabel="Create"
         onSubmit={createCollection}
         onCancel={() => setNamingCollection(false)}
+      />
+
+      <PromptDialog
+        open={unlocking}
+        title="Admin unlock"
+        placeholder="Admin token"
+        inputType="password"
+        submitLabel="Unlock"
+        onSubmit={unlock}
+        onCancel={() => setUnlocking(false)}
       />
     </div>
   );

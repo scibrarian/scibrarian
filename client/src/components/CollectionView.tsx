@@ -31,12 +31,14 @@ const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 // rows from /api/papers.
 export function CollectionView({
   collectionId,
+  isAdmin,
   reloadToken,
   onChanged,
   onDeleted,
   children,
 }: {
   collectionId: number;
+  isAdmin: boolean;
   reloadToken: number;
   onChanged: () => void;
   onDeleted: () => void;
@@ -168,39 +170,43 @@ export function CollectionView({
 
   return (
     <div className="collection-view">
-      <div className="collection-head">
-        <div className="collection-actions">
-          <button onClick={() => filesInputRef.current?.click()}>+ Add files</button>
-          <button onClick={() => folderInputRef.current?.click()}>+ Add folder</button>
-          <button className="link-btn" onClick={() => setRenaming(true)}>
-            Rename
-          </button>
-          <button className="link-btn danger" onClick={() => setConfirmingDelete(true)}>
-            Delete collection
-          </button>
-          <input
-            ref={filesInputRef}
-            type="file"
-            multiple
-            accept=".pdf,application/pdf"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              void handleImport(e.target.files);
-              e.target.value = ""; // allow re-picking the same selection
-            }}
-          />
-          <input
-            ref={folderInputRef}
-            type="file"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              void handleImport(e.target.files);
-              e.target.value = "";
-            }}
-            {...folderInputProps}
-          />
+      {/* Management chrome is admin-only; viewers just see the papers module
+          (and, below, live progress of any admin-triggered import). */}
+      {isAdmin && (
+        <div className="collection-head">
+          <div className="collection-actions">
+            <button onClick={() => filesInputRef.current?.click()}>+ Add files</button>
+            <button onClick={() => folderInputRef.current?.click()}>+ Add folder</button>
+            <button className="link-btn" onClick={() => setRenaming(true)}>
+              Rename
+            </button>
+            <button className="link-btn danger" onClick={() => setConfirmingDelete(true)}>
+              Delete collection
+            </button>
+            <input
+              ref={filesInputRef}
+              type="file"
+              multiple
+              accept=".pdf,application/pdf"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                void handleImport(e.target.files);
+                e.target.value = ""; // allow re-picking the same selection
+              }}
+            />
+            <input
+              ref={folderInputRef}
+              type="file"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                void handleImport(e.target.files);
+                e.target.value = "";
+              }}
+              {...folderInputProps}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {(error ?? filesError) && <div className="banner error">{error ?? filesError}</div>}
       {notice && <div className="banner info">{notice}</div>}
@@ -221,7 +227,7 @@ export function CollectionView({
 
       {children}
 
-      {unresolved.length > 0 && (
+      {isAdmin && unresolved.length > 0 && (
         <UnresolvedFiles files={unresolved} onChanged={onChanged} onError={setError} />
       )}
 

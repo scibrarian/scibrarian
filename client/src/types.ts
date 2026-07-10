@@ -48,11 +48,18 @@ export interface RefreshResponse {
   polledAt: string;
 }
 
+// What /api/auth reports: whether this browser's requests count as admin.
+export interface AuthStatus {
+  admin: boolean;
+}
+
 // What /api/settings exposes: never the API key itself, just whether one is set.
 export interface AppSettings {
   ncbi_email: string;
   poll_cron: string;
   has_api_key: boolean;
+  // URLs where other machines can reach this server; empty when bound to loopback.
+  share_urls: string[];
 }
 
 export interface Collection extends CollectionRow {

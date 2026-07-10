@@ -71,6 +71,7 @@ export function PromptDialog({
   title,
   placeholder,
   initialValue = "",
+  inputType = "text",
   submitLabel,
   onSubmit,
   onCancel,
@@ -79,6 +80,7 @@ export function PromptDialog({
   title: string;
   placeholder?: string;
   initialValue?: string;
+  inputType?: "text" | "password";
   submitLabel: string;
   onSubmit: (value: string) => void;
   onCancel: () => void;
@@ -101,6 +103,7 @@ export function PromptDialog({
     <ModalShell open={open} onClose={onCancel} title={title}>
       <form className="modal-form" onSubmit={handleSubmit}>
         <input
+          type={inputType}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder={placeholder}

@@ -37,7 +37,8 @@ Then open the UI URL printed by Vite (default http://localhost:5173).
 ## Optional config
 
 Copy `.env.example` to `server/.env` to set an NCBI API key (higher rate limit),
-contact email, or a custom database path. Everything works without it.
+contact email, a custom database path, or the sharing options below
+(`HOST`, `ADMIN_TOKEN`). Everything works without it.
 
 ## Production build
 
@@ -45,3 +46,44 @@ contact email, or a custom database path. Everything works without it.
 npm run build      # builds the client
 npm start          # serves the built UI + API from http://localhost:3001
 ```
+
+## Sharing your server
+
+By default the server only listens on this machine (`127.0.0.1`) and needs no
+auth. To let other people browse your instance read-only:
+
+1. Generate a token and set it in `server/.env`, along with the bind host:
+
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+   ```
+
+   ```ini
+   ADMIN_TOKEN=<the generated token>
+   HOST=0.0.0.0        # or a specific LAN/Tailscale IP
+   ```
+
+2. Restart with `npm start`. Others browse to `http://<your-ip>:3001` and can
+   view everything — papers, timelines, graphs, stored PDFs — but every
+   mutating control (Settings, refresh, uploads, add/delete) is hidden and the
+   API rejects mutations without the token. The exact address to send people
+   (with a copy button) is shown in **Settings → Sharing** once you unlock
+   admin mode.
+3. To administer, click the **🔒 padlock** in the header and paste the token.
+   The browser remembers it (localStorage) until you click **🔓** to leave
+   admin mode. The server re-checks the token on every request.
+
+The server refuses to start on a non-loopback `HOST` unless `ADMIN_TOKEN` is
+set, so it can't be exposed writable-by-anyone by accident. With no
+`ADMIN_TOKEN` (the default), nothing changes: loopback-only, no auth, no
+padlock.
+
+How you expose it matters:
+
+- **Tailscale (recommended):** invite viewers to your tailnet and bind `HOST`
+  to your Tailscale IP. Traffic is encrypted and nothing touches the public
+  internet.
+- **LAN:** `HOST=0.0.0.0` works, but plain HTTP means the token is visible to
+  anyone sniffing the network — only unlock admin mode on networks you trust.
+- **Public internet:** put the app behind a TLS reverse proxy (e.g. Caddy,
+  nginx); never send the token over plain HTTP.
