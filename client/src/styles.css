@@ -1119,6 +1119,9 @@ code {
 
 .ws-picker {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .ws-trigger {
@@ -1389,6 +1392,33 @@ code {
 
 .links-cell {
   white-space: nowrap;
+}
+
+/* Admin-only share-link column: headerless, just the icon button. */
+.papers-table th.share-col,
+.papers-table td.share-cell {
+  padding: 10px 6px;
+  text-align: center;
+}
+
+.share-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.share-btn:hover {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.share-btn.copied {
+  color: var(--accent);
 }
 
 .links-cell a {

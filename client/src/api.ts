@@ -14,6 +14,7 @@ import type {
   PaperSource,
   PapersResponse,
   RefreshResponse,
+  ShareLinkResponse,
   UploadResponse,
 } from "./types";
 
@@ -112,6 +113,20 @@ export const api = {
     req<ImportStartResponse>(`/api/collections/${id}/import`, { method: "POST" }),
   getImportStatus: (id: number) => req<ImportStatus>(`/api/collections/${id}/import/status`),
   fileContentUrl: (fileId: number) => `/api/collections/files/${fileId}/content`,
+  // Admin-only: mint an expiring signed URL for a stored PDF. Omitting
+  // ttlSeconds uses the server's default share window (24h).
+  mintShareLink: (fileId: number, ttlSeconds?: number) =>
+    req<ShareLinkResponse>(`/api/collections/files/${fileId}/share`, {
+      method: "POST",
+      body: JSON.stringify(ttlSeconds != null ? { ttlSeconds } : {}),
+    }),
+  // Admin-only: mint an expiring signed URL that downloads the whole
+  // collection as a zip.
+  mintCollectionShareLink: (collectionId: number, ttlSeconds?: number) =>
+    req<ShareLinkResponse>(`/api/collections/${collectionId}/share`, {
+      method: "POST",
+      body: JSON.stringify(ttlSeconds != null ? { ttlSeconds } : {}),
+    }),
   setFilePmid: (fileId: number, pmid: string) =>
     req<CollectionFile>(`/api/collections/files/${fileId}/pmid`, {
       method: "POST",

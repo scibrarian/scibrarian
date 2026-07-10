@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { ConfirmDialog } from "./Dialogs";
@@ -199,20 +200,7 @@ export function Settings({
   }
 
   async function copyUrl(url: string) {
-    try {
-      await navigator.clipboard.writeText(url);
-    } catch {
-      // navigator.clipboard needs a secure context (HTTPS or localhost); fall
-      // back to the legacy path when the app is served over plain LAN HTTP.
-      const ta = document.createElement("textarea");
-      ta.value = url;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-    }
+    await copyTextToClipboard(url);
     setCopiedUrl(url);
     setTimeout(() => setCopiedUrl((cur) => (cur === url ? null : cur)), 2000);
   }
@@ -451,7 +439,9 @@ export function Settings({
             <>
               <p className="hint">
                 Send one of these addresses to anyone on your network. They can view
-                everything; changing anything still requires the admin token.
+                everything except stored PDFs — share an individual PDF with the Share
+                button in the Papers table. Changing anything still requires the admin
+                token.
               </p>
               <ul className="list">
                 {settings.share_urls.map((url) => (

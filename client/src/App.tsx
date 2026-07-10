@@ -35,6 +35,10 @@ export default function App() {
   // /api/auth — the stored token alone proves nothing). Viewers get a
   // read-only UI; the server enforces the same split regardless.
   const [isAdmin, setIsAdmin] = useState(false);
+  // Whether the server has an ADMIN_TOKEN at all. false = tokenless
+  // single-user mode, where stored PDFs open directly without minted links.
+  // Defaults true (the stricter path) until /api/auth answers.
+  const [tokenRequired, setTokenRequired] = useState(true);
   const [unlocking, setUnlocking] = useState(false);
 
   function loadDiseases(): Promise<Disease[]> {
@@ -63,19 +67,22 @@ export default function App() {
     setAuthRejectedHandler(() => setIsAdmin(false));
     // Admin state resolves with the same `loaded` flip so the admin controls
     // don't pop in after the skeletons clear.
-    const auth = api.getAuth().catch(() => ({ admin: false }));
-    Promise.all([loadDiseases(), loadCollections(), auth]).then(([ds, cs, { admin }]) => {
-      setIsAdmin(admin);
-      // Land in whichever workspace actually has something in it.
-      if (ds.length > 0) {
-        setMode("discover");
-        setActiveDiseaseId(ds[0].id);
-      } else if (cs.length > 0) {
-        setMode("papers");
-        setActiveCollectionId(cs[0].id);
+    const auth = api.getAuth().catch(() => ({ admin: false, token_required: true }));
+    Promise.all([loadDiseases(), loadCollections(), auth]).then(
+      ([ds, cs, { admin, token_required }]) => {
+        setIsAdmin(admin);
+        setTokenRequired(token_required);
+        // Land in whichever workspace actually has something in it.
+        if (ds.length > 0) {
+          setMode("discover");
+          setActiveDiseaseId(ds[0].id);
+        } else if (cs.length > 0) {
+          setMode("papers");
+          setActiveCollectionId(cs[0].id);
+        }
+        setLoaded(true);
       }
-      setLoaded(true);
-    });
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -141,7 +148,7 @@ export default function App() {
   async function unlock(token: string) {
     setUnlocking(false);
     setAdminToken(token.trim());
-    const { admin } = await api.getAuth().catch(() => ({ admin: false }));
+    const { admin } = await api.getAuth().catch(() => ({ admin: false, token_required: true }));
     setIsAdmin(admin);
     if (!admin) {
       setAdminToken(null);
@@ -210,7 +217,13 @@ export default function App() {
     ) : viewMode === "timeline" ? (
       <Timeline source={source} reloadToken={reloadToken} emptyState={emptyState} />
     ) : (
-      <PapersTable source={source} reloadToken={reloadToken} emptyState={emptyState} />
+      <PapersTable
+        source={source}
+        reloadToken={reloadToken}
+        emptyState={emptyState}
+        isAdmin={isAdmin}
+        tokenRequired={tokenRequired}
+      />
     ));
 
   return (
@@ -313,10 +326,12 @@ export default function App() {
           activeCollectionId={activeCollectionId}
           settingsActive={showSettings}
           loaded={loaded}
+          tokenRequired={tokenRequired}
           onSelectDisease={selectDisease}
           onSelectCollection={selectCollection}
           onCreateCollection={() => setNamingCollection(true)}
           onAddTopic={() => setShowSettings(true)}
+          onShareError={setStatus}
         />
       </div>
 

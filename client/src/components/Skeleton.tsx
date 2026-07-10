@@ -71,8 +71,10 @@ export function FilterSkeleton() {
 // Shared column widths for the papers table. The table uses `table-layout:
 // fixed`, so these widths (not the cell content) determine the columns — which
 // is what keeps the skeleton and the loaded table pixel-identical instead of
-// reflowing when real titles arrive.
-export function PapersColgroup() {
+// reflowing when real titles arrive. `share` adds the admin-only headerless
+// share-link column, and must match between skeleton and table for the same
+// reason.
+export function PapersColgroup({ share = false }: { share?: boolean }) {
   return (
     <colgroup>
       <col style={{ width: "36%" }} />
@@ -81,16 +83,17 @@ export function PapersColgroup() {
       <col style={{ width: "8%" }} />
       <col style={{ width: "11%" }} />
       <col style={{ width: "15%" }} />
+      {share && <col style={{ width: 40 }} />}
     </colgroup>
   );
 }
 
 // Mirrors the collection papers table: real headers, shimmering rows.
-export function PapersTableSkeleton({ rows = 5 }: { rows?: number }) {
+export function PapersTableSkeleton({ rows = 5, share = false }: { rows?: number; share?: boolean }) {
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
       <table className="papers-table">
-        <PapersColgroup />
+        <PapersColgroup share={share} />
         <thead>
           <tr>
             <th>Title</th>
@@ -99,6 +102,7 @@ export function PapersTableSkeleton({ rows = 5 }: { rows?: number }) {
             <th className="num">Year</th>
             <th className="num">Citations</th>
             <th>Links</th>
+            {share && <th className="share-col" />}
           </tr>
         </thead>
         <tbody>
@@ -122,6 +126,7 @@ export function PapersTableSkeleton({ rows = 5 }: { rows?: number }) {
               <td>
                 <SkeletonBar w={70} h={12} />
               </td>
+              {share && <td className="share-cell" />}
             </tr>
           ))}
         </tbody>

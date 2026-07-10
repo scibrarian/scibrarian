@@ -1,5 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { api } from "../api";
 import type { Collection, Disease } from "../types";
+import { ShareLinkButton } from "./ShareLinkButton";
 import { SkeletonBar } from "./Skeleton";
 
 export type Mode = "discover" | "papers";
@@ -19,10 +21,12 @@ export function WorkspaceNav({
   activeCollectionId,
   settingsActive,
   loaded,
+  tokenRequired,
   onSelectDisease,
   onSelectCollection,
   onCreateCollection,
   onAddTopic,
+  onShareError,
 }: {
   mode: Mode;
   isAdmin: boolean;
@@ -33,10 +37,12 @@ export function WorkspaceNav({
   activeCollectionId: number | null;
   settingsActive: boolean;
   loaded: boolean;
+  tokenRequired: boolean;
   onSelectDisease: (id: number) => void;
   onSelectCollection: (id: number) => void;
   onCreateCollection: () => void;
   onAddTopic: () => void;
+  onShareError: (message: string) => void;
 }) {
   const inDiscover = mode === "discover";
   const activeDisease = diseases.find((d) => d.id === activeDiseaseId);
@@ -119,6 +125,23 @@ export function WorkspaceNav({
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         )}
+        {/* Owner-only: copy an expiring link that downloads the active
+            collection as a zip. Beside the picker so it's unambiguous what
+            gets shared. */}
+        {loaded &&
+          !inDiscover &&
+          !settingsActive &&
+          isAdmin &&
+          tokenRequired &&
+          activeCollection &&
+          activeCollection.fileCount > 0 && (
+            <ShareLinkButton
+              mint={() => api.mintCollectionShareLink(activeCollection.id)}
+              title={`Copy a link that downloads “${activeCollection.name}” as a zip (valid 24 hours)`}
+              ariaLabel="Copy collection share link"
+              onError={onShareError}
+            />
+          )}
       </div>
     </nav>
   );

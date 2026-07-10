@@ -75,6 +75,13 @@ export interface PapersResponse {
   journals: string[]; // distinct journal display names, for the filter chips
 }
 
+// A minted expiring download link for one stored PDF. `path` is relative so
+// the client can prepend whichever origin it reached the server on.
+export interface ShareLinkResponse {
+  path: string; // /api/collections/files/<id>/content?exp=...&sig=...
+  expiresAt: string; // ISO timestamp
+}
+
 export interface PollResult {
   diseaseId: number;
   diseaseName: string;

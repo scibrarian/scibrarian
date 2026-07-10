@@ -64,11 +64,17 @@ auth. To let other people browse your instance read-only:
    ```
 
 2. Restart with `npm start`. Others browse to `http://<your-ip>:3001` and can
-   view everything — papers, timelines, graphs, stored PDFs — but every
-   mutating control (Settings, refresh, uploads, add/delete) is hidden and the
-   API rejects mutations without the token. The exact address to send people
-   (with a copy button) is shown in **Settings → Sharing** once you unlock
-   admin mode.
+   view everything — papers, timelines, graphs — but every mutating control
+   (Settings, refresh, uploads, add/delete) is hidden and the API rejects
+   mutations without the token. Stored PDFs are the exception: uploaded full
+   texts may be copyrighted, so they're owner-only. To hand a viewer one
+   file, click the **🔗** next to the paper — it copies a signed link that
+   works for 24 hours. The 🔗 beside the collection picker does the same for
+   a whole collection, downloaded as a zip. (Links work for whoever has
+   them, so send them privately; rotating `ADMIN_TOKEN` cancels all
+   outstanding links.) The
+   exact address to send people (with a copy button) is shown in
+   **Settings → Sharing** once you unlock admin mode.
 3. To administer, click the **🔒 padlock** in the header and paste the token.
    The browser remembers it (localStorage) until you click **🔓** to leave
    admin mode. The server re-checks the token on every request.

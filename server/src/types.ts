@@ -14,6 +14,7 @@ export type {
   Paper,
   PapersResponse,
   PollResult,
+  ShareLinkResponse,
 } from "../../shared/types.js";
 
 // Server-only: the client is served AppSettings, which never carries the key.
