@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
-import { formatAuthors } from "../lib/format";
+import { errorMessage, formatAuthors } from "../lib/format";
 import { usePapers } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { PapersToolbar } from "./PapersToolbar";
+import { ShareLinkButton } from "./ShareLinkButton";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
@@ -20,10 +21,14 @@ export function PapersTable({
   source,
   reloadToken,
   emptyState,
+  isAdmin,
+  tokenRequired,
 }: {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
+  isAdmin: boolean;
+  tokenRequired: boolean;
 }) {
   const {
     key,
@@ -42,6 +47,7 @@ export function PapersTable({
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [actionError, setActionError] = useState<string | null>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   // A new source or query starts from the top.
@@ -102,9 +108,37 @@ export function PapersTable({
 
   const arrow = (k: SortKey) => (k === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "");
 
-  function openPaper(p: Paper) {
-    const url = p.file_id != null ? api.fileContentUrl(p.file_id) : p.url;
-    window.open(url, "_blank", "noopener");
+  // The share-link column only exists for the owner of a token-mode instance;
+  // viewers and tokenless single-user setups get the plain table.
+  const showShareCol = isAdmin && tokenRequired;
+
+  // Whether a title click will open the stored PDF (vs falling back to PubMed).
+  // Viewers never open stored PDFs in token mode — they're owner-only.
+  function opensStoredPdf(p: Paper): boolean {
+    if (p.file_id == null) return false;
+    if (!tokenRequired) return true; // tokenless single-user: open as always
+    return isAdmin && p.file_exists;
+  }
+
+  async function openPaper(p: Paper) {
+    if (!opensStoredPdf(p)) return void window.open(p.url, "_blank", "noopener");
+    if (!tokenRequired) {
+      return void window.open(api.fileContentUrl(p.file_id!), "_blank", "noopener");
+    }
+    // Token mode: window.open can't carry the Authorization header, so mint a
+    // short-lived signed URL first. The tab must be opened synchronously in
+    // the click (popup blockers) and without "noopener" (we need the handle
+    // to navigate it) — it only ever goes to a same-origin PDF.
+    const tab = window.open("about:blank", "_blank");
+    try {
+      const { path } = await api.mintShareLink(p.file_id!, 300);
+      const url = new URL(path, window.location.origin).toString();
+      if (tab) tab.location.href = url;
+      else window.open(url, "_blank", "noopener");
+    } catch (err) {
+      tab?.close();
+      setActionError(errorMessage(err));
+    }
   }
 
   return (
@@ -118,10 +152,10 @@ export function PapersTable({
         loading={loading}
       />
 
-      {error && <div className="banner error">{error}</div>}
+      {(error ?? actionError) && <div className="banner error">{error ?? actionError}</div>}
 
       {loading && visible.length === 0 ? (
-        <PapersTableSkeleton />
+        <PapersTableSkeleton share={showShareCol} />
       ) : visible.length === 0 ? (
         <div className="empty">
           {allDeselected
@@ -134,7 +168,7 @@ export function PapersTable({
         <>
           <div className="papers-table-wrap">
             <table className="papers-table">
-              <PapersColgroup />
+              <PapersColgroup share={showShareCol} />
               <thead>
                 <tr>
                   <th className="sortable" onClick={() => toggleSort("title")}>
@@ -153,6 +187,7 @@ export function PapersTable({
                     Citations{arrow("citations")}
                   </th>
                   <th>Links</th>
+                  {showShareCol && <th className="share-col" aria-label="Share" />}
                 </tr>
               </thead>
               <tbody>
@@ -162,7 +197,7 @@ export function PapersTable({
                       <button
                         className="paper-open"
                         onClick={() => openPaper(p)}
-                        title={p.file_name ? `Open ${p.file_name}` : "Open on PubMed"}
+                        title={opensStoredPdf(p) ? `Open ${p.file_name}` : "Open on PubMed"}
                       >
                         {p.title || "(untitled)"}
                       </button>
@@ -186,6 +221,18 @@ export function PapersTable({
                         </a>
                       )}
                     </td>
+                    {showShareCol && (
+                      <td className="share-cell">
+                        {p.file_id != null && p.file_exists && (
+                          <ShareLinkButton
+                            mint={() => api.mintShareLink(p.file_id!)}
+                            title="Copy a link that lets anyone download this PDF for 24 hours"
+                            ariaLabel="Copy share link"
+                            onError={setActionError}
+                          />
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

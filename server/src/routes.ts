@@ -51,6 +51,14 @@ import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
 import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
+import { ZipArchive } from "archiver";
+import {
+  signCollectionShare,
+  signFileShare,
+  signingEnabled,
+  verifyCollectionShare,
+  verifyFileShare,
+} from "./signing.js";
 import type { GraphEdge, GraphNode, GraphResponse, PapersResponse, Settings } from "./types.js";
 import { errMessage, round1 } from "./util.js";
 
@@ -91,9 +99,10 @@ api.use((req, res, next) => {
   res.status(401).json({ error: "Admin access required." });
 });
 
-// Lets the client decide whether to show mutating UI.
+// Lets the client decide whether to show mutating UI, and whether stored PDFs
+// need minted links (token mode) or open directly (tokenless single-user).
 api.get("/auth", (req, res) => {
-  res.json({ admin: isAdminRequest(req) });
+  res.json({ admin: isAdminRequest(req), token_required: ADMIN_TOKEN.length > 0 });
 });
 
 // ---------- diseases ----------
@@ -323,7 +332,12 @@ api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
   res.json({
-    files: listCollectionFiles(id).map((f) => ({ ...f, exists: blobExists(f.content_hash) })),
+    // content_hash is the blob-store key — server-internal, so viewers never
+    // see it (it also feeds the share-link MAC).
+    files: listCollectionFiles(id).map(({ content_hash, ...f }) => ({
+      ...f,
+      exists: blobExists(content_hash),
+    })),
   });
 });
 
@@ -380,10 +394,23 @@ api.post("/collections/:id/import", (req, res) => {
   res.status(202).json({ jobId: status.jobId, total: status.total });
 });
 
-// Stream a stored PDF for viewing in a browser tab.
+// Stream a stored PDF for viewing in a browser tab. Unlike the rest of the
+// GETs, the bytes are owner-only: uploaded PDFs are usually copyrighted, so
+// viewers need a signed link minted by the admin (below). The general GET
+// pass-through in the gate middleware doesn't apply here.
 api.get("/collections/files/:fileId/content", (req, res) => {
   const file = getCollectionFile(Number(req.params.fileId));
   if (!file) return res.status(404).json({ error: "File not found." });
+  if (!isAdminRequest(req)) {
+    if (req.query.exp == null && req.query.sig == null) {
+      return res.status(401).json({ error: "Stored PDFs are owner-only. Ask the owner for a share link." });
+    }
+    const verdict = verifyFileShare(file.id, file.content_hash, req.query.exp, req.query.sig);
+    if (verdict === "expired") {
+      return res.status(403).json({ error: "This share link has expired." });
+    }
+    if (verdict !== "ok") return res.status(403).json({ error: "Invalid share link." });
+  }
   if (!blobExists(file.content_hash)) {
     return res.status(410).json({ error: "That file's PDF is no longer stored." });
   }
@@ -392,6 +419,118 @@ api.get("/collections/files/:fileId/content", (req, res) => {
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
   res.sendFile(blobPath(file.content_hash));
+});
+
+// Mint an expiring share link for one stored PDF (admin-only via the mutation
+// gate; POST so it can never be triggered by a bare URL). The default TTL is
+// the product's "share this paper" window; the client's own PDF-open flow
+// requests a short one instead.
+const SHARE_TTL_DEFAULT = 24 * 3600;
+const SHARE_TTL_MIN = 60;
+const SHARE_TTL_MAX = 7 * 24 * 3600;
+
+// Validated TTL from a mint request body; null when out of bounds.
+function shareTtl(body: { ttlSeconds?: unknown } | undefined): number | null {
+  const ttl = body?.ttlSeconds ?? SHARE_TTL_DEFAULT;
+  if (!Number.isInteger(ttl)) return null;
+  const n = ttl as number;
+  return n >= SHARE_TTL_MIN && n <= SHARE_TTL_MAX ? n : null;
+}
+
+const TTL_ERROR = `ttlSeconds must be an integer between ${SHARE_TTL_MIN} and ${SHARE_TTL_MAX}.`;
+
+api.post("/collections/files/:fileId/share", (req, res) => {
+  if (!signingEnabled) {
+    return res.status(400).json({ error: "Share links require ADMIN_TOKEN to be configured." });
+  }
+  const file = getCollectionFile(Number(req.params.fileId));
+  if (!file) return res.status(404).json({ error: "File not found." });
+  if (!blobExists(file.content_hash)) {
+    return res.status(410).json({ error: "That file's PDF is no longer stored." });
+  }
+  const ttl = shareTtl(req.body);
+  if (ttl == null) return res.status(400).json({ error: TTL_ERROR });
+  const { exp, sig } = signFileShare(file.id, file.content_hash, ttl);
+  res.json({
+    path: `/api/collections/files/${file.id}/content?exp=${exp}&sig=${sig}`,
+    expiresAt: new Date(exp * 1000).toISOString(),
+  });
+});
+
+// Mint an expiring link to the whole collection as a zip download. The grant
+// covers the collection's contents at download time, not at mint time.
+api.post("/collections/:id/share", (req, res) => {
+  if (!signingEnabled) {
+    return res.status(400).json({ error: "Share links require ADMIN_TOKEN to be configured." });
+  }
+  const id = Number(req.params.id);
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  if (!listCollectionFiles(id).some((f) => blobExists(f.content_hash))) {
+    return res.status(410).json({ error: "This collection has no stored PDFs." });
+  }
+  const ttl = shareTtl(req.body);
+  if (ttl == null) return res.status(400).json({ error: TTL_ERROR });
+  const { exp, sig } = signCollectionShare(id, ttl);
+  res.json({
+    path: `/api/collections/${id}/archive?exp=${exp}&sig=${sig}`,
+    expiresAt: new Date(exp * 1000).toISOString(),
+  });
+});
+
+// Two uploads can share a display name; suffix "(2)", "(3)", … keeps every
+// zip entry distinct.
+function uniqueZipName(name: string, used: Set<string>): string {
+  const dot = name.lastIndexOf(".");
+  const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  let candidate = name;
+  for (let n = 2; used.has(candidate); n++) candidate = `${base} (${n})${ext}`;
+  used.add(candidate);
+  return candidate;
+}
+
+// Stream every stored PDF of a collection as one zip. Same access rule as the
+// single-file content route: owner, or a valid collection share link.
+api.get("/collections/:id/archive", (req, res) => {
+  const id = Number(req.params.id);
+  const collection = getCollection(id);
+  if (!collection) return res.status(404).json({ error: "Collection not found." });
+  if (!isAdminRequest(req)) {
+    if (req.query.exp == null && req.query.sig == null) {
+      return res.status(401).json({ error: "Stored PDFs are owner-only. Ask the owner for a share link." });
+    }
+    const verdict = verifyCollectionShare(id, req.query.exp, req.query.sig);
+    if (verdict === "expired") {
+      return res.status(403).json({ error: "This share link has expired." });
+    }
+    if (verdict !== "ok") return res.status(403).json({ error: "Invalid share link." });
+  }
+  const files = listCollectionFiles(id).filter((f) => blobExists(f.content_hash));
+  if (files.length === 0) {
+    return res.status(410).json({ error: "This collection has no stored PDFs." });
+  }
+  // Same ASCII/quote scrub as single-file downloads; the zip carries the
+  // collection's name.
+  const zipName =
+    (collection.name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_").trim() || "collection") +
+    ".zip";
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
+  // PDFs are already compressed — store entries as-is instead of deflating.
+  const zip = new ZipArchive({ store: true });
+  zip.on("error", (err: Error) => {
+    // Headers are already on the wire; all we can do is drop the connection
+    // so the client sees a failed download rather than a truncated "success".
+    console.error(`[archive] collection ${id}: ${errMessage(err)}`);
+    res.destroy(err);
+  });
+  zip.pipe(res);
+  const used = new Set<string>();
+  for (const f of files) {
+    zip.append(fs.createReadStream(blobPath(f.content_hash)), {
+      name: uniqueZipName(f.file_name, used),
+    });
+  }
+  void zip.finalize();
 });
 
 api.get("/collections/:id/import/status", (req, res) => {

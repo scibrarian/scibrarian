@@ -14,6 +14,7 @@ import type {
   Paper,
   PapersResponse,
   PollResult,
+  ShareLinkResponse,
 } from "../../shared/types";
 
 export type {
@@ -26,6 +27,7 @@ export type {
   Paper,
   PapersResponse,
   PollResult,
+  ShareLinkResponse,
 };
 
 export interface Disease extends DiseaseRow {
@@ -48,9 +50,12 @@ export interface RefreshResponse {
   polledAt: string;
 }
 
-// What /api/auth reports: whether this browser's requests count as admin.
+// What /api/auth reports: whether this browser's requests count as admin, and
+// whether an ADMIN_TOKEN is configured at all (false = tokenless single-user
+// mode, where stored PDFs stay openly fetchable).
 export interface AuthStatus {
   admin: boolean;
+  token_required: boolean;
 }
 
 // What /api/settings exposes: never the API key itself, just whether one is set.
@@ -68,7 +73,8 @@ export interface Collection extends CollectionRow {
   matchedCount: number;
 }
 
-export interface CollectionFile extends CollectionFileRow {
+// The API strips content_hash (blob-store key) from what viewers can see.
+export interface CollectionFile extends Omit<CollectionFileRow, "content_hash"> {
   exists: boolean; // whether the stored PDF is still present
 }
 
