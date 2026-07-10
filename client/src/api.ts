@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  AuthStatus,
   Collection,
   CollectionFile,
   CollectionFilesResponse,
@@ -16,12 +17,40 @@ import type {
   UploadResponse,
 } from "./types";
 
+// The admin token unlocks mutating endpoints; GETs work without one. Kept in
+// localStorage so an unlocked admin stays unlocked across reloads — the server
+// re-verifies it on every request, so nothing is trusted from storage alone.
+const TOKEN_KEY = "sciluminate_admin_token";
+
+export function getAdminToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setAdminToken(token: string | null): void {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+// App registers a handler so a 401 mid-session (token rotated/revoked on the
+// server) demotes the UI back to viewer mode.
+let onAuthRejected: () => void = () => {};
+export function setAuthRejectedHandler(fn: () => void): void {
+  onAuthRejected = fn;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    // FormData bodies must set their own multipart boundary header.
-    headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
-    ...init,
-  });
+  const headers: Record<string, string> = {};
+  // FormData bodies must set their own multipart boundary header.
+  if (!(init?.body instanceof FormData)) headers["Content-Type"] = "application/json";
+  const token = getAdminToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    // The stored token is no longer valid; drop it and lock the UI. The error
+    // thrown below still surfaces "Admin access required." to the caller.
+    setAdminToken(null);
+    onAuthRejected();
+  }
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
@@ -42,6 +71,8 @@ function sourceQuery(source: PaperSource): string {
 }
 
 export const api = {
+  getAuth: () => req<AuthStatus>("/api/auth"),
+
   getDiseases: () => req<Disease[]>("/api/diseases"),
   createDisease: (name: string, term: string) =>
     req<Disease>("/api/diseases", { method: "POST", body: JSON.stringify({ name, term }) }),

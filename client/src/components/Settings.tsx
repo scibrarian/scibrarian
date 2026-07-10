@@ -49,6 +49,7 @@ export function Settings({
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   // The journal warning depends on an article count fetched *before* the
   // dialog opens, so the pending removal carries its message along.
   const [journalToRemove, setJournalToRemove] = useState<{ journal: Journal; message: string } | null>(null);
@@ -195,6 +196,25 @@ export function Settings({
     } catch (err) {
       setError(errorMessage(err));
     }
+  }
+
+  async function copyUrl(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // navigator.clipboard needs a secure context (HTTPS or localhost); fall
+      // back to the legacy path when the app is served over plain LAN HTTP.
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setCopiedUrl(url);
+    setTimeout(() => setCopiedUrl((cur) => (cur === url ? null : cur)), 2000);
   }
 
   async function saveSettings(e: FormEvent) {
@@ -393,6 +413,37 @@ export function Settings({
             <button type="submit">Save settings</button>
           </form>
         )}
+      </section>
+
+      <section className="panel">
+        <h2>Sharing</h2>
+        {settings &&
+          (settings.share_urls.length === 0 ? (
+            <p className="hint">
+              Only this machine can connect right now. To let others view your server, set{" "}
+              <code>HOST</code> and <code>ADMIN_TOKEN</code> in <code>server/.env</code> and
+              restart — see the README&rsquo;s &ldquo;Sharing your server&rdquo; section.
+            </p>
+          ) : (
+            <>
+              <p className="hint">
+                Send one of these addresses to anyone on your network. They can view
+                everything; changing anything still requires the admin token.
+              </p>
+              <ul className="list">
+                {settings.share_urls.map((url) => (
+                  <li key={url}>
+                    <span>
+                      <code>{url}</code>
+                    </span>
+                    <button className="link-btn" onClick={() => copyUrl(url)}>
+                      {copiedUrl === url ? "Copied ✓" : "Copy"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ))}
       </section>
 
       <ConfirmDialog

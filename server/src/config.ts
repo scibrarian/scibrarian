@@ -11,6 +11,18 @@ export const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 export const PORT = Number(process.env.PORT) || 3001;
 
+// Host/interface to bind. Default loopback = this machine only. Anything else
+// (0.0.0.0, a LAN/Tailscale IP) requires ADMIN_TOKEN — enforced in index.ts.
+export const HOST = process.env.HOST || "127.0.0.1";
+
+export const HOST_IS_LOOPBACK =
+  HOST === "localhost" || HOST === "::1" || HOST.startsWith("127.");
+
+// When set, all non-GET API requests require `Authorization: Bearer <token>`.
+// When empty, the app behaves as before: single user, no auth (loopback only).
+// Trimmed so a pasted trailing newline in .env doesn't break every unlock.
+export const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();
+
 export const DB_PATH = path.isAbsolute(process.env.DB_PATH || "")
   ? (process.env.DB_PATH as string)
   : path.join(PROJECT_ROOT, process.env.DB_PATH || "data/app.db");

@@ -11,6 +11,7 @@ export type Mode = "discover" | "papers";
 // dismissal, arrow-key navigation, and focus return.
 export function WorkspaceNav({
   mode,
+  isAdmin,
   onModeChange,
   diseases,
   collections,
@@ -24,6 +25,7 @@ export function WorkspaceNav({
   onAddTopic,
 }: {
   mode: Mode;
+  isAdmin: boolean;
   onModeChange: (m: Mode) => void;
   diseases: Disease[];
   collections: Collection[];
@@ -87,9 +89,11 @@ export function WorkspaceNav({
                       </DropdownMenu.Item>
                     ))}
                     {diseases.length === 0 && <div className="ws-empty">No topics yet.</div>}
-                    <DropdownMenu.Item className="ws-add" onSelect={onAddTopic}>
-                      ＋ Add topic…
-                    </DropdownMenu.Item>
+                    {isAdmin && (
+                      <DropdownMenu.Item className="ws-add" onSelect={onAddTopic}>
+                        ＋ Add topic…
+                      </DropdownMenu.Item>
+                    )}
                   </>
                 ) : (
                   <>
@@ -104,9 +108,11 @@ export function WorkspaceNav({
                       </DropdownMenu.Item>
                     ))}
                     {collections.length === 0 && <div className="ws-empty">No collections yet.</div>}
-                    <DropdownMenu.Item className="ws-add" onSelect={onCreateCollection}>
-                      ＋ New collection
-                    </DropdownMenu.Item>
+                    {isAdmin && (
+                      <DropdownMenu.Item className="ws-add" onSelect={onCreateCollection}>
+                        ＋ New collection
+                      </DropdownMenu.Item>
+                    )}
                   </>
                 )}
               </DropdownMenu.Content>

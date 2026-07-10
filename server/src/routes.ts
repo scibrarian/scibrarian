@@ -1,4 +1,6 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
 import {
@@ -43,7 +45,7 @@ import {
   isPdfFile,
   storeBlobFromTemp,
 } from "./blobstore.js";
-import { UPLOAD_TMP_DIR } from "./config.js";
+import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./config.js";
 import { ensureCitations } from "./icite.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
@@ -61,6 +63,38 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<unknown>) {
 }
 
 export const api = Router();
+
+// ---------- admin gate ----------
+
+// Constant-time token check. Hashing both sides first equalizes buffer lengths
+// (timingSafeEqual throws on mismatched lengths, which would itself leak).
+function tokenMatches(provided: string): boolean {
+  const a = crypto.createHash("sha256").update(provided).digest();
+  const b = crypto.createHash("sha256").update(ADMIN_TOKEN).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+// No ADMIN_TOKEN configured = single-user mode: everyone is admin (index.ts
+// refuses to bind non-loopback in that case).
+function isAdminRequest(req: Request): boolean {
+  if (!ADMIN_TOKEN) return true;
+  const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
+  return m != null && tokenMatches(m[1].trim());
+}
+
+// Reads are open to everyone; every mutation requires the admin token. This is
+// registered before all routes, so unauthorized uploads are rejected before
+// multer ever writes a temp file.
+api.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  if (isAdminRequest(req)) return next();
+  res.status(401).json({ error: "Admin access required." });
+});
+
+// Lets the client decide whether to show mutating UI.
+api.get("/auth", (req, res) => {
+  res.json({ admin: isAdminRequest(req) });
+});
 
 // ---------- diseases ----------
 
@@ -420,6 +454,21 @@ api.get("/status", (_req, res) => {
 
 // ---------- settings ----------
 
+// Where other machines can reach this server, for the Settings sharing panel.
+// A loopback bind isn't shareable; a wildcard bind maps to every external IPv4
+// address this machine has (LAN, Tailscale, …).
+function shareUrls(): string[] {
+  if (HOST_IS_LOOPBACK) return [];
+  if (HOST !== "0.0.0.0" && HOST !== "::") return [`http://${HOST}:${PORT}`];
+  const urls: string[] = [];
+  for (const infos of Object.values(os.networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info.family === "IPv4" && !info.internal) urls.push(`http://${info.address}:${PORT}`);
+    }
+  }
+  return urls;
+}
+
 // Never echo the raw API key back; just whether one is set.
 function settingsResponse() {
   const s = getSettings();
@@ -427,6 +476,7 @@ function settingsResponse() {
     ncbi_email: s.ncbi_email,
     poll_cron: s.poll_cron,
     has_api_key: Boolean(s.ncbi_api_key),
+    share_urls: shareUrls(),
   };
 }
 
