@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { DB_PATH, ENV_DEFAULTS } from "./config.js";
+import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import type {
   Article,
   Collection,
@@ -159,11 +159,12 @@ export function getSettings(): Settings {
     ncbi_api_key: getSetting("ncbi_api_key"),
     ncbi_email: getSetting("ncbi_email"),
     poll_cron: getSetting("poll_cron"),
+    poll_enabled: getSetting("poll_enabled"),
   };
 }
 
-// Seed editable settings from env defaults only if not already present.
-for (const [key, value] of Object.entries(ENV_DEFAULTS)) {
+// Seed editable settings with their defaults only if not already present.
+for (const [key, value] of Object.entries(SETTING_DEFAULTS)) {
   if (getSettingStmt.get(key) === undefined) {
     setSettingStmt.run(key, value);
   }

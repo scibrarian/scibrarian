@@ -475,6 +475,7 @@ function settingsResponse() {
   return {
     ncbi_email: s.ncbi_email,
     poll_cron: s.poll_cron,
+    poll_enabled: s.poll_enabled === "1",
     has_api_key: Boolean(s.ncbi_api_key),
     share_urls: shareUrls(),
   };
@@ -489,6 +490,9 @@ api.put("/settings", (req, res) => {
   const editable: (keyof Settings)[] = ["ncbi_email", "poll_cron"];
   for (const key of editable) {
     if (typeof body[key] === "string") setSetting(key, body[key].trim());
+  }
+  if (typeof body.poll_enabled === "boolean") {
+    setSetting("poll_enabled", body.poll_enabled ? "1" : "0");
   }
   // Only overwrite the API key when a non-empty value is explicitly provided.
   if (typeof body.ncbi_api_key === "string" && body.ncbi_api_key.trim()) {

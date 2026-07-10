@@ -39,12 +39,14 @@ export const UPLOAD_TMP_DIR = path.join(path.dirname(BLOBS_DIR), "tmp-uploads");
 // the last resort when the saved cron expression is invalid.
 export const DEFAULT_POLL_CRON = "0 6 * * *";
 
-// Used to seed editable settings on first run; afterwards the values in the
-// settings table win (so they can be changed in the UI).
-export const ENV_DEFAULTS = {
-  ncbi_api_key: process.env.NCBI_API_KEY || "",
-  ncbi_email: process.env.NCBI_EMAIL || "changeme@website.com",
-  poll_cron: process.env.POLL_CRON || DEFAULT_POLL_CRON,
+// First-run values for the settings table. These settings are managed in the
+// Settings UI only — the settings table is the single source of truth, and
+// .env plays no part (deploy-level config like PORT/HOST stays above).
+export const SETTING_DEFAULTS = {
+  ncbi_api_key: "",
+  ncbi_email: "",
+  poll_cron: DEFAULT_POLL_CRON,
+  poll_enabled: "0",
 };
 
 // Path to the built client (used in production / `npm start`)

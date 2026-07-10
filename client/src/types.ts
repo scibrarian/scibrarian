@@ -57,6 +57,7 @@ export interface AuthStatus {
 export interface AppSettings {
   ncbi_email: string;
   poll_cron: string;
+  poll_enabled: boolean;
   has_api_key: boolean;
   // URLs where other machines can reach this server; empty when bound to loopback.
   share_urls: string[];
