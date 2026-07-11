@@ -90,6 +90,25 @@ export async function pollAll(): Promise<PollResult[]> {
   return results;
 }
 
+// Serialize every poll — scheduled and manual — through one flag so runs can't
+// overlap and multiply NCBI traffic (PubMed rate-limits globally by API key/IP).
+// node-cron fires runScheduled without awaiting the prior run, and /refresh can
+// fire at any time; either way a poll started while one is in flight is refused,
+// not stacked. The check-and-set is race-free on Node's single thread since no
+// await sits between them.
+let isPolling = false;
+
+// Run `fn` under the poll lock. Returns null if a poll is already in progress.
+export async function withPollLock<T>(fn: () => Promise<T>): Promise<T | null> {
+  if (isPolling) return null;
+  isPolling = true;
+  try {
+    return await fn();
+  } finally {
+    isPolling = false;
+  }
+}
+
 // ---------- scheduler ----------
 
 let task: ScheduledTask | null = null;
@@ -119,8 +138,14 @@ export function rescheduleFromSettings(): void {
 }
 
 async function runScheduled(): Promise<void> {
-  console.log("[scheduler] running scheduled poll...");
-  const results = await pollAll();
+  const results = await withPollLock(() => {
+    console.log("[scheduler] running scheduled poll...");
+    return pollAll();
+  });
+  if (results === null) {
+    console.log("[scheduler] skipped: a poll is already running");
+    return;
+  }
   const added = results.reduce((s, r) => s + r.added, 0);
   console.log(`[scheduler] poll complete: ${added} new paper(s) across ${results.length} disease(s)`);
   for (const r of results) {

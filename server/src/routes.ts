@@ -46,11 +46,10 @@ import {
   storeBlobFromTemp,
 } from "./blobstore.js";
 import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./config.js";
-import { ensureCitations } from "./icite.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
-import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
+import { pollAll, pollDisease, rescheduleFromSettings, warmCitations, withPollLock } from "./poller.js";
 import { ZipArchive } from "archiver";
 import {
   signCollectionShare,
@@ -228,7 +227,14 @@ api.get(
     // pre-warm them, so this is usually a no-op; re-query only when it wasn't.
     const stale = missingOrStaleCitations(rows.map((r) => r.pmid));
     if (stale.length > 0) {
-      await ensureCitations(stale);
+      // Best-effort: a failing iCite must not take down a view whose paper rows
+      // are entirely local. On failure this no-ops and we serve stale counts.
+      // TODO(perf): this awaits the iCite round-trip before responding and then
+      // re-queries the full list. Poll/import pre-warm counts so the slow path
+      // is rare, but consider making the backfill fire-and-forget — serve the
+      // local rows now, warm the cache for next load — to drop both the latency
+      // and the re-query. Freshness-vs-latency tradeoff; synchronous for now.
+      await warmCitations(stale, "papers");
       rows = listPapers(source, q);
     }
 
@@ -258,7 +264,11 @@ api.get(
     const inSet = new Set(pmids);
 
     // Lazily fetch + cache any missing/stale citation rows from iCite.
-    await ensureCitations(missingOrStaleCitations(pmids));
+    // Best-effort: an iCite outage must not 500 the graph, which renders fine
+    // from cached counts (or zeros for never-fetched papers).
+    // TODO(perf): like /papers, this awaits the iCite refresh before responding;
+    // a fire-and-forget backfill would serve cached counts immediately. Deferred.
+    await warmCitations(missingOrStaleCitations(pmids), "graph");
 
     const cites = getCitations(pmids);
     const nodes: GraphNode[] = papers.map((p) => ({
@@ -543,7 +553,9 @@ api.get("/collections/:id/archive", (req, res) => {
       name: uniqueZipName(f.file_name, used),
     });
   }
-  void zip.finalize();
+  // The "error" handler above already logs and destroys the response; the
+  // catch just keeps finalize()'s rejection from crashing the process.
+  void zip.finalize().catch(() => {});
 });
 
 api.get("/collections/:id/import/status", (req, res) => {
@@ -587,7 +599,14 @@ api.post(
   "/refresh",
   asyncHandler(async (req, res) => {
     const diseaseId = req.query.disease ? Number(req.query.disease) : undefined;
-    const results = diseaseId ? [await pollDisease(diseaseId)] : await pollAll();
+    // Share the scheduler's lock so a manual refresh can't run concurrently with
+    // a scheduled poll (or another refresh) and double up NCBI traffic.
+    const results = await withPollLock(() =>
+      diseaseId ? pollDisease(diseaseId).then((r) => [r]) : pollAll()
+    );
+    if (results === null) {
+      return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
+    }
     res.json({ results, polledAt: new Date().toISOString() });
   })
 );

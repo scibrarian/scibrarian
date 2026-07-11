@@ -16,6 +16,11 @@ import type { CollectionFile, CollectionFilesResponse, ImportStatus } from "../t
 // gigantic multipart body (the server also caps files-per-request).
 const UPLOAD_BATCH = 20;
 
+// Consecutive failed status polls before we give up on a running import. A
+// single blip must not freeze the progress UI, but a truly-dead server
+// shouldn't be polled forever either. At the 1s tick this is ~5s of retries.
+const MAX_POLL_FAILURES = 5;
+
 // webkitdirectory (folder selection) isn't in React's input typings.
 const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInputElement>;
 
@@ -74,16 +79,33 @@ export function CollectionView({
 
   const startPolling = useCallback(() => {
     stopPolling();
+    // Scoped to this polling session (reset each startPolling). inFlight stops
+    // slow responses from stacking requests — without it, several polls can be
+    // outstanding at once and each fires onChanged() when the job completes.
+    let inFlight = false;
+    let failures = 0;
     pollRef.current = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const s = await api.getImportStatus(collectionId);
+        failures = 0;
         setImportStatus(s);
         if (s.state === "done" || s.state === "error" || s.state === "idle") {
           stopPolling();
           onChanged();
         }
       } catch {
-        stopPolling();
+        // A transient failure must not freeze the progress bar: keep polling
+        // and retry next tick. Only give up after several failures in a row —
+        // then clear the stuck "running" UI so it doesn't hang forever.
+        if (++failures >= MAX_POLL_FAILURES) {
+          stopPolling();
+          setImportStatus(null);
+          setError("Lost contact with the import job. Reload to check its status.");
+        }
+      } finally {
+        inFlight = false;
       }
     }, 1000);
   }, [collectionId, onChanged, stopPolling]);
