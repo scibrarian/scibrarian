@@ -45,6 +45,15 @@ export async function warmCitations(pmids: string[], label: string): Promise<voi
   }
 }
 
+// The lower bound for a poll's MeSH-date window, as PubMed's YYYY/MM/DD. Start a
+// day before the last poll so an ET-vs-UTC boundary or same-day indexing can't
+// slip a record through the seam; re-listing a day is idempotent (insert dedup).
+function mhdaWindowStart(lastPolledIso: string): string {
+  const d = new Date(lastPolledIso);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10).replace(/-/g, "/");
+}
+
 export async function pollDisease(id: number): Promise<PollResult> {
   const disease = getDisease(id);
   if (!disease) {
@@ -55,7 +64,13 @@ export async function pollDisease(id: number): Promise<PollResult> {
     const journals = listJournals().map((j) => j.name);
     const term = buildTerm(disease.term, journals);
 
-    const pmids = await search(term);
+    // Incremental poll: ask PubMed only for papers whose MeSH Date lands since
+    // the last successful poll, instead of re-listing the topic's whole history
+    // every time. That still catches older papers PubMed only just indexed with
+    // MeSH (see search). The first poll (no watermark) omits the bound and scans
+    // everything to seed the topic.
+    const mhdaSince = disease.last_polled_at ? mhdaWindowStart(disease.last_polled_at) : undefined;
+    const pmids = await search(term, mhdaSince);
     result.found = pmids.length;
 
     const known = existingPmids(pmids);
