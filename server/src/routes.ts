@@ -15,6 +15,7 @@ import {
   deleteCollectionFile,
   deleteDisease,
   diseaseArticleCounts,
+  getArticleAbstract,
   getCitations,
   getCollection,
   getCollectionFile,
@@ -262,6 +263,12 @@ api.get(
     res.json(body);
   })
 );
+
+// The papers list omits abstracts (they dominate its size); the card view
+// fetches one here on demand. Public article metadata, so open like /papers.
+api.get("/articles/:pmid/abstract", (req, res) => {
+  res.json({ abstract: getArticleAbstract(String(req.params.pmid)) ?? "" });
+});
 
 // ---------- citation graph ----------
 
