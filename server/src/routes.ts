@@ -43,6 +43,7 @@ import {
   blobPath,
   cleanUploadName,
   deleteBlobsIfOrphaned,
+  existingBlobHashes,
   isPdfFile,
   storeBlobFromTemp,
 } from "./blobstore.js";
@@ -253,10 +254,13 @@ api.get(
       rows = listPapers(source, q);
     }
 
+    // One directory read instead of a stat per row. Only collection rows carry
+    // a content_hash; disease rows are always null, so skip the readdir for them.
+    const present = collectionId ? existingBlobHashes() : null;
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
         ...p,
-        file_exists: content_hash != null && blobExists(content_hash),
+        file_exists: content_hash != null && present != null && present.has(content_hash),
       })),
       journals: diseaseId ? journalsForDisease(diseaseId) : journalsForCollection(collectionId),
     };
@@ -373,9 +377,16 @@ api.delete("/collections/:id", (req, res) => {
 // content_hash (the blob-store key, which also feeds the share-link MAC), plus
 // whether that blob is still present. The files list and the manual-match
 // response both go through this, so the client always sees one shape.
-function apiFile(row: CollectionFile): Omit<CollectionFile, "content_hash"> & { exists: boolean } {
+// `present`, when given, is a prebuilt set of blob hashes (from one readdir) so
+// a list of files resolves `exists` without a stat syscall per row; a lone file
+// (manual match) just stats directly.
+function apiFile(
+  row: CollectionFile,
+  present?: Set<string>
+): Omit<CollectionFile, "content_hash"> & { exists: boolean } {
   const { content_hash, ...rest } = row;
-  return { ...rest, exists: blobExists(content_hash) };
+  const exists = present ? present.has(content_hash) : blobExists(content_hash);
+  return { ...rest, exists };
 }
 
 // Every file row of a collection (matched or not), for the management shell:
@@ -384,7 +395,8 @@ function apiFile(row: CollectionFile): Omit<CollectionFile, "content_hash"> & { 
 api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  res.json({ files: listCollectionFiles(id).map(apiFile) });
+  const present = existingBlobHashes();
+  res.json({ files: listCollectionFiles(id).map((f) => apiFile(f, present)) });
 });
 
 // Upload PDFs into a collection. Each file is verified by magic bytes, hashed

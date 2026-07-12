@@ -47,6 +47,17 @@ export function blobExists(hash: string): boolean {
   return fs.existsSync(blobPath(hash));
 }
 
+// The set of blob hashes currently present, from a single directory read. List
+// endpoints resolve `exists` for many rows against this instead of an
+// fs.existsSync per row — one readdir rather than N blocking stat syscalls.
+export function existingBlobHashes(): Set<string> {
+  const out = new Set<string>();
+  for (const name of fs.readdirSync(BLOBS_DIR)) {
+    if (name.endsWith(".pdf")) out.add(name.slice(0, -4));
+  }
+  return out;
+}
+
 // Hash a finished upload and move it into the store; identical content just
 // discards the temp file. The rename is same-volume (see UPLOAD_TMP_DIR).
 export async function storeBlobFromTemp(tmpPath: string): Promise<{ hash: string }> {
