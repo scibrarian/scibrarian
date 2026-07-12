@@ -333,6 +333,15 @@ export function existingPmids(pmids: string[]): Set<string> {
   return new Set(rows.map((r) => r.pmid));
 }
 
+// The papers list omits abstracts (they dominate its size); the card view
+// fetches one on demand by pmid. Returns null for an unknown pmid.
+export function getArticleAbstract(pmid: string): string | null {
+  const row = db.prepare("SELECT abstract FROM articles WHERE pmid = ?").get(pmid) as
+    | { abstract: string }
+    | undefined;
+  return row?.abstract ?? null;
+}
+
 const upsertArticleStmt = db.prepare(`
   INSERT INTO articles (pmid, title, abstract, journal_name, nlm_id, authors, pub_date, pub_date_display, doi, url)
   VALUES (@pmid, @title, @abstract, @journal_name, @nlm_id, @authors, @pub_date, @pub_date_display, @doi, @url)
@@ -448,7 +457,7 @@ export function listPapers(
   }
   const rows = db
     .prepare(
-      `SELECT a.pmid, a.title, a.abstract, ${JOURNAL_DISPLAY} AS journal_name,
+      `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
               a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
               COALESCE(pc.citation_count, 0) AS citation_count,
               ${fileCols}

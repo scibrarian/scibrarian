@@ -73,11 +73,13 @@ export type ImportStatus = ImportJob | { state: "idle" };
 // One row of the unified papers view (/api/papers): article metadata plus the
 // cached citation count, for either paper source. The file_* fields carry the
 // first matched uploaded copy and are only populated for collection sources —
-// null for topics, which have no files.
+// null for topics, which have no files. The abstract is deliberately NOT here:
+// it dominates the payload size, so the card view fetches it on demand by pmid
+// (GET /api/articles/:pmid/abstract). Free-text search still covers abstracts —
+// that runs against the DB column server-side.
 export interface Paper {
   pmid: string;
   title: string;
-  abstract: string;
   journal_name: string;
   authors: string[];
   pub_date: string; // sortable YYYY-MM-DD

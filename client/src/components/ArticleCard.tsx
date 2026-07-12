@@ -1,16 +1,50 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Paper } from "../types";
+import { api } from "../api";
 import { formatAuthors } from "../lib/format";
 
 const ABSTRACT_PREVIEW = 320;
 
+// Abstracts aren't in the papers list payload (they'd dominate its size), so
+// each card fetches its own by pmid. Cache per pmid so re-renders and re-scrolls
+// (the Timeline mounts/unmounts cards as you scroll) don't refetch.
+const abstractCache = new Map<string, string>();
+
 export function ArticleCard({ article }: { article: Paper }) {
   const [expanded, setExpanded] = useState(false);
-  const longAbstract = article.abstract.length > ABSTRACT_PREVIEW;
+  // null = still loading; "" = loaded, no abstract available.
+  const [abstract, setAbstract] = useState<string | null>(
+    () => abstractCache.get(article.pmid) ?? null
+  );
+
+  useEffect(() => {
+    const cached = abstractCache.get(article.pmid);
+    if (cached !== undefined) {
+      setAbstract(cached);
+      return;
+    }
+    setAbstract(null);
+    let active = true;
+    api
+      .getAbstract(article.pmid)
+      .then((r) => {
+        abstractCache.set(article.pmid, r.abstract);
+        if (active) setAbstract(r.abstract);
+      })
+      .catch(() => {
+        if (active) setAbstract(""); // treat a failed fetch as "no abstract"
+      });
+    return () => {
+      active = false;
+    };
+  }, [article.pmid]);
+
+  const loading = abstract === null;
+  const longAbstract = !!abstract && abstract.length > ABSTRACT_PREVIEW;
   const shown =
-    expanded || !longAbstract
-      ? article.abstract
-      : article.abstract.slice(0, ABSTRACT_PREVIEW).trimEnd() + "…";
+    !abstract || expanded || !longAbstract
+      ? abstract ?? ""
+      : abstract.slice(0, ABSTRACT_PREVIEW).trimEnd() + "…";
 
   return (
     <article className="card">
@@ -26,7 +60,9 @@ export function ArticleCard({ article }: { article: Paper }) {
       {article.authors.length > 0 && (
         <p className="card-authors">{formatAuthors(article.authors, 4)}</p>
       )}
-      {article.abstract ? (
+      {loading ? (
+        <p className="card-abstract muted">Loading abstract…</p>
+      ) : abstract ? (
         <div className="card-abstract">
           <span className="abstract-text">{shown}</span>{" "}
           {longAbstract && (
