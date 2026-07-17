@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { BLOBS_DIR, UPLOAD_TMP_DIR } from "./config.js";
-import { countFilesByHash } from "./db.js";
 
 // Content-addressed store for uploaded PDFs: one file per distinct content,
 // named by its SHA-256 hex digest. Rows in collection_files reference blobs by
@@ -47,28 +46,48 @@ export function blobExists(hash: string): boolean {
   return fs.existsSync(blobPath(hash));
 }
 
+// The set of blob hashes currently present, from a single directory read. List
+// endpoints resolve `exists` for many rows against this instead of an
+// fs.existsSync per row — one readdir rather than N blocking stat syscalls.
+export function existingBlobHashes(): Set<string> {
+  const out = new Set<string>();
+  for (const name of fs.readdirSync(BLOBS_DIR)) {
+    if (name.endsWith(".pdf")) out.add(name.slice(0, -4));
+  }
+  return out;
+}
+
 // Hash a finished upload and move it into the store; identical content just
 // discards the temp file. The rename is same-volume (see UPLOAD_TMP_DIR).
 export async function storeBlobFromTemp(tmpPath: string): Promise<{ hash: string }> {
   const hash = await sha256File(tmpPath);
   if (blobExists(hash)) {
     await fs.promises.unlink(tmpPath);
-  } else {
+    return { hash };
+  }
+  try {
     await fs.promises.rename(tmpPath, blobPath(hash));
+  } catch (err) {
+    // Concurrent identical uploads can race this rename. On Windows, renaming
+    // onto an existing blob overwrites — unless the winner's copy is already
+    // held open (import scan, download, AV), which fails with EPERM. The store
+    // is content-addressed, so if the blob exists now the bytes are already
+    // right: drop our redundant temp instead of failing the upload.
+    if (!blobExists(hash)) throw err;
+    await fs.promises.unlink(tmpPath).catch(() => {});
   }
   return { hash };
 }
 
-// Drop blobs that no collection_files row references anymore. Called after
-// deleting file rows; ENOENT just means it was already gone.
-export function deleteBlobsIfOrphaned(hashes: string[]): void {
-  for (const hash of new Set(hashes)) {
-    if (countFilesByHash(hash) === 0) {
-      try {
-        fs.unlinkSync(blobPath(hash));
-      } catch {
-        /* already gone or locked; harmless either way */
-      }
+// Blindly unlink these blobs. Orphanhood is the DB layer's call — see db.ts
+// gcBlobsIfOrphaned, which row-deleting functions invoke themselves — the
+// store knows nothing about references. ENOENT just means already gone.
+export function deleteBlobs(hashes: Iterable<string>): void {
+  for (const hash of hashes) {
+    try {
+      fs.unlinkSync(blobPath(hash));
+    } catch {
+      /* already gone or locked; harmless either way */
     }
   }
 }

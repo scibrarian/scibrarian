@@ -94,6 +94,9 @@ export const api = {
     return req<PapersResponse>(`/api/papers?${qs}`);
   },
 
+  // Abstracts are kept out of the papers list payload; the card fetches one lazily.
+  getAbstract: (pmid: string) => req<{ abstract: string }>(`/api/articles/${pmid}/abstract`),
+
   getGraph: (source: PaperSource) => req<GraphResponse>(`/api/graph?${sourceQuery(source)}`),
 
   getCollections: () => req<Collection[]>("/api/collections"),

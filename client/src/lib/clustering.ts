@@ -23,8 +23,6 @@ export interface ClusterInfo {
   label: string;
   color: string;
   size: number;
-  colored: boolean; // one of the top-10 colored clusters
-  singletons?: boolean; // the bucket of size-1 communities
 }
 
 export interface ClusteringResult {
@@ -32,7 +30,7 @@ export interface ClusteringResult {
   clusters: ClusterInfo[]; // size-sorted; "Singletons" bucket (if any) last
 }
 
-export const SINGLETON_KEY = -1;
+const SINGLETON_KEY = -1;
 export const NEUTRAL_COLOR = "#111111";
 const TOP_N = 100;
 
@@ -143,16 +141,17 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
   const totalDocs = nodes.length;
 
   // Real clusters = communities of size >= 2, ranked by size (ties: larger id last
-  // -> smaller id first for stability). Top 10 get colors; the rest are black.
+  // -> smaller id first for stability). The largest TOP_N get colors (the first
+  // 10 from the curated palette, then golden-angle hues); anything beyond that
+  // is neutral black.
   const real = [...members.entries()]
     .filter(([, pmids]) => pmids.length >= 2)
     .sort((a, b) => b[1].length - a[1].length || a[0] - b[0]);
 
   real.forEach(([id, pmids], rank) => {
-    const colored = rank < TOP_N;
-    const color = colored ? rankColor(rank) : NEUTRAL_COLOR;
+    const color = rank < TOP_N ? rankColor(rank) : NEUTRAL_COLOR;
     const label = labelFor(pmids, titleTokens, globalDf, totalDocs);
-    result.clusters.push({ id, label, color, size: pmids.length, colored });
+    result.clusters.push({ id, label, color, size: pmids.length });
     for (const pmid of pmids) result.byPmid.set(pmid, { community: id, color, label });
   });
 
@@ -166,8 +165,6 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
       label,
       color: NEUTRAL_COLOR,
       size: singletons.length,
-      colored: false,
-      singletons: true,
     });
     for (const pmid of singletons)
       result.byPmid.set(pmid, { community: SINGLETON_KEY, color: NEUTRAL_COLOR, label });

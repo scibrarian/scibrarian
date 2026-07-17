@@ -9,6 +9,7 @@ import type {
   GraphEdge,
   GraphNode,
   GraphResponse,
+  ImportStatus,
   Journal,
   JournalRemovalResult,
   Paper,
@@ -22,6 +23,7 @@ export type {
   GraphEdge,
   GraphNode,
   GraphResponse,
+  ImportStatus,
   Journal,
   JournalRemovalResult,
   Paper,
@@ -93,20 +95,6 @@ export interface UploadResponse {
 export interface ImportStartResponse {
   jobId: string;
   total: number; // pending files the job will scan
-}
-
-export interface ImportStatus {
-  state: "idle" | "running" | "done" | "error";
-  jobId?: string;
-  total?: number;
-  processed?: number;
-  matched?: number;
-  unmatched?: number;
-  errors?: number;
-  currentFile?: string | null;
-  startedAt?: string;
-  finishedAt?: string | null;
-  error?: string; // fatal job error only
 }
 
 // Which paper set a view reads from: a Discover topic or a Library

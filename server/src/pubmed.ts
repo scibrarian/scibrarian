@@ -106,13 +106,23 @@ export function buildTerm(diseaseTerm: string, journalNames: string[]): string {
 
 // ---------- esearch ----------
 
-// Fetch *all* matching PMIDs (no date filter — full history), newest first.
-// A single esearch caps at 10k ids, so we page with retstart; MAX_RESULTS is a
-// safety ceiling so an overly broad term can't pull an unbounded set.
+// Fetch matching PMIDs. A single esearch caps at 10k ids, so we page with
+// retstart; MAX_RESULTS is a safety ceiling so an overly broad term can't pull
+// an unbounded set.
+//
+// `mhdaSince` (YYYY/MM/DD) bounds the query by MeSH Date [mhda] — the date a
+// citation was indexed with MeSH (which equals its Entrez date until it's
+// indexed). An incremental poll passes the last-poll date so PubMed returns only
+// what became matchable since then: brand-new papers *and* older ones PubMed
+// only just assigned MeSH. The latter (old add-date, recent MeSH date) are a
+// large share of results — verified ~47% for a sample MeSH topic — that an
+// add-date (edat) window would silently miss. Omit it to scan the full history
+// (a topic's first poll).
 const PAGE = 1000;
 const MAX_RESULTS = 10000;
 
-export async function search(term: string): Promise<string[]> {
+export async function search(term: string, mhdaSince?: string): Promise<string[]> {
+  const q = mhdaSince ? `(${term}) AND (${mhdaSince}:3000[mhda])` : term;
   const ids: string[] = [];
   let retstart = 0;
   let total = Infinity;
@@ -120,10 +130,10 @@ export async function search(term: string): Promise<string[]> {
     const params = new URLSearchParams({
       db: "pubmed",
       retmode: "json",
-      sort: "date",
+      sort: "pub_date",
       retmax: String(PAGE),
       retstart: String(retstart),
-      term,
+      term: q,
     });
     const res = await eutilsFetch("esearch.fcgi", params);
     const data = (await res.json()) as {

@@ -18,6 +18,13 @@ app.use(express.json());
 
 app.use("/api", api);
 
+// Anything under /api the router didn't match must fail as JSON here — without
+// this, unknown /api GETs fall through to the SPA fallback below and return
+// index.html with a 200, which hides typos and removed endpoints from callers.
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "Not found." });
+});
+
 // In production, serve the built client. In dev, Vite serves the UI separately.
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));

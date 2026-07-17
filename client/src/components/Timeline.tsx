@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import { useIncrementalList } from "../lib/hooks";
 import { usePapers } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
@@ -10,10 +11,6 @@ interface MonthGroup {
   label: string;
   items: Paper[];
 }
-
-// A source can hold thousands of papers; render them incrementally so the first
-// paint stays cheap. The rest materialize as the user scrolls near the bottom.
-const PAGE_SIZE = 50;
 
 // Month-grouped article cards, for either source.
 export function Timeline({
@@ -39,32 +36,12 @@ export function Timeline({
     allDeselected,
     filtered,
   } = usePapers(source, reloadToken);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const sentinelRef = useRef<HTMLDivElement>(null);
-
   // A new source or query starts from the top.
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [key, search, reloadToken]);
-
-  const shown = useMemo(() => visible.slice(0, visibleCount), [visible, visibleCount]);
+  const { shown, hasMore, sentinelRef } = useIncrementalList(
+    visible,
+    `${key}|${search}|${reloadToken}`
+  );
   const groups = groupByMonth(shown);
-  const hasMore = visibleCount < visible.length;
-
-  // Grow the rendered slice as the sentinel near the bottom scrolls into view.
-  // rootMargin preloads the next page before the user hits the very end.
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el || !hasMore) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) setVisibleCount((c) => c + PAGE_SIZE);
-      },
-      { rootMargin: "800px 0px" }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [hasMore, visible.length]);
 
   return (
     <div className="timeline-wrap">
