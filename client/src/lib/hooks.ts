@@ -31,6 +31,23 @@ export function usePrefersDark(): boolean {
 // by "Refresh now").
 export type FetchCache<T> = Map<string, { token: number; data: T }>;
 
+// Cap each cache so a long session — every distinct search prefix mints a key —
+// can't pin unbounded responses in memory. LRU: re-inserting on write/hit keeps
+// the Map ordered oldest-first, so evicting from the front drops the
+// least-recently-used entry. Sized to comfortably hold a session's worth of
+// recent views (the point of the cache) while bounding the worst case.
+const MAX_CACHE_ENTRIES = 30;
+
+function cacheTouch<T>(cache: FetchCache<T>, key: string, value: { token: number; data: T }): void {
+  cache.delete(key); // re-insert at the end so Map order tracks recency
+  cache.set(key, value);
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
 // Fetch-with-cache for view data. State is seeded from the cache so remounting
 // — e.g. flipping back to a tab — paints instantly instead of refetching and
 // re-showing a loading state. `data` is null until the *current* key's result
@@ -58,6 +75,7 @@ export function useCachedFetch<T>(
     // Serve an unchanged (same token) result from cache without a refetch.
     const hit = lookup();
     if (hit !== undefined) {
+      cacheTouch(cache, key, { token, data: hit }); // mark most-recently-used
       setEntry({ key, data: hit });
       setLoading(false);
       return;
@@ -68,7 +86,7 @@ export function useCachedFetch<T>(
     fetcher()
       .then((res) => {
         if (cancelled) return;
-        cache.set(key, { token, data: res });
+        cacheTouch(cache, key, { token, data: res });
         setEntry({ key, data: res });
       })
       .catch((e) => !cancelled && setError(errorMessage(e)))
