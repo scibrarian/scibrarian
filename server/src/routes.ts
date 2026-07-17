@@ -6,7 +6,6 @@ import multer from "multer";
 import {
   addCollectionFiles,
   collectionCounts,
-  collectionGraphPapers,
   countJournalArticles,
   createCollection,
   createDisease,
@@ -21,10 +20,9 @@ import {
   getCollection,
   getCollectionFile,
   getSettings,
-  graphPapers,
+  graphPapersForSource,
   journalByNlmId,
-  journalsForCollection,
-  journalsForDisease,
+  journalsForSource,
   listCollectionFiles,
   listPapers,
   listCollections,
@@ -37,6 +35,7 @@ import {
   setFileMatched,
   setSetting,
   upsertArticles,
+  type PaperSourceQuery,
 } from "./db.js";
 import {
   blobExists,
@@ -257,16 +256,27 @@ api.delete("/journals/:id", (req, res) => {
 
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
+// The paper source both /papers and /graph accept: ?disease= or ?collection=
+// (disease wins when both are sent, as before). null = neither given (400).
+// Everything downstream dispatches on the source inside db.ts (listPapers,
+// journalsForSource, graphPapersForSource) — a new source kind is added there,
+// not by branching in each route.
+function parseSource(req: Request): PaperSourceQuery | null {
+  const diseaseId = Number(req.query.disease);
+  const collectionId = Number(req.query.collection);
+  if (diseaseId) return { diseaseId };
+  if (collectionId) return { collectionId };
+  return null;
+}
+
+const SOURCE_REQUIRED = "'disease' or 'collection' query param is required.";
+
 api.get(
   "/papers",
   asyncHandler(async (req, res) => {
-    const diseaseId = Number(req.query.disease);
-    const collectionId = Number(req.query.collection);
-    if (!diseaseId && !collectionId) {
-      return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
-    }
+    const source = parseSource(req);
+    if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
     const q = req.query.q ? String(req.query.q) : undefined;
-    const source = diseaseId ? { diseaseId } : { collectionId };
     let rows = listPapers(source, q);
 
     // Backfill missing/stale citation counts, like /graph does. Poll and import
@@ -286,13 +296,13 @@ api.get(
 
     // One directory read instead of a stat per row. Only collection rows carry
     // a content_hash; disease rows are always null, so skip the readdir for them.
-    const present = collectionId ? existingBlobHashes() : null;
+    const present = "collectionId" in source ? existingBlobHashes() : null;
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
         ...p,
         file_exists: content_hash != null && present != null && present.has(content_hash),
       })),
-      journals: diseaseId ? journalsForDisease(diseaseId) : journalsForCollection(collectionId),
+      journals: journalsForSource(source),
     };
     res.json(body);
   })
@@ -309,12 +319,9 @@ api.get("/articles/:pmid/abstract", (req, res) => {
 api.get(
   "/graph",
   asyncHandler(async (req, res) => {
-    const diseaseId = Number(req.query.disease);
-    const collectionId = Number(req.query.collection);
-    if (!diseaseId && !collectionId) {
-      return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
-    }
-    const papers = diseaseId ? graphPapers(diseaseId) : collectionGraphPapers(collectionId);
+    const source = parseSource(req);
+    if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
+    const papers = graphPapersForSource(source);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 

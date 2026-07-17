@@ -400,7 +400,16 @@ export function diseaseArticleCounts(): Record<number, number> {
 }
 
 // Distinct journal display names that have articles for a disease (filter chips).
-export function journalsForDisease(diseaseId: number): string[] {
+// Journal filter-chip names for either paper source. Routes dispatch through
+// this (and graphPapersForSource / listPapers) rather than picking per-source
+// functions themselves — a new source kind extends the union and these
+// dispatchers, and the compiler flags every spot that must learn about it.
+export function journalsForSource(source: PaperSourceQuery): string[] {
+  if ("diseaseId" in source) return journalsForDisease(source.diseaseId);
+  return journalsForCollection(source.collectionId);
+}
+
+function journalsForDisease(diseaseId: number): string[] {
   const rows = db
     .prepare(
       `SELECT DISTINCT ${JOURNAL_DISPLAY} AS j FROM articles a
@@ -478,7 +487,7 @@ export function listPapers(
 
 // Distinct journal display names present in a collection (filter chips) —
 // the collection-source counterpart of journalsForDisease.
-export function journalsForCollection(collectionId: number): string[] {
+function journalsForCollection(collectionId: number): string[] {
   const rows = db
     .prepare(
       `SELECT DISTINCT ${JOURNAL_DISPLAY} AS jn
@@ -517,8 +526,15 @@ export interface GraphPaper {
   pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
 }
 
+// The papers that make up a source's graph — the per-source dispatch lives
+// here, not in routes (see journalsForSource).
+export function graphPapersForSource(source: PaperSourceQuery): GraphPaper[] {
+  if ("diseaseId" in source) return graphPapers(source.diseaseId);
+  return collectionGraphPapers(source.collectionId);
+}
+
 // The papers that make up one disease's graph (green nodes).
-export function graphPapers(diseaseId: number): GraphPaper[] {
+function graphPapers(diseaseId: number): GraphPaper[] {
   return db
     .prepare(
       `SELECT a.pmid, a.title, a.url, a.pub_date FROM articles a
@@ -749,7 +765,7 @@ export const upsertArticles = transaction((articles: ArticleInsert[]) => {
 // copies of the same paper (two files, one PMID) into a single row.
 // The papers that make up one collection's citation graph (same shape as
 // graphPapers, so the /graph route works on either source).
-export function collectionGraphPapers(collectionId: number): GraphPaper[] {
+function collectionGraphPapers(collectionId: number): GraphPaper[] {
   return db
     .prepare(
       `SELECT DISTINCT a.pmid, a.title, a.url, a.pub_date FROM articles a
