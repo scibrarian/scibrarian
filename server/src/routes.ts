@@ -66,6 +66,7 @@ import {
   signingEnabled,
   verifyCollectionShare,
   verifyFileShare,
+  type ShareVerdict,
 } from "./signing.js";
 import type {
   CollectionFile,
@@ -108,6 +109,11 @@ function isAdminRequest(req: Request): boolean {
 // Reads are open to everyone; every mutation requires the admin token. This is
 // registered before all routes, so unauthorized uploads are rejected before
 // multer ever writes a temp file.
+//
+// CAUTION: the GET pass-through is fail-open. A new GET route is public unless
+// it gates itself — any route serving stored PDF bytes must start with
+// requireStoredPdfAccess (see /content and /archive), and owner-only reads
+// like GET /settings check isAdminRequest inline.
 api.use((req, res, next) => {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
   if (isAdminRequest(req)) return next();
@@ -120,6 +126,31 @@ api.use((req, res, next) => {
 // admin anyway.
 function libraryOpen(): boolean {
   return getSettings().library_open === "1";
+}
+
+// The one access ladder for GETs that serve stored PDF bytes (the single-file
+// content route and the collection zip): owner, open library, or a valid share
+// signature on the URL. Sends the error response and returns false on denial.
+// Every byte-serving GET must call this first — the gate above lets GETs pass.
+function requireStoredPdfAccess(req: Request, res: Response, verify: () => ShareVerdict): boolean {
+  if (isAdminRequest(req) || libraryOpen()) return true;
+  if (req.query.exp == null && req.query.sig == null) {
+    res.status(401).json({
+      error:
+        "Stored PDFs are owner-only. Ask the owner for a share link. (If the library was just closed, reload the page.)",
+    });
+    return false;
+  }
+  const verdict = verify();
+  if (verdict === "expired") {
+    res.status(403).json({ error: "This share link has expired." });
+    return false;
+  }
+  if (verdict !== "ok") {
+    res.status(403).json({ error: "Invalid share link." });
+    return false;
+  }
+  return true;
 }
 
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
@@ -459,16 +490,10 @@ api.post("/collections/:id/import", (req, res) => {
 api.get("/collections/files/:fileId/content", (req, res) => {
   const file = getCollectionFile(Number(req.params.fileId));
   if (!file) return res.status(404).json({ error: "File not found." });
-  if (!isAdminRequest(req) && !libraryOpen()) {
-    if (req.query.exp == null && req.query.sig == null) {
-      return res.status(401).json({ error: "Stored files have been set to owner-only, so you must ask the owner for a share link. Please reload the page to reflect these changes in your web browser." });
-    }
-    const verdict = verifyFileShare(file.id, file.content_hash, req.query.exp, req.query.sig);
-    if (verdict === "expired") {
-      return res.status(403).json({ error: "This share link has expired." });
-    }
-    if (verdict !== "ok") return res.status(403).json({ error: "Invalid share link." });
-  }
+  const allowed = requireStoredPdfAccess(req, res, () =>
+    verifyFileShare(file.id, file.content_hash, req.query.exp, req.query.sig)
+  );
+  if (!allowed) return;
   if (!blobExists(file.content_hash)) {
     return res.status(410).json({ error: "That file's PDF is no longer stored." });
   }
@@ -552,16 +577,10 @@ api.get("/collections/:id/archive", (req, res) => {
   const id = Number(req.params.id);
   const collection = getCollection(id);
   if (!collection) return res.status(404).json({ error: "Collection not found." });
-  if (!isAdminRequest(req) && !libraryOpen()) {
-    if (req.query.exp == null && req.query.sig == null) {
-      return res.status(401).json({ error: "Stored PDFs are owner-only. Ask the owner for a share link." });
-    }
-    const verdict = verifyCollectionShare(id, req.query.exp, req.query.sig);
-    if (verdict === "expired") {
-      return res.status(403).json({ error: "This share link has expired." });
-    }
-    if (verdict !== "ok") return res.status(403).json({ error: "Invalid share link." });
-  }
+  const allowed = requireStoredPdfAccess(req, res, () =>
+    verifyCollectionShare(id, req.query.exp, req.query.sig)
+  );
+  if (!allowed) return;
   const files = listCollectionFiles(id).filter((f) => blobExists(f.content_hash));
   if (files.length === 0) {
     return res.status(410).json({ error: "This collection has no stored PDFs." });
