@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
-import type { Collection, Disease, PaperSource } from "./types";
+import type { AuthStatus, Collection, Disease, PaperSource } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
 import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
@@ -168,6 +168,15 @@ export default function App() {
     setIsAdmin(false);
   }
 
+  // A title click in the papers table re-fetches /auth to decide PDF access;
+  // fold that fresh snapshot back into app state so the whole UI (share
+  // column, tooltips) reflects a mid-session Open Library or token change.
+  function handleAuthRefreshed(a: AuthStatus) {
+    setIsAdmin(a.admin);
+    setTokenRequired(a.token_required);
+    setLibraryOpen(a.library_open);
+  }
+
   async function handleRefresh() {
     setRefreshing(true);
     setStatus(null);
@@ -231,6 +240,7 @@ export default function App() {
         isAdmin={isAdmin}
         tokenRequired={tokenRequired}
         libraryOpen={libraryOpen}
+        onAuthRefreshed={handleAuthRefreshed}
       />
     ));
 

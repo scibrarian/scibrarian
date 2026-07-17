@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { errorMessage, formatAuthors } from "../lib/format";
 import { usePapers } from "../lib/papers";
-import type { Paper, PaperSource } from "../types";
+import type { AuthStatus, Paper, PaperSource } from "../types";
 import { PapersToolbar } from "./PapersToolbar";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
@@ -24,6 +24,7 @@ export function PapersTable({
   isAdmin,
   tokenRequired,
   libraryOpen,
+  onAuthRefreshed,
 }: {
   source: PaperSource;
   reloadToken: number;
@@ -31,6 +32,9 @@ export function PapersTable({
   isAdmin: boolean;
   tokenRequired: boolean;
   libraryOpen: boolean;
+  // Reports the fresh /auth fetched on a title click so the app-wide snapshot
+  // (isAdmin/tokenRequired/libraryOpen) heals without a reload.
+  onAuthRefreshed: (auth: AuthStatus) => void;
 }) {
   const {
     key,
@@ -114,30 +118,46 @@ export function PapersTable({
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
 
-  // Whether a title click will open the stored PDF (vs falling back to
-  // PubMed). In token mode PDFs are owner-only unless the owner has opened
-  // the Library to viewers.
+  // Predicts what a title click will open, for the hover tooltip only. It reads
+  // the auth snapshot, which can lag a mid-session Open Library toggle until the
+  // next click refreshes it — openPaper below decides against fresh /auth.
   function opensStoredPdf(p: Paper): boolean {
-    // No matched file, or the blob is gone (orphaned/deleted) — fall back to
-    // PubMed rather than opening a content URL the server answers with 410.
     if (p.file_id == null || !p.file_exists) return false;
     if (!tokenRequired || libraryOpen) return true; // bare URL works for everyone
     return isAdmin;
   }
 
+  // Open what a title click refers to. When a stored PDF exists, the access
+  // policy (open library / token mode / admin) is re-checked against a fresh
+  // /auth at click time — the load-time snapshot goes stale when the owner
+  // toggles Open Library mid-session, which used to strand viewers on a raw
+  // 401 tab (closed after load) or hide newly opened PDFs (opened after load).
   async function openPaper(p: Paper) {
-    if (!opensStoredPdf(p)) return void window.open(p.url, "_blank", "noopener");
-    if (!tokenRequired || libraryOpen) {
-      return void window.open(api.fileContentUrl(p.file_id!), "_blank", "noopener");
+    // No matched file, or the blob is gone (orphaned/deleted) — plain PubMed
+    // link rather than a content URL the server answers with 410.
+    if (p.file_id == null || !p.file_exists) {
+      return void window.open(p.url, "_blank", "noopener");
     }
-    // Token mode: window.open can't carry the Authorization header, so mint a
-    // short-lived signed URL first. The tab must be opened synchronously in
-    // the click (popup blockers) and without "noopener" (we need the handle
-    // to navigate it) — it only ever goes to a same-origin PDF.
+    const fileId = p.file_id;
+    // The tab must be opened synchronously in the click (popup blockers); it
+    // is navigated once the fresh policy is known. Detach opener since the
+    // fallback destination (PubMed) is cross-origin.
     const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
     try {
-      const { path } = await api.mintShareLink(p.file_id!, 300);
-      const url = new URL(path, window.location.origin).toString();
+      const auth = await api.getAuth();
+      onAuthRefreshed(auth); // heal the app-wide snapshot too
+      let url: string;
+      if (!auth.token_required || auth.library_open) {
+        url = api.fileContentUrl(fileId); // bare URL works for everyone
+      } else if (auth.admin) {
+        // window.open can't carry the Authorization header, so mint a
+        // short-lived signed URL first.
+        const { path } = await api.mintShareLink(fileId, 300);
+        url = new URL(path, window.location.origin).toString();
+      } else {
+        url = p.url; // PDFs are owner-only and we're a viewer: go to PubMed
+      }
       if (tab) tab.location.href = url;
       else window.open(url, "_blank", "noopener");
     } catch (err) {
