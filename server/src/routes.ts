@@ -692,16 +692,42 @@ function shareUrls(): string[] {
 }
 
 // Never echo the raw API key back; just whether one is set.
+// How the API treats each setting: how PUT persists it and how the response
+// echoes it. `satisfies Record<keyof Settings, …>` makes the table exhaustive —
+// adding a setting to SETTING_DEFAULTS without deciding its rule is a compile
+// error, so a new toggle can never round-trip 200 without persisting.
+type SettingRule =
+  | { kind: "string"; validate?: (value: string) => string | null } // returns an error message
+  | { kind: "boolean" }
+  | { kind: "secret"; expose: `has_${string}` }; // write-only; response carries presence
+
+const SETTING_RULES = {
+  ncbi_email: { kind: "string" },
+  // A blank cron means "use the default"; anything else must be valid, or the
+  // scheduler would silently fall back to the default while the UI reported a
+  // successful save.
+  poll_cron: {
+    kind: "string",
+    validate: (v) => (v && !isValidCron(v) ? "That isn't a valid cron expression." : null),
+  },
+  poll_enabled: { kind: "boolean" },
+  library_open: { kind: "boolean" },
+  ncbi_api_key: { kind: "secret", expose: "has_api_key" },
+} satisfies Record<keyof Settings, SettingRule>;
+
+const SETTING_KEYS = Object.keys(SETTING_RULES) as (keyof Settings)[];
+
 function settingsResponse() {
   const s = getSettings();
-  return {
-    ncbi_email: s.ncbi_email,
-    poll_cron: s.poll_cron,
-    poll_enabled: s.poll_enabled === "1",
-    library_open: s.library_open === "1",
-    has_api_key: Boolean(s.ncbi_api_key),
-    share_urls: shareUrls(),
-  };
+  const out: Record<string, unknown> = {};
+  for (const key of SETTING_KEYS) {
+    const rule: SettingRule = SETTING_RULES[key];
+    if (rule.kind === "string") out[key] = s[key];
+    else if (rule.kind === "boolean") out[key] = s[key] === "1";
+    else out[rule.expose] = Boolean(s[key]); // never echo the secret itself
+  }
+  out.share_urls = shareUrls(); // derived from the bind address, not a setting
+  return out;
 }
 
 // Unlike other reads, this one is admin-only: it exposes the owner's NCBI email
@@ -714,26 +740,28 @@ api.get("/settings", (req, res) => {
 });
 
 api.put("/settings", (req, res) => {
-  const body = req.body ?? {};
-  // A blank cron means "use the default"; anything else must be valid, or the
-  // scheduler would silently fall back to the default while the UI reported a
-  // successful save. Reject before persisting so nothing is half-applied.
-  if (typeof body.poll_cron === "string" && body.poll_cron.trim() && !isValidCron(body.poll_cron.trim())) {
-    return res.status(400).json({ error: "That isn't a valid cron expression." });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  // Validate everything before persisting anything, so a rejected value can't
+  // leave the save half-applied.
+  for (const key of SETTING_KEYS) {
+    const rule: SettingRule = SETTING_RULES[key];
+    const value = body[key];
+    if (rule.kind === "string" && rule.validate && typeof value === "string") {
+      const err = rule.validate(value.trim());
+      if (err) return res.status(400).json({ error: err });
+    }
   }
-  const editable: (keyof Settings)[] = ["ncbi_email", "poll_cron"];
-  for (const key of editable) {
-    if (typeof body[key] === "string") setSetting(key, body[key].trim());
-  }
-  if (typeof body.poll_enabled === "boolean") {
-    setSetting("poll_enabled", body.poll_enabled ? "1" : "0");
-  }
-  if (typeof body.library_open === "boolean") {
-    setSetting("library_open", body.library_open ? "1" : "0");
-  }
-  // Only overwrite the API key when a non-empty value is explicitly provided.
-  if (typeof body.ncbi_api_key === "string" && body.ncbi_api_key.trim()) {
-    setSetting("ncbi_api_key", body.ncbi_api_key.trim());
+  for (const key of SETTING_KEYS) {
+    const rule: SettingRule = SETTING_RULES[key];
+    const value = body[key];
+    if (rule.kind === "string" && typeof value === "string") {
+      setSetting(key, value.trim());
+    } else if (rule.kind === "boolean" && typeof value === "boolean") {
+      setSetting(key, value ? "1" : "0");
+    } else if (rule.kind === "secret" && typeof value === "string" && value.trim()) {
+      // Secrets are write-only: only overwrite on an explicit non-empty value.
+      setSetting(key, value.trim());
+    }
   }
   rescheduleFromSettings();
   res.json(settingsResponse());
