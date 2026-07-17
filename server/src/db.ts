@@ -367,21 +367,30 @@ const linkArticleStmt = db.prepare(
 
 export type ArticleInsert = Omit<Article, "authors" | "first_seen_at"> & { authors: string[] };
 
+// The one place an ArticleInsert maps onto the articles upsert — shared by the
+// disease path (saveArticles) and the collection path (upsertArticles), so a
+// new article column can't end up persisted by one and dropped by the other.
+// (Both callers are transactions; this stays a plain per-row helper because
+// the transaction wrapper's BEGIN can't nest.)
+function upsertArticle(a: ArticleInsert): void {
+  upsertArticleStmt.run({
+    pmid: a.pmid,
+    title: a.title,
+    abstract: a.abstract,
+    journal_name: a.journal_name,
+    nlm_id: a.nlm_id || null,
+    authors: JSON.stringify(a.authors),
+    pub_date: a.pub_date,
+    pub_date_display: a.pub_date_display,
+    doi: a.doi,
+    url: a.url,
+  });
+}
+
 // Insert/refresh a batch of articles and link them to a disease, atomically.
 export const saveArticles = transaction((articles: ArticleInsert[], diseaseId: number) => {
   for (const a of articles) {
-    upsertArticleStmt.run({
-      pmid: a.pmid,
-      title: a.title,
-      abstract: a.abstract,
-      journal_name: a.journal_name,
-      nlm_id: a.nlm_id || null,
-      authors: JSON.stringify(a.authors),
-      pub_date: a.pub_date,
-      pub_date_display: a.pub_date_display,
-      doi: a.doi,
-      url: a.url,
-    });
+    upsertArticle(a);
     linkArticleStmt.run(a.pmid, diseaseId);
   }
 });
@@ -748,20 +757,7 @@ export function deleteCollectionFile(fileId: number): void {
 // Insert/refresh articles without linking them to a disease (collections track
 // membership in collection_files instead of article_diseases).
 export const upsertArticles = transaction((articles: ArticleInsert[]) => {
-  for (const a of articles) {
-    upsertArticleStmt.run({
-      pmid: a.pmid,
-      title: a.title,
-      abstract: a.abstract,
-      journal_name: a.journal_name,
-      nlm_id: a.nlm_id || null,
-      authors: JSON.stringify(a.authors),
-      pub_date: a.pub_date,
-      pub_date_display: a.pub_date_display,
-      doi: a.doi,
-      url: a.url,
-    });
-  }
+  for (const a of articles) upsertArticle(a);
 });
 
 // The papers-list rows for a collection. DISTINCT pmid collapses duplicate
