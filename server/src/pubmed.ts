@@ -95,8 +95,8 @@ async function eutilsFetch(endpoint: string, params: URLSearchParams): Promise<R
 
 // ---------- query building ----------
 
-export function buildTerm(diseaseTerm: string, journalNames: string[]): string {
-  const term = diseaseTerm.trim();
+export function buildTerm(topicTerm: string, journalNames: string[]): string {
+  const term = topicTerm.trim();
   if (journalNames.length === 0) return term;
   const journalClause = journalNames
     .map((n) => `"${n.replace(/"/g, "")}"[Journal]`)

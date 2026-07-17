@@ -2,7 +2,7 @@
 // The client extends some of these with fields its API responses add — see
 // client/src/types.ts.
 
-export interface Disease {
+export interface Topic {
   id: number;
   name: string;
   term: string;
@@ -105,8 +105,8 @@ export interface ShareLinkResponse {
 }
 
 export interface PollResult {
-  diseaseId: number;
-  diseaseName: string;
+  topicId: number;
+  topicName: string;
   found: number; // PMIDs returned by search
   added: number; // papers newly added to this feed (fetched, or linked from another feed)
   error?: string;
@@ -114,7 +114,7 @@ export interface PollResult {
 
 export interface JournalRemovalResult {
   deletedArticles: number; // permanently deleted (kept when a collection file references them)
-  removedFromInterests: number; // distinct papers unlinked from the disease feeds
+  removedFromInterests: number; // distinct papers unlinked from the topic feeds
 }
 
 export interface GraphNode {

@@ -3,9 +3,9 @@ import { api } from "../api";
 import type { PaperSource, PapersResponse } from "../types";
 import { useCachedFetch, type FetchCache } from "./hooks";
 
-// Stable cache/state key for a paper source ("d3" / "c1").
+// Stable cache/state key for a paper source ("t3" / "c1").
 export function sourceKey(source: PaperSource): string {
-  return "disease" in source ? `d${source.disease}` : `c${source.collection}`;
+  return "topic" in source ? `t${source.topic}` : `c${source.collection}`;
 }
 
 // Cache the last successful fetch per (source, search). Remounting a view —

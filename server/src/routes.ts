@@ -8,12 +8,12 @@ import {
   collectionCounts,
   countJournalArticles,
   createCollection,
-  createDisease,
+  createTopic,
   createJournal,
   deleteCollection,
   deleteCollectionFile,
-  deleteDisease,
-  diseaseArticleCounts,
+  deleteTopic,
+  topicArticleCounts,
   gcBlobsIfOrphaned,
   getArticleAbstract,
   getCitations,
@@ -26,7 +26,7 @@ import {
   listCollectionFiles,
   listPapers,
   listCollections,
-  listDiseases,
+  listTopics,
   listJournals,
   missingOrStaleCitations,
   removeJournalWithArticles,
@@ -52,7 +52,7 @@ import { fetchArticles, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
   pollAll,
-  pollDisease,
+  pollTopic,
   rescheduleFromSettings,
   warmCitations,
   withPollLock,
@@ -162,25 +162,25 @@ api.get("/auth", (req, res) => {
   });
 });
 
-// ---------- diseases ----------
+// ---------- topics ----------
 
-api.get("/diseases", (_req, res) => {
-  const counts = diseaseArticleCounts();
-  const diseases = listDiseases().map((d) => ({ ...d, articleCount: counts[d.id] ?? 0 }));
-  res.json(diseases);
+api.get("/topics", (_req, res) => {
+  const counts = topicArticleCounts();
+  const topics = listTopics().map((d) => ({ ...d, articleCount: counts[d.id] ?? 0 }));
+  res.json(topics);
 });
 
-api.post("/diseases", (req, res) => {
+api.post("/topics", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const term = String(req.body?.term ?? "").trim();
   if (!name || !term) {
     return res.status(400).json({ error: "Both 'name' and 'term' are required." });
   }
-  res.status(201).json(createDisease(name, term));
+  res.status(201).json(createTopic(name, term));
 });
 
-api.delete("/diseases/:id", (req, res) => {
-  deleteDisease(Number(req.params.id));
+api.delete("/topics/:id", (req, res) => {
+  deleteTopic(Number(req.params.id));
   res.status(204).end();
 });
 
@@ -256,20 +256,20 @@ api.delete("/journals/:id", (req, res) => {
 
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
-// The paper source both /papers and /graph accept: ?disease= or ?collection=
-// (disease wins when both are sent, as before). null = neither given (400).
+// The paper source both /papers and /graph accept: ?topic= or ?collection=
+// (topic wins when both are sent, as before). null = neither given (400).
 // Everything downstream dispatches on the source inside db.ts (listPapers,
 // journalsForSource, graphPapersForSource) — a new source kind is added there,
 // not by branching in each route.
 function parseSource(req: Request): PaperSourceQuery | null {
-  const diseaseId = Number(req.query.disease);
+  const topicId = Number(req.query.topic);
   const collectionId = Number(req.query.collection);
-  if (diseaseId) return { diseaseId };
+  if (topicId) return { topicId };
   if (collectionId) return { collectionId };
   return null;
 }
 
-const SOURCE_REQUIRED = "'disease' or 'collection' query param is required.";
+const SOURCE_REQUIRED = "'topic' or 'collection' query param is required.";
 
 api.get(
   "/papers",
@@ -295,7 +295,7 @@ api.get(
     }
 
     // One directory read instead of a stat per row. Only collection rows carry
-    // a content_hash; disease rows are always null, so skip the readdir for them.
+    // a content_hash; topic rows are always null, so skip the readdir for them.
     const present = "collectionId" in source ? existingBlobHashes() : null;
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
@@ -656,11 +656,11 @@ api.delete("/collections/files/:fileId", (req, res) => {
 api.post(
   "/refresh",
   asyncHandler(async (req, res) => {
-    const diseaseId = req.query.disease ? Number(req.query.disease) : undefined;
+    const topicId = req.query.topic ? Number(req.query.topic) : undefined;
     // Share the scheduler's lock so a manual refresh can't run concurrently with
     // a scheduled poll (or another refresh) and double up NCBI traffic.
     const results = await withPollLock(() =>
-      diseaseId ? pollDisease(diseaseId).then((r) => [r]) : pollAll()
+      topicId ? pollTopic(topicId).then((r) => [r]) : pollAll()
     );
     if (results === null) {
       return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });

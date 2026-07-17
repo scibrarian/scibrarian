@@ -5,7 +5,7 @@ import type {
   Collection as CollectionRow,
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
-  Disease as DiseaseRow,
+  Topic as TopicRow,
   GraphEdge,
   GraphNode,
   GraphResponse,
@@ -32,7 +32,7 @@ export type {
   ShareLinkResponse,
 };
 
-export interface Disease extends DiseaseRow {
+export interface Topic extends TopicRow {
   articleCount?: number;
 }
 
@@ -99,4 +99,4 @@ export interface ImportStartResponse {
 
 // Which paper set a view reads from: a Discover topic or a Library
 // collection. Every analysis module (table, timeline, graph) takes one.
-export type PaperSource = { disease: number } | { collection: number };
+export type PaperSource = { topic: number } | { collection: number };

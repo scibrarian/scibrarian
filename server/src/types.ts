@@ -5,7 +5,7 @@ export type {
   Collection,
   CollectionFile,
   CollectionFileStatus,
-  Disease,
+  Topic,
   GraphEdge,
   GraphNode,
   GraphResponse,

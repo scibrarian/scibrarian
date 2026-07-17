@@ -4,7 +4,7 @@ import type {
   Collection,
   CollectionFile,
   CollectionFilesResponse,
-  Disease,
+  Topic,
   GraphResponse,
   ImportStartResponse,
   ImportStatus,
@@ -68,16 +68,16 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 // The query param naming both source-driven endpoints share.
 function sourceQuery(source: PaperSource): string {
-  return "disease" in source ? `disease=${source.disease}` : `collection=${source.collection}`;
+  return "topic" in source ? `topic=${source.topic}` : `collection=${source.collection}`;
 }
 
 export const api = {
   getAuth: () => req<AuthStatus>("/api/auth"),
 
-  getDiseases: () => req<Disease[]>("/api/diseases"),
-  createDisease: (name: string, term: string) =>
-    req<Disease>("/api/diseases", { method: "POST", body: JSON.stringify({ name, term }) }),
-  deleteDisease: (id: number) => req<void>(`/api/diseases/${id}`, { method: "DELETE" }),
+  getTopics: () => req<Topic[]>("/api/topics"),
+  createTopic: (name: string, term: string) =>
+    req<Topic>("/api/topics", { method: "POST", body: JSON.stringify({ name, term }) }),
+  deleteTopic: (id: number) => req<void>(`/api/topics/${id}`, { method: "DELETE" }),
 
   getJournals: () => req<Journal[]>("/api/journals"),
   searchJournals: (q: string) =>
@@ -137,8 +137,8 @@ export const api = {
     }),
   deleteCollectionFile: (fileId: number) =>
     req<void>(`/api/collections/files/${fileId}`, { method: "DELETE" }),
-  refresh: (diseaseId?: number) => {
-    const suffix = diseaseId ? `?disease=${diseaseId}` : "";
+  refresh: (topicId?: number) => {
+    const suffix = topicId ? `?topic=${topicId}` : "";
     return req<RefreshResponse>(`/api/refresh${suffix}`, { method: "POST" });
   },
 
