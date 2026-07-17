@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import type {
   Article,
@@ -609,8 +610,13 @@ export function renameCollection(id: number, name: string): void {
 }
 
 export function deleteCollection(id: number): void {
+  // Hashes are captured before the delete (the cascade takes the rows with
+  // it), then blobs nothing else references are GC'd — here, not at call
+  // sites, so a deletion path can't forget the dance and leak blobs.
+  const hashes = hashesForCollection(id);
   // collection_files rows cascade; cached articles/paper_citations stay.
   db.prepare("DELETE FROM collections WHERE id = ?").run(id);
+  gcBlobsIfOrphaned(hashes);
 }
 
 export function collectionCounts(): Record<number, { files: number; matched: number }> {
@@ -643,7 +649,7 @@ export const addCollectionFiles = transaction(
 
 // How many rows (across all collections) still reference a blob — 0 means the
 // blob itself can be deleted.
-export function countFilesByHash(hash: string): number {
+function countFilesByHash(hash: string): number {
   return (
     db.prepare("SELECT COUNT(*) AS c FROM collection_files WHERE content_hash = ?").get(hash) as {
       c: number;
@@ -651,8 +657,16 @@ export function countFilesByHash(hash: string): number {
   ).c;
 }
 
-// Captured before deleting a collection so its blobs can be GC'd afterwards.
-export function hashesForCollection(collectionId: number): string[] {
+// Delete whichever of these blobs no collection_files row references anymore.
+// The row-deleting functions here call it themselves, so no route has to
+// remember the capture-hashes-then-GC dance. Exported for the one non-row
+// case: uploads whose blobs were stored but whose rows were never recorded.
+export function gcBlobsIfOrphaned(hashes: string[]): void {
+  deleteBlobs([...new Set(hashes)].filter((h) => countFilesByHash(h) === 0));
+}
+
+// The blobs a collection's rows reference, captured before deletion for GC.
+function hashesForCollection(collectionId: number): string[] {
   return (
     db
       .prepare("SELECT DISTINCT content_hash FROM collection_files WHERE collection_id = ?")
@@ -703,7 +717,13 @@ export function setFileError(fileId: number, message: string): void {
 }
 
 export function deleteCollectionFile(fileId: number): void {
+  // Same enforced order as deleteCollection: capture the hash, delete the
+  // row, GC the blob if that was the last reference.
+  const row = db
+    .prepare("SELECT content_hash FROM collection_files WHERE id = ?")
+    .get(fileId) as { content_hash: string } | undefined;
   db.prepare("DELETE FROM collection_files WHERE id = ?").run(fileId);
+  if (row) gcBlobsIfOrphaned([row.content_hash]);
 }
 
 // Insert/refresh articles without linking them to a disease (collections track

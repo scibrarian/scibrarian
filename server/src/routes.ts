@@ -15,13 +15,13 @@ import {
   deleteCollectionFile,
   deleteDisease,
   diseaseArticleCounts,
+  gcBlobsIfOrphaned,
   getArticleAbstract,
   getCitations,
   getCollection,
   getCollectionFile,
   getSettings,
   graphPapers,
-  hashesForCollection,
   journalByNlmId,
   journalsForCollection,
   journalsForDisease,
@@ -42,7 +42,6 @@ import {
   blobExists,
   blobPath,
   cleanUploadName,
-  deleteBlobsIfOrphaned,
   existingBlobHashes,
   isPdfFile,
   storeBlobFromTemp,
@@ -395,12 +394,8 @@ api.put("/collections/:id", (req, res) => {
 });
 
 api.delete("/collections/:id", (req, res) => {
-  // collection_files cascade; cached articles/citations stay (shared globally).
-  // Blobs nothing else references go with the collection.
-  const id = Number(req.params.id);
-  const hashes = hashesForCollection(id);
-  deleteCollection(id);
-  deleteBlobsIfOrphaned(hashes);
+  // Rows cascade and orphaned blobs are GC'd inside deleteCollection.
+  deleteCollection(Number(req.params.id));
   res.status(204).end();
 });
 
@@ -464,7 +459,7 @@ api.post(
     } catch (err) {
       await discardTemps();
       // Blobs stored before the failure but never recorded would leak otherwise.
-      deleteBlobsIfOrphaned(stored.map((s) => s.hash));
+      gcBlobsIfOrphaned(stored.map((s) => s.hash));
       res.status(500).json({ error: errMessage(err) });
     }
   })
@@ -643,10 +638,9 @@ api.post(
 );
 
 api.delete("/collections/files/:fileId", (req, res) => {
-  const fileId = Number(req.params.fileId);
-  const file = getCollectionFile(fileId);
-  deleteCollectionFile(fileId);
-  if (file) deleteBlobsIfOrphaned([file.content_hash]);
+  // The row's blob is GC'd inside deleteCollectionFile if this was the last
+  // reference.
+  deleteCollectionFile(Number(req.params.fileId));
   res.status(204).end();
 });
 

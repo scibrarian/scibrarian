@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { BLOBS_DIR, UPLOAD_TMP_DIR } from "./config.js";
-import { countFilesByHash } from "./db.js";
 
 // Content-addressed store for uploaded PDFs: one file per distinct content,
 // named by its SHA-256 hex digest. Rows in collection_files reference blobs by
@@ -70,16 +69,15 @@ export async function storeBlobFromTemp(tmpPath: string): Promise<{ hash: string
   return { hash };
 }
 
-// Drop blobs that no collection_files row references anymore. Called after
-// deleting file rows; ENOENT just means it was already gone.
-export function deleteBlobsIfOrphaned(hashes: string[]): void {
-  for (const hash of new Set(hashes)) {
-    if (countFilesByHash(hash) === 0) {
-      try {
-        fs.unlinkSync(blobPath(hash));
-      } catch {
-        /* already gone or locked; harmless either way */
-      }
+// Blindly unlink these blobs. Orphanhood is the DB layer's call — see db.ts
+// gcBlobsIfOrphaned, which row-deleting functions invoke themselves — the
+// store knows nothing about references. ENOENT just means already gone.
+export function deleteBlobs(hashes: Iterable<string>): void {
+  for (const hash of hashes) {
+    try {
+      fs.unlinkSync(blobPath(hash));
+    } catch {
+      /* already gone or locked; harmless either way */
     }
   }
 }
