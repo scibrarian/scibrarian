@@ -6,7 +6,6 @@ import multer from "multer";
 import {
   addCollectionFiles,
   collectionCounts,
-  collectionGraphPapers,
   countJournalArticles,
   createCollection,
   createDisease,
@@ -15,15 +14,15 @@ import {
   deleteCollectionFile,
   deleteDisease,
   diseaseArticleCounts,
+  gcBlobsIfOrphaned,
+  getArticleAbstract,
   getCitations,
   getCollection,
   getCollectionFile,
   getSettings,
-  graphPapers,
-  hashesForCollection,
+  graphPapersForSource,
   journalByNlmId,
-  journalsForCollection,
-  journalsForDisease,
+  journalsForSource,
   listCollectionFiles,
   listPapers,
   listCollections,
@@ -36,21 +35,28 @@ import {
   setFileMatched,
   setSetting,
   upsertArticles,
+  type PaperSourceQuery,
 } from "./db.js";
 import {
   blobExists,
   blobPath,
   cleanUploadName,
-  deleteBlobsIfOrphaned,
+  existingBlobHashes,
   isPdfFile,
   storeBlobFromTemp,
 } from "./blobstore.js";
 import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./config.js";
-import { ensureCitations } from "./icite.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
-import { pollAll, pollDisease, rescheduleFromSettings, warmCitations } from "./poller.js";
+import {
+  isValidCron,
+  pollAll,
+  pollDisease,
+  rescheduleFromSettings,
+  warmCitations,
+  withPollLock,
+} from "./poller.js";
 import { ZipArchive } from "archiver";
 import {
   signCollectionShare,
@@ -58,8 +64,16 @@ import {
   signingEnabled,
   verifyCollectionShare,
   verifyFileShare,
+  type ShareVerdict,
 } from "./signing.js";
-import type { GraphEdge, GraphNode, GraphResponse, PapersResponse, Settings } from "./types.js";
+import type {
+  CollectionFile,
+  GraphEdge,
+  GraphNode,
+  GraphResponse,
+  PapersResponse,
+  Settings,
+} from "./types.js";
 import { errMessage, round1 } from "./util.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -93,6 +107,11 @@ function isAdminRequest(req: Request): boolean {
 // Reads are open to everyone; every mutation requires the admin token. This is
 // registered before all routes, so unauthorized uploads are rejected before
 // multer ever writes a temp file.
+//
+// CAUTION: the GET pass-through is fail-open. A new GET route is public unless
+// it gates itself — any route serving stored PDF bytes must start with
+// requireStoredPdfAccess (see /content and /archive), and owner-only reads
+// like GET /settings check isAdminRequest inline.
 api.use((req, res, next) => {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
   if (isAdminRequest(req)) return next();
@@ -105,6 +124,31 @@ api.use((req, res, next) => {
 // admin anyway.
 function libraryOpen(): boolean {
   return getSettings().library_open === "1";
+}
+
+// The one access ladder for GETs that serve stored PDF bytes (the single-file
+// content route and the collection zip): owner, open library, or a valid share
+// signature on the URL. Sends the error response and returns false on denial.
+// Every byte-serving GET must call this first — the gate above lets GETs pass.
+function requireStoredPdfAccess(req: Request, res: Response, verify: () => ShareVerdict): boolean {
+  if (isAdminRequest(req) || libraryOpen()) return true;
+  if (req.query.exp == null && req.query.sig == null) {
+    res.status(401).json({
+      error:
+        "Stored PDFs are owner-only. Ask the owner for a share link. (If the library was just closed, reload the page.)",
+    });
+    return false;
+  }
+  const verdict = verify();
+  if (verdict === "expired") {
+    res.status(403).json({ error: "This share link has expired." });
+    return false;
+  }
+  if (verdict !== "ok") {
+    res.status(403).json({ error: "Invalid share link." });
+    return false;
+  }
+  return true;
 }
 
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
@@ -212,53 +256,81 @@ api.delete("/journals/:id", (req, res) => {
 
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
+// The paper source both /papers and /graph accept: ?disease= or ?collection=
+// (disease wins when both are sent, as before). null = neither given (400).
+// Everything downstream dispatches on the source inside db.ts (listPapers,
+// journalsForSource, graphPapersForSource) — a new source kind is added there,
+// not by branching in each route.
+function parseSource(req: Request): PaperSourceQuery | null {
+  const diseaseId = Number(req.query.disease);
+  const collectionId = Number(req.query.collection);
+  if (diseaseId) return { diseaseId };
+  if (collectionId) return { collectionId };
+  return null;
+}
+
+const SOURCE_REQUIRED = "'disease' or 'collection' query param is required.";
+
 api.get(
   "/papers",
   asyncHandler(async (req, res) => {
-    const diseaseId = Number(req.query.disease);
-    const collectionId = Number(req.query.collection);
-    if (!diseaseId && !collectionId) {
-      return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
-    }
+    const source = parseSource(req);
+    if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
     const q = req.query.q ? String(req.query.q) : undefined;
-    const source = diseaseId ? { diseaseId } : { collectionId };
     let rows = listPapers(source, q);
 
     // Backfill missing/stale citation counts, like /graph does. Poll and import
     // pre-warm them, so this is usually a no-op; re-query only when it wasn't.
     const stale = missingOrStaleCitations(rows.map((r) => r.pmid));
     if (stale.length > 0) {
-      await ensureCitations(stale);
+      // Best-effort: a failing iCite must not take down a view whose paper rows
+      // are entirely local. On failure this no-ops and we serve stale counts.
+      // TODO(perf): this awaits the iCite round-trip before responding and then
+      // re-queries the full list. Poll/import pre-warm counts so the slow path
+      // is rare, but consider making the backfill fire-and-forget — serve the
+      // local rows now, warm the cache for next load — to drop both the latency
+      // and the re-query. Freshness-vs-latency tradeoff; synchronous for now.
+      await warmCitations(stale, "papers");
       rows = listPapers(source, q);
     }
 
+    // One directory read instead of a stat per row. Only collection rows carry
+    // a content_hash; disease rows are always null, so skip the readdir for them.
+    const present = "collectionId" in source ? existingBlobHashes() : null;
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
         ...p,
-        file_exists: content_hash != null && blobExists(content_hash),
+        file_exists: content_hash != null && present != null && present.has(content_hash),
       })),
-      journals: diseaseId ? journalsForDisease(diseaseId) : journalsForCollection(collectionId),
+      journals: journalsForSource(source),
     };
     res.json(body);
   })
 );
+
+// The papers list omits abstracts (they dominate its size); the card view
+// fetches one here on demand. Public article metadata, so open like /papers.
+api.get("/articles/:pmid/abstract", (req, res) => {
+  res.json({ abstract: getArticleAbstract(String(req.params.pmid)) ?? "" });
+});
 
 // ---------- citation graph ----------
 
 api.get(
   "/graph",
   asyncHandler(async (req, res) => {
-    const diseaseId = Number(req.query.disease);
-    const collectionId = Number(req.query.collection);
-    if (!diseaseId && !collectionId) {
-      return res.status(400).json({ error: "'disease' or 'collection' query param is required." });
-    }
-    const papers = diseaseId ? graphPapers(diseaseId) : collectionGraphPapers(collectionId);
+    const source = parseSource(req);
+    if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
+    const papers = graphPapersForSource(source);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
     // Lazily fetch + cache any missing/stale citation rows from iCite.
-    await ensureCitations(missingOrStaleCitations(pmids));
+    // Best-effort: an iCite outage must not 500 the graph, which renders fine
+    // from cached counts (or zeros for never-fetched papers).
+    // TODO(perf): like /papers, this awaits the iCite refresh before responding;
+    // a fire-and-forget backfill would serve cached counts immediately. Deferred.
+    await warmCitations(missingOrStaleCitations(pmids), "graph");
 
     const cites = getCitations(pmids);
     const nodes: GraphNode[] = papers.map((p) => ({
@@ -329,14 +401,26 @@ api.put("/collections/:id", (req, res) => {
 });
 
 api.delete("/collections/:id", (req, res) => {
-  // collection_files cascade; cached articles/citations stay (shared globally).
-  // Blobs nothing else references go with the collection.
-  const id = Number(req.params.id);
-  const hashes = hashesForCollection(id);
-  deleteCollection(id);
-  deleteBlobsIfOrphaned(hashes);
+  // Rows cascade and orphaned blobs are GC'd inside deleteCollection.
+  deleteCollection(Number(req.params.id));
   res.status(204).end();
 });
+
+// The API shape of a collection file: the DB row minus the server-internal
+// content_hash (the blob-store key, which also feeds the share-link MAC), plus
+// whether that blob is still present. The files list and the manual-match
+// response both go through this, so the client always sees one shape.
+// `present`, when given, is a prebuilt set of blob hashes (from one readdir) so
+// a list of files resolves `exists` without a stat syscall per row; a lone file
+// (manual match) just stats directly.
+function apiFile(
+  row: CollectionFile,
+  present?: Set<string>
+): Omit<CollectionFile, "content_hash"> & { exists: boolean } {
+  const { content_hash, ...rest } = row;
+  const exists = present ? present.has(content_hash) : blobExists(content_hash);
+  return { ...rest, exists };
+}
 
 // Every file row of a collection (matched or not), for the management shell:
 // the unmatched-files section and flagging files whose blob has gone missing.
@@ -344,14 +428,8 @@ api.delete("/collections/:id", (req, res) => {
 api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  res.json({
-    // content_hash is the blob-store key — server-internal, so viewers never
-    // see it (it also feeds the share-link MAC).
-    files: listCollectionFiles(id).map(({ content_hash, ...f }) => ({
-      ...f,
-      exists: blobExists(content_hash),
-    })),
-  });
+  const present = existingBlobHashes();
+  res.json({ files: listCollectionFiles(id).map((f) => apiFile(f, present)) });
 });
 
 // Upload PDFs into a collection. Each file is verified by magic bytes, hashed
@@ -388,7 +466,7 @@ api.post(
     } catch (err) {
       await discardTemps();
       // Blobs stored before the failure but never recorded would leak otherwise.
-      deleteBlobsIfOrphaned(stored.map((s) => s.hash));
+      gcBlobsIfOrphaned(stored.map((s) => s.hash));
       res.status(500).json({ error: errMessage(err) });
     }
   })
@@ -414,16 +492,10 @@ api.post("/collections/:id/import", (req, res) => {
 api.get("/collections/files/:fileId/content", (req, res) => {
   const file = getCollectionFile(Number(req.params.fileId));
   if (!file) return res.status(404).json({ error: "File not found." });
-  if (!isAdminRequest(req) && !libraryOpen()) {
-    if (req.query.exp == null && req.query.sig == null) {
-      return res.status(401).json({ error: "Stored files have been set to owner-only, so you must ask the owner for a share link. Please reload the page to reflect these changes in your web browser." });
-    }
-    const verdict = verifyFileShare(file.id, file.content_hash, req.query.exp, req.query.sig);
-    if (verdict === "expired") {
-      return res.status(403).json({ error: "This share link has expired." });
-    }
-    if (verdict !== "ok") return res.status(403).json({ error: "Invalid share link." });
-  }
+  const allowed = requireStoredPdfAccess(req, res, () =>
+    verifyFileShare(file.id, file.content_hash, req.query.exp, req.query.sig)
+  );
+  if (!allowed) return;
   if (!blobExists(file.content_hash)) {
     return res.status(410).json({ error: "That file's PDF is no longer stored." });
   }
@@ -507,16 +579,10 @@ api.get("/collections/:id/archive", (req, res) => {
   const id = Number(req.params.id);
   const collection = getCollection(id);
   if (!collection) return res.status(404).json({ error: "Collection not found." });
-  if (!isAdminRequest(req) && !libraryOpen()) {
-    if (req.query.exp == null && req.query.sig == null) {
-      return res.status(401).json({ error: "Stored PDFs are owner-only. Ask the owner for a share link." });
-    }
-    const verdict = verifyCollectionShare(id, req.query.exp, req.query.sig);
-    if (verdict === "expired") {
-      return res.status(403).json({ error: "This share link has expired." });
-    }
-    if (verdict !== "ok") return res.status(403).json({ error: "Invalid share link." });
-  }
+  const allowed = requireStoredPdfAccess(req, res, () =>
+    verifyCollectionShare(id, req.query.exp, req.query.sig)
+  );
+  if (!allowed) return;
   const files = listCollectionFiles(id).filter((f) => blobExists(f.content_hash));
   if (files.length === 0) {
     return res.status(410).json({ error: "This collection has no stored PDFs." });
@@ -543,7 +609,9 @@ api.get("/collections/:id/archive", (req, res) => {
       name: uniqueZipName(f.file_name, used),
     });
   }
-  void zip.finalize();
+  // The "error" handler above already logs and destroys the response; the
+  // catch just keeps finalize()'s rejection from crashing the process.
+  void zip.finalize().catch(() => {});
 });
 
 api.get("/collections/:id/import/status", (req, res) => {
@@ -569,15 +637,17 @@ api.post(
     upsertArticles(articles);
     await warmCitations([pmid], "manual match");
     setFileMatched(fileId, pmid, "manual");
-    res.json(getCollectionFile(fileId));
+    // Return the same shape as the files list (content_hash stripped, exists
+    // added), not the raw row. getCollectionFile can't be missing here — the
+    // row was verified above and setFileMatched only updates it.
+    res.json(apiFile(getCollectionFile(fileId)!));
   })
 );
 
 api.delete("/collections/files/:fileId", (req, res) => {
-  const fileId = Number(req.params.fileId);
-  const file = getCollectionFile(fileId);
-  deleteCollectionFile(fileId);
-  if (file) deleteBlobsIfOrphaned([file.content_hash]);
+  // The row's blob is GC'd inside deleteCollectionFile if this was the last
+  // reference.
+  deleteCollectionFile(Number(req.params.fileId));
   res.status(204).end();
 });
 
@@ -587,22 +657,17 @@ api.post(
   "/refresh",
   asyncHandler(async (req, res) => {
     const diseaseId = req.query.disease ? Number(req.query.disease) : undefined;
-    const results = diseaseId ? [await pollDisease(diseaseId)] : await pollAll();
+    // Share the scheduler's lock so a manual refresh can't run concurrently with
+    // a scheduled poll (or another refresh) and double up NCBI traffic.
+    const results = await withPollLock(() =>
+      diseaseId ? pollDisease(diseaseId).then((r) => [r]) : pollAll()
+    );
+    if (results === null) {
+      return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
+    }
     res.json({ results, polledAt: new Date().toISOString() });
   })
 );
-
-api.get("/status", (_req, res) => {
-  const counts = diseaseArticleCounts();
-  res.json({
-    diseases: listDiseases().map((d) => ({
-      id: d.id,
-      name: d.name,
-      last_polled_at: d.last_polled_at,
-      articleCount: counts[d.id] ?? 0,
-    })),
-  });
-});
 
 // ---------- settings ----------
 
@@ -622,37 +687,76 @@ function shareUrls(): string[] {
 }
 
 // Never echo the raw API key back; just whether one is set.
+// How the API treats each setting: how PUT persists it and how the response
+// echoes it. `satisfies Record<keyof Settings, …>` makes the table exhaustive —
+// adding a setting to SETTING_DEFAULTS without deciding its rule is a compile
+// error, so a new toggle can never round-trip 200 without persisting.
+type SettingRule =
+  | { kind: "string"; validate?: (value: string) => string | null } // returns an error message
+  | { kind: "boolean" }
+  | { kind: "secret"; expose: `has_${string}` }; // write-only; response carries presence
+
+const SETTING_RULES = {
+  ncbi_email: { kind: "string" },
+  // A blank cron means "use the default"; anything else must be valid, or the
+  // scheduler would silently fall back to the default while the UI reported a
+  // successful save.
+  poll_cron: {
+    kind: "string",
+    validate: (v) => (v && !isValidCron(v) ? "That isn't a valid cron expression." : null),
+  },
+  poll_enabled: { kind: "boolean" },
+  library_open: { kind: "boolean" },
+  ncbi_api_key: { kind: "secret", expose: "has_api_key" },
+} satisfies Record<keyof Settings, SettingRule>;
+
+const SETTING_KEYS = Object.keys(SETTING_RULES) as (keyof Settings)[];
+
 function settingsResponse() {
   const s = getSettings();
-  return {
-    ncbi_email: s.ncbi_email,
-    poll_cron: s.poll_cron,
-    poll_enabled: s.poll_enabled === "1",
-    library_open: s.library_open === "1",
-    has_api_key: Boolean(s.ncbi_api_key),
-    share_urls: shareUrls(),
-  };
+  const out: Record<string, unknown> = {};
+  for (const key of SETTING_KEYS) {
+    const rule: SettingRule = SETTING_RULES[key];
+    if (rule.kind === "string") out[key] = s[key];
+    else if (rule.kind === "boolean") out[key] = s[key] === "1";
+    else out[rule.expose] = Boolean(s[key]); // never echo the secret itself
+  }
+  out.share_urls = shareUrls(); // derived from the bind address, not a setting
+  return out;
 }
 
-api.get("/settings", (_req, res) => {
+// Unlike other reads, this one is admin-only: it exposes the owner's NCBI email
+// and this machine's external IPs (share_urls). The global gate above only
+// covers mutations, so GETs need their own check — without it, any viewer on a
+// shared instance could read these.
+api.get("/settings", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
   res.json(settingsResponse());
 });
 
 api.put("/settings", (req, res) => {
-  const body = req.body ?? {};
-  const editable: (keyof Settings)[] = ["ncbi_email", "poll_cron"];
-  for (const key of editable) {
-    if (typeof body[key] === "string") setSetting(key, body[key].trim());
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  // Validate everything before persisting anything, so a rejected value can't
+  // leave the save half-applied.
+  for (const key of SETTING_KEYS) {
+    const rule: SettingRule = SETTING_RULES[key];
+    const value = body[key];
+    if (rule.kind === "string" && rule.validate && typeof value === "string") {
+      const err = rule.validate(value.trim());
+      if (err) return res.status(400).json({ error: err });
+    }
   }
-  if (typeof body.poll_enabled === "boolean") {
-    setSetting("poll_enabled", body.poll_enabled ? "1" : "0");
-  }
-  if (typeof body.library_open === "boolean") {
-    setSetting("library_open", body.library_open ? "1" : "0");
-  }
-  // Only overwrite the API key when a non-empty value is explicitly provided.
-  if (typeof body.ncbi_api_key === "string" && body.ncbi_api_key.trim()) {
-    setSetting("ncbi_api_key", body.ncbi_api_key.trim());
+  for (const key of SETTING_KEYS) {
+    const rule: SettingRule = SETTING_RULES[key];
+    const value = body[key];
+    if (rule.kind === "string" && typeof value === "string") {
+      setSetting(key, value.trim());
+    } else if (rule.kind === "boolean" && typeof value === "boolean") {
+      setSetting(key, value ? "1" : "0");
+    } else if (rule.kind === "secret" && typeof value === "string" && value.trim()) {
+      // Secrets are write-only: only overwrite on an explicit non-empty value.
+      setSetting(key, value.trim());
+    }
   }
   rescheduleFromSettings();
   res.json(settingsResponse());

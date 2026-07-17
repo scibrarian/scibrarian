@@ -16,6 +16,11 @@ import type { CollectionFile, CollectionFilesResponse, ImportStatus } from "../t
 // gigantic multipart body (the server also caps files-per-request).
 const UPLOAD_BATCH = 20;
 
+// Consecutive failed status polls before we give up on a running import. A
+// single blip must not freeze the progress UI, but a truly-dead server
+// shouldn't be polled forever either. At the 1s tick this is ~5s of retries.
+const MAX_POLL_FAILURES = 5;
+
 // webkitdirectory (folder selection) isn't in React's input typings.
 const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInputElement>;
 
@@ -74,16 +79,33 @@ export function CollectionView({
 
   const startPolling = useCallback(() => {
     stopPolling();
+    // Scoped to this polling session (reset each startPolling). inFlight stops
+    // slow responses from stacking requests — without it, several polls can be
+    // outstanding at once and each fires onChanged() when the job completes.
+    let inFlight = false;
+    let failures = 0;
     pollRef.current = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const s = await api.getImportStatus(collectionId);
+        failures = 0;
         setImportStatus(s);
         if (s.state === "done" || s.state === "error" || s.state === "idle") {
           stopPolling();
           onChanged();
         }
       } catch {
-        stopPolling();
+        // A transient failure must not freeze the progress bar: keep polling
+        // and retry next tick. Only give up after several failures in a row —
+        // then clear the stuck "running" UI so it doesn't hang forever.
+        if (++failures >= MAX_POLL_FAILURES) {
+          stopPolling();
+          setImportStatus(null);
+          setError("Lost contact with the import job. Reload to check its status.");
+        }
+      } finally {
+        inFlight = false;
       }
     }, 1000);
   }, [collectionId, onChanged, stopPolling]);
@@ -162,11 +184,11 @@ export function CollectionView({
     (f) => f.match_status === "unmatched" || f.match_status === "error" || f.match_status === "pending"
   );
 
-  const running = importStatus?.state === "running";
-  const progressPct =
-    importStatus && importStatus.total
-      ? Math.round(((importStatus.processed ?? 0) / importStatus.total) * 100)
-      : 0;
+  // Narrow away the "idle" sentinel so the live-job fields (total, processed, …)
+  // are available; when idle there's no progress to show anyway.
+  const job = importStatus && importStatus.state !== "idle" ? importStatus : null;
+  const running = job?.state === "running";
+  const progressPct = job && job.total ? Math.round((job.processed / job.total) * 100) : 0;
 
   return (
     <div className="collection-view">
@@ -217,10 +239,10 @@ export function CollectionView({
             <div className="progress-fill" style={{ width: `${progressPct}%` }} />
           </div>
           <div className="progress-label">
-            Scanning {importStatus?.processed ?? 0} / {importStatus?.total ?? 0} ·{" "}
-            {importStatus?.matched ?? 0} matched · {importStatus?.unmatched ?? 0} unmatched
-            {importStatus?.errors ? ` · ${importStatus.errors} error` : ""}
-            {importStatus?.currentFile ? ` · ${importStatus.currentFile}` : ""}
+            Scanning {job?.processed ?? 0} / {job?.total ?? 0} ·{" "}
+            {job?.matched ?? 0} matched · {job?.unmatched ?? 0} unmatched
+            {job?.errors ? ` · ${job.errors} error` : ""}
+            {job?.currentFile ? ` · ${job.currentFile}` : ""}
           </div>
         </div>
       )}

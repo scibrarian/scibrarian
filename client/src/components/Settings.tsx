@@ -76,10 +76,22 @@ export function Settings({
       setJournalResults([]);
       return;
     }
+    // Guard against out-of-order responses: the cleanup runs before the next
+    // query fires, so a slower earlier request can't overwrite newer results
+    // (which would show options that don't match the input — you could add the
+    // wrong journal).
+    let active = true;
     api
       .searchJournals(journalQuery)
-      .then((r) => setJournalResults(r.results))
-      .catch(() => setJournalResults([]));
+      .then((r) => {
+        if (active) setJournalResults(r.results);
+      })
+      .catch(() => {
+        if (active) setJournalResults([]);
+      });
+    return () => {
+      active = false;
+    };
   }, [journalQuery]);
 
   const listOpen = !listDismissed && journalResults.length > 0;

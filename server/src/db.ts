@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import type {
   Article,
@@ -154,14 +155,14 @@ export function setSetting(key: keyof Settings, value: string): void {
   setSettingStmt.run(key, value);
 }
 
+// Derived from the defaults' key set so a newly added setting can't be
+// persisted but read back as "" because this list wasn't updated.
 export function getSettings(): Settings {
-  return {
-    ncbi_api_key: getSetting("ncbi_api_key"),
-    ncbi_email: getSetting("ncbi_email"),
-    poll_cron: getSetting("poll_cron"),
-    poll_enabled: getSetting("poll_enabled"),
-    library_open: getSetting("library_open"),
-  };
+  const out = {} as Settings;
+  for (const key of Object.keys(SETTING_DEFAULTS) as (keyof Settings)[]) {
+    out[key] = getSetting(key);
+  }
+  return out;
 }
 
 // Seed editable settings with their defaults only if not already present.
@@ -250,22 +251,32 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
     .get(nlmId) as Journal | undefined;
 }
 
+// Which of a journal's articles a removal would permanently delete: the
+// journal's articles minus those referenced by a collection file (library
+// copies are kept). One WHERE fragment, bound to a single nlm_id param, shared
+// by the confirm-dialog count and the destructive DELETE below — if the
+// pinning rule ever changes, both move together, so the dialog can't promise
+// one thing and the delete do another.
+const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
+   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`;
+
+function journalNlmId(id: number): string | null {
+  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
+    | { nlm_id: string | null }
+    | undefined;
+  return j?.nlm_id ?? null;
+}
+
 // How many stored articles a journal removal would permanently delete (for the
 // confirmation). Articles referenced by a collection file are kept, so they
 // are excluded from the count.
 export function countJournalArticles(id: number): number {
-  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
-    | { nlm_id: string | null }
-    | undefined;
-  if (!j || !j.nlm_id) return 0;
+  const nlmId = journalNlmId(id);
+  if (!nlmId) return 0;
   return (
     db
-      .prepare(
-        `SELECT COUNT(*) AS c FROM articles
-         WHERE nlm_id = ?
-           AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`
-      )
-      .get(j.nlm_id) as { c: number }
+      .prepare(`SELECT COUNT(*) AS c FROM articles WHERE ${DELETABLE_JOURNAL_ARTICLES}`)
+      .get(nlmId) as { c: number }
   ).c;
 }
 
@@ -274,31 +285,24 @@ export function countJournalArticles(id: number): number {
 // untouched. Unreferenced articles are permanently deleted (article_diseases
 // rows cascade via the foreign key).
 export const removeJournalWithArticles = transaction((id: number): JournalRemovalResult => {
-  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
-    | { nlm_id: string | null }
-    | undefined;
+  const nlmId = journalNlmId(id);
   let deletedArticles = 0;
   let removedFromInterests = 0;
-  if (j && j.nlm_id) {
+  if (nlmId) {
     removedFromInterests = (
       db
         .prepare(
           `SELECT COUNT(DISTINCT pmid) AS c FROM article_diseases
            WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)`
         )
-        .get(j.nlm_id) as { c: number }
+        .get(nlmId) as { c: number }
     ).c;
     db.prepare(
       "DELETE FROM article_diseases WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)"
-    ).run(j.nlm_id);
+    ).run(nlmId);
+    // Same predicate the confirm dialog counted with (DELETABLE_JOURNAL_ARTICLES).
     deletedArticles = Number(
-      db
-        .prepare(
-          `DELETE FROM articles
-           WHERE nlm_id = ?
-             AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`
-        )
-        .run(j.nlm_id).changes
+      db.prepare(`DELETE FROM articles WHERE ${DELETABLE_JOURNAL_ARTICLES}`).run(nlmId).changes
     );
   }
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
@@ -333,6 +337,15 @@ export function existingPmids(pmids: string[]): Set<string> {
   return new Set(rows.map((r) => r.pmid));
 }
 
+// The papers list omits abstracts (they dominate its size); the card view
+// fetches one on demand by pmid. Returns null for an unknown pmid.
+export function getArticleAbstract(pmid: string): string | null {
+  const row = db.prepare("SELECT abstract FROM articles WHERE pmid = ?").get(pmid) as
+    | { abstract: string }
+    | undefined;
+  return row?.abstract ?? null;
+}
+
 const upsertArticleStmt = db.prepare(`
   INSERT INTO articles (pmid, title, abstract, journal_name, nlm_id, authors, pub_date, pub_date_display, doi, url)
   VALUES (@pmid, @title, @abstract, @journal_name, @nlm_id, @authors, @pub_date, @pub_date_display, @doi, @url)
@@ -354,21 +367,30 @@ const linkArticleStmt = db.prepare(
 
 export type ArticleInsert = Omit<Article, "authors" | "first_seen_at"> & { authors: string[] };
 
+// The one place an ArticleInsert maps onto the articles upsert — shared by the
+// disease path (saveArticles) and the collection path (upsertArticles), so a
+// new article column can't end up persisted by one and dropped by the other.
+// (Both callers are transactions; this stays a plain per-row helper because
+// the transaction wrapper's BEGIN can't nest.)
+function upsertArticle(a: ArticleInsert): void {
+  upsertArticleStmt.run({
+    pmid: a.pmid,
+    title: a.title,
+    abstract: a.abstract,
+    journal_name: a.journal_name,
+    nlm_id: a.nlm_id || null,
+    authors: JSON.stringify(a.authors),
+    pub_date: a.pub_date,
+    pub_date_display: a.pub_date_display,
+    doi: a.doi,
+    url: a.url,
+  });
+}
+
 // Insert/refresh a batch of articles and link them to a disease, atomically.
 export const saveArticles = transaction((articles: ArticleInsert[], diseaseId: number) => {
   for (const a of articles) {
-    upsertArticleStmt.run({
-      pmid: a.pmid,
-      title: a.title,
-      abstract: a.abstract,
-      journal_name: a.journal_name,
-      nlm_id: a.nlm_id || null,
-      authors: JSON.stringify(a.authors),
-      pub_date: a.pub_date,
-      pub_date_display: a.pub_date_display,
-      doi: a.doi,
-      url: a.url,
-    });
+    upsertArticle(a);
     linkArticleStmt.run(a.pmid, diseaseId);
   }
 });
@@ -390,7 +412,16 @@ export function diseaseArticleCounts(): Record<number, number> {
 }
 
 // Distinct journal display names that have articles for a disease (filter chips).
-export function journalsForDisease(diseaseId: number): string[] {
+// Journal filter-chip names for either paper source. Routes dispatch through
+// this (and graphPapersForSource / listPapers) rather than picking per-source
+// functions themselves — a new source kind extends the union and these
+// dispatchers, and the compiler flags every spot that must learn about it.
+export function journalsForSource(source: PaperSourceQuery): string[] {
+  if ("diseaseId" in source) return journalsForDisease(source.diseaseId);
+  return journalsForCollection(source.collectionId);
+}
+
+function journalsForDisease(diseaseId: number): string[] {
   const rows = db
     .prepare(
       `SELECT DISTINCT ${JOURNAL_DISPLAY} AS j FROM articles a
@@ -405,6 +436,14 @@ export function journalsForDisease(diseaseId: number): string[] {
 // Which paper set /api/papers reads: a topic's articles or a collection's
 // matched uploads. Mirrors the client's PaperSource.
 export type PaperSourceQuery = { diseaseId: number } | { collectionId: number };
+
+// Escape LIKE wildcards so a literal % or _ in a user query (e.g. "100%",
+// "COVID_19") matches itself instead of acting as a wildcard. Callers wrap the
+// result in their own %/_ and must pair each LIKE with ESCAPE '\'. The
+// backslash itself is escaped first so it can serve as the escape character.
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
 
 // The unified rows behind the table and timeline views, for either source:
 // article metadata, cached citation count, and — for collections — the first
@@ -434,12 +473,13 @@ export function listPapers(
     : "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash";
   let search = "";
   if (q) {
-    search = "WHERE (a.title LIKE ? OR a.abstract LIKE ?)";
-    params.push(`%${q}%`, `%${q}%`);
+    search = "WHERE (a.title LIKE ? ESCAPE '\\' OR a.abstract LIKE ? ESCAPE '\\')";
+    const like = `%${escapeLike(q)}%`;
+    params.push(like, like);
   }
   const rows = db
     .prepare(
-      `SELECT a.pmid, a.title, a.abstract, ${JOURNAL_DISPLAY} AS journal_name,
+      `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
               a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
               COALESCE(pc.citation_count, 0) AS citation_count,
               ${fileCols}
@@ -459,7 +499,7 @@ export function listPapers(
 
 // Distinct journal display names present in a collection (filter chips) —
 // the collection-source counterpart of journalsForDisease.
-export function journalsForCollection(collectionId: number): string[] {
+function journalsForCollection(collectionId: number): string[] {
   const rows = db
     .prepare(
       `SELECT DISTINCT ${JOURNAL_DISPLAY} AS jn
@@ -498,8 +538,15 @@ export interface GraphPaper {
   pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
 }
 
+// The papers that make up a source's graph — the per-source dispatch lives
+// here, not in routes (see journalsForSource).
+export function graphPapersForSource(source: PaperSourceQuery): GraphPaper[] {
+  if ("diseaseId" in source) return graphPapers(source.diseaseId);
+  return collectionGraphPapers(source.collectionId);
+}
+
 // The papers that make up one disease's graph (green nodes).
-export function graphPapers(diseaseId: number): GraphPaper[] {
+function graphPapers(diseaseId: number): GraphPaper[] {
   return db
     .prepare(
       `SELECT a.pmid, a.title, a.url, a.pub_date FROM articles a
@@ -591,8 +638,13 @@ export function renameCollection(id: number, name: string): void {
 }
 
 export function deleteCollection(id: number): void {
+  // Hashes are captured before the delete (the cascade takes the rows with
+  // it), then blobs nothing else references are GC'd — here, not at call
+  // sites, so a deletion path can't forget the dance and leak blobs.
+  const hashes = hashesForCollection(id);
   // collection_files rows cascade; cached articles/paper_citations stay.
   db.prepare("DELETE FROM collections WHERE id = ?").run(id);
+  gcBlobsIfOrphaned(hashes);
 }
 
 export function collectionCounts(): Record<number, { files: number; matched: number }> {
@@ -625,7 +677,7 @@ export const addCollectionFiles = transaction(
 
 // How many rows (across all collections) still reference a blob — 0 means the
 // blob itself can be deleted.
-export function countFilesByHash(hash: string): number {
+function countFilesByHash(hash: string): number {
   return (
     db.prepare("SELECT COUNT(*) AS c FROM collection_files WHERE content_hash = ?").get(hash) as {
       c: number;
@@ -633,8 +685,16 @@ export function countFilesByHash(hash: string): number {
   ).c;
 }
 
-// Captured before deleting a collection so its blobs can be GC'd afterwards.
-export function hashesForCollection(collectionId: number): string[] {
+// Delete whichever of these blobs no collection_files row references anymore.
+// The row-deleting functions here call it themselves, so no route has to
+// remember the capture-hashes-then-GC dance. Exported for the one non-row
+// case: uploads whose blobs were stored but whose rows were never recorded.
+export function gcBlobsIfOrphaned(hashes: string[]): void {
+  deleteBlobs([...new Set(hashes)].filter((h) => countFilesByHash(h) === 0));
+}
+
+// The blobs a collection's rows reference, captured before deletion for GC.
+function hashesForCollection(collectionId: number): string[] {
   return (
     db
       .prepare("SELECT DISTINCT content_hash FROM collection_files WHERE collection_id = ?")
@@ -685,33 +745,26 @@ export function setFileError(fileId: number, message: string): void {
 }
 
 export function deleteCollectionFile(fileId: number): void {
+  // Same enforced order as deleteCollection: capture the hash, delete the
+  // row, GC the blob if that was the last reference.
+  const row = db
+    .prepare("SELECT content_hash FROM collection_files WHERE id = ?")
+    .get(fileId) as { content_hash: string } | undefined;
   db.prepare("DELETE FROM collection_files WHERE id = ?").run(fileId);
+  if (row) gcBlobsIfOrphaned([row.content_hash]);
 }
 
 // Insert/refresh articles without linking them to a disease (collections track
 // membership in collection_files instead of article_diseases).
 export const upsertArticles = transaction((articles: ArticleInsert[]) => {
-  for (const a of articles) {
-    upsertArticleStmt.run({
-      pmid: a.pmid,
-      title: a.title,
-      abstract: a.abstract,
-      journal_name: a.journal_name,
-      nlm_id: a.nlm_id || null,
-      authors: JSON.stringify(a.authors),
-      pub_date: a.pub_date,
-      pub_date_display: a.pub_date_display,
-      doi: a.doi,
-      url: a.url,
-    });
-  }
+  for (const a of articles) upsertArticle(a);
 });
 
 // The papers-list rows for a collection. DISTINCT pmid collapses duplicate
 // copies of the same paper (two files, one PMID) into a single row.
 // The papers that make up one collection's citation graph (same shape as
 // graphPapers, so the /graph route works on either source).
-export function collectionGraphPapers(collectionId: number): GraphPaper[] {
+function collectionGraphPapers(collectionId: number): GraphPaper[] {
   return db
     .prepare(
       `SELECT DISTINCT a.pmid, a.title, a.url, a.pub_date FROM articles a
@@ -751,13 +804,14 @@ export const bulkInsertCatalog = transaction((rows: CatalogSeed[]) => {
 
 // Autocomplete: match title/abbreviation, prefix matches first, then shortest title.
 export function searchCatalog(q: string, limit = 10): CatalogRow[] {
-  const like = `%${q}%`;
-  const prefix = `${q}%`;
+  const esc = escapeLike(q);
+  const like = `%${esc}%`;
+  const prefix = `${esc}%`;
   return db
     .prepare(
       `SELECT * FROM journal_catalog
-       WHERE title LIKE ? OR med_abbr LIKE ? OR iso_abbr LIKE ?
-       ORDER BY CASE WHEN title LIKE ? OR med_abbr LIKE ? THEN 0 ELSE 1 END, length(title)
+       WHERE title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' OR iso_abbr LIKE ? ESCAPE '\\'
+       ORDER BY CASE WHEN title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, length(title)
        LIMIT ?`
     )
     .all(like, like, like, prefix, prefix, limit) as unknown as CatalogRow[];

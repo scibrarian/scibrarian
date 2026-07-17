@@ -12,32 +12,18 @@ import { extractPdfText } from "./pdf-text.js";
 import { findDois, findPmid } from "./pdf-match.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
-import type { CollectionFile } from "./types.js";
+import type { CollectionFile, ImportJob } from "./types.js";
 import { chunk, errMessage } from "./util.js";
 
 // One import job per collection, in memory. Single-user app: a server restart
 // mid-import simply leaves rows in 'pending', and the next import resumes them
 // (the job always drives off pendingCollectionFiles). Finished jobs stay in the
 // map (until the next import overwrites them) so the client can read the final
-// tallies.
+// tallies. The ImportJob shape lives in shared/types.ts.
 
-export interface ImportStatus {
-  jobId: string;
-  state: "running" | "done" | "error";
-  total: number; // pending files at job start
-  processed: number; // PDFs text-extracted so far
-  matched: number;
-  unmatched: number;
-  errors: number;
-  currentFile: string | null;
-  startedAt: string;
-  finishedAt: string | null;
-  error?: string; // fatal job failure only
-}
+const jobs = new Map<number, ImportJob>();
 
-const jobs = new Map<number, ImportStatus>();
-
-export function getImportStatus(collectionId: number): ImportStatus | null {
+export function getImportStatus(collectionId: number): ImportJob | null {
   return jobs.get(collectionId) ?? null;
 }
 
@@ -51,9 +37,9 @@ const RESOLVE_BATCH = 50;
 // PMIDs per esummary/efetch call (matches the poller's batch size).
 const FETCH_BATCH = 100;
 
-export function startImport(collectionId: number, collectionName: string): ImportStatus {
+export function startImport(collectionId: number, collectionName: string): ImportJob {
   const pending = pendingCollectionFiles(collectionId);
-  const job: ImportStatus = {
+  const job: ImportJob = {
     jobId: randomUUID(),
     state: "running",
     total: pending.length,
@@ -77,7 +63,7 @@ interface Candidate {
 }
 
 async function runImport(
-  job: ImportStatus,
+  job: ImportJob,
   files: CollectionFile[],
   label: string
 ): Promise<void> {
@@ -140,7 +126,7 @@ async function validatePmids(pmids: string[]): Promise<Set<string>> {
 
 // Match candidates by explicit PMID first (free), then by DOI→PMID lookup.
 // Returns the PMIDs newly matched in this round (for citation warming).
-async function resolveCandidates(candidates: Candidate[], job: ImportStatus): Promise<string[]> {
+async function resolveCandidates(candidates: Candidate[], job: ImportJob): Promise<string[]> {
   if (candidates.length === 0) return [];
   const matchedPmids: string[] = [];
 
