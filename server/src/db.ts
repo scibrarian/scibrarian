@@ -251,22 +251,32 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
     .get(nlmId) as Journal | undefined;
 }
 
+// Which of a journal's articles a removal would permanently delete: the
+// journal's articles minus those referenced by a collection file (library
+// copies are kept). One WHERE fragment, bound to a single nlm_id param, shared
+// by the confirm-dialog count and the destructive DELETE below — if the
+// pinning rule ever changes, both move together, so the dialog can't promise
+// one thing and the delete do another.
+const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
+   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`;
+
+function journalNlmId(id: number): string | null {
+  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
+    | { nlm_id: string | null }
+    | undefined;
+  return j?.nlm_id ?? null;
+}
+
 // How many stored articles a journal removal would permanently delete (for the
 // confirmation). Articles referenced by a collection file are kept, so they
 // are excluded from the count.
 export function countJournalArticles(id: number): number {
-  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
-    | { nlm_id: string | null }
-    | undefined;
-  if (!j || !j.nlm_id) return 0;
+  const nlmId = journalNlmId(id);
+  if (!nlmId) return 0;
   return (
     db
-      .prepare(
-        `SELECT COUNT(*) AS c FROM articles
-         WHERE nlm_id = ?
-           AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`
-      )
-      .get(j.nlm_id) as { c: number }
+      .prepare(`SELECT COUNT(*) AS c FROM articles WHERE ${DELETABLE_JOURNAL_ARTICLES}`)
+      .get(nlmId) as { c: number }
   ).c;
 }
 
@@ -275,31 +285,24 @@ export function countJournalArticles(id: number): number {
 // untouched. Unreferenced articles are permanently deleted (article_diseases
 // rows cascade via the foreign key).
 export const removeJournalWithArticles = transaction((id: number): JournalRemovalResult => {
-  const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
-    | { nlm_id: string | null }
-    | undefined;
+  const nlmId = journalNlmId(id);
   let deletedArticles = 0;
   let removedFromInterests = 0;
-  if (j && j.nlm_id) {
+  if (nlmId) {
     removedFromInterests = (
       db
         .prepare(
           `SELECT COUNT(DISTINCT pmid) AS c FROM article_diseases
            WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)`
         )
-        .get(j.nlm_id) as { c: number }
+        .get(nlmId) as { c: number }
     ).c;
     db.prepare(
       "DELETE FROM article_diseases WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)"
-    ).run(j.nlm_id);
+    ).run(nlmId);
+    // Same predicate the confirm dialog counted with (DELETABLE_JOURNAL_ARTICLES).
     deletedArticles = Number(
-      db
-        .prepare(
-          `DELETE FROM articles
-           WHERE nlm_id = ?
-             AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`
-        )
-        .run(j.nlm_id).changes
+      db.prepare(`DELETE FROM articles WHERE ${DELETABLE_JOURNAL_ARTICLES}`).run(nlmId).changes
     );
   }
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
