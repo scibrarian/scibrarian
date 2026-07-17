@@ -155,14 +155,14 @@ export function setSetting(key: keyof Settings, value: string): void {
   setSettingStmt.run(key, value);
 }
 
+// Derived from the defaults' key set so a newly added setting can't be
+// persisted but read back as "" because this list wasn't updated.
 export function getSettings(): Settings {
-  return {
-    ncbi_api_key: getSetting("ncbi_api_key"),
-    ncbi_email: getSetting("ncbi_email"),
-    poll_cron: getSetting("poll_cron"),
-    poll_enabled: getSetting("poll_enabled"),
-    library_open: getSetting("library_open"),
-  };
+  const out = {} as Settings;
+  for (const key of Object.keys(SETTING_DEFAULTS) as (keyof Settings)[]) {
+    out[key] = getSetting(key);
+  }
+  return out;
 }
 
 // Seed editable settings with their defaults only if not already present.
