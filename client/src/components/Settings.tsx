@@ -4,7 +4,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { ConfirmDialog } from "./Dialogs";
-import type { AppSettings, Disease, Journal, JournalSearchResult } from "../types";
+import type { AppSettings, Topic, Journal, JournalSearchResult } from "../types";
 
 const SMALL_WORDS = new Set([
   "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor",
@@ -35,7 +35,7 @@ export function Settings({
   onPapersRemoved: (count: number) => void;
 }) {
   const [journals, setJournals] = useState<Journal[]>([]);
-  const [diseases, setDiseases] = useState<Disease[]>([]);
+  const [topics, setTopics] = useState<Topic[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
   const [journalName, setJournalName] = useState("");
@@ -45,8 +45,8 @@ export function Settings({
   const [listDismissed, setListDismissed] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const listRef = useRef<HTMLUListElement>(null);
-  const [diseaseName, setDiseaseName] = useState("");
-  const [diseaseTerm, setDiseaseTerm] = useState("");
+  const [topicName, setTopicName] = useState("");
+  const [topicTerm, setTopicTerm] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -54,13 +54,13 @@ export function Settings({
   // The journal warning depends on an article count fetched *before* the
   // dialog opens, so the pending removal carries its message along.
   const [journalToRemove, setJournalToRemove] = useState<{ journal: Journal; message: string } | null>(null);
-  const [diseaseToRemove, setDiseaseToRemove] = useState<number | null>(null);
+  const [topicToRemove, setTopicToRemove] = useState<number | null>(null);
 
   function reload() {
-    Promise.all([api.getJournals(), api.getDiseases(), api.getSettings()])
+    Promise.all([api.getJournals(), api.getTopics(), api.getSettings()])
       .then(([j, d, s]) => {
         setJournals(j);
-        setDiseases(d);
+        setTopics(d);
         setSettings(s);
       })
       .catch((e) => setError(e.message));
@@ -179,19 +179,19 @@ export function Settings({
     }
   }
 
-  async function addDisease(e: FormEvent) {
+  async function addTopic(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    const name = diseaseName.trim();
-    const term = diseaseTerm.trim();
+    const name = topicName.trim();
+    const term = topicTerm.trim();
     if (!name || !term) {
-      setError("A disease needs both a name and a PubMed search term.");
+      setError("A topic needs both a name and a PubMed search term.");
       return;
     }
     try {
-      await api.createDisease(name, term);
-      setDiseaseName("");
-      setDiseaseTerm("");
+      await api.createTopic(name, term);
+      setTopicName("");
+      setTopicTerm("");
       reload();
       onDataChanged();
     } catch (err) {
@@ -199,11 +199,11 @@ export function Settings({
     }
   }
 
-  async function removeDisease() {
-    if (diseaseToRemove == null) return;
-    setDiseaseToRemove(null);
+  async function removeTopic() {
+    if (topicToRemove == null) return;
+    setTopicToRemove(null);
     try {
-      await api.deleteDisease(diseaseToRemove);
+      await api.deleteTopic(topicToRemove);
       reload();
       onDataChanged();
     } catch (err) {
@@ -360,39 +360,39 @@ export function Settings({
       </section>
 
       <section className="panel">
-        <h2>Diseases</h2>
+        <h2>Topics</h2>
         <p className="hint">
-          Each disease becomes a topic in <strong>🔍 Interests</strong>. The{" "}
+          Each topic appears under <strong>🔍 Interests</strong>. The{" "}
           <strong>PubMed term</strong> can be a MeSH heading
           like <code>"diabetes mellitus, type 2"[MeSH]</code> or plain keywords like{" "}
           <code>alzheimer disease</code>. MeSH terms are more precise.
         </p>
-        <form className="stacked-form" onSubmit={addDisease}>
+        <form className="stacked-form" onSubmit={addTopic}>
           <input
-            value={diseaseName}
-            onChange={(e) => setDiseaseName(e.target.value)}
+            value={topicName}
+            onChange={(e) => setTopicName(e.target.value)}
             placeholder="Display name (e.g. Type 2 Diabetes)"
           />
           <input
-            value={diseaseTerm}
-            onChange={(e) => setDiseaseTerm(e.target.value)}
+            value={topicTerm}
+            onChange={(e) => setTopicTerm(e.target.value)}
             placeholder='PubMed term (e.g. "diabetes mellitus, type 2"[MeSH])'
           />
-          <button type="submit">Add disease</button>
+          <button type="submit">Add topic</button>
         </form>
         <ul className="list">
-          {diseases.map((d) => (
+          {topics.map((d) => (
             <li key={d.id}>
               <span>
                 <strong>{d.name}</strong>
                 <code className="term">{d.term}</code>
               </span>
-              <button className="link-btn danger" onClick={() => setDiseaseToRemove(d.id)}>
+              <button className="link-btn danger" onClick={() => setTopicToRemove(d.id)}>
                 Remove
               </button>
             </li>
           ))}
-          {diseases.length === 0 && <li className="muted">No diseases yet.</li>}
+          {topics.length === 0 && <li className="muted">No topics yet.</li>}
         </ul>
       </section>
 
@@ -518,13 +518,13 @@ export function Settings({
         onCancel={() => setJournalToRemove(null)}
       />
       <ConfirmDialog
-        open={diseaseToRemove != null}
-        title="Remove this disease?"
+        open={topicToRemove != null}
+        title="Remove this topic?"
         message="Its timeline links are removed too. Papers stay in the database."
         confirmLabel="Remove"
         danger
-        onConfirm={removeDisease}
-        onCancel={() => setDiseaseToRemove(null)}
+        onConfirm={removeTopic}
+        onCancel={() => setTopicToRemove(null)}
       />
     </div>
   );

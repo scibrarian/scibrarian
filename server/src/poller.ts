@@ -3,12 +3,12 @@ import { DEFAULT_POLL_CRON } from "./config.js";
 import {
   db,
   existingPmids,
-  getDisease,
+  getTopic,
   getSettings,
-  listDiseases,
+  listTopics,
   listJournals,
   saveArticles,
-  setDiseaseLastPolled,
+  setTopicLastPolled,
   transaction,
 } from "./db.js";
 import { ensureCitations } from "./icite.js";
@@ -18,16 +18,16 @@ import { chunk, errMessage } from "./util.js";
 
 const BATCH_SIZE = 100;
 
-// Link existing articles to a disease without refetching them from PubMed.
+// Link existing articles to a topic without refetching them from PubMed.
 // Returns how many links were newly created — INSERT OR IGNORE reports 0
-// changes for a (pmid, disease) row that already existed — so a poll can count
+// changes for a (pmid, topic) row that already existed — so a poll can count
 // these toward its "added" delta.
 const linkStmt = db.prepare(
-  "INSERT OR IGNORE INTO article_diseases (pmid, disease_id) VALUES (?, ?)"
+  "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
 );
-const linkKnown = transaction((pmids: string[], diseaseId: number): number => {
+const linkKnown = transaction((pmids: string[], topicId: number): number => {
   let linked = 0;
-  for (const pmid of pmids) linked += Number(linkStmt.run(pmid, diseaseId).changes);
+  for (const pmid of pmids) linked += Number(linkStmt.run(pmid, topicId).changes);
   return linked;
 });
 
@@ -54,22 +54,22 @@ function mhdaWindowStart(lastPolledIso: string): string {
   return d.toISOString().slice(0, 10).replace(/-/g, "/");
 }
 
-export async function pollDisease(id: number): Promise<PollResult> {
-  const disease = getDisease(id);
-  if (!disease) {
-    return { diseaseId: id, diseaseName: `#${id}`, found: 0, added: 0, error: "Disease not found" };
+export async function pollTopic(id: number): Promise<PollResult> {
+  const topic = getTopic(id);
+  if (!topic) {
+    return { topicId: id, topicName: `#${id}`, found: 0, added: 0, error: "Topic not found" };
   }
-  const result: PollResult = { diseaseId: id, diseaseName: disease.name, found: 0, added: 0 };
+  const result: PollResult = { topicId: id, topicName: topic.name, found: 0, added: 0 };
   try {
     const journals = listJournals().map((j) => j.name);
-    const term = buildTerm(disease.term, journals);
+    const term = buildTerm(topic.term, journals);
 
     // Incremental poll: ask PubMed only for papers whose MeSH Date lands since
     // the last successful poll, instead of re-listing the topic's whole history
     // every time. That still catches older papers PubMed only just indexed with
     // MeSH (see search). The first poll (no watermark) omits the bound and scans
     // everything to seed the topic.
-    const mhdaSince = disease.last_polled_at ? mhdaWindowStart(disease.last_polled_at) : undefined;
+    const mhdaSince = topic.last_polled_at ? mhdaWindowStart(topic.last_polled_at) : undefined;
     const pmids = await search(term, mhdaSince);
     result.found = pmids.length;
 
@@ -84,7 +84,7 @@ export async function pollDisease(id: number): Promise<PollResult> {
       result.added += articles.length;
     }
 
-    // A paper already stored under another disease may also match this one —
+    // A paper already stored under another topic may also match this one —
     // link it here too, without a wasteful refetch. A newly created link counts
     // toward `added`: from this feed's view the paper just appeared, even though
     // it wasn't fetched from PubMed. Without this the banner shows "Added 0"
@@ -96,9 +96,9 @@ export async function pollDisease(id: number): Promise<PollResult> {
     // missing) so their graph opens instantly. Best-effort: a failure must not
     // fail the poll — the graph view lazily backfills any gaps on load, and the
     // 14-day staleness refresh stays lazy there too.
-    await warmCitations(savedPmids, disease.name);
+    await warmCitations(savedPmids, topic.name);
 
-    setDiseaseLastPolled(id, new Date().toISOString());
+    setTopicLastPolled(id, new Date().toISOString());
   } catch (err) {
     result.error = errMessage(err);
   }
@@ -107,8 +107,8 @@ export async function pollDisease(id: number): Promise<PollResult> {
 
 export async function pollAll(): Promise<PollResult[]> {
   const results: PollResult[] = [];
-  for (const disease of listDiseases()) {
-    results.push(await pollDisease(disease.id));
+  for (const topic of listTopics()) {
+    results.push(await pollTopic(topic.id));
   }
   return results;
 }
@@ -177,8 +177,8 @@ async function runScheduled(): Promise<void> {
     return;
   }
   const added = results.reduce((s, r) => s + r.added, 0);
-  console.log(`[scheduler] poll complete: ${added} new paper(s) across ${results.length} disease(s)`);
+  console.log(`[scheduler] poll complete: ${added} new paper(s) across ${results.length} topic(s)`);
   for (const r of results) {
-    if (r.error) console.warn(`[scheduler]   ${r.diseaseName}: ${r.error}`);
+    if (r.error) console.warn(`[scheduler]   ${r.topicName}: ${r.error}`);
   }
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
-import type { AuthStatus, Collection, Disease, PaperSource } from "./types";
+import type { AuthStatus, Collection, Topic, PaperSource } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
 import { Timeline } from "./components/Timeline";
 import { CitationGraph } from "./components/CitationGraph";
@@ -14,11 +14,11 @@ import { PromptDialog } from "./components/Dialogs";
 type ViewMode = "table" | "timeline" | "graph";
 
 export default function App() {
-  const [diseases, setDiseases] = useState<Disease[]>([]);
+  const [topics, setTopics] = useState<Topic[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mode, setMode] = useState<Mode>("discover");
   const [showSettings, setShowSettings] = useState(false);
-  const [activeDiseaseId, setActiveDiseaseId] = useState<number | null>(null);
+  const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
   // Each workspace remembers its own view; the defaults match what each is
   // usually for (reading new papers vs. managing a library).
@@ -43,11 +43,11 @@ export default function App() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
 
-  function loadDiseases(): Promise<Disease[]> {
+  function loadTopics(): Promise<Topic[]> {
     return api
-      .getDiseases()
+      .getTopics()
       .then((ds) => {
-        setDiseases(ds);
+        setTopics(ds);
         return ds;
       })
       .catch(() => []);
@@ -72,7 +72,7 @@ export default function App() {
     const auth = api
       .getAuth()
       .catch(() => ({ admin: false, token_required: true, library_open: false }));
-    Promise.all([loadDiseases(), loadCollections(), auth]).then(
+    Promise.all([loadTopics(), loadCollections(), auth]).then(
       ([ds, cs, { admin, token_required, library_open }]) => {
         setIsAdmin(admin);
         setTokenRequired(token_required);
@@ -80,7 +80,7 @@ export default function App() {
         // Land in whichever workspace actually has something in it.
         if (ds.length > 0) {
           setMode("discover");
-          setActiveDiseaseId(ds[0].id);
+          setActiveTopicId(ds[0].id);
         } else if (cs.length > 0) {
           setMode("papers");
           setActiveCollectionId(cs[0].id);
@@ -91,7 +91,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activeDisease = diseases.find((d) => d.id === activeDiseaseId) ?? null;
+  const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
   const inDiscover = mode === "discover";
@@ -104,18 +104,18 @@ export default function App() {
   function changeMode(m: Mode) {
     setShowSettings(false);
     setMode(m);
-    if (m === "discover" && activeDiseaseId == null && diseases.length > 0) {
-      setActiveDiseaseId(diseases[0].id);
+    if (m === "discover" && activeTopicId == null && topics.length > 0) {
+      setActiveTopicId(topics[0].id);
     }
     if (m === "papers" && activeCollectionId == null && collections.length > 0) {
       setActiveCollectionId(collections[0].id);
     }
   }
 
-  function selectDisease(id: number) {
+  function selectTopic(id: number) {
     setShowSettings(false);
     setMode("discover");
-    setActiveDiseaseId(id);
+    setActiveTopicId(id);
   }
 
   function selectCollection(id: number) {
@@ -181,12 +181,12 @@ export default function App() {
     setRefreshing(true);
     setStatus(null);
     try {
-      const countPapers = (ds: Disease[]) => ds.reduce((s, d) => s + (d.articleCount ?? 0), 0);
-      const before = countPapers(diseases);
-      const res = await api.refresh(activeDiseaseId ?? undefined);
+      const countPapers = (ds: Topic[]) => ds.reduce((s, d) => s + (d.articleCount ?? 0), 0);
+      const before = countPapers(topics);
+      const res = await api.refresh(activeTopicId ?? undefined);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
-      const after = countPapers(await loadDiseases());
+      const after = countPapers(await loadTopics());
       // Polling only adds, but papers can leave the feeds between refreshes
       // (e.g. a journal removal); surface that instead of just "Added 0".
       const removed = Math.max(0, before + added - after);
@@ -204,7 +204,7 @@ export default function App() {
 
   // The active paper source, if a topic/collection is selected in this mode.
   const source: PaperSource | null = inDiscover
-    ? activeDisease && { disease: activeDisease.id }
+    ? activeTopic && { topic: activeTopic.id }
     : activeCollection && { collection: activeCollection.id };
   const showViewControls = !showSettings && source != null;
 
@@ -215,7 +215,7 @@ export default function App() {
     <>No papers here yet. The site owner hasn’t added any.</>
   ) : inDiscover ? (
     <>
-      No papers yet. Add journals &amp; diseases in <strong>⚙ Settings</strong>, then click
+      No papers yet. Add journals &amp; topics in <strong>⚙ Settings</strong>, then click
       “Refresh now”.
     </>
   ) : (
@@ -284,10 +284,10 @@ export default function App() {
                 </div>
               )}
               {/* Refresh polls PubMed for the active topic; irrelevant to Library. */}
-              {!showSettings && inDiscover && activeDisease && (
+              {!showSettings && inDiscover && activeTopic && (
                 <>
-                  {activeDisease.last_polled_at && (
-                    <span className="updated">Updated {timeAgo(activeDisease.last_polled_at)}</span>
+                  {activeTopic.last_polled_at && (
+                    <span className="updated">Updated {timeAgo(activeTopic.last_polled_at)}</span>
                   )}
                   {isAdmin && (
                     <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
@@ -338,14 +338,14 @@ export default function App() {
           mode={mode}
           isAdmin={isAdmin}
           onModeChange={changeMode}
-          diseases={diseases}
+          topics={topics}
           collections={collections}
-          activeDiseaseId={activeDiseaseId}
+          activeTopicId={activeTopicId}
           activeCollectionId={activeCollectionId}
           settingsActive={showSettings}
           loaded={loaded}
           tokenRequired={tokenRequired}
-          onSelectDisease={selectDisease}
+          onSelectTopic={selectTopic}
           onSelectCollection={selectCollection}
           onCreateCollection={() => setNamingCollection(true)}
           onAddTopic={() => setShowSettings(true)}
@@ -367,7 +367,7 @@ export default function App() {
           <TimelineSkeleton withToolbar />
         ) : showSettings ? (
           <Settings
-            onDataChanged={loadDiseases}
+            onDataChanged={loadTopics}
             onPapersRemoved={(count) => {
               setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
               bumpReloadToken();

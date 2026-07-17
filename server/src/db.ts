@@ -7,7 +7,7 @@ import type {
   Article,
   Collection,
   CollectionFile,
-  Disease,
+  Topic,
   Journal,
   JournalRemovalResult,
   Paper,
@@ -40,7 +40,7 @@ export function transaction<A extends unknown[], R>(fn: (...args: A) => R): (...
 }
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS diseases (
+  CREATE TABLE IF NOT EXISTS topics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     term TEXT NOT NULL,
@@ -69,12 +69,12 @@ db.exec(`
     first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
-  CREATE TABLE IF NOT EXISTS article_diseases (
+  CREATE TABLE IF NOT EXISTS article_topics (
     pmid TEXT NOT NULL,
-    disease_id INTEGER NOT NULL,
-    PRIMARY KEY (pmid, disease_id),
+    topic_id INTEGER NOT NULL,
+    PRIMARY KEY (pmid, topic_id),
     FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE,
-    FOREIGN KEY (disease_id) REFERENCES diseases(id) ON DELETE CASCADE
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS settings (
@@ -131,7 +131,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_collection_files_collection ON collection_files(collection_id);
   CREATE INDEX IF NOT EXISTS idx_collection_files_pmid ON collection_files(pmid);
   CREATE INDEX IF NOT EXISTS idx_collection_files_hash ON collection_files(content_hash);
-  CREATE INDEX IF NOT EXISTS idx_article_diseases_disease ON article_diseases(disease_id);
+  CREATE INDEX IF NOT EXISTS idx_article_topics_topic ON article_topics(topic_id);
   CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
@@ -188,13 +188,13 @@ const SEED_JOURNALS: ReadonlyArray<[name: string, nlmId: string]> = [
 const seedFlag = getSettingStmt.get("seeded") as { value: string } | undefined;
 if (!seedFlag) {
   const journalCount = (db.prepare("SELECT COUNT(*) AS c FROM journals").get() as { c: number }).c;
-  const diseaseCount = (db.prepare("SELECT COUNT(*) AS c FROM diseases").get() as { c: number }).c;
-  if (journalCount === 0 && diseaseCount === 0) {
+  const topicCount = (db.prepare("SELECT COUNT(*) AS c FROM topics").get() as { c: number }).c;
+  if (journalCount === 0 && topicCount === 0) {
     const insJ = db.prepare("INSERT OR IGNORE INTO journals (name, nlm_id) VALUES (?, ?)");
     for (const [name, nlmId] of SEED_JOURNALS) {
       insJ.run(name, nlmId);
     }
-    db.prepare("INSERT INTO diseases (name, term) VALUES (?, ?)").run(
+    db.prepare("INSERT INTO topics (name, term) VALUES (?, ?)").run(
       "Type 2 Diabetes",
       '"diabetes mellitus, type 2"[MeSH]'
     );
@@ -202,31 +202,31 @@ if (!seedFlag) {
   setSettingStmt.run("seeded", "1");
 }
 
-// ---------- diseases ----------
+// ---------- topics ----------
 
-export function listDiseases(): Disease[] {
+export function listTopics(): Topic[] {
   return db
-    .prepare("SELECT id, name, term, last_polled_at, created_at FROM diseases ORDER BY id ASC")
-    .all() as unknown as Disease[];
+    .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics ORDER BY id ASC")
+    .all() as unknown as Topic[];
 }
 
-export function getDisease(id: number): Disease | undefined {
+export function getTopic(id: number): Topic | undefined {
   return db
-    .prepare("SELECT id, name, term, last_polled_at, created_at FROM diseases WHERE id = ?")
-    .get(id) as Disease | undefined;
+    .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics WHERE id = ?")
+    .get(id) as Topic | undefined;
 }
 
-export function createDisease(name: string, term: string): Disease {
-  const info = db.prepare("INSERT INTO diseases (name, term) VALUES (?, ?)").run(name, term);
-  return getDisease(Number(info.lastInsertRowid))!;
+export function createTopic(name: string, term: string): Topic {
+  const info = db.prepare("INSERT INTO topics (name, term) VALUES (?, ?)").run(name, term);
+  return getTopic(Number(info.lastInsertRowid))!;
 }
 
-export function deleteDisease(id: number): void {
-  db.prepare("DELETE FROM diseases WHERE id = ?").run(id);
+export function deleteTopic(id: number): void {
+  db.prepare("DELETE FROM topics WHERE id = ?").run(id);
 }
 
-export function setDiseaseLastPolled(id: number, iso: string): void {
-  db.prepare("UPDATE diseases SET last_polled_at = ? WHERE id = ?").run(iso, id);
+export function setTopicLastPolled(id: number, iso: string): void {
+  db.prepare("UPDATE topics SET last_polled_at = ? WHERE id = ?").run(iso, id);
 }
 
 // ---------- journals ----------
@@ -280,9 +280,9 @@ export function countJournalArticles(id: number): number {
   ).c;
 }
 
-// Remove a journal (matched by NLM id): its articles leave every disease feed,
+// Remove a journal (matched by NLM id): its articles leave every topic feed,
 // but articles referenced by a collection file survive so the user's library is
-// untouched. Unreferenced articles are permanently deleted (article_diseases
+// untouched. Unreferenced articles are permanently deleted (article_topics
 // rows cascade via the foreign key).
 export const removeJournalWithArticles = transaction((id: number): JournalRemovalResult => {
   const nlmId = journalNlmId(id);
@@ -292,13 +292,13 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
     removedFromInterests = (
       db
         .prepare(
-          `SELECT COUNT(DISTINCT pmid) AS c FROM article_diseases
+          `SELECT COUNT(DISTINCT pmid) AS c FROM article_topics
            WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)`
         )
         .get(nlmId) as { c: number }
     ).c;
     db.prepare(
-      "DELETE FROM article_diseases WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)"
+      "DELETE FROM article_topics WHERE pmid IN (SELECT pmid FROM articles WHERE nlm_id = ?)"
     ).run(nlmId);
     // Same predicate the confirm dialog counted with (DELETABLE_JOURNAL_ARTICLES).
     deletedArticles = Number(
@@ -362,13 +362,13 @@ const upsertArticleStmt = db.prepare(`
 `);
 
 const linkArticleStmt = db.prepare(
-  "INSERT OR IGNORE INTO article_diseases (pmid, disease_id) VALUES (?, ?)"
+  "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
 );
 
 export type ArticleInsert = Omit<Article, "authors" | "first_seen_at"> & { authors: string[] };
 
 // The one place an ArticleInsert maps onto the articles upsert — shared by the
-// disease path (saveArticles) and the collection path (upsertArticles), so a
+// topic path (saveArticles) and the collection path (upsertArticles), so a
 // new article column can't end up persisted by one and dropped by the other.
 // (Both callers are transactions; this stays a plain per-row helper because
 // the transaction wrapper's BEGIN can't nest.)
@@ -387,55 +387,55 @@ function upsertArticle(a: ArticleInsert): void {
   });
 }
 
-// Insert/refresh a batch of articles and link them to a disease, atomically.
-export const saveArticles = transaction((articles: ArticleInsert[], diseaseId: number) => {
+// Insert/refresh a batch of articles and link them to a topic, atomically.
+export const saveArticles = transaction((articles: ArticleInsert[], topicId: number) => {
   for (const a of articles) {
     upsertArticle(a);
-    linkArticleStmt.run(a.pmid, diseaseId);
+    linkArticleStmt.run(a.pmid, topicId);
   }
 });
 
 // The journal name shown to the user: the watched journal's abbreviation (or the
 // catalog abbreviation), resolved by NLM id, falling back to the stored title.
 const JOURNAL_DISPLAY = "COALESCE(j.name, jc.med_abbr, a.journal_name)";
-const ARTICLE_JOINS = `JOIN article_diseases ad ON ad.pmid = a.pmid
+const ARTICLE_JOINS = `JOIN article_topics ad ON ad.pmid = a.pmid
        LEFT JOIN journals j ON j.nlm_id = a.nlm_id
        LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id`;
 
-export function diseaseArticleCounts(): Record<number, number> {
+export function topicArticleCounts(): Record<number, number> {
   const rows = db
-    .prepare("SELECT disease_id, COUNT(*) AS c FROM article_diseases GROUP BY disease_id")
-    .all() as { disease_id: number; c: number }[];
+    .prepare("SELECT topic_id, COUNT(*) AS c FROM article_topics GROUP BY topic_id")
+    .all() as { topic_id: number; c: number }[];
   const out: Record<number, number> = {};
-  for (const r of rows) out[r.disease_id] = r.c;
+  for (const r of rows) out[r.topic_id] = r.c;
   return out;
 }
 
-// Distinct journal display names that have articles for a disease (filter chips).
+// Distinct journal display names that have articles for a topic (filter chips).
 // Journal filter-chip names for either paper source. Routes dispatch through
 // this (and graphPapersForSource / listPapers) rather than picking per-source
 // functions themselves — a new source kind extends the union and these
 // dispatchers, and the compiler flags every spot that must learn about it.
 export function journalsForSource(source: PaperSourceQuery): string[] {
-  if ("diseaseId" in source) return journalsForDisease(source.diseaseId);
+  if ("topicId" in source) return journalsForTopic(source.topicId);
   return journalsForCollection(source.collectionId);
 }
 
-function journalsForDisease(diseaseId: number): string[] {
+function journalsForTopic(topicId: number): string[] {
   const rows = db
     .prepare(
       `SELECT DISTINCT ${JOURNAL_DISPLAY} AS j FROM articles a
        ${ARTICLE_JOINS}
-       WHERE ad.disease_id = ? AND ${JOURNAL_DISPLAY} <> ''
+       WHERE ad.topic_id = ? AND ${JOURNAL_DISPLAY} <> ''
        ORDER BY j ASC`
     )
-    .all(diseaseId) as { j: string }[];
+    .all(topicId) as { j: string }[];
   return rows.map((r) => r.j);
 }
 
 // Which paper set /api/papers reads: a topic's articles or a collection's
 // matched uploads. Mirrors the client's PaperSource.
-export type PaperSourceQuery = { diseaseId: number } | { collectionId: number };
+export type PaperSourceQuery = { topicId: number } | { collectionId: number };
 
 // Escape LIKE wildcards so a literal % or _ in a user query (e.g. "100%",
 // "COVID_19") matches itself instead of acting as a wildcard. Callers wrap the
@@ -454,21 +454,21 @@ export function listPapers(
   source: PaperSourceQuery,
   q?: string
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
-  const fromDisease = "diseaseId" in source;
-  const params: (string | number)[] = fromDisease
-    ? [source.diseaseId]
+  const fromTopic = "topicId" in source;
+  const params: (string | number)[] = fromTopic
+    ? [source.topicId]
     : [source.collectionId, source.collectionId];
   // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
   // and links the lowest-id 'matched' file for it, if any.
-  const membership = fromDisease
-    ? "JOIN article_diseases ad ON ad.pmid = a.pmid AND ad.disease_id = ?"
+  const membership = fromTopic
+    ? "JOIN article_topics ad ON ad.pmid = a.pmid AND ad.topic_id = ?"
     : `JOIN (SELECT DISTINCT pmid FROM collection_files
              WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
        LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
                   WHERE collection_id = ? AND match_status = 'matched'
                   GROUP BY pmid) mf ON mf.pmid = a.pmid
        LEFT JOIN collection_files cf ON cf.id = mf.file_id`;
-  const fileCols = fromDisease
+  const fileCols = fromTopic
     ? "NULL AS file_id, NULL AS file_name, NULL AS content_hash"
     : "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash";
   let search = "";
@@ -498,7 +498,7 @@ export function listPapers(
 }
 
 // Distinct journal display names present in a collection (filter chips) —
-// the collection-source counterpart of journalsForDisease.
+// the collection-source counterpart of journalsForTopic.
 function journalsForCollection(collectionId: number): string[] {
   const rows = db
     .prepare(
@@ -541,19 +541,19 @@ export interface GraphPaper {
 // The papers that make up a source's graph — the per-source dispatch lives
 // here, not in routes (see journalsForSource).
 export function graphPapersForSource(source: PaperSourceQuery): GraphPaper[] {
-  if ("diseaseId" in source) return graphPapers(source.diseaseId);
+  if ("topicId" in source) return graphPapers(source.topicId);
   return collectionGraphPapers(source.collectionId);
 }
 
-// The papers that make up one disease's graph (green nodes).
-function graphPapers(diseaseId: number): GraphPaper[] {
+// The papers that make up one topic's graph (green nodes).
+function graphPapers(topicId: number): GraphPaper[] {
   return db
     .prepare(
       `SELECT a.pmid, a.title, a.url, a.pub_date FROM articles a
-       JOIN article_diseases ad ON ad.pmid = a.pmid
-       WHERE ad.disease_id = ?`
+       JOIN article_topics ad ON ad.pmid = a.pmid
+       WHERE ad.topic_id = ?`
     )
-    .all(diseaseId) as unknown as GraphPaper[];
+    .all(topicId) as unknown as GraphPaper[];
 }
 
 // PMIDs that have no cached citation row, or whose row is older than maxAgeDays.
@@ -754,8 +754,8 @@ export function deleteCollectionFile(fileId: number): void {
   if (row) gcBlobsIfOrphaned([row.content_hash]);
 }
 
-// Insert/refresh articles without linking them to a disease (collections track
-// membership in collection_files instead of article_diseases).
+// Insert/refresh articles without linking them to a topic (collections track
+// membership in collection_files instead of article_topics).
 export const upsertArticles = transaction((articles: ArticleInsert[]) => {
   for (const a of articles) upsertArticle(a);
 });

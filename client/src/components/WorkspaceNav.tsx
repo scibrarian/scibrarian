@@ -1,6 +1,6 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { api } from "../api";
-import type { Collection, Disease } from "../types";
+import type { Collection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { SkeletonBar } from "./Skeleton";
 
@@ -15,14 +15,14 @@ export function WorkspaceNav({
   mode,
   isAdmin,
   onModeChange,
-  diseases,
+  topics,
   collections,
-  activeDiseaseId,
+  activeTopicId,
   activeCollectionId,
   settingsActive,
   loaded,
   tokenRequired,
-  onSelectDisease,
+  onSelectTopic,
   onSelectCollection,
   onCreateCollection,
   onAddTopic,
@@ -31,27 +31,27 @@ export function WorkspaceNav({
   mode: Mode;
   isAdmin: boolean;
   onModeChange: (m: Mode) => void;
-  diseases: Disease[];
+  topics: Topic[];
   collections: Collection[];
-  activeDiseaseId: number | null;
+  activeTopicId: number | null;
   activeCollectionId: number | null;
   settingsActive: boolean;
   loaded: boolean;
   tokenRequired: boolean;
-  onSelectDisease: (id: number) => void;
+  onSelectTopic: (id: number) => void;
   onSelectCollection: (id: number) => void;
   onCreateCollection: () => void;
   onAddTopic: () => void;
   onShareError: (message: string) => void;
 }) {
   const inDiscover = mode === "discover";
-  const activeDisease = diseases.find((d) => d.id === activeDiseaseId);
+  const activeTopic = topics.find((d) => d.id === activeTopicId);
   const activeCollection = collections.find((c) => c.id === activeCollectionId);
 
   const label = inDiscover
-    ? activeDisease?.name ?? (diseases.length ? "Select a topic" : "No topics yet")
+    ? activeTopic?.name ?? (topics.length ? "Select a topic" : "No topics yet")
     : activeCollection?.name ?? (collections.length ? "Select a collection" : "No collections yet");
-  const count = inDiscover ? activeDisease?.articleCount : activeCollection?.matchedCount;
+  const count = inDiscover ? activeTopic?.articleCount : activeCollection?.matchedCount;
 
   return (
     <nav className="workspace-nav">
@@ -84,17 +84,17 @@ export function WorkspaceNav({
               <DropdownMenu.Content className="ws-menu" align="start" sideOffset={6} loop>
                 {inDiscover ? (
                   <>
-                    {diseases.map((d) => (
+                    {topics.map((d) => (
                       <DropdownMenu.Item
                         key={d.id}
-                        className={`ws-option ${d.id === activeDiseaseId && !settingsActive ? "active" : ""}`}
-                        onSelect={() => onSelectDisease(d.id)}
+                        className={`ws-option ${d.id === activeTopicId && !settingsActive ? "active" : ""}`}
+                        onSelect={() => onSelectTopic(d.id)}
                       >
                         <span className="ws-option-name">{d.name}</span>
                         <span className="count">{d.articleCount ?? 0}</span>
                       </DropdownMenu.Item>
                     ))}
-                    {diseases.length === 0 && <div className="ws-empty">No topics yet.</div>}
+                    {topics.length === 0 && <div className="ws-empty">No topics yet.</div>}
                     {isAdmin && (
                       <DropdownMenu.Item className="ws-add" onSelect={onAddTopic}>
                         ＋ Add topic…
