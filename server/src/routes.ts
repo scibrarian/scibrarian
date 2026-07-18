@@ -8,11 +8,12 @@ import {
   collectionCounts,
   countJournalArticles,
   createCollection,
+  countTopicArticles,
   createTopic,
   createJournal,
   deleteCollection,
   deleteCollectionFile,
-  deleteTopic,
+  removeTopicWithArticles,
   topicByTerm,
   topicArticleCounts,
   gcBlobsIfOrphaned,
@@ -199,9 +200,14 @@ api.post(
   })
 );
 
+// How many stored papers removing this topic would delete (for the confirm):
+// papers exclusive to the topic and not saved in a library collection.
+api.get("/topics/:id/article-count", (req, res) => {
+  res.json({ count: countTopicArticles(Number(req.params.id)) });
+});
+
 api.delete("/topics/:id", (req, res) => {
-  deleteTopic(Number(req.params.id));
-  res.status(204).end();
+  res.json(removeTopicWithArticles(Number(req.params.id)));
 });
 
 // Autocomplete against the local MeSH descriptor list (headings + synonyms).

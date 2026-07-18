@@ -16,6 +16,7 @@ export type {
   PapersResponse,
   PollResult,
   ShareLinkResponse,
+  TopicRemovalResult,
 } from "../../shared/types.js";
 
 import { SETTING_DEFAULTS } from "./config.js";
