@@ -4,6 +4,7 @@ import { errorMessage, round1, titleCaseJournal } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
+import { ListRowSkeleton } from "./Skeleton";
 import type { Journal, JournalSearchResult } from "../types";
 
 // Transfer-list dialog for bulk journal curation: left pane is the NLM catalog
@@ -395,6 +396,10 @@ export function JournalManager({
               aria-label="Filter your journals"
             />
             <ul className="jm-list">
+              {current === null &&
+                [0, 1, 2].map((i) => (
+                  <ListRowSkeleton key={i} className="filter-option" w={["40%", "55%", "35%"][i]} pill />
+                ))}
               {rightRows.map((row) =>
                 renderRow(
                   rightKey(row),

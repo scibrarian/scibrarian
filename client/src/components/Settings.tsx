@@ -5,6 +5,7 @@ import { errorMessage, round1 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { JournalManager } from "./JournalManager";
+import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { Typeahead } from "./Typeahead";
 import type { AppSettings, Topic, Journal, MeshSearchResult } from "../types";
 
@@ -20,6 +21,10 @@ export function Settings({
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // False only until the first reload settles — the panels show skeletons
+  // instead of misleading "No journals yet." empty states and a form that pops
+  // in. Later reloads (after mutations) keep showing the current data.
+  const [loaded, setLoaded] = useState(false);
 
   const [topicQuery, setTopicQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -37,7 +42,8 @@ export function Settings({
         setTopics(d);
         setSettings(s);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setLoaded(true));
   }
 
   useEffect(reload, []);
@@ -131,20 +137,26 @@ export function Settings({
           Manage journals…
         </button>
         <ul className="list">
-          {journals.map((j) => (
-            <li key={j.id}>
-              <span>{j.name}</span>
-              {j.metric != null && (
-                <span
-                  className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
-                  title="OpenAlex 2-yr citations per article"
-                >
-                  {round1(j.metric)}
-                </span>
-              )}
-            </li>
-          ))}
-          {journals.length === 0 && <li className="muted">No journals yet.</li>}
+          {!loaded ? (
+            [0, 1, 2].map((i) => <ListRowSkeleton key={i} w={["30%", "42%", "35%"][i]} pill />)
+          ) : (
+            <>
+              {journals.map((j) => (
+                <li key={j.id}>
+                  <span>{j.name}</span>
+                  {j.metric != null && (
+                    <span
+                      className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
+                      title="OpenAlex 2-yr citations per article"
+                    >
+                      {round1(j.metric)}
+                    </span>
+                  )}
+                </li>
+              ))}
+              {journals.length === 0 && <li className="muted">No journals yet.</li>}
+            </>
+          )}
         </ul>
       </section>
 
@@ -176,25 +188,32 @@ export function Settings({
           <button type="submit">Add</button>
         </form>
         <ul className="list">
-          {topics.map((d) => (
-            <li key={d.id}>
-              <span>
-                <strong>{d.name}</strong>
-                <code className="term">{d.term}</code>
-              </span>
-              <button className="link-btn danger" onClick={() => setTopicToRemove(d.id)}>
-                Remove
-              </button>
-            </li>
-          ))}
-          {topics.length === 0 && <li className="muted">No topics yet.</li>}
+          {!loaded ? (
+            [0, 1].map((i) => <ListRowSkeleton key={i} w={["55%", "40%"][i]} />)
+          ) : (
+            <>
+              {topics.map((d) => (
+                <li key={d.id}>
+                  <span>
+                    <strong>{d.name}</strong>
+                    <code className="term">{d.term}</code>
+                  </span>
+                  <button className="link-btn danger" onClick={() => setTopicToRemove(d.id)}>
+                    Remove
+                  </button>
+                </li>
+              ))}
+              {topics.length === 0 && <li className="muted">No topics yet.</li>}
+            </>
+          )}
         </ul>
       </section>
 
       <section className="panel">
         <h2>Polling & NCBI</h2>
         {savedMsg && <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />}
-        {settings && (
+        {!loaded && <StackedFormSkeleton />}
+        {loaded && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
             <label>
               Scheduled polling
@@ -254,7 +273,13 @@ export function Settings({
 
       <section className="panel">
         <h2>Sharing</h2>
-        {settings &&
+        {!loaded && (
+          <p className="hint" aria-busy="true" aria-label="Loading sharing info">
+            <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
+            <SkeletonBar w="60%" h={12} />
+          </p>
+        )}
+        {loaded && settings &&
           (settings.share_urls.length === 0 ? (
             <p className="hint">
               Only this machine can connect right now. To let others view your server, set{" "}
