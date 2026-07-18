@@ -33,7 +33,9 @@ export function Settings({
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   // Journal add/remove lives in the JournalManager dialog.
   const [managingJournals, setManagingJournals] = useState(false);
-  const [topicToRemove, setTopicToRemove] = useState<number | null>(null);
+  // The topic warning depends on an article count fetched *before* the dialog
+  // opens, so the pending removal carries its message along.
+  const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
 
   function reload() {
     Promise.all([api.getJournals(), api.getTopics(), api.getSettings()])
@@ -65,13 +67,31 @@ export function Settings({
     }
   }
 
+  async function askRemoveTopic(d: Topic) {
+    setError(null);
+    let count = 0;
+    try {
+      count = (await api.topicArticleCount(d.id)).count;
+    } catch {
+      /* if the count lookup fails, fall through with the gentle warning */
+    }
+    const message =
+      count > 0
+        ? `This will permanently delete ${count} stored paper${
+            count === 1 ? "" : "s"
+          }. Papers that also appear under other topics, or are saved in your Library, are kept. This cannot be undone.`
+        : "No stored papers are exclusive to this topic — papers under other topics and in your Library are kept.";
+    setTopicToRemove({ topic: d, message });
+  }
+
   async function removeTopic() {
-    if (topicToRemove == null) return;
+    if (!topicToRemove) return;
     setTopicToRemove(null);
     try {
-      await api.deleteTopic(topicToRemove);
+      const res = await api.deleteTopic(topicToRemove.topic.id);
       reload();
       onDataChanged();
+      if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -198,7 +218,7 @@ export function Settings({
                     <strong>{d.name}</strong>
                     <code className="term">{d.term}</code>
                   </span>
-                  <button className="link-btn danger" onClick={() => setTopicToRemove(d.id)}>
+                  <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
                     Remove
                   </button>
                 </li>
@@ -339,8 +359,8 @@ export function Settings({
       />
       <ConfirmDialog
         open={topicToRemove != null}
-        title="Remove this topic?"
-        message="Its timeline links are removed too. Papers stay in the database."
+        title={topicToRemove ? `Remove "${topicToRemove.topic.name}"?` : ""}
+        message={topicToRemove?.message ?? ""}
         confirmLabel="Remove"
         danger
         onConfirm={removeTopic}

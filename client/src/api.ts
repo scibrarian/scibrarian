@@ -16,6 +16,7 @@ import type {
   PapersResponse,
   RefreshResponse,
   ShareLinkResponse,
+  TopicRemovalResult,
   UploadResponse,
 } from "./types";
 
@@ -80,7 +81,9 @@ export const api = {
   // descriptor list and builds the PubMed term itself.
   createTopic: (name: string) =>
     req<Topic>("/api/topics", { method: "POST", body: JSON.stringify({ name }) }),
-  deleteTopic: (id: number) => req<void>(`/api/topics/${id}`, { method: "DELETE" }),
+  topicArticleCount: (id: number) => req<{ count: number }>(`/api/topics/${id}/article-count`),
+  deleteTopic: (id: number) =>
+    req<TopicRemovalResult>(`/api/topics/${id}`, { method: "DELETE" }),
   searchMesh: (q: string) =>
     req<MeshSearchResponse>(`/api/mesh/search?q=${encodeURIComponent(q)}`),
 

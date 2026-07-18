@@ -8,6 +8,7 @@ import type {
   Collection,
   CollectionFile,
   Topic,
+  TopicRemovalResult,
   Journal,
   JournalRemovalResult,
   Paper,
@@ -248,9 +249,48 @@ export function createTopic(name: string, term: string): Topic {
   return getTopic(Number(info.lastInsertRowid))!;
 }
 
-export function deleteTopic(id: number): void {
-  db.prepare("DELETE FROM topics WHERE id = ?").run(id);
+// Which of a topic's articles a removal would permanently delete: papers whose
+// only topic link is this one (papers under other topics keep those feeds) and
+// that aren't referenced by a collection file (library copies are kept). Like
+// DELETABLE_JOURNAL_ARTICLES below, the confirm-dialog count and the
+// destructive DELETE share this fragment so they can't disagree. Binds the
+// topic id twice.
+//
+// CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
+// topic's *current* match criteria — every stored paper that matches a topic
+// is linked to it. The poller guarantees this today (all-time first poll,
+// contiguous MeSH-date windows, cross-linking of known pmids). If per-topic
+// fetch filters are ever added (e.g. "papers since 2000"), *widening* a
+// topic's criteria must clear its last_polled_at so the next poll re-seeds
+// all-time under the new filter and relinks older papers — otherwise this
+// predicate can delete a paper that the widened topic should now claim.
+// Narrowing is safe by default: stale links merely keep papers alive.
+const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
+   AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
+   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`;
+
+// How many stored articles a topic removal would permanently delete (for the
+// confirmation).
+export function countTopicArticles(id: number): number {
+  return (
+    db
+      .prepare(`SELECT COUNT(*) AS c FROM articles WHERE ${DELETABLE_TOPIC_ARTICLES}`)
+      .get(id, id) as { c: number }
+  ).c;
 }
+
+// Remove a topic: papers exclusive to it (and not saved in the library) are
+// permanently deleted; papers that also appear under other topics survive with
+// those links intact. Deleting a topic's articles is recoverable in principle —
+// re-adding the topic re-seeds from an all-time PubMed scan. article_topics
+// rows cascade via both foreign keys.
+export const removeTopicWithArticles = transaction((id: number): TopicRemovalResult => {
+  const deletedArticles = Number(
+    db.prepare(`DELETE FROM articles WHERE ${DELETABLE_TOPIC_ARTICLES}`).run(id, id).changes
+  );
+  db.prepare("DELETE FROM topics WHERE id = ?").run(id);
+  return { deletedArticles };
+});
 
 export function setTopicLastPolled(id: number, iso: string): void {
   db.prepare("UPDATE topics SET last_polled_at = ? WHERE id = ?").run(iso, id);
