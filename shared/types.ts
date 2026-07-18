@@ -13,6 +13,8 @@ export interface Topic {
 export interface Journal {
   id: number;
   name: string;
+  nlm_id: string | null; // null on rows added before NLM resolution existed
+  metric: number | null; // OpenAlex 2-yr mean citedness (from journal_catalog), null when unknown
   created_at: string;
 }
 

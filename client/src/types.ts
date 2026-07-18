@@ -37,6 +37,7 @@ export interface Topic extends TopicRow {
 }
 
 export interface JournalSearchResult {
+  nlm_id: string; // the journal identity key — used to dedupe against added journals
   title: string;
   abbr: string;
   issn: string;

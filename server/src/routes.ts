@@ -22,6 +22,7 @@ import {
   getCollectionFile,
   getSettings,
   graphPapersForSource,
+  findCatalogByNlmId,
   journalByNlmId,
   journalsForSource,
   listCollectionFiles,
@@ -226,16 +227,19 @@ api.get(
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? "").trim();
     if (q.length < 2) return res.json({ results: [] });
+    const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
     // Pull a wider name-matched pool, then surface the highest-impact journals
     // first (a metric of 0 or no data sinks to the bottom) so obscure/defunct
     // titles don't crowd out the ones worth watching. Sort is stable, so ties
-    // keep the catalog's name-relevance order.
-    const rows = await attachMetrics(searchCatalog(q, 30));
+    // keep the catalog's name-relevance order. The pool of 50 matches the
+    // per-call ISSN cap in attachMetrics, so every pooled row can get a metric.
+    const rows = await attachMetrics(searchCatalog(q, 50));
     const score = (m: number | null) => (m == null ? -1 : m);
     rows.sort((a, b) => score(b.metric) - score(a.metric));
     res.json({
-      results: rows.slice(0, 10).map((r) => ({
+      results: rows.slice(0, limit).map((r) => ({
+        nlm_id: r.nlm_id,
         title: r.title,
         abbr: r.med_abbr || r.iso_abbr,
         issn: r.issn_print || r.issn_online,
@@ -247,12 +251,23 @@ api.get(
 
 api.post("/journals", async (req, res) => {
   const raw = String(req.body?.name ?? "").trim();
-  if (!raw) return res.status(400).json({ error: "'name' is required." });
+  const nlmId = String(req.body?.nlmId ?? "").trim();
+  if (!raw && !nlmId) return res.status(400).json({ error: "'name' is required." });
   try {
     await ensureCatalogLoaded();
-    // Resolve to the stable NLM id + display abbreviation; null means PubMed
-    // doesn't recognize the name, so we never add a journal that returns nothing.
-    const resolved = await resolveJournal(raw);
+    // An explicit nlmId (the journal manager sends the catalog row's id) skips
+    // name resolution — catalog names aren't unique, so a name round-trip could
+    // land on a different journal than the one the user picked.
+    let resolved: { nlmId: string; name: string } | null = null;
+    if (nlmId) {
+      const cat = findCatalogByNlmId(nlmId);
+      if (!cat) return res.status(422).json({ error: "Unknown journal id." });
+      resolved = { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
+    } else {
+      // Resolve to the stable NLM id + display abbreviation; null means PubMed
+      // doesn't recognize the name, so we never add a journal that returns nothing.
+      resolved = await resolveJournal(raw);
+    }
     if (!resolved) {
       return res.status(422).json({
         error: `PubMed doesn't recognize "${raw}" as a journal name. Use its official title or NLM abbreviation.`,

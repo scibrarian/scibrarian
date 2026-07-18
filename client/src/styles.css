@@ -1067,6 +1067,117 @@ code {
   cursor: default;
 }
 
+/* ---------- journal manager (transfer list) ---------- */
+
+.modal.wide {
+  max-width: 780px;
+}
+
+.jm-panes {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.jm-pane {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.jm-pane-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.jm-pane input {
+  margin: 0 8px 8px;
+  font-size: 13px;
+}
+
+/* Fixed height so moving rows doesn't make the panes (and buttons) jump. */
+.jm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 6px;
+  overflow-y: auto;
+  height: 340px;
+}
+
+.jm-row .filter-option {
+  min-width: 0;
+}
+
+.jm-row .filter-option-name {
+  flex: 1;
+}
+
+.jm-row .ta-metric,
+.jm-row .jm-new {
+  flex-shrink: 0;
+}
+
+.jm-empty {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.jm-move {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.jm-move button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.jm-move button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Staged additions — visible until Apply commits them. */
+.jm-new {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+@media (max-width: 700px) {
+  .jm-panes {
+    grid-template-columns: 1fr;
+  }
+  .jm-move {
+    flex-direction: row;
+    justify-content: center;
+  }
+  .jm-list {
+    height: 200px;
+  }
+}
+
 /* ---------- workspace nav (Interests / Library) ---------- */
 
 .gear-btn {
