@@ -127,7 +127,7 @@ export function Settings({
           Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
           citations per article — an open stand-in for impact factor.
         </p>
-        <button type="button" onClick={() => setManagingJournals(true)}>
+        <button type="button" className="accent-btn" onClick={() => setManagingJournals(true)}>
           Manage journals…
         </button>
         <ul className="list">

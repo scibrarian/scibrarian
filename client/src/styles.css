@@ -634,7 +634,8 @@ input:focus {
 }
 
 .stacked-form button,
-.inline-form button {
+.inline-form button,
+.accent-btn {
   align-self: flex-start;
   background: var(--accent);
   color: #fff;
