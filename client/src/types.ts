@@ -16,6 +16,7 @@ import type {
   PapersResponse,
   PollResult,
   ShareLinkResponse,
+  TopicRemovalResult,
 } from "../../shared/types";
 
 export type {
@@ -30,6 +31,7 @@ export type {
   PapersResponse,
   PollResult,
   ShareLinkResponse,
+  TopicRemovalResult,
 };
 
 export interface Topic extends TopicRow {
