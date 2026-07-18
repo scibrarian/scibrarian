@@ -10,6 +10,10 @@ export interface Topic {
   created_at: string;
 }
 
+export interface TopicRemovalResult {
+  deletedArticles: number;
+}
+
 export interface Journal {
   id: number;
   name: string;
