@@ -258,24 +258,25 @@ export function setTopicLastPolled(id: number, iso: string): void {
 
 // ---------- journals ----------
 
+// Journal rows carry the catalog's metric (when the nlm_id matches a catalog
+// entry whose metric has been fetched) so the client can sort by impact.
+const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, c.metric
+   FROM journals j LEFT JOIN journal_catalog c ON c.nlm_id = j.nlm_id`;
+
 export function listJournals(): Journal[] {
-  return db
-    .prepare("SELECT id, name, created_at FROM journals ORDER BY name ASC")
-    .all() as unknown as Journal[];
+  return db.prepare(`${JOURNAL_SELECT} ORDER BY j.name ASC`).all() as unknown as Journal[];
 }
 
 export function createJournal(name: string, nlmId: string | null): Journal {
   const info = db.prepare("INSERT INTO journals (name, nlm_id) VALUES (?, ?)").run(name, nlmId);
   return db
-    .prepare("SELECT id, name, created_at FROM journals WHERE id = ?")
+    .prepare(`${JOURNAL_SELECT} WHERE j.id = ?`)
     .get(Number(info.lastInsertRowid)) as unknown as Journal;
 }
 
 // Used to reject adding the same journal twice (identity is the NLM id).
 export function journalByNlmId(nlmId: string): Journal | undefined {
-  return db
-    .prepare("SELECT id, name, created_at FROM journals WHERE nlm_id = ?")
-    .get(nlmId) as Journal | undefined;
+  return db.prepare(`${JOURNAL_SELECT} WHERE j.nlm_id = ?`).get(nlmId) as Journal | undefined;
 }
 
 // Which of a journal's articles a removal would permanently delete: the
@@ -853,6 +854,12 @@ export function findCatalogByName(name: string): CatalogRow | undefined {
        LIMIT 1`
     )
     .get(name, name, name) as CatalogRow | undefined;
+}
+
+export function findCatalogByNlmId(nlmId: string): CatalogRow | undefined {
+  return db.prepare("SELECT * FROM journal_catalog WHERE nlm_id = ?").get(nlmId) as
+    | CatalogRow
+    | undefined;
 }
 
 export function setCatalogMetric(nlmId: string, metric: number | null): void {

@@ -5,22 +5,24 @@ import * as Dialog from "@radix-ui/react-dialog";
 // behavior a hand-rolled modal misses — focus trap, Escape/overlay dismiss,
 // focus restore, aria wiring — while the existing .modal CSS supplies the look.
 // Content nests inside Overlay so the backdrop's flex centering keeps working.
-function ModalShell({
+export function ModalShell({
   open,
   onClose,
   title,
+  wide = false,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
+  wide?: boolean;
   children: ReactNode;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop">
-          <Dialog.Content className="modal" aria-describedby={undefined}>
+          <Dialog.Content className={wide ? "modal wide" : "modal"} aria-describedby={undefined}>
             <Dialog.Title className="modal-heading">{title}</Dialog.Title>
             {children}
           </Dialog.Content>

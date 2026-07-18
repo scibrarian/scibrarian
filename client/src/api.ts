@@ -85,10 +85,15 @@ export const api = {
     req<MeshSearchResponse>(`/api/mesh/search?q=${encodeURIComponent(q)}`),
 
   getJournals: () => req<Journal[]>("/api/journals"),
-  searchJournals: (q: string) =>
-    req<JournalSearchResponse>(`/api/journals/search?q=${encodeURIComponent(q)}`),
-  createJournal: (name: string) =>
-    req<Journal>("/api/journals", { method: "POST", body: JSON.stringify({ name }) }),
+  searchJournals: (q: string, limit?: number) =>
+    req<JournalSearchResponse>(
+      `/api/journals/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
+    ),
+  createJournal: (name: string, nlmId?: string) =>
+    req<Journal>("/api/journals", {
+      method: "POST",
+      body: JSON.stringify(nlmId ? { name, nlmId } : { name }),
+    }),
   journalArticleCount: (id: number) =>
     req<{ count: number }>(`/api/journals/${id}/article-count`),
   deleteJournal: (id: number) =>
