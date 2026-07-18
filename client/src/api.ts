@@ -11,6 +11,7 @@ import type {
   Journal,
   JournalRemovalResult,
   JournalSearchResponse,
+  MeshSearchResponse,
   PaperSource,
   PapersResponse,
   RefreshResponse,
@@ -75,9 +76,13 @@ export const api = {
   getAuth: () => req<AuthStatus>("/api/auth"),
 
   getTopics: () => req<Topic[]>("/api/topics"),
-  createTopic: (name: string, term: string) =>
-    req<Topic>("/api/topics", { method: "POST", body: JSON.stringify({ name, term }) }),
+  // Topics are MeSH headings: the server validates `name` against its indexed
+  // descriptor list and builds the PubMed term itself.
+  createTopic: (name: string) =>
+    req<Topic>("/api/topics", { method: "POST", body: JSON.stringify({ name }) }),
   deleteTopic: (id: number) => req<void>(`/api/topics/${id}`, { method: "DELETE" }),
+  searchMesh: (q: string) =>
+    req<MeshSearchResponse>(`/api/mesh/search?q=${encodeURIComponent(q)}`),
 
   getJournals: () => req<Journal[]>("/api/journals"),
   searchJournals: (q: string) =>

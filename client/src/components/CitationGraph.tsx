@@ -6,6 +6,7 @@ import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from ".
 import { sourceKey } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
+import { Banner } from "./Banner";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -253,7 +254,7 @@ export function CitationGraph({
         )}
       </div>
 
-      {error && <div className="banner error">{error}</div>}
+      {error && <Banner kind="error" message={error} />}
 
       <div className="graph-body">
         <div className="graph-canvas" ref={wrapRef}>

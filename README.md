@@ -30,8 +30,9 @@ Then open the UI URL printed by Vite (default http://localhost:5173).
 1. Go to the **Settings** tab.
 2. Add the journals you want to watch (e.g. *New England Journal of Medicine*, *Lancet*,
    *JAMA*, *Nature Medicine*).
-3. Add the topics you want to track. The **PubMed term** can be a MeSH term like
-   `"diabetes mellitus, type 2"[MeSH]` or plain keywords like `alzheimer disease`.
+3. Add the topics you want to track. Each topic is a **MeSH heading** — search the
+   vocabulary and pick one (typing a synonym like `type 2 diabetes` or `NIDDM` finds
+   the official term `Diabetes Mellitus, Type 2`).
 4. Click **Refresh now**. Each topic gets its own tab with a timeline.
 
 ## Optional config

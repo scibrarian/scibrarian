@@ -1,10 +1,11 @@
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage } from "../lib/format";
-import { useDebounced } from "../lib/hooks";
+import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
-import type { AppSettings, Topic, Journal, JournalSearchResult } from "../types";
+import { Typeahead } from "./Typeahead";
+import type { AppSettings, Topic, Journal, JournalSearchResult, MeshSearchResult } from "../types";
 
 const SMALL_WORDS = new Set([
   "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor",
@@ -39,14 +40,7 @@ export function Settings({
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
   const [journalName, setJournalName] = useState("");
-  const [journalResults, setJournalResults] = useState<JournalSearchResult[]>([]);
-  // The results list is a combobox popup: it hides on Escape/blur (dismissed)
-  // without discarding the fetched results, and reopens on typing or refocus.
-  const [listDismissed, setListDismissed] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(-1);
-  const listRef = useRef<HTMLUListElement>(null);
-  const [topicName, setTopicName] = useState("");
-  const [topicTerm, setTopicTerm] = useState("");
+  const [topicQuery, setTopicQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -68,70 +62,6 @@ export function Settings({
 
   useEffect(reload, []);
 
-  // Debounced journal autocomplete against the local NLM catalog.
-  const journalQuery = useDebounced(journalName.trim(), 200);
-  useEffect(() => {
-    setActiveIndex(-1);
-    if (journalQuery.length < 2) {
-      setJournalResults([]);
-      return;
-    }
-    // Guard against out-of-order responses: the cleanup runs before the next
-    // query fires, so a slower earlier request can't overwrite newer results
-    // (which would show options that don't match the input — you could add the
-    // wrong journal).
-    let active = true;
-    api
-      .searchJournals(journalQuery)
-      .then((r) => {
-        if (active) setJournalResults(r.results);
-      })
-      .catch(() => {
-        if (active) setJournalResults([]);
-      });
-    return () => {
-      active = false;
-    };
-  }, [journalQuery]);
-
-  const listOpen = !listDismissed && journalResults.length > 0;
-
-  // Keep the keyboard-highlighted option visible in the scrolling list.
-  useEffect(() => {
-    listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex]);
-
-  function handleTypeaheadKey(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Escape") {
-      if (listOpen) {
-        e.preventDefault();
-        setListDismissed(true);
-        setActiveIndex(-1);
-      }
-      return;
-    }
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      if (journalResults.length === 0) return;
-      e.preventDefault();
-      if (!listOpen) {
-        setListDismissed(false);
-        setActiveIndex(e.key === "ArrowDown" ? 0 : journalResults.length - 1);
-        return;
-      }
-      setActiveIndex((i) => {
-        const n = journalResults.length;
-        return e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n;
-      });
-      return;
-    }
-    if (e.key === "Enter" && listOpen && activeIndex >= 0) {
-      // Add the highlighted result, not the raw typed text the form would submit.
-      e.preventDefault();
-      const r = journalResults[activeIndex];
-      addJournal(r.abbr || r.title);
-    }
-  }
-
   async function addJournal(name: string) {
     setError(null);
     const n = name.trim();
@@ -139,9 +69,6 @@ export function Settings({
     try {
       await api.createJournal(n);
       setJournalName("");
-      setJournalResults([]);
-      setActiveIndex(-1);
-      setListDismissed(false);
       reload();
       onDataChanged();
     } catch (err) {
@@ -179,19 +106,16 @@ export function Settings({
     }
   }
 
-  async function addTopic(e: FormEvent) {
-    e.preventDefault();
+  // `name` is a MeSH heading — picked from the autocomplete, or typed and
+  // submitted (the server validates it and rejects anything that isn't a real
+  // heading, so we don't need to gate it here).
+  async function addTopic(name: string) {
     setError(null);
-    const name = topicName.trim();
-    const term = topicTerm.trim();
-    if (!name || !term) {
-      setError("A topic needs both a name and a PubMed search term.");
-      return;
-    }
+    const n = name.trim();
+    if (!n) return;
     try {
-      await api.createTopic(name, term);
-      setTopicName("");
-      setTopicTerm("");
+      await api.createTopic(n);
+      setTopicQuery("");
       reload();
       onDataChanged();
     } catch (err) {
@@ -259,7 +183,7 @@ export function Settings({
 
   return (
     <div className="settings">
-      {error && <div className="banner error">{error}</div>}
+      {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
 
       <section className="panel">
         <h2>Journals</h2>
@@ -275,75 +199,31 @@ export function Settings({
             addJournal(journalName);
           }}
         >
-          <div
-            className="typeahead"
-            onBlur={(e) => {
-              // focusout bubbles; only dismiss when focus leaves the whole
-              // combobox (input + list), not when it moves between them.
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-                setListDismissed(true);
-                setActiveIndex(-1);
-              }
-            }}
-          >
-            <input
-              value={journalName}
-              onChange={(e) => {
-                setJournalName(e.target.value);
-                setListDismissed(false);
-                setActiveIndex(-1);
-              }}
-              onKeyDown={handleTypeaheadKey}
-              onFocus={() => setListDismissed(false)}
-              placeholder="Search journals (e.g. lancet, n engl j med)…"
-              autoComplete="off"
-              role="combobox"
-              aria-expanded={listOpen}
-              aria-controls="journal-typeahead-list"
-              aria-autocomplete="list"
-              aria-activedescendant={
-                listOpen && activeIndex >= 0 ? `journal-option-${activeIndex}` : undefined
-              }
-            />
-            {listOpen && (
-              <ul
-                className="typeahead-list"
-                id="journal-typeahead-list"
-                role="listbox"
-                ref={listRef}
-                // Keep the input focused while clicking a result, so the blur
-                // handler above can't unmount the list before the click lands.
-                onMouseDown={(e) => e.preventDefault()}
-              >
-                {journalResults.map((r, i) => (
-                  <li key={r.issn || r.title} role="presentation">
-                    <button
-                      type="button"
-                      role="option"
-                      id={`journal-option-${i}`}
-                      aria-selected={i === activeIndex}
-                      tabIndex={-1}
-                      className={`typeahead-item${i === activeIndex ? " active" : ""}`}
-                      onClick={() => addJournal(r.abbr || r.title)}
+          <Typeahead<JournalSearchResult>
+            value={journalName}
+            onChange={setJournalName}
+            search={(q) => api.searchJournals(q).then((r) => r.results)}
+            onSelect={(r) => addJournal(r.abbr || r.title)}
+            getKey={(r) => r.issn || r.title}
+            placeholder="Search journals (e.g. lancet, n engl j med)…"
+            id="journal-typeahead"
+            renderItem={(r) => (
+              <>
+                <span className="ta-title">{titleCaseJournal(r.title)}</span>
+                <span className="ta-meta">
+                  {r.abbr && <span className="ta-abbr">{r.abbr}</span>}
+                  {r.metric != null && (
+                    <span
+                      className={`ta-metric${r.metric === 0 ? " zero" : ""}`}
+                      title="OpenAlex 2-yr citations per article"
                     >
-                      <span className="ta-title">{titleCaseJournal(r.title)}</span>
-                      <span className="ta-meta">
-                        {r.abbr && <span className="ta-abbr">{r.abbr}</span>}
-                        {r.metric != null && (
-                          <span
-                            className={`ta-metric${r.metric === 0 ? " zero" : ""}`}
-                            title="OpenAlex 2-yr citations per article"
-                          >
-                            {r.metric}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                      {r.metric}
+                    </span>
+                  )}
+                </span>
+              </>
             )}
-          </div>
+          />
           <button type="submit">Add</button>
         </form>
         <ul className="list">
@@ -362,23 +242,29 @@ export function Settings({
       <section className="panel">
         <h2>Topics</h2>
         <p className="hint">
-          Each topic appears under <strong>🔍 Interests</strong>. The{" "}
-          <strong>PubMed term</strong> can be a MeSH heading
-          like <code>"diabetes mellitus, type 2"[MeSH]</code> or plain keywords like{" "}
-          <code>alzheimer disease</code>. MeSH terms are more precise.
+          Each topic appears under <strong>🔍 Interests</strong>. Search the{" "}
+          <strong>MeSH</strong> vocabulary and pick a heading — typing a synonym
+          (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds the official
+          term (<code>Diabetes Mellitus, Type 2</code>). PubMed is searched by that MeSH heading.
         </p>
-        <form className="stacked-form" onSubmit={addTopic}>
-          <input
-            value={topicName}
-            onChange={(e) => setTopicName(e.target.value)}
-            placeholder="Display name (e.g. Type 2 Diabetes)"
+        <form
+          className="inline-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            addTopic(topicQuery);
+          }}
+        >
+          <Typeahead<MeshSearchResult>
+            value={topicQuery}
+            onChange={setTopicQuery}
+            search={(q) => api.searchMesh(q).then((r) => r.results)}
+            onSelect={(m) => addTopic(m.name)}
+            getKey={(m) => m.ui}
+            placeholder="Search MeSH terms (e.g. type 2 diabetes)…"
+            id="topic-typeahead"
+            renderItem={(m) => <span className="ta-title">{m.name}</span>}
           />
-          <input
-            value={topicTerm}
-            onChange={(e) => setTopicTerm(e.target.value)}
-            placeholder='PubMed term (e.g. "diabetes mellitus, type 2"[MeSH])'
-          />
-          <button type="submit">Add topic</button>
+          <button type="submit">Add</button>
         </form>
         <ul className="list">
           {topics.map((d) => (
@@ -398,7 +284,7 @@ export function Settings({
 
       <section className="panel">
         <h2>Polling & NCBI</h2>
-        {savedMsg && <div className="banner success">{savedMsg}</div>}
+        {savedMsg && <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />}
         {settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
             <label>

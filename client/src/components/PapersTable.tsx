@@ -4,6 +4,7 @@ import { errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { usePapers } from "../lib/papers";
 import type { AuthStatus, Paper, PaperSource } from "../types";
+import { Banner } from "./Banner";
 import { PapersToolbar } from "./PapersToolbar";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
@@ -154,7 +155,9 @@ export function PapersTable({
         loading={loading}
       />
 
-      {(error ?? actionError) && <div className="banner error">{error ?? actionError}</div>}
+      {(error ?? actionError) && (
+        <Banner kind="error" message={error ?? actionError!} onDismiss={() => setActionError(null)} />
+      )}
 
       {loading && visible.length === 0 ? (
         <PapersTableSkeleton share={showShareCol} />

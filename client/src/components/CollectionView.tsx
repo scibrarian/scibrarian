@@ -9,6 +9,7 @@ import {
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { useCachedFetch, type FetchCache } from "../lib/hooks";
+import { Banner } from "./Banner";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import type { CollectionFile, CollectionFilesResponse, ImportStatus } from "../types";
 
@@ -230,8 +231,10 @@ export function CollectionView({
         </div>
       )}
 
-      {(error ?? filesError) && <div className="banner error">{error ?? filesError}</div>}
-      {notice && <div className="banner info">{notice}</div>}
+      {(error ?? filesError) && (
+        <Banner kind="error" message={error ?? filesError!} onDismiss={() => setError(null)} />
+      )}
+      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
 
       {running && (
         <div className="import-progress">

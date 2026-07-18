@@ -47,6 +47,15 @@ export interface JournalSearchResponse {
   results: JournalSearchResult[];
 }
 
+export interface MeshSearchResult {
+  ui: string; // MeSH descriptor id, e.g. D003924
+  name: string; // canonical heading
+}
+
+export interface MeshSearchResponse {
+  results: MeshSearchResult[];
+}
+
 export interface RefreshResponse {
   results: PollResult[];
   polledAt: string;

@@ -102,6 +102,23 @@ db.exec(`
     metric_fetched_at TEXT
   );
 
+  -- Reference list of MeSH descriptors (from NLM's yearly desc<year>.xml) for
+  -- the topic autocomplete. Topics must be a real MeSH heading, so this is the
+  -- single source of truth the picker searches and POST /topics validates
+  -- against. entry terms (synonyms) live in mesh_entry_terms so typing a synonym
+  -- surfaces the canonical heading. mesh_version (in settings) tracks the loaded
+  -- year; a newer year triggers a full re-download + replace on startup.
+  CREATE TABLE IF NOT EXISTS mesh_descriptors (
+    ui TEXT PRIMARY KEY,        -- e.g. D003924
+    name TEXT NOT NULL           -- canonical heading, e.g. "Diabetes Mellitus, Type 2"
+  );
+
+  CREATE TABLE IF NOT EXISTS mesh_entry_terms (
+    term TEXT NOT NULL,          -- heading + all synonyms
+    ui TEXT NOT NULL,
+    FOREIGN KEY (ui) REFERENCES mesh_descriptors(ui) ON DELETE CASCADE
+  );
+
   -- User-created collections of uploaded PDFs. Matched files soft-reference
   -- articles.pmid (no FK, following the paper_citations precedent);
   -- removeJournalWithArticles preserves any article a collection file points to.
@@ -137,6 +154,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id);
   CREATE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id);
+  CREATE INDEX IF NOT EXISTS idx_mesh_descriptors_name ON mesh_descriptors(name COLLATE NOCASE);
+  CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_term ON mesh_entry_terms(term COLLATE NOCASE);
+  CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_ui ON mesh_entry_terms(ui);
 `);
 
 // ---------- settings ----------
@@ -194,10 +214,6 @@ if (!seedFlag) {
     for (const [name, nlmId] of SEED_JOURNALS) {
       insJ.run(name, nlmId);
     }
-    db.prepare("INSERT INTO topics (name, term) VALUES (?, ?)").run(
-      "Type 2 Diabetes",
-      '"diabetes mellitus, type 2"[MeSH]'
-    );
   }
   setSettingStmt.run("seeded", "1");
 }
@@ -214,6 +230,17 @@ export function getTopic(id: number): Topic | undefined {
   return db
     .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics WHERE id = ?")
     .get(id) as Topic | undefined;
+}
+
+// Used to reject adding the same topic twice. Identity is the PubMed term, which
+// is built deterministically from the MeSH heading, so the same heading always
+// yields the same term; NOCASE also catches an equivalent legacy/seed term.
+export function topicByTerm(term: string): Topic | undefined {
+  return db
+    .prepare(
+      "SELECT id, name, term, last_polled_at, created_at FROM topics WHERE term = ? COLLATE NOCASE"
+    )
+    .get(term) as Topic | undefined;
 }
 
 export function createTopic(name: string, term: string): Topic {
@@ -832,4 +859,98 @@ export function setCatalogMetric(nlmId: string, metric: number | null): void {
   db.prepare(
     "UPDATE journal_catalog SET metric = ?, metric_fetched_at = datetime('now') WHERE nlm_id = ?"
   ).run(metric, nlmId);
+}
+
+// ---------- MeSH descriptors (NLM desc<year>.xml) ----------
+
+export interface MeshDescriptor {
+  ui: string;
+  name: string;
+}
+
+// One parsed descriptor: the canonical heading plus every entry term (synonyms,
+// including the preferred term) so a synonym search still finds the heading.
+export interface MeshSeed {
+  ui: string;
+  name: string;
+  terms: string[];
+}
+
+export function meshDescriptorCount(): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM mesh_descriptors").get() as { c: number }).c;
+}
+
+// The loaded MeSH year, tracked in settings — but managed by the importer, so
+// it's deliberately kept out of SETTING_DEFAULTS (never shown/edited in the UI).
+// Read/written through the raw statements, like the `seeded` first-run flag.
+export function getMeshVersion(): string {
+  const row = getSettingStmt.get("mesh_version") as { value: string } | undefined;
+  return row?.value ?? "";
+}
+
+export function setMeshVersion(version: string): void {
+  setSettingStmt.run("mesh_version", version);
+}
+
+const insertMeshDescriptorStmt = db.prepare(
+  "INSERT OR IGNORE INTO mesh_descriptors (ui, name) VALUES (?, ?)"
+);
+const insertMeshEntryTermStmt = db.prepare(
+  "INSERT INTO mesh_entry_terms (term, ui) VALUES (?, ?)"
+);
+
+// Swap in a whole new MeSH vocabulary atomically: a version bump supersedes the
+// old set, so we clear both tables and repopulate, then stamp the version. Entry
+// terms are deduped per descriptor (case-insensitively).
+export const replaceMeshData = transaction((rows: MeshSeed[], version: string) => {
+  db.exec("DELETE FROM mesh_entry_terms");
+  db.exec("DELETE FROM mesh_descriptors");
+  for (const r of rows) {
+    insertMeshDescriptorStmt.run(r.ui, r.name);
+    const seen = new Set<string>();
+    for (const term of r.terms) {
+      const key = term.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      insertMeshEntryTermStmt.run(term, r.ui);
+    }
+  }
+  setMeshVersion(version);
+});
+
+// Topic autocomplete: match any entry term (the heading is stored as one too),
+// dedupe to one row per descriptor, and rank so the query's relevance to the
+// heading wins over an obscure-synonym match — heading-prefix, then
+// synonym-prefix, then heading-substring, then synonym-only — and shortest
+// heading breaks ties. Without this, searching "diabetes" surfaces descriptors
+// like Hemochromatosis (synonym "Bronze Diabetes") above "Diabetes Mellitus".
+export function searchMesh(q: string, limit = 10): MeshDescriptor[] {
+  const esc = escapeLike(q);
+  const like = `%${esc}%`;
+  const prefix = `${esc}%`;
+  return db
+    .prepare(
+      `SELECT d.ui AS ui, d.name AS name,
+         MIN(CASE
+           WHEN d.name LIKE ? ESCAPE '\\' THEN 0
+           WHEN et.term LIKE ? ESCAPE '\\' THEN 1
+           WHEN d.name LIKE ? ESCAPE '\\' THEN 2
+           ELSE 3
+         END) AS rank
+       FROM mesh_descriptors d
+       JOIN mesh_entry_terms et ON et.ui = d.ui
+       WHERE et.term LIKE ? ESCAPE '\\'
+       GROUP BY d.ui, d.name
+       ORDER BY rank, length(d.name)
+       LIMIT ?`
+    )
+    .all(prefix, prefix, like, like, limit) as unknown as MeshDescriptor[];
+}
+
+// Validation: exact (case-insensitive) match on the canonical heading. Used by
+// POST /topics to reject anything that isn't a real MeSH descriptor.
+export function findMeshByName(name: string): MeshDescriptor | undefined {
+  return db
+    .prepare("SELECT ui, name FROM mesh_descriptors WHERE name = ? COLLATE NOCASE LIMIT 1")
+    .get(name) as MeshDescriptor | undefined;
 }

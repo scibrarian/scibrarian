@@ -3,6 +3,7 @@ import { useIncrementalList } from "../lib/hooks";
 import { usePapers } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
+import { Banner } from "./Banner";
 import { PapersToolbar } from "./PapersToolbar";
 import { TimelineSkeleton } from "./Skeleton";
 
@@ -54,7 +55,7 @@ export function Timeline({
         loading={loading}
       />
 
-      {error && <div className="banner error">{error}</div>}
+      {error && <Banner kind="error" message={error} />}
 
       {loading ? (
         <TimelineSkeleton />

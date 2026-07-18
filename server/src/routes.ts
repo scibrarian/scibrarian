@@ -13,6 +13,7 @@ import {
   deleteCollection,
   deleteCollectionFile,
   deleteTopic,
+  topicByTerm,
   topicArticleCounts,
   gcBlobsIfOrphaned,
   getArticleAbstract,
@@ -28,10 +29,12 @@ import {
   listCollections,
   listTopics,
   listJournals,
+  findMeshByName,
   missingOrStaleCitations,
   removeJournalWithArticles,
   renameCollection,
   searchCatalog,
+  searchMesh,
   setFileMatched,
   setSetting,
   upsertArticles,
@@ -48,6 +51,7 @@ import {
 import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./config.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
+import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
@@ -170,19 +174,45 @@ api.get("/topics", (_req, res) => {
   res.json(topics);
 });
 
-api.post("/topics", (req, res) => {
-  const name = String(req.body?.name ?? "").trim();
-  const term = String(req.body?.term ?? "").trim();
-  if (!name || !term) {
-    return res.status(400).json({ error: "Both 'name' and 'term' are required." });
-  }
-  res.status(201).json(createTopic(name, term));
-});
+// Topics are strictly MeSH headings: the client sends a heading picked from the
+// autocomplete, we validate it against the indexed descriptor list, and build
+// the PubMed term ourselves so a topic can never carry an invalid MeSH term.
+api.post(
+  "/topics",
+  asyncHandler(async (req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    if (!name) return res.status(400).json({ error: "'name' is required." });
+    await ensureMeshLoaded();
+    const descriptor = findMeshByName(name);
+    if (!descriptor) {
+      return res.status(422).json({
+        error: `"${name}" isn't a MeSH heading. Pick a term from the suggestions.`,
+        suggestions: searchMesh(name, 5).map((m) => m.name),
+      });
+    }
+    const term = `"${descriptor.name}"[MeSH]`;
+    if (topicByTerm(term)) {
+      return res.status(409).json({ error: `"${descriptor.name}" is already a topic.` });
+    }
+    res.status(201).json(createTopic(descriptor.name, term));
+  })
+);
 
 api.delete("/topics/:id", (req, res) => {
   deleteTopic(Number(req.params.id));
   res.status(204).end();
 });
+
+// Autocomplete against the local MeSH descriptor list (headings + synonyms).
+api.get(
+  "/mesh/search",
+  asyncHandler(async (req, res) => {
+    const q = String(req.query.q ?? "").trim();
+    if (q.length < 2) return res.json({ results: [] });
+    await ensureMeshLoaded();
+    res.json({ results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name })) });
+  })
+);
 
 // ---------- journals ----------
 

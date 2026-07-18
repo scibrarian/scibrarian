@@ -6,6 +6,7 @@ import "./db.js"; // initialize schema + seed on startup
 import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
 import { ensureCatalogLoaded } from "./journal-catalog.js";
+import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { errMessage } from "./util.js";
 
 const app = express();
@@ -59,4 +60,5 @@ app.listen(PORT, HOST, () => {
   if (ADMIN_TOKEN) console.log("[server] Admin mode on: mutations require ADMIN_TOKEN");
   startScheduler();
   void ensureCatalogLoaded(); // warm the journal catalog in the background
+  void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
 });

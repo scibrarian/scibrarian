@@ -10,6 +10,7 @@ import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
+import { Banner } from "./components/Banner";
 
 type ViewMode = "table" | "timeline" | "graph";
 
@@ -353,14 +354,7 @@ export default function App() {
         />
       </div>
 
-      {status && (
-        <div className="banner info dismissible">
-          <span>{status}</span>
-          <button className="banner-close" onClick={() => setStatus(null)} aria-label="Dismiss">
-            ×
-          </button>
-        </div>
-      )}
+      {status && <Banner kind="info" message={status} onDismiss={() => setStatus(null)} />}
 
       <main className="app-main">
         {!loaded ? (
