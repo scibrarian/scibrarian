@@ -49,6 +49,12 @@ export default function App() {
       .getTopics()
       .then((ds) => {
         setTopics(ds);
+        // Keep the selection valid against the fresh list: creating the first
+        // topic selects it, deleting the active one falls back to the first
+        // remaining (instead of a dangling id that renders as no selection).
+        setActiveTopicId((cur) =>
+          cur != null && ds.some((d) => d.id === cur) ? cur : ds[0]?.id ?? null
+        );
         return ds;
       })
       .catch(() => []);
