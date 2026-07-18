@@ -255,6 +255,16 @@ export function createTopic(name: string, term: string): Topic {
 // DELETABLE_JOURNAL_ARTICLES below, the confirm-dialog count and the
 // destructive DELETE share this fragment so they can't disagree. Binds the
 // topic id twice.
+//
+// CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
+// topic's *current* match criteria — every stored paper that matches a topic
+// is linked to it. The poller guarantees this today (all-time first poll,
+// contiguous MeSH-date windows, cross-linking of known pmids). If per-topic
+// fetch filters are ever added (e.g. "papers since 2000"), *widening* a
+// topic's criteria must clear its last_polled_at so the next poll re-seeds
+// all-time under the new filter and relinks older papers — otherwise this
+// predicate can delete a paper that the widened topic should now claim.
+// Narrowing is safe by default: stale links merely keep papers alive.
 const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
    AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
    AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`;

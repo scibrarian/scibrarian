@@ -68,7 +68,10 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // the last successful poll, instead of re-listing the topic's whole history
     // every time. That still catches older papers PubMed only just indexed with
     // MeSH (see search). The first poll (no watermark) omits the bound and scans
-    // everything to seed the topic.
+    // everything to seed the topic. If the term or a future per-topic fetch
+    // filter ever becomes editable, widening it must clear last_polled_at to
+    // force such a re-seed — topic deletion relies on the links being complete
+    // (see DELETABLE_TOPIC_ARTICLES in db.ts).
     const mhdaSince = topic.last_polled_at ? mhdaWindowStart(topic.last_polled_at) : undefined;
     const pmids = await search(term, mhdaSince);
     result.found = pmids.length;
