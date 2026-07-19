@@ -42,8 +42,10 @@ npm test           # runs the Vitest suite for both workspaces
 ```
 
 Tests live next to the code they cover (`*.test.ts`) and focus on pure logic —
-share-link signing, PDF identifier matching, formatting, and citation-graph
-clustering. `npx vitest` starts the watcher during development.
+share-link signing, PubMed response parsing, PDF identifier matching,
+formatting, and citation-graph clustering. `npx vitest` starts the watcher
+during development. CI runs the suite plus both workspaces' typechecks on
+every pull request.
 
 ## Optional config
 
