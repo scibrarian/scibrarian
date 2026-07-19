@@ -12,8 +12,8 @@ export function sourceKey(source: PaperSource): string {
 // flipping between Papers/Timeline, or clicking back into a workspace — then
 // paints from cache instead of refetching. The Table and Timeline modules share
 // this cache because they read the same endpoint with the same key. reloadToken
-// is bumped whenever the underlying data changes ("Refresh now", collection
-// imports and file edits), so a stale entry is never served.
+// is bumped whenever the underlying data changes ("Check for new papers",
+// collection imports and file edits), so a stale entry is never served.
 const papersCache: FetchCache<PapersResponse> = new Map();
 
 // The data + toolbar state shared by the Table and Timeline modules: fetches

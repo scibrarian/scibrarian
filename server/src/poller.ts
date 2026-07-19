@@ -12,6 +12,8 @@ import {
   transaction,
 } from "./db.js";
 import { ensureCitations } from "./icite.js";
+import { refreshCatalogIfStale } from "./journal-catalog.js";
+import { recheckMeshVersion } from "./mesh-catalog.js";
 import { buildTerm, fetchArticles, search } from "./pubmed.js";
 import type { PollResult } from "./types.js";
 import { chunk, errMessage } from "./util.js";
@@ -146,8 +148,23 @@ export function isValidCron(expr: string): boolean {
   return cron.validate(expr);
 }
 
+// Reference data (NLM journal catalog, MeSH descriptors) re-checks daily on a
+// fixed schedule, deliberately independent of poll_cron/poll_enabled — turning
+// off article polling shouldn't freeze autocomplete data, and long-running
+// processes must still pick up NLM's updates without a restart. Cheap while
+// fresh: the catalog check reads one settings timestamp (30-day TTL), the MeSH
+// check is one small directory fetch. Runs before the default 6am poll so a
+// poll after a catalog change sees the new data.
+const REFERENCE_REFRESH_CRON = "30 5 * * *";
+
 export function startScheduler(): void {
   rescheduleFromSettings();
+  // Created once here, never touched by rescheduleFromSettings, so a settings
+  // save can't stop or duplicate it.
+  cron.schedule(REFERENCE_REFRESH_CRON, () => {
+    void refreshCatalogIfStale();
+    void recheckMeshVersion();
+  });
 }
 
 export function rescheduleFromSettings(): void {

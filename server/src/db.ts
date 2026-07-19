@@ -91,7 +91,10 @@ db.exec(`
   );
 
   -- Reference list of journals (from NLM's J_Medline.txt) for autocomplete and
-  -- validation. metric = OpenAlex 2yr mean citedness, fetched + cached lazily.
+  -- validation. Re-downloaded and upserted in place once stale (see
+  -- journal-catalog.ts); journal_catalog_loaded_at (in settings) tracks the
+  -- last load. metric = OpenAlex 2yr mean citedness, fetched + cached lazily
+  -- and preserved across catalog refreshes.
   CREATE TABLE IF NOT EXISTS journal_catalog (
     nlm_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -861,14 +864,36 @@ export function journalCatalogCount(): number {
   return (db.prepare("SELECT COUNT(*) AS c FROM journal_catalog").get() as { c: number }).c;
 }
 
-const insertCatalogStmt = db.prepare(`
-  INSERT OR IGNORE INTO journal_catalog (nlm_id, title, med_abbr, iso_abbr, issn_print, issn_online)
+// Refreshes must update identity columns in place (NLM revises titles,
+// abbreviations and ISSNs) while leaving metric/metric_fetched_at alone — the
+// OpenAlex cache lives in the same table and must survive a catalog refresh.
+// Rows missing from a newer J_Medline are kept rather than deleted: stale
+// extras are harmless to autocomplete, and never deleting means a truncated
+// download can't hollow out the catalog.
+const upsertCatalogStmt = db.prepare(`
+  INSERT INTO journal_catalog (nlm_id, title, med_abbr, iso_abbr, issn_print, issn_online)
   VALUES (@nlm_id, @title, @med_abbr, @iso_abbr, @issn_print, @issn_online)
+  ON CONFLICT(nlm_id) DO UPDATE SET
+    title = excluded.title,
+    med_abbr = excluded.med_abbr,
+    iso_abbr = excluded.iso_abbr,
+    issn_print = excluded.issn_print,
+    issn_online = excluded.issn_online
 `);
 
-export const bulkInsertCatalog = transaction((rows: CatalogSeed[]) => {
-  for (const r of rows) insertCatalogStmt.run(r);
+export const bulkUpsertCatalog = transaction((rows: CatalogSeed[]) => {
+  for (const r of rows) upsertCatalogStmt.run(r);
+  // Stamped in the same transaction so a half-applied load can't look fresh.
+  setSettingStmt.run("journal_catalog_loaded_at", new Date().toISOString());
 });
+
+// When the catalog was last loaded from NLM (ISO timestamp; "" before the
+// first load). Importer-managed like mesh_version, so deliberately kept out
+// of SETTING_DEFAULTS and never shown in the UI.
+export function getCatalogLoadedAt(): string {
+  const row = getSettingStmt.get("journal_catalog_loaded_at") as { value: string } | undefined;
+  return row?.value ?? "";
+}
 
 // Autocomplete: match title/abbreviation, prefix matches first, then shortest title.
 export function searchCatalog(q: string, limit = 10): CatalogRow[] {

@@ -131,9 +131,10 @@ let ready = false;
 let loading: Promise<void> | null = null;
 
 // Populate (or refresh) the MeSH descriptor list. Runs the version check +
-// download at most once per successful process run; on failure it stays retryable
-// so a later call (e.g. the first search) can try again. Failures are non-fatal:
-// the app works, the topic picker is just empty until a load succeeds.
+// download at most once per successful process run (recheckMeshVersion re-arms
+// it); on failure it stays retryable so a later call (e.g. the first search)
+// can try again. Failures are non-fatal: the app works, the topic picker is
+// just empty until a load succeeds.
 export function ensureMeshLoaded(): Promise<void> {
   if (ready) return Promise.resolve();
   if (loading) return loading;
@@ -163,4 +164,13 @@ export function ensureMeshLoaded(): Promise<void> {
     }
   })();
   return loading;
+}
+
+// Drop the once-per-run latch and re-run the version check. The daily scheduler
+// tick calls this so a process that stays up across NLM's yearly MeSH release
+// (~November) still picks it up without a restart; while the version is
+// unchanged each re-check costs one small directory fetch.
+export function recheckMeshVersion(): Promise<void> {
+  ready = false;
+  return ensureMeshLoaded();
 }

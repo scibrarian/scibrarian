@@ -5,7 +5,7 @@ import { ADMIN_TOKEN, CLIENT_DIST, HOST, HOST_IS_LOOPBACK, PORT } from "./config
 import "./db.js"; // initialize schema + seed on startup
 import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
-import { ensureCatalogLoaded } from "./journal-catalog.js";
+import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { errMessage } from "./util.js";
 
@@ -59,6 +59,6 @@ app.listen(PORT, HOST, () => {
   console.log(`[server] API listening on ${url}`);
   if (ADMIN_TOKEN) console.log("[server] Admin mode on: mutations require ADMIN_TOKEN");
   startScheduler();
-  void ensureCatalogLoaded(); // warm the journal catalog in the background
+  void refreshCatalogIfStale(); // warm (or refresh a stale) journal catalog in the background
   void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
 });

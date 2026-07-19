@@ -247,7 +247,7 @@ export function Settings({
                 />
                 <span className="hint">
                   When on, every topic is checked for new papers on the schedule below.
-                  “Refresh now” works either way.
+                  “Check for new papers” works either way.
                 </span>
               </span>
             </label>

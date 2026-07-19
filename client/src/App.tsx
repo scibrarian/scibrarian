@@ -223,7 +223,7 @@ export default function App() {
   ) : inDiscover ? (
     <>
       No papers yet. Add journals &amp; topics in <strong>⚙ Settings</strong>, then click
-      “Refresh now”.
+      “Check for new papers”.
     </>
   ) : (
     <>
@@ -298,7 +298,7 @@ export default function App() {
                   )}
                   {isAdmin && (
                     <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-                      {refreshing ? "Refreshing…" : "Refresh now"}
+                      {refreshing ? "Checking…" : "Check for new papers"}
                     </button>
                   )}
                 </>

@@ -28,7 +28,7 @@ function nodeValFromCount(count: number): number {
 // Cache the last successful graph fetch per source. Remounting the graph — e.g.
 // flipping the view toggle back to Graph — then paints from cache instead of
 // refetching and re-showing the "Loading citation data…" state. reloadToken is
-// bumped when the data actually changes ("Refresh now", collection imports and
+// bumped when the data actually changes ("Check for new papers", collection imports and
 // file edits), which invalidates the entry. Only the raw server response is
 // cached; the settled node positions still recompute on remount (the layout
 // re-runs from scratch).
