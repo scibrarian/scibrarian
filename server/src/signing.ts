@@ -14,7 +14,7 @@ export const signingEnabled = ADMIN_TOKEN.length > 0;
 
 // Domain-separated from the raw token; rotating ADMIN_TOKEN revokes every
 // outstanding link (intentional — it's the owner's kill switch).
-const SHARE_KEY = crypto.createHash("sha256").update(`sciluminate-share:${ADMIN_TOKEN}`).digest();
+const SHARE_KEY = crypto.createHash("sha256").update(`scibrarian-share:${ADMIN_TOKEN}`).digest();
 
 function mac(payload: string, exp: number): string {
   return crypto.createHmac("sha256", SHARE_KEY).update(`${payload}:${exp}`).digest("hex");

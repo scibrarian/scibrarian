@@ -24,7 +24,7 @@ import type {
 // The admin token unlocks mutating endpoints; GETs work without one. Kept in
 // localStorage so an unlocked admin stays unlocked across reloads — the server
 // re-verifies it on every request, so nothing is trusted from storage alone.
-const TOKEN_KEY = "sciluminate_admin_token";
+const TOKEN_KEY = "scibrarian_admin_token";
 
 export function getAdminToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);

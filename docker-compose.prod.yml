@@ -8,9 +8,9 @@
 #   3. docker compose -f docker-compose.prod.yml up -d --build
 
 services:
-  sciluminate:
+  scibrarian:
     build: .
-    image: sciluminate
+    image: scibrarian
     restart: unless-stopped
     init: true
     environment:
@@ -18,7 +18,7 @@ services:
       # internally so Caddy can reach it, which makes this token mandatory.
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env (copy .env.prod.example)}
     volumes:
-      - sciluminate-data:/data
+      - scibrarian-data:/data
     expose:
       - "3001"            # reachable by Caddy on the internal network only
     networks:
@@ -28,7 +28,7 @@ services:
     image: caddy:2
     restart: unless-stopped
     depends_on:
-      - sciluminate
+      - scibrarian
     ports:
       - "80:80"
       - "443:443"
@@ -47,6 +47,6 @@ networks:
   web:
 
 volumes:
-  sciluminate-data:
+  scibrarian-data:
   caddy-data:
   caddy-config:
