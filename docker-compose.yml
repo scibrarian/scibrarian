@@ -1,7 +1,7 @@
 services:
-  sciluminate:
+  scibrarian:
     build: .
-    image: sciluminate
+    image: scibrarian
     # Published on the host loopback only: reachable from this machine, not the
     # LAN. Change to "3001:3001" (or a "<lan-ip>:3001:3001") to expose it wider —
     # ADMIN_TOKEN already protects every mutation if you do.
@@ -14,9 +14,9 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN (e.g. in a .env file next to docker-compose.yml) — the server will not bind a non-loopback interface without it}
       # NCBI email / API key are configured in the app's Settings UI, not here.
     volumes:
-      - sciluminate-data:/data
+      - scibrarian-data:/data
     init: true
     restart: unless-stopped
 
 volumes:
-  sciluminate-data:
+  scibrarian-data:

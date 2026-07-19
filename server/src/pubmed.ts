@@ -8,7 +8,7 @@ import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
 export { buildTerm } from "./pubmed-parse.js";
 
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
-const TOOL = "sciluminate";
+const TOOL = "scibrarian";
 
 // ---------- request throttling ----------
 // NCBI allows ~3 req/sec without an API key, ~10/sec with one. We serialize all

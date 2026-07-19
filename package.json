@@ -1,5 +1,5 @@
 {
-  "name": "sciluminate",
+  "name": "scibrarian",
   "version": "1.0.0",
   "private": true,
   "description": "Local web app that polls top journals (via PubMed) and shows a per-topic timeline of recent research.",
