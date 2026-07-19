@@ -1,0 +1,52 @@
+# Production deployment: Caddy terminates HTTPS (automatic Let's Encrypt certs)
+# and reverse-proxies to the app over a private Docker network. Only Caddy's
+# 80/443 are published to the host; the app port is never exposed directly.
+#
+# Setup (see DEPLOY.md for the full walkthrough):
+#   1. cp .env.prod.example .env      # then fill in ADMIN_TOKEN, DOMAIN, ACME_EMAIL
+#   2. cp Caddyfile.example Caddyfile  # then paste your basic-auth hash
+#   3. docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  sciluminate:
+    build: .
+    image: sciluminate
+    restart: unless-stopped
+    init: true
+    environment:
+      # Guards every mutation and stored-PDF download. The image binds 0.0.0.0
+      # internally so Caddy can reach it, which makes this token mandatory.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env (copy .env.prod.example)}
+    volumes:
+      - sciluminate-data:/data
+    expose:
+      - "3001"            # reachable by Caddy on the internal network only
+    networks:
+      - web
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - sciluminate
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"     # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env (the public hostname whose DNS points at this host)}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env (Let's Encrypt expiry notices)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # certificates + ACME account — MUST persist
+      - caddy-config:/config
+    networks:
+      - web
+
+networks:
+  web:
+
+volumes:
+  sciluminate-data:
+  caddy-data:
+  caddy-config:

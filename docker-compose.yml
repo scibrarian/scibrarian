@@ -1,0 +1,22 @@
+services:
+  sciluminate:
+    build: .
+    image: sciluminate
+    # Published on the host loopback only: reachable from this machine, not the
+    # LAN. Change to "3001:3001" (or a "<lan-ip>:3001:3001") to expose it wider —
+    # ADMIN_TOKEN already protects every mutation if you do.
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      # Required. The container binds 0.0.0.0 internally, so the server refuses
+      # to start without a token. Put ADMIN_TOKEN in a .env file beside this
+      # compose file: `ADMIN_TOKEN=<a long random string>`.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN (e.g. in a .env file next to docker-compose.yml) — the server will not bind a non-loopback interface without it}
+      # NCBI email / API key are configured in the app's Settings UI, not here.
+    volumes:
+      - sciluminate-data:/data
+    init: true
+    restart: unless-stopped
+
+volumes:
+  sciluminate-data:

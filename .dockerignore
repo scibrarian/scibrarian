@@ -1,0 +1,26 @@
+# Dependencies and build artifacts are (re)created inside the image.
+node_modules
+**/node_modules
+client/dist
+**/dist
+
+# Local data + secrets never belong in the image.
+data
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+.env
+**/.env
+
+# VCS, tooling, and docs that don't affect the build.
+.git
+.gitignore
+.github
+.vscode
+.claude
+Dockerfile
+docker-compose*.yml
+Caddyfile*
+.dockerignore
+*.md

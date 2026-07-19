@@ -1,0 +1,30 @@
+# Copy to `Caddyfile` (kept out of git) and paste your basic-auth hash below.
+# DOMAIN and ACME_EMAIL are injected from the environment by docker-compose.prod.yml.
+# Requires Caddy >= 2.8 (the `caddy:2` image); older tags use `basicauth`.
+
+{$DOMAIN} {
+	# Automatic HTTPS: Caddy obtains and renews a Let's Encrypt certificate for
+	# {$DOMAIN}. ACME_EMAIL receives expiry notices.
+	tls {$ACME_EMAIL}
+
+	# --- Edge login -----------------------------------------------------------
+	# The app has no view-side login and every GET request is public, so we gate
+	# the whole site behind HTTP basic auth. Generate a hash with:
+	#
+	#   docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+	#
+	# then set the username and paste the hash (it starts with $2a$…) below. The
+	# hash lives here, not in .env, because docker-compose mangles the $'s in a
+	# bcrypt hash.
+	#
+	# Prefer a public read-only dashboard (and want the app's built-in share
+	# links to work for outsiders)? Delete this entire basic_auth block —
+	# mutations and stored PDFs stay protected by ADMIN_TOKEN either way, but
+	# paper metadata becomes world-readable.
+	basic_auth {
+		admin REPLACE_WITH_YOUR_BCRYPT_HASH
+	}
+	# --------------------------------------------------------------------------
+
+	reverse_proxy sciluminate:3001
+}
