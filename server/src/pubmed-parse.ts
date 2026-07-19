@@ -33,6 +33,7 @@ interface ESummaryDoc {
   title?: string;
   fulljournalname?: string;
   source?: string;
+  nlmuniqueid?: string; // NLM Unique journal ID — the stable journal identity
   pubdate?: string;
   epubdate?: string;
   sortpubdate?: string;
@@ -74,6 +75,23 @@ export function parseSummaries(pmids: string[], body: unknown): Map<string, Arti
       pub_date_display: pubDateDisplay,
       doi: extractDoi(doc),
     });
+  }
+  return out;
+}
+
+// Pull each doc's journal NLM id from an esummary body, one entry per article
+// (repeats intact — journal-frequency ranking counts them; see
+// journal-suggest.ts). Error stubs and docs without an id are skipped.
+export function parseJournalIds(body: unknown): string[] {
+  const result = (body as { result?: Record<string, ESummaryDoc | string[]> })?.result;
+  if (!result) return [];
+  const uids = Array.isArray(result.uids) ? result.uids : [];
+  const out: string[] = [];
+  for (const uid of uids) {
+    const doc = result[uid];
+    if (!doc || Array.isArray(doc) || typeof doc !== "object") continue;
+    if (doc.error || !doc.nlmuniqueid) continue;
+    out.push(doc.nlmuniqueid);
   }
   return out;
 }
