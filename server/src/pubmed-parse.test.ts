@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildTerm, parsePubDate, parseSummaries, parseArticleSet } from "./pubmed-parse.js";
+import {
+  buildTerm,
+  parseJournalIds,
+  parsePubDate,
+  parseSummaries,
+  parseArticleSet,
+} from "./pubmed-parse.js";
 
 describe("buildTerm", () => {
   it("returns the bare trimmed term when no journals are selected", () => {
@@ -117,6 +123,31 @@ describe("parseSummaries", () => {
   it("returns an empty map for a body with no result", () => {
     expect(parseSummaries(["1"], {}).size).toBe(0);
     expect(parseSummaries(["1"], null).size).toBe(0);
+  });
+});
+
+describe("parseJournalIds", () => {
+  // Journal-count sample: two NEJM papers, one Lancet paper, an error stub,
+  // and a doc without an nlmuniqueid.
+  const body = {
+    result: {
+      uids: ["1", "2", "3", "4", "5"],
+      "1": { uid: "1", nlmuniqueid: "0255562" },
+      "2": { uid: "2", nlmuniqueid: "2985213R" },
+      "3": { uid: "3", nlmuniqueid: "0255562" },
+      "4": { uid: "4", error: "cannot get document summary" },
+      "5": { uid: "5", title: "No journal id on this one" },
+    },
+  };
+
+  it("returns one id per doc with repeats intact, skipping stubs and id-less docs", () => {
+    expect(parseJournalIds(body)).toEqual(["0255562", "2985213R", "0255562"]);
+  });
+
+  it("returns empty for bodies without a result or uids", () => {
+    expect(parseJournalIds({})).toEqual([]);
+    expect(parseJournalIds(null)).toEqual([]);
+    expect(parseJournalIds({ result: {} })).toEqual([]);
   });
 });
 

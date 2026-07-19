@@ -12,11 +12,15 @@ import type { Journal, JournalSearchResult } from "../types";
 // nothing hits the server until Apply, which shows one aggregated warning when
 // removals are staged (removal permanently deletes non-library papers).
 
+// Staged adds carry optional topic attribution when they came from Auto
+// (JournalSuggestion rows), so the right pane can say why each was suggested.
+type StagedAdd = JournalSearchResult & { topics?: string[] };
+
 // A right-pane row is either a stored journal or a staged add. Stored rows key
 // by id (legacy rows can have a null nlm_id); staged rows key by nlm_id.
 type RightRow =
   | { kind: "current"; journal: Journal }
-  | { kind: "staged"; result: JournalSearchResult };
+  | { kind: "staged"; result: StagedAdd };
 
 const rightKey = (row: RightRow) =>
   row.kind === "current" ? `j${row.journal.id}` : `n${row.result.nlm_id}`;
@@ -63,12 +67,14 @@ export function JournalManager({
   const [rightFilter, setRightFilter] = useState("");
   const [searchResults, setSearchResults] = useState<JournalSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [stagedAdds, setStagedAdds] = useState<Map<string, JournalSearchResult>>(new Map());
+  const [stagedAdds, setStagedAdds] = useState<Map<string, StagedAdd>>(new Map());
   const [stagedRemovals, setStagedRemovals] = useState<Set<number>>(new Set());
   const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
   const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<{ title: string; message: string } | null>(null);
   const [applying, setApplying] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Each opening starts fresh — stale staging from the last use would be worse
@@ -85,6 +91,8 @@ export function JournalManager({
     setRightSelected(new Set());
     setConfirm(null);
     setApplying(false);
+    setSuggesting(false);
+    setNotice(null);
     setError(null);
     let active = true;
     api
@@ -201,10 +209,52 @@ export function JournalManager({
     });
   }
 
+  // ----- auto-suggest -----
+
+  // Auto: pull per-topic suggestions from the server and stage them as adds.
+  // Nothing is committed — suggestions land in the right pane for review and
+  // go through the same Apply as manual moves. The server already excludes
+  // stored journals; the functional update keeps any staging the user did
+  // while the (slow, multi-request) fetch was in flight.
+  async function autoSuggest() {
+    if (suggesting || applying) return;
+    setSuggesting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await api.suggestJournals();
+      if (r.topicCount === 0) {
+        setNotice("No topics yet — add topics first, then Auto can suggest journals for them.");
+        return;
+      }
+      const fresh = r.results.filter((s) => !stagedAdds.has(s.nlm_id));
+      setStagedAdds((prev) => {
+        const next = new Map(prev);
+        for (const s of r.results) if (!next.has(s.nlm_id)) next.set(s.nlm_id, s);
+        return next;
+      });
+      const parts = [
+        fresh.length > 0
+          ? `Staged ${fresh.length} suggested journal${
+              fresh.length === 1 ? "" : "s"
+            } — review below, then press Apply.`
+          : "No new suggestions — your list already covers your topics' top journals.",
+      ];
+      if (r.failed.length > 0) {
+        parts.push(`Couldn't fetch suggestions for: ${r.failed.join(", ")}.`);
+      }
+      setNotice(parts.join(" "));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
   // ----- apply -----
 
   async function beginApply() {
-    if (applying) return;
+    if (applying || suggesting) return;
     if (stagedRemovals.size === 0) return commit();
     // The warning needs article counts fetched before the dialog opens; a
     // failed count falls through as 0 (same tolerance as the old per-journal
@@ -289,10 +339,11 @@ export function JournalManager({
     selected: boolean,
     onToggle: () => void,
     onMove: () => void,
-    isNew = false
+    isNew = false,
+    tooltip?: string
   ) {
     return (
-      <li key={key} className="jm-row" onDoubleClick={onMove} title={name}>
+      <li key={key} className="jm-row" onDoubleClick={onMove} title={tooltip ?? name}>
         <label className="filter-option">
           <input type="checkbox" checked={selected} onChange={onToggle} />
           <span className="filter-option-name">{name}</span>
@@ -338,6 +389,21 @@ export function JournalManager({
           stand-in for impact factor.
         </p>
         {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
+        {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
+        <div className="jm-auto">
+          <button
+            type="button"
+            onClick={autoSuggest}
+            disabled={suggesting || applying}
+            title="Stage the top journals publishing on your topics, ranked by the citation metric"
+          >
+            {suggesting ? "Searching PubMed…" : "Auto"}
+          </button>
+          <span className="hint">
+            Auto stages the top journals for each of your topics (recent papers, highest
+            metric first) — nothing is added until you press Apply.
+          </span>
+        </div>
         <div className="jm-panes">
           <section className="jm-pane" aria-label="Catalog journals">
             <header className="jm-pane-header">
@@ -408,7 +474,10 @@ export function JournalManager({
                   rightSelected.has(rightKey(row)),
                   () => setRightSelected(toggled(rightSelected, rightKey(row))),
                   () => moveLeft([row]),
-                  row.kind === "staged"
+                  row.kind === "staged",
+                  row.kind === "staged" && row.result.topics?.length
+                    ? `${rightName(row)} — suggested for: ${row.result.topics.join(", ")}`
+                    : undefined
                 )
               )}
               {current !== null && rightRows.length === 0 && (
@@ -427,7 +496,7 @@ export function JournalManager({
             type="button"
             className="primary"
             onClick={beginApply}
-            disabled={!dirty || applying}
+            disabled={!dirty || applying || suggesting}
           >
             {applyLabel}
           </button>

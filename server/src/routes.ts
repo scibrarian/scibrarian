@@ -53,6 +53,7 @@ import {
 import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./config.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
+import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { fetchArticles, resolveJournal } from "./pubmed.js";
 import {
@@ -251,6 +252,29 @@ api.get(
         issn: r.issn_print || r.issn_online,
         metric: round1(r.metric),
       })),
+    });
+  })
+);
+
+// "Auto" suggestions: for each of the user's topics, sample its most recent
+// PubMed papers, rank the journals publishing them, and return the
+// highest-impact per-topic picks not already in the list (journal-suggest.ts).
+// `per_topic` caps how many journals each topic contributes. Suggestions are
+// only staged client-side — adding still goes through POST /journals.
+api.get(
+  "/journals/suggest",
+  asyncHandler(async (req, res) => {
+    const perTopic = Math.min(30, Math.max(1, Number(req.query.per_topic) || 10));
+    await ensureCatalogLoaded();
+    const topics = listTopics();
+    const { results, failed } =
+      topics.length > 0
+        ? await suggestJournals(topics, perTopic)
+        : { results: [], failed: [] };
+    res.json({
+      topicCount: topics.length,
+      failed,
+      results: results.map((r) => ({ ...r, metric: round1(r.metric) })),
     });
   })
 );
