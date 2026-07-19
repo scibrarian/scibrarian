@@ -256,7 +256,7 @@ export default function App() {
       <header className="app-header">
         <div className="brand">
           <span className="logo">🧬</span>
-          <h1>SciLuminate</h1>
+          <h1>Scibrarian</h1>
         </div>
         <div className="header-actions">
           {!loaded ? (

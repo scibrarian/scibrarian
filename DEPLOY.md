@@ -1,6 +1,6 @@
-# Deploying SciLuminate
+# Deploying Scibrarian
 
-SciLuminate is built for a **single owner on a trusted network**. Every *write*
+Scibrarian is built for a **single owner on a trusted network**. Every *write*
 (adding topics/journals, uploading PDFs, changing settings) requires an
 `ADMIN_TOKEN`, but by design **every read is unauthenticated** — anyone who can
 reach the port can view your topics, papers, abstracts, and graphs. Stored PDFs
@@ -52,9 +52,9 @@ so the public read surface isn't wide open.
 Create an `A` record for your chosen hostname pointing at the server's public
 IPv4 (and an `AAAA` for IPv6 if you have one):
 ```
-A    sciluminate.example.com   →   203.0.113.10
+A    scibrarian.example.com   →   203.0.113.10
 ```
-Wait for it to resolve (`dig +short sciluminate.example.com`) before continuing —
+Wait for it to resolve (`dig +short scibrarian.example.com`) before continuing —
 Caddy can't get a certificate until the name points here.
 
 ### 2. Configure secrets and domain
@@ -62,7 +62,7 @@ Caddy can't get a certificate until the name points here.
 cp .env.prod.example .env
 # Edit .env:
 #   ADMIN_TOKEN=<paste `openssl rand -hex 32`>
-#   DOMAIN=sciluminate.example.com
+#   DOMAIN=scibrarian.example.com
 #   ACME_EMAIL=you@example.com
 ```
 
@@ -82,7 +82,7 @@ docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
-Visit `https://sciluminate.example.com`. You'll get the basic-auth prompt, then
+Visit `https://scibrarian.example.com`. You'll get the basic-auth prompt, then
 unlock writes with your `ADMIN_TOKEN` (padlock in the header).
 
 Watch the first cert issuance if anything looks off:
@@ -131,7 +131,7 @@ and associate it with the instance. Point your DNS `A` record at that Elastic IP
 and confirm it resolves before launching Caddy (Let's Encrypt rate-limits failed
 attempts):
 ```bash
-dig +short sciluminate.example.com   # must print your Elastic IP
+dig +short scibrarian.example.com   # must print your Elastic IP
 ```
 
 ### 4. Install Docker + the Compose plugin
@@ -162,7 +162,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 ### 6. Deploy
 ```bash
-git clone <your-repo-url> sciluminate && cd sciluminate
+git clone <your-repo-url> scibrarian && cd scibrarian
 ```
 Now follow **Option B, steps 2–4** above: create `.env` and `Caddyfile`, then
 `docker compose -f docker-compose.prod.yml up -d --build`. Watch the first cert
@@ -179,13 +179,13 @@ issuance with `docker compose -f docker-compose.prod.yml logs -f caddy`.
 ## Operations
 
 **Data** lives in two Docker volumes — back these up:
-- `sciluminate-data` — the SQLite database and uploaded PDF blobs.
+- `scibrarian-data` — the SQLite database and uploaded PDF blobs.
 - `caddy-data` — TLS certificates and the ACME account (prod only).
 
 Example backup of the app data:
 ```bash
-docker run --rm -v sciluminate_sciluminate-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/sciluminate-backup.tar.gz -C /data .
+docker run --rm -v scibrarian_scibrarian-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/scibrarian-backup.tar.gz -C /data .
 ```
 
 **Update** to the latest code:
