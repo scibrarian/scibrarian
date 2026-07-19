@@ -50,18 +50,6 @@ export interface JournalSearchResponse {
   results: JournalSearchResult[];
 }
 
-// One row from /api/journals/suggest ("Auto"): a catalog journal plus which of
-// the user's topics wanted it.
-export interface JournalSuggestion extends JournalSearchResult {
-  topics: string[];
-}
-
-export interface JournalSuggestResponse {
-  results: JournalSuggestion[];
-  topicCount: number; // topics considered; 0 = user has no topics yet
-  failed: string[]; // topics whose PubMed lookup failed (results are partial)
-}
-
 export interface MeshSearchResult {
   ui: string; // MeSH descriptor id, e.g. D003924
   name: string; // canonical heading
