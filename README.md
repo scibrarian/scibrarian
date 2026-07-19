@@ -5,7 +5,9 @@ A local web app that watches the top medical journals you choose and keeps a
 
 - One tab per topic, reverse-chronological timeline of papers.
 - You specify the journals and the topics (with PubMed search terms) in **Settings**.
-- A background scheduler polls daily; a **Refresh now** button polls on demand.
+- A background scheduler polls daily; a **Check for new papers** button polls on demand.
+- Reference data (the NLM journal catalog, OpenAlex impact metrics, and the MeSH
+  vocabulary) refreshes itself on startup and on a daily background check.
 - Papers (title, authors, journal, date, abstract, PubMed/DOI link) are stored locally
   in SQLite, so the timeline persists.
 - **Collections**: upload PDFs of papers you already have; they're matched against
@@ -33,7 +35,7 @@ Then open the UI URL printed by Vite (default http://localhost:5173).
 3. Add the topics you want to track. Each topic is a **MeSH heading** — search the
    vocabulary and pick one (typing a synonym like `type 2 diabetes` or `NIDDM` finds
    the official term `Diabetes Mellitus, Type 2`).
-4. Click **Refresh now**. Each topic gets its own tab with a timeline.
+4. Click **Check for new papers**. Each topic gets its own tab with a timeline.
 
 ## Tests
 

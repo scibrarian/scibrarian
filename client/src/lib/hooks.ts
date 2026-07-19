@@ -63,7 +63,7 @@ export function useIncrementalList<T>(items: T[], resetKey: string) {
 
 // A module-level cache for useCachedFetch: one entry per key, invalidated when
 // `token` no longer matches (bumped whenever the underlying data changes, e.g.
-// by "Refresh now").
+// by "Check for new papers").
 export type FetchCache<T> = Map<string, { token: number; data: T }>;
 
 // Cap each cache so a long session — every distinct search prefix mints a key —

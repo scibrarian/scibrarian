@@ -1,5 +1,6 @@
 import {
-  bulkInsertCatalog,
+  bulkUpsertCatalog,
+  getCatalogLoadedAt,
   getSetting,
   journalCatalogCount,
   setCatalogMetric,
@@ -13,6 +14,9 @@ const J_MEDLINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt";
 // OpenAlex journal-level metrics (open, CC0). We use 2-yr mean citedness.
 const OPENALEX = "https://api.openalex.org/sources";
 const METRIC_TTL_DAYS = 180;
+// NLM revises J_Medline continuously (new MEDLINE journals, renames, ISSN
+// changes); a monthly re-download keeps autocomplete current for ~10 MB/month.
+const CATALOG_TTL_DAYS = 30;
 
 // ---------- NLM catalog load ----------
 
@@ -43,11 +47,7 @@ function parseJMedline(text: string): CatalogSeed[] {
 
 let loading: Promise<void> | null = null;
 
-// Populate the catalog from NLM on first use. Safe to call repeatedly and
-// concurrently; downloads at most once. Failures are non-fatal (the app still
-// works without autocomplete — it just falls back to a live PubMed check).
-export function ensureCatalogLoaded(): Promise<void> {
-  if (journalCatalogCount() > 0) return Promise.resolve();
+function startLoad(): Promise<void> {
   if (loading) return loading;
   loading = (async () => {
     try {
@@ -55,7 +55,7 @@ export function ensureCatalogLoaded(): Promise<void> {
       const res = await fetch(J_MEDLINE_URL);
       if (!res.ok) throw new Error(`NLM returned ${res.status} ${res.statusText}`);
       const rows = parseJMedline(await res.text());
-      bulkInsertCatalog(rows);
+      bulkUpsertCatalog(rows);
       console.log(`[journals] catalog loaded: ${rows.length} journals`);
     } catch (err) {
       console.warn("[journals] catalog load failed:", errMessage(err));
@@ -64,6 +64,28 @@ export function ensureCatalogLoaded(): Promise<void> {
     }
   })();
   return loading;
+}
+
+// Populate the catalog from NLM on first use. Safe to call repeatedly and
+// concurrently; downloads at most once. Failures are non-fatal (the app still
+// works without autocomplete — it just falls back to a live PubMed check).
+// Request paths call this; a populated-but-stale catalog is served as-is so a
+// search never waits on (or triggers) a re-download.
+export function ensureCatalogLoaded(): Promise<void> {
+  if (journalCatalogCount() > 0) return Promise.resolve();
+  return startLoad();
+}
+
+// Startup + daily-scheduler entry: also re-download once the last load is
+// older than CATALOG_TTL_DAYS, upserting in place so cached OpenAlex metrics
+// survive (see bulkUpsertCatalog). A failed refresh leaves the current catalog
+// serving; the next startup or daily tick retries.
+export function refreshCatalogIfStale(): Promise<void> {
+  const loadedMs = Date.parse(getCatalogLoadedAt());
+  const fresh =
+    Number.isFinite(loadedMs) && Date.now() - loadedMs < CATALOG_TTL_DAYS * 86_400_000;
+  if (fresh && journalCatalogCount() > 0) return Promise.resolve();
+  return startLoad();
 }
 
 // ---------- OpenAlex metrics ----------
