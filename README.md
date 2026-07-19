@@ -35,6 +35,16 @@ Then open the UI URL printed by Vite (default http://localhost:5173).
    the official term `Diabetes Mellitus, Type 2`).
 4. Click **Refresh now**. Each topic gets its own tab with a timeline.
 
+## Tests
+
+```bash
+npm test           # runs the Vitest suite for both workspaces
+```
+
+Tests live next to the code they cover (`*.test.ts`) and focus on pure logic —
+share-link signing, PDF identifier matching, formatting, and citation-graph
+clustering. `npx vitest` starts the watcher during development.
+
 ## Optional config
 
 Copy `.env.example` to `server/.env` to set an NCBI API key (higher rate limit),
