@@ -1,6 +1,6 @@
 import { findCatalogByName, getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
-import { parseArticleSet, parseJournalIds, parseSummaries } from "./pubmed-parse.js";
+import { parseArticleSet, parseSummaries } from "./pubmed-parse.js";
 import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
 
 // Fetch/throttle/retry side of the PubMed client; response parsing and query
@@ -132,30 +132,6 @@ export async function search(term: string, mhdaSince?: string): Promise<string[]
   return ids.slice(0, MAX_RESULTS);
 }
 
-// The most recent `retmax` PMIDs for a term, published on/after `mindate`
-// (YYYY/MM/DD). One bounded request — unlike search(), which pages through a
-// topic's complete history for polling — because journal-frequency ranking
-// (journal-suggest.ts) only needs a recent sample, not completeness.
-export async function searchRecent(
-  term: string,
-  retmax: number,
-  mindate: string
-): Promise<string[]> {
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    sort: "pub_date",
-    retmax: String(retmax),
-    datetype: "pdat",
-    mindate,
-    maxdate: "3000", // mindate is ignored unless maxdate is also present
-    term,
-  });
-  const res = await eutilsFetch("esearch.fcgi", params);
-  const data = (await res.json()) as { esearchresult?: { idlist?: string[] } };
-  return data.esearchresult?.idlist ?? [];
-}
-
 // Resolve a DOI to its PMID via a field-tagged esearch (covers all of PubMed,
 // unlike the PMC-only idconv service, and inherits the shared throttle/retry/
 // API-key plumbing). Returns null unless PubMed has exactly one match — 0 or
@@ -184,20 +160,6 @@ export async function fetchSummaries(pmids: string[]): Promise<Map<string, Artic
   });
   const res = await eutilsFetch("esummary.fcgi", params);
   return parseSummaries(pmids, await res.json());
-}
-
-// Journal NLM ids for a batch of PMIDs (one per article, repeats intact) — the
-// lean esummary variant journal-frequency ranking needs; full article metadata
-// isn't parsed or returned.
-export async function fetchJournalIds(pmids: string[]): Promise<string[]> {
-  if (pmids.length === 0) return [];
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    id: pmids.join(","),
-  });
-  const res = await eutilsFetch("esummary.fcgi", params);
-  return parseJournalIds(await res.json());
 }
 
 // ---------- efetch (abstract + journal identity) ----------

@@ -11,7 +11,6 @@ import type {
   Journal,
   JournalRemovalResult,
   JournalSearchResponse,
-  JournalSuggestResponse,
   MeshSearchResponse,
   PaperSource,
   PapersResponse,
@@ -92,12 +91,6 @@ export const api = {
   searchJournals: (q: string, limit?: number) =>
     req<JournalSearchResponse>(
       `/api/journals/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
-    ),
-  // Per-topic journal suggestions for the Auto button; omitting perTopic uses
-  // the server default (10 per topic).
-  suggestJournals: (perTopic?: number) =>
-    req<JournalSuggestResponse>(
-      `/api/journals/suggest${perTopic ? `?per_topic=${perTopic}` : ""}`
     ),
   createJournal: (name: string, nlmId?: string) =>
     req<Journal>("/api/journals", {
