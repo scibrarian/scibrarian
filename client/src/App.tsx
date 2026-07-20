@@ -175,9 +175,9 @@ export default function App() {
     setIsAdmin(false);
   }
 
-  // A title click in the papers table re-fetches /auth to decide PDF access;
-  // fold that fresh snapshot back into app state so the whole UI (share
-  // column, tooltips) reflects a mid-session Open Library or token change.
+  // A title click in any view re-fetches /auth to decide PDF access; fold that
+  // fresh snapshot back into app state so the whole UI (share column, tooltips,
+  // file badges) reflects a mid-session Open Library or token change.
   function handleAuthRefreshed(a: AuthStatus) {
     setIsAdmin(a.admin);
     setTokenRequired(a.token_required);
@@ -233,21 +233,32 @@ export default function App() {
     </>
   );
 
+  // Every view opens papers the same way, so they all take the same access
+  // snapshot (see usePaperOpener).
+  const access = {
+    isAdmin,
+    tokenRequired,
+    libraryOpen,
+    onAuthRefreshed: handleAuthRefreshed,
+  };
+
   const module =
     source &&
     (viewMode === "graph" ? (
-      <CitationGraph source={source} reloadToken={reloadToken} />
+      <CitationGraph source={source} reloadToken={reloadToken} {...access} />
     ) : viewMode === "timeline" ? (
-      <Timeline source={source} reloadToken={reloadToken} emptyState={emptyState} />
+      <Timeline
+        source={source}
+        reloadToken={reloadToken}
+        emptyState={emptyState}
+        {...access}
+      />
     ) : (
       <PapersTable
         source={source}
         reloadToken={reloadToken}
         emptyState={emptyState}
-        isAdmin={isAdmin}
-        tokenRequired={tokenRequired}
-        libraryOpen={libraryOpen}
-        onAuthRefreshed={handleAuthRefreshed}
+        {...access}
       />
     ));
 

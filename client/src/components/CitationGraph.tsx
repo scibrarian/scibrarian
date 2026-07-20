@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
+import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { sourceKey } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
@@ -37,7 +38,11 @@ const graphCache: FetchCache<GraphResponse> = new Map();
 export function CitationGraph({
   source,
   reloadToken,
-}: {
+  isAdmin,
+  tokenRequired,
+  libraryOpen,
+  onAuthRefreshed,
+}: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
 }) {
@@ -49,6 +54,12 @@ export function CitationGraph({
   // Custom tooltip for cluster names (native title has an un-tunable delay).
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const dark = usePrefersDark();
+  const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
+    isAdmin,
+    tokenRequired,
+    libraryOpen,
+    onAuthRefreshed,
+  });
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
@@ -254,7 +265,13 @@ export function CitationGraph({
         )}
       </div>
 
-      {error && <Banner kind="error" message={error} />}
+      {(error ?? openError) && (
+        <Banner
+          kind="error"
+          message={(error ?? openError)!}
+          onDismiss={openError ? clearOpenError : undefined}
+        />
+      )}
 
       <div className="graph-body">
         <div className="graph-canvas" ref={wrapRef}>
@@ -352,21 +369,52 @@ export function CitationGraph({
                 <Dialog.Close className="modal-close" aria-label="Close">
                   ×
                 </Dialog.Close>
-                <p className="modal-meta">
-                  {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
-                  {selected.year != null && ` · ${selected.year}`}
-                </p>
+                <div className="modal-head">
+                  {/* Marks a node whose title opens the stored PDF rather than
+                      PubMed — the click target is otherwise identical. */}
+                  {opensStoredPdf(selected) && (
+                    <span
+                      className="modal-file-icon"
+                      aria-label="Opens the stored PDF"
+                      title={`Opens ${selected.file_name}`}
+                    >
+                      📄
+                    </span>
+                  )}
+                  <p className="modal-meta">
+                    {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
+                    {selected.year != null && ` · ${selected.year}`}
+                  </p>
+                </div>
                 <Dialog.Title asChild>
-                  <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
+                  <button
+                    className="modal-title"
+                    onClick={() => openPaper(selected)}
+                    title={openTitle(selected, opensStoredPdf)}
+                  >
                     {selected.title || "(untitled)"}
-                  </a>
+                  </button>
                 </Dialog.Title>
+                {selected.file_id != null && !selected.file_exists && (
+                  <p className="modal-file-name">
+                    <span className="file-missing" title="The stored PDF is missing">
+                      file missing
+                    </span>
+                  </p>
+                )}
                 {selectedCluster && (
                   <p className="modal-cluster">
                     <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
                     {selectedCluster.label}
                   </p>
                 )}
+                {/* The title can now lead to the PDF, so PubMed gets its own
+                    link rather than being the only thing the modal opens. */}
+                <p className="modal-links">
+                  <a href={selected.url} target="_blank" rel="noreferrer">
+                    PubMed ↗
+                  </a>
+                </p>
               </Dialog.Content>
             </Dialog.Overlay>
           </Dialog.Portal>

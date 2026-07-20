@@ -408,12 +408,18 @@ api.get(
     await warmCitations(missingOrStaleCitations(pmids), "graph");
 
     const cites = getCitations(pmids);
+    // One directory read for the whole graph, as in /papers. Only collection
+    // papers carry a content_hash, so topic graphs skip the readdir.
+    const present = "collectionId" in source ? existingBlobHashes() : null;
     const nodes: GraphNode[] = papers.map((p) => ({
       pmid: p.pmid,
       title: p.title,
       url: p.url,
       citationCount: cites.get(p.pmid)?.citation_count ?? 0,
       year: /^\d{4}/.test(p.pub_date) ? Number(p.pub_date.slice(0, 4)) : null,
+      file_id: p.file_id,
+      file_name: p.file_name,
+      file_exists: p.content_hash != null && present != null && present.has(p.content_hash),
     }));
 
     // Edge P -> R means P cites R; keep only edges where both ends are in the dataset.

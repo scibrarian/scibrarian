@@ -328,14 +328,18 @@ body {
   line-height: 1.35;
 }
 
-.card-title a {
-  color: var(--text);
-  text-decoration: none;
+/* The title is a button (it may open a stored PDF, not just a URL) but should
+   read as the heading it sits in — .paper-open's own sizing is for table rows. */
+.card-title .paper-open {
+  font-size: inherit;
+  font-weight: inherit;
 }
 
-.card-title a:hover {
-  color: var(--accent);
-  text-decoration: underline;
+/* Marks a card whose title opens the stored PDF rather than PubMed. */
+.file-badge {
+  margin-right: 6px;
+  font-size: 13px;
+  vertical-align: baseline;
 }
 
 .card-authors {
@@ -979,27 +983,71 @@ code {
   cursor: pointer;
 }
 
+/* Meta line, with the file icon leading it when the title opens a stored PDF.
+   Leaves room for the × so a long meta line never runs under it. */
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding-right: 24px;
+}
+
+.modal-file-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
 .modal-meta {
   font-size: 12px;
   font-weight: 700;
   color: var(--success);
-  margin: 0 0 8px;
+  margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
+/* A button, not a link: it opens the stored PDF when there is one, PubMed
+   otherwise. Styled as the plain heading it replaced. */
 .modal-title {
   display: block;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font-family: inherit;
   font-size: 17px;
   font-weight: 600;
   color: var(--text);
   text-decoration: none;
   line-height: 1.35;
   margin-bottom: 10px;
+  cursor: pointer;
 }
 
 .modal-title:hover {
   color: var(--accent);
+  text-decoration: underline;
+}
+
+.modal-file-name {
+  margin: 0 0 10px;
+}
+
+.modal-links {
+  display: flex;
+  gap: 14px;
+  font-size: 13px;
+  margin: 0;
+}
+
+.modal-links a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.modal-links a:hover {
   text-decoration: underline;
 }
 

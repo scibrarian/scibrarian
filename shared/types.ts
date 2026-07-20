@@ -129,6 +129,11 @@ export interface GraphNode {
   url: string;
   citationCount: number;
   year: number | null; // publication year, null when unknown
+  // Same linked-PDF fields Paper carries, so a node click can open the stored
+  // file rather than PubMed. Always null/false for topic nodes.
+  file_id: number | null;
+  file_name: string | null;
+  file_exists: boolean;
 }
 
 export interface GraphEdge {

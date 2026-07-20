@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { useIncrementalList } from "../lib/hooks";
+import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
@@ -13,12 +14,17 @@ interface MonthGroup {
   items: Paper[];
 }
 
-// Month-grouped article cards, for either source.
+// Month-grouped article cards, for either source. Card titles open the same
+// thing the table's do — the linked PDF when there is one, PubMed otherwise.
 export function Timeline({
   source,
   reloadToken,
   emptyState,
-}: {
+  isAdmin,
+  tokenRequired,
+  libraryOpen,
+  onAuthRefreshed,
+}: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
@@ -43,6 +49,9 @@ export function Timeline({
     `${key}|${search}|${reloadToken}`
   );
   const groups = groupByMonth(shown);
+  // One opener for the whole timeline, so a failed open surfaces in a single
+  // banner rather than per-card.
+  const opener = usePaperOpener({ isAdmin, tokenRequired, libraryOpen, onAuthRefreshed });
 
   return (
     <div className="timeline-wrap">
@@ -55,7 +64,13 @@ export function Timeline({
         loading={loading}
       />
 
-      {error && <Banner kind="error" message={error} />}
+      {(error ?? opener.openError) && (
+        <Banner
+          kind="error"
+          message={(error ?? opener.openError)!}
+          onDismiss={opener.openError ? opener.clearOpenError : undefined}
+        />
+      )}
 
       {loading ? (
         <TimelineSkeleton />
@@ -75,7 +90,7 @@ export function Timeline({
               {g.items.map((p) => (
                 <div key={p.pmid} className="timeline-row">
                   <div className="timeline-dot" />
-                  <ArticleCard article={p} />
+                  <ArticleCard article={p} opener={opener} />
                 </div>
               ))}
             </section>

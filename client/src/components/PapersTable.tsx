@@ -1,9 +1,10 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { api } from "../api";
-import { errorMessage, formatAuthors } from "../lib/format";
+import { formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
+import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers } from "../lib/papers";
-import type { AuthStatus, Paper, PaperSource } from "../types";
+import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { PapersToolbar } from "./PapersToolbar";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -22,16 +23,10 @@ export function PapersTable({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
-}: {
+}: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
-  isAdmin: boolean;
-  tokenRequired: boolean;
-  libraryOpen: boolean;
-  // Reports the fresh /auth fetched on a title click so the app-wide snapshot
-  // (isAdmin/tokenRequired/libraryOpen) heals without a reload.
-  onAuthRefreshed: (auth: AuthStatus) => void;
 }) {
   const {
     key,
@@ -50,6 +45,12 @@ export function PapersTable({
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [actionError, setActionError] = useState<string | null>(null);
+  const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
+    isAdmin,
+    tokenRequired,
+    libraryOpen,
+    onAuthRefreshed,
+  });
 
   const sortedPapers = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -96,54 +97,6 @@ export function PapersTable({
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
 
-  // Predicts what a title click will open, for the hover tooltip only. It reads
-  // the auth snapshot, which can lag a mid-session Open Library toggle until the
-  // next click refreshes it — openPaper below decides against fresh /auth.
-  function opensStoredPdf(p: Paper): boolean {
-    if (p.file_id == null || !p.file_exists) return false;
-    if (!tokenRequired || libraryOpen) return true; // bare URL works for everyone
-    return isAdmin;
-  }
-
-  // Open what a title click refers to. When a stored PDF exists, the access
-  // policy (open library / token mode / admin) is re-checked against a fresh
-  // /auth at click time — the load-time snapshot goes stale when the owner
-  // toggles Open Library mid-session, which used to strand viewers on a raw
-  // 401 tab (closed after load) or hide newly opened PDFs (opened after load).
-  async function openPaper(p: Paper) {
-    // No matched file, or the blob is gone (orphaned/deleted) — plain PubMed
-    // link rather than a content URL the server answers with 410.
-    if (p.file_id == null || !p.file_exists) {
-      return void window.open(p.url, "_blank", "noopener");
-    }
-    const fileId = p.file_id;
-    // The tab must be opened synchronously in the click (popup blockers); it
-    // is navigated once the fresh policy is known. Detach opener since the
-    // fallback destination (PubMed) is cross-origin.
-    const tab = window.open("about:blank", "_blank");
-    if (tab) tab.opener = null;
-    try {
-      const auth = await api.getAuth();
-      onAuthRefreshed(auth); // heal the app-wide snapshot too
-      let url: string;
-      if (!auth.token_required || auth.library_open) {
-        url = api.fileContentUrl(fileId); // bare URL works for everyone
-      } else if (auth.admin) {
-        // window.open can't carry the Authorization header, so mint a
-        // short-lived signed URL first.
-        const { path } = await api.mintShareLink(fileId, 300);
-        url = new URL(path, window.location.origin).toString();
-      } else {
-        url = p.url; // PDFs are owner-only and we're a viewer: go to PubMed
-      }
-      if (tab) tab.location.href = url;
-      else window.open(url, "_blank", "noopener");
-    } catch (err) {
-      tab?.close();
-      setActionError(errorMessage(err));
-    }
-  }
-
   return (
     <div className="papers-table-view">
       <PapersToolbar
@@ -155,8 +108,15 @@ export function PapersTable({
         loading={loading}
       />
 
-      {(error ?? actionError) && (
-        <Banner kind="error" message={error ?? actionError!} onDismiss={() => setActionError(null)} />
+      {(error ?? actionError ?? openError) && (
+        <Banner
+          kind="error"
+          message={(error ?? actionError ?? openError)!}
+          onDismiss={() => {
+            setActionError(null);
+            clearOpenError();
+          }}
+        />
       )}
 
       {loading && visible.length === 0 ? (
@@ -202,7 +162,7 @@ export function PapersTable({
                       <button
                         className="paper-open"
                         onClick={() => openPaper(p)}
-                        title={opensStoredPdf(p) ? `Open ${p.file_name}` : "Open on PubMed"}
+                        title={openTitle(p, opensStoredPdf)}
                       >
                         {p.title || "(untitled)"}
                       </button>

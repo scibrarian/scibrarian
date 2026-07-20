@@ -607,6 +607,11 @@ export interface GraphPaper {
   title: string;
   url: string;
   pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
+  // The linked PDF, mirroring listPapers so a graph node and its table row
+  // agree on which file a click opens. Null for topic papers, which have none.
+  file_id: number | null;
+  file_name: string | null;
+  content_hash: string | null; // routes resolves this to file_exists
 }
 
 // The papers that make up a source's graph — the per-source dispatch lives
@@ -616,11 +621,14 @@ export function graphPapersForSource(source: PaperSourceQuery): GraphPaper[] {
   return collectionGraphPapers(source.collectionId);
 }
 
-// The papers that make up one topic's graph (green nodes).
+// The papers that make up one topic's graph (green nodes). Topic papers are
+// never backed by an upload, so the file columns are constant nulls.
 function graphPapers(topicId: number): GraphPaper[] {
   return db
     .prepare(
-      `SELECT a.pmid, a.title, a.url, a.pub_date FROM articles a
+      `SELECT a.pmid, a.title, a.url, a.pub_date,
+              NULL AS file_id, NULL AS file_name, NULL AS content_hash
+       FROM articles a
        JOIN article_topics ad ON ad.pmid = a.pmid
        WHERE ad.topic_id = ?`
     )
@@ -834,15 +842,24 @@ export const upsertArticles = transaction((articles: ArticleInsert[]) => {
 // The papers-list rows for a collection. DISTINCT pmid collapses duplicate
 // copies of the same paper (two files, one PMID) into a single row.
 // The papers that make up one collection's citation graph (same shape as
-// graphPapers, so the /graph route works on either source).
+// graphPapers, so the /graph route works on either source). Membership is one
+// row per distinct matched pmid; the linked file is the lowest-id 'matched'
+// one, resolved exactly as listPapers does so a node opens the same PDF its
+// table row does.
 function collectionGraphPapers(collectionId: number): GraphPaper[] {
   return db
     .prepare(
-      `SELECT DISTINCT a.pmid, a.title, a.url, a.pub_date FROM articles a
-       JOIN collection_files cf ON cf.pmid = a.pmid
-       WHERE cf.collection_id = ?`
+      `SELECT a.pmid, a.title, a.url, a.pub_date,
+              cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash
+       FROM articles a
+       JOIN (SELECT DISTINCT pmid FROM collection_files
+             WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
+       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                  WHERE collection_id = ? AND match_status = 'matched'
+                  GROUP BY pmid) mf ON mf.pmid = a.pmid
+       LEFT JOIN collection_files cf ON cf.id = mf.file_id`
     )
-    .all(collectionId) as unknown as GraphPaper[];
+    .all(collectionId, collectionId) as unknown as GraphPaper[];
 }
 
 // ---------- journal catalog (NLM J_Medline) ----------
