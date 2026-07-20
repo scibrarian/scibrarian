@@ -3,10 +3,10 @@ import { api } from "../api";
 import { formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { usePapers } from "../lib/papers";
+import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
-import { PapersToolbar } from "./PapersToolbar";
+import { PaperFilters } from "./PaperFilters";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
@@ -23,25 +23,15 @@ export function PapersTable({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
+  filters,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
+  filters: PaperFilterState;
 }) {
-  const {
-    key,
-    search,
-    visible,
-    journals,
-    loading,
-    error,
-    query,
-    setQuery,
-    deselected,
-    setDeselected,
-    allDeselected,
-    filtered,
-  } = usePapers(source, reloadToken);
+  const { key, search, visible, journals, maxCitations, loading, error, allDeselected, filtered } =
+    usePapers(source, reloadToken, filters);
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -99,12 +89,10 @@ export function PapersTable({
 
   return (
     <div className="papers-table-view">
-      <PapersToolbar
-        query={query}
-        onQueryChange={setQuery}
+      <PaperFilters
+        filters={filters}
         journals={journals}
-        deselected={deselected}
-        onDeselectedChange={setDeselected}
+        maxCitations={maxCitations}
         loading={loading}
       />
 

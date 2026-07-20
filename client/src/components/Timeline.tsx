@@ -1,11 +1,11 @@
 import { type ReactNode } from "react";
 import { useIncrementalList } from "../lib/hooks";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { usePapers } from "../lib/papers";
+import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
 import { Banner } from "./Banner";
-import { PapersToolbar } from "./PapersToolbar";
+import { PaperFilters } from "./PaperFilters";
 import { TimelineSkeleton } from "./Skeleton";
 
 interface MonthGroup {
@@ -24,25 +24,15 @@ export function Timeline({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
+  filters,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
+  filters: PaperFilterState;
 }) {
-  const {
-    key,
-    search,
-    visible,
-    journals,
-    loading,
-    error,
-    query,
-    setQuery,
-    deselected,
-    setDeselected,
-    allDeselected,
-    filtered,
-  } = usePapers(source, reloadToken);
+  const { key, search, visible, journals, maxCitations, loading, error, allDeselected, filtered } =
+    usePapers(source, reloadToken, filters);
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     visible,
@@ -55,12 +45,10 @@ export function Timeline({
 
   return (
     <div className="timeline-wrap">
-      <PapersToolbar
-        query={query}
-        onQueryChange={setQuery}
+      <PaperFilters
+        filters={filters}
         journals={journals}
-        deselected={deselected}
-        onDeselectedChange={setDeselected}
+        maxCitations={maxCitations}
         loading={loading}
       />
 

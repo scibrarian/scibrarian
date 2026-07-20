@@ -16,21 +16,30 @@ export function sourceKey(source: PaperSource): string {
 // collection imports and file edits), so a stale entry is never served.
 const papersCache: FetchCache<PapersResponse> = new Map();
 
-// The data + toolbar state shared by the Table and Timeline modules: fetches
-// /api/papers for the source, owns the debounced free-text search (server-side)
-// and the journal filter chips (client-side, so toggling never refetches).
-export function usePapers(source: PaperSource, reloadToken: number) {
+// Filter state for one paper source, owned above the views (in App) instead of
+// inside them. Each view unmounts as you flip Papers / Timeline / Graph, so
+// state held in a view was silently discarded on every switch — typing a search
+// in Timeline and moving to Papers used to start over from an unfiltered list.
+export function usePaperFilters(source: PaperSource) {
   const key = sourceKey(source);
   // Journals the user has turned off (empty = show all).
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
+  // The citation threshold's value plus the number box's string, which must be
+  // allowed to go empty mid-typing. Clamping needs the source's citation range,
+  // so it lives in the control (see PaperFilters), not here.
+  const [minCitations, setMinCitations] = useState(0);
+  const [minText, setMinText] = useState("0");
 
-  // Reset filters whenever the source changes.
+  // A new source starts unfiltered: its journals and citation range differ, so
+  // carrying the old filter over would hide papers for no visible reason.
   useEffect(() => {
     setDeselected(new Set());
     setQuery("");
     setSearch("");
+    setMinCitations(0);
+    setMinText("0");
   }, [key]);
 
   // Debounce the free-text search box. Kept inline rather than useDebounced:
@@ -39,6 +48,35 @@ export function usePapers(source: PaperSource, reloadToken: number) {
     const t = setTimeout(() => setSearch(query.trim()), 300);
     return () => clearTimeout(t);
   }, [query]);
+
+  return {
+    key,
+    query,
+    setQuery,
+    search,
+    deselected,
+    setDeselected,
+    minCitations,
+    setMinCitations,
+    minText,
+    setMinText,
+    // Whether anything is narrowing the list, so a view can tell "filtered to
+    // nothing" apart from "this source is empty".
+    active: search !== "" || deselected.size > 0 || minCitations > 0,
+  };
+}
+
+export type PaperFilterState = ReturnType<typeof usePaperFilters>;
+
+// The paper list for a source, filtered by the shared state above: the search
+// runs server-side (refetch per term), journals and the citation threshold are
+// applied client-side so toggling them never refetches.
+export function usePapers(
+  source: PaperSource,
+  reloadToken: number,
+  filters: PaperFilterState
+) {
+  const { key, search, deselected, minCitations } = filters;
 
   // On a fresh mount `search` is "", which is the key a previous visit to this
   // source would have cached under.
@@ -61,30 +99,36 @@ export function usePapers(source: PaperSource, reloadToken: number) {
 
   const journals = shown?.journals ?? [];
   const visible = useMemo(() => {
-    const all = shown?.papers ?? [];
-    return deselected.size === 0 ? all : all.filter((p) => !deselected.has(p.journal_name));
-  }, [shown, deselected]);
+    let all = shown?.papers ?? [];
+    if (deselected.size > 0) all = all.filter((p) => !deselected.has(p.journal_name));
+    if (minCitations > 0) all = all.filter((p) => p.citation_count >= minCitations);
+    return all;
+  }, [shown, deselected, minCitations]);
+
+  // The citation threshold's upper bound, so the slider spans this source's
+  // actual range. Taken from the unfiltered list, or the threshold itself while
+  // the first load is still in flight, so the handle never sits past the end.
+  const maxCitations = useMemo(
+    () => (shown?.papers ?? []).reduce((m, p) => Math.max(m, p.citation_count), 0),
+    [shown]
+  );
 
   // Only the initial load of a source (nothing to show yet) counts as loading;
   // a search refetch keeps the prior list visible, so it doesn't skeleton.
   const showLoading = loading && shown == null;
 
   const allDeselected = journals.length > 0 && deselected.size >= journals.length;
-  // Whether an empty `visible` means "filters matched nothing" vs "no papers".
-  const filtered = search !== "" || deselected.size > 0;
 
   return {
     key,
     search,
     visible,
     journals,
+    maxCitations,
     loading: showLoading,
     error,
-    query,
-    setQuery,
-    deselected,
-    setDeselected,
     allDeselected,
-    filtered,
+    // Whether an empty `visible` means "filters matched nothing" vs "no papers".
+    filtered: filters.active,
   };
 }

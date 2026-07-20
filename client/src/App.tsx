@@ -3,9 +3,7 @@ import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api
 import { errorMessage } from "./lib/format";
 import type { AuthStatus, Collection, Topic, PaperSource } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
-import { Timeline } from "./components/Timeline";
-import { CitationGraph } from "./components/CitationGraph";
-import { PapersTable } from "./components/PapersTable";
+import { PaperViews } from "./components/PaperViews";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
@@ -241,25 +239,15 @@ export default function App() {
     onAuthRefreshed: handleAuthRefreshed,
   };
 
-  const module =
-    source &&
-    (viewMode === "graph" ? (
-      <CitationGraph source={source} reloadToken={reloadToken} {...access} />
-    ) : viewMode === "timeline" ? (
-      <Timeline
-        source={source}
-        reloadToken={reloadToken}
-        emptyState={emptyState}
-        {...access}
-      />
-    ) : (
-      <PapersTable
-        source={source}
-        reloadToken={reloadToken}
-        emptyState={emptyState}
-        {...access}
-      />
-    ));
+  const module = source && (
+    <PaperViews
+      source={source}
+      viewMode={viewMode}
+      reloadToken={reloadToken}
+      emptyState={emptyState}
+      access={access}
+    />
+  );
 
   return (
     <div className="app">

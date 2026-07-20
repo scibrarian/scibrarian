@@ -4,10 +4,11 @@ import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { sourceKey } from "../lib/papers";
+import { sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 import { Banner } from "./Banner";
+import { PaperFilters } from "./PaperFilters";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -42,12 +43,15 @@ export function CitationGraph({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
+  filters,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
+  filters: PaperFilterState;
 }) {
-  const [minCitations, setMinCitations] = useState(0); // instant: slider + box
-  const [minText, setMinText] = useState("0"); // controlled string for the number box
+  // The citation threshold is shared with the other views (instant: slider +
+  // box); hide-unconnected is about edges, so it stays graph-local.
+  const { minCitations } = filters;
   const [hideUnconnected, setHideUnconnected] = useState(true);
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -198,28 +202,6 @@ export function CitationGraph({
     );
   };
 
-  // Slider and number input share this range; the number input is clamped so a
-  // typed value always maps to a valid slider position.
-  const sliderMax = Math.max(10, maxCitations);
-  const clampMin = (raw: string): number => {
-    const v = Math.round(Number(raw));
-    if (!Number.isFinite(v)) return 0;
-    return Math.min(Math.max(0, v), sliderMax);
-  };
-  const setBothMin = (v: number) => {
-    setMinCitations(v);
-    setMinText(String(v));
-  };
-  const handleMinText = (raw: string) => {
-    const digits = raw.replace(/\D/g, "");
-    if (digits === "") {
-      setMinText("");
-      setMinCitations(0);
-      return;
-    }
-    setBothMin(clampMin(digits));
-  };
-
   const selectedCluster = selected ? clustering.byPmid.get(selected.pmid) : undefined;
 
   // The neutral (uncolored/singleton) color must flip for dark mode so those
@@ -231,25 +213,9 @@ export function CitationGraph({
 
   return (
     <div className="graph-wrap">
-      <div className="toolbar">
-        <div className="graph-filter">
-          <span>Min citations:</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            className="min-input"
-            value={minText}
-            onChange={(e) => handleMinText(e.target.value)}
-            onBlur={() => minText === "" && setMinText("0")}
-          />
-          <input
-            type="range"
-            min={0}
-            max={sliderMax}
-            value={minCitations}
-            onChange={(e) => setBothMin(clampMin(e.target.value))}
-          />
-        </div>
+      {/* No search or journal dropdown yet: /api/graph accepts neither, and
+          filtering its payload client-side would disagree with the table. */}
+      <PaperFilters filters={filters} searchable={false} maxCitations={maxCitations}>
         <label className="graph-check">
           <input
             type="checkbox"
@@ -263,7 +229,7 @@ export function CitationGraph({
             {shown.nodes} of {data.nodes.length} papers · {shown.links} citation links
           </span>
         )}
-      </div>
+      </PaperFilters>
 
       {(error ?? openError) && (
         <Banner

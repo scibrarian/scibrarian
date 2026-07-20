@@ -154,8 +154,13 @@ body {
 
 /* journal multiselect filter */
 
+/* Holds every non-search control on one line (journals, citation threshold,
+   and any view-specific extras), wrapping rather than overflowing. */
 .filter-row {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px;
 }
 
 .filter-picker {
@@ -745,15 +750,7 @@ code {
 
 /* ---------- citation graph ---------- */
 
-.graph-wrap .toolbar {
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 18px;
-}
-
-.graph-filter {
+.citation-filter {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -764,7 +761,7 @@ code {
 /* Fixed-width number box so editing/sliding never reflows the toolbar and
    shifts the slider under the cursor. Wide enough for 5 digits; spinner arrows
    removed (the slider handles increment/decrement) so they don't clip the value. */
-.graph-filter .min-input {
+.citation-filter .min-input {
   flex: none;
   width: 8ch;
   padding: 5px 8px;
@@ -774,13 +771,13 @@ code {
   -moz-appearance: textfield;
 }
 
-.graph-filter .min-input::-webkit-outer-spin-button,
-.graph-filter .min-input::-webkit-inner-spin-button {
+.citation-filter .min-input::-webkit-outer-spin-button,
+.citation-filter .min-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
-.graph-filter input[type="range"] {
+.citation-filter input[type="range"] {
   width: 180px;
   padding: 0;
 }
