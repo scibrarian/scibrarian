@@ -117,7 +117,11 @@ export const api = {
   // Abstracts are kept out of the papers list payload; the card fetches one lazily.
   getAbstract: (pmid: string) => req<{ abstract: string }>(`/api/articles/${pmid}/abstract`),
 
-  getGraph: (source: PaperSource) => req<GraphResponse>(`/api/graph?${sourceQuery(source)}`),
+  // Takes the same `q` as getPapers, resolved server-side by the same SQL.
+  getGraph: (source: PaperSource, q?: string) => {
+    const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
+    return req<GraphResponse>(`/api/graph?${qs}`);
+  },
 
   getCollections: () => req<Collection[]>("/api/collections"),
   createCollection: (name: string) =>

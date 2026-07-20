@@ -1,10 +1,11 @@
 import { type ReactNode } from "react";
 import { useIncrementalList } from "../lib/hooks";
-import { usePapers } from "../lib/papers";
+import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
+import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
 import { Banner } from "./Banner";
-import { PapersToolbar } from "./PapersToolbar";
+import { PaperFilters } from "./PaperFilters";
 import { TimelineSkeleton } from "./Skeleton";
 
 interface MonthGroup {
@@ -13,49 +14,62 @@ interface MonthGroup {
   items: Paper[];
 }
 
-// Month-grouped article cards, for either source.
+// Month-grouped article cards, for either source. Card titles open the same
+// thing the table's do — the linked PDF when there is one, PubMed otherwise.
 export function Timeline({
   source,
   reloadToken,
   emptyState,
-}: {
+  isAdmin,
+  tokenRequired,
+  libraryOpen,
+  onAuthRefreshed,
+  filters,
+}: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
+  filters: PaperFilterState;
 }) {
   const {
     key,
     search,
     visible,
     journals,
+    maxCitations,
+    yearBounds,
     loading,
     error,
-    query,
-    setQuery,
-    deselected,
-    setDeselected,
     allDeselected,
     filtered,
-  } = usePapers(source, reloadToken);
+  } = usePapers(source, reloadToken, filters);
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     visible,
     `${key}|${search}|${reloadToken}`
   );
   const groups = groupByMonth(shown);
+  // One opener for the whole timeline, so a failed open surfaces in a single
+  // banner rather than per-card.
+  const opener = usePaperOpener({ isAdmin, tokenRequired, libraryOpen, onAuthRefreshed });
 
   return (
     <div className="timeline-wrap">
-      <PapersToolbar
-        query={query}
-        onQueryChange={setQuery}
+      <PaperFilters
+        filters={filters}
         journals={journals}
-        deselected={deselected}
-        onDeselectedChange={setDeselected}
+        maxCitations={maxCitations}
+        yearBounds={yearBounds}
         loading={loading}
       />
 
-      {error && <Banner kind="error" message={error} />}
+      {(error ?? opener.openError) && (
+        <Banner
+          kind="error"
+          message={(error ?? opener.openError)!}
+          onDismiss={opener.openError ? opener.clearOpenError : undefined}
+        />
+      )}
 
       {loading ? (
         <TimelineSkeleton />
@@ -75,7 +89,7 @@ export function Timeline({
               {g.items.map((p) => (
                 <div key={p.pmid} className="timeline-row">
                   <div className="timeline-dot" />
-                  <ArticleCard article={p} />
+                  <ArticleCard article={p} opener={opener} />
                 </div>
               ))}
             </section>

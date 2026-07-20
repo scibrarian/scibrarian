@@ -127,8 +127,14 @@ export interface GraphNode {
   pmid: string;
   title: string;
   url: string;
+  journal_name: string; // display name, matching Paper — drives the journal filter
   citationCount: number;
   year: number | null; // publication year, null when unknown
+  // Same linked-PDF fields Paper carries, so a node click can open the stored
+  // file rather than PubMed. Always null/false for topic nodes.
+  file_id: number | null;
+  file_name: string | null;
+  file_exists: boolean;
 }
 
 export interface GraphEdge {
@@ -139,4 +145,8 @@ export interface GraphEdge {
 export interface GraphResponse {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  // Every journal in the source, not just the ones surviving the current
+  // search — the filter chips must stay put while a query narrows the graph.
+  // Same list /papers returns, so the dropdown matches across views.
+  journals: string[];
 }
