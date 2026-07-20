@@ -3,10 +3,12 @@ import * as Dialog from "@radix-ui/react-dialog";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
-import { sourceKey } from "../lib/papers";
+import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
+import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 import { Banner } from "./Banner";
+import { PaperFilters } from "./PaperFilters";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -37,31 +39,60 @@ const graphCache: FetchCache<GraphResponse> = new Map();
 export function CitationGraph({
   source,
   reloadToken,
-}: {
+  isAdmin,
+  tokenRequired,
+  libraryOpen,
+  onAuthRefreshed,
+  filters,
+}: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
+  filters: PaperFilterState;
 }) {
-  const [minCitations, setMinCitations] = useState(0); // instant: slider + box
-  const [minText, setMinText] = useState("0"); // controlled string for the number box
+  // The citation threshold is shared with the other views (instant: slider +
+  // box); hide-unconnected is about edges, so it stays graph-local.
+  const { minCitations } = filters;
   const [hideUnconnected, setHideUnconnected] = useState(true);
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
   // Custom tooltip for cluster names (native title has an un-tunable delay).
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const dark = usePrefersDark();
+  const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
+    isAdmin,
+    tokenRequired,
+    libraryOpen,
+    onAuthRefreshed,
+  });
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [size, setSize] = useState({ width: 800, height: 600 });
 
-  // Stable fetch key: the same source object is re-created each render.
+  // Stable fetch key: the same source object is re-created each render. The
+  // search is part of it — it selects a different set of papers server-side.
   const key = sourceKey(source);
-  const { data, loading, error } = useCachedFetch(graphCache, key, reloadToken, () =>
-    api.getGraph(source)
+  const { search, deselected, yearFrom, yearTo } = filters;
+  const {
+    data: fetched,
+    loading,
+    error,
+  } = useCachedFetch(graphCache, `${key}:${search}`, reloadToken, () =>
+    api.getGraph(source, search || undefined)
   );
 
+  // Keep the last result for THIS source on screen while a search refetch is in
+  // flight, so typing narrows the graph in place instead of blanking the canvas
+  // to the loading message on every keystroke (the papers list does the same).
+  const lastForSource = useRef<{ key: string; data: GraphResponse } | null>(null);
+  if (fetched) lastForSource.current = { key, data: fetched };
+  const data = fetched ?? (lastForSource.current?.key === key ? lastForSource.current.data : null);
+  // Only a load with nothing to show counts as loading; a search refetch keeps
+  // the previous graph on screen, so it must not fall back to the empty state.
+  const showLoading = loading && data == null;
+
   // Close the paper modal when the graph underneath it changes.
-  useEffect(() => setSelected(null), [key, reloadToken]);
+  useEffect(() => setSelected(null), [key, search, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
@@ -105,11 +136,18 @@ export function CitationGraph({
     return { nodes, links };
   }, [data, allNodes, hideUnconnected]);
 
-  // Community detection on the *active* subgraph (papers passing the threshold).
-  // Recomputes when the data or the debounced threshold changes.
+  // Community detection on the *active* subgraph (papers passing the threshold
+  // and the journal filter). Recomputes when the data, the debounced threshold,
+  // or the journal selection changes. Filtering here rather than in graphData
+  // keeps it out of the simulation set, so narrowing never restarts the layout.
   const clustering = useMemo<ClusteringResult>(() => {
     if (!data) return { byPmid: new Map(), clusters: [] };
-    const active = graphData.nodes.filter((n) => (n.citationCount as number) >= activeMin);
+    const active = graphData.nodes.filter(
+      (n) =>
+        (n.citationCount as number) >= activeMin &&
+        !deselected.has(String(n.journal_name ?? "")) &&
+        inYearRange((n.year as number | null) ?? null, yearFrom, yearTo)
+    );
     return clusterGraph(
       active.map((n) => ({
         pmid: n.pmid,
@@ -118,7 +156,7 @@ export function CitationGraph({
       })),
       data.edges
     );
-  }, [data, graphData, activeMin]);
+  }, [data, graphData, activeMin, deselected, yearFrom, yearTo]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -130,6 +168,9 @@ export function CitationGraph({
     () => (data ? data.nodes.reduce((m, n) => Math.max(m, n.citationCount), 0) : 0),
     [data]
   );
+
+  // The year control's span, from the same node set the citation range uses.
+  const yearBounds = useMemo(() => bounds((data?.nodes ?? []).map((n) => n.year)), [data]);
 
   const isVisible = (pmid: string): boolean => {
     const a = clustering.byPmid.get(pmid);
@@ -187,28 +228,6 @@ export function CitationGraph({
     );
   };
 
-  // Slider and number input share this range; the number input is clamped so a
-  // typed value always maps to a valid slider position.
-  const sliderMax = Math.max(10, maxCitations);
-  const clampMin = (raw: string): number => {
-    const v = Math.round(Number(raw));
-    if (!Number.isFinite(v)) return 0;
-    return Math.min(Math.max(0, v), sliderMax);
-  };
-  const setBothMin = (v: number) => {
-    setMinCitations(v);
-    setMinText(String(v));
-  };
-  const handleMinText = (raw: string) => {
-    const digits = raw.replace(/\D/g, "");
-    if (digits === "") {
-      setMinText("");
-      setMinCitations(0);
-      return;
-    }
-    setBothMin(clampMin(digits));
-  };
-
   const selectedCluster = selected ? clustering.byPmid.get(selected.pmid) : undefined;
 
   // The neutral (uncolored/singleton) color must flip for dark mode so those
@@ -220,25 +239,15 @@ export function CitationGraph({
 
   return (
     <div className="graph-wrap">
-      <div className="toolbar">
-        <div className="graph-filter">
-          <span>Min citations:</span>
-          <input
-            type="text"
-            inputMode="numeric"
-            className="min-input"
-            value={minText}
-            onChange={(e) => handleMinText(e.target.value)}
-            onBlur={() => minText === "" && setMinText("0")}
-          />
-          <input
-            type="range"
-            min={0}
-            max={sliderMax}
-            value={minCitations}
-            onChange={(e) => setBothMin(clampMin(e.target.value))}
-          />
-        </div>
+      {/* Full filter row: /api/graph now takes the same `q` as /api/papers and
+          returns journal names, so all three views filter identically. */}
+      <PaperFilters
+        filters={filters}
+        journals={data?.journals ?? []}
+        maxCitations={maxCitations}
+        yearBounds={yearBounds}
+        loading={loading}
+      >
         <label className="graph-check">
           <input
             type="checkbox"
@@ -252,13 +261,19 @@ export function CitationGraph({
             {shown.nodes} of {data.nodes.length} papers · {shown.links} citation links
           </span>
         )}
-      </div>
+      </PaperFilters>
 
-      {error && <Banner kind="error" message={error} />}
+      {(error ?? openError) && (
+        <Banner
+          kind="error"
+          message={(error ?? openError)!}
+          onDismiss={openError ? clearOpenError : undefined}
+        />
+      )}
 
       <div className="graph-body">
         <div className="graph-canvas" ref={wrapRef}>
-          {loading ? (
+          {showLoading ? (
             <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
           ) : !data || data.nodes.length === 0 ? (
             <div className="empty">No papers yet.</div>
@@ -352,21 +367,52 @@ export function CitationGraph({
                 <Dialog.Close className="modal-close" aria-label="Close">
                   ×
                 </Dialog.Close>
-                <p className="modal-meta">
-                  {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
-                  {selected.year != null && ` · ${selected.year}`}
-                </p>
+                <div className="modal-head">
+                  {/* Marks a node whose title opens the stored PDF rather than
+                      PubMed — the click target is otherwise identical. */}
+                  {opensStoredPdf(selected) && (
+                    <span
+                      className="modal-file-icon"
+                      aria-label="Opens the stored PDF"
+                      title={`Opens ${selected.file_name}`}
+                    >
+                      📄
+                    </span>
+                  )}
+                  <p className="modal-meta">
+                    {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
+                    {selected.year != null && ` · ${selected.year}`}
+                  </p>
+                </div>
                 <Dialog.Title asChild>
-                  <a className="modal-title" href={selected.url} target="_blank" rel="noreferrer">
+                  <button
+                    className="modal-title"
+                    onClick={() => openPaper(selected)}
+                    title={openTitle(selected, opensStoredPdf)}
+                  >
                     {selected.title || "(untitled)"}
-                  </a>
+                  </button>
                 </Dialog.Title>
+                {selected.file_id != null && !selected.file_exists && (
+                  <p className="modal-file-name">
+                    <span className="file-missing" title="The stored PDF is missing">
+                      file missing
+                    </span>
+                  </p>
+                )}
                 {selectedCluster && (
                   <p className="modal-cluster">
                     <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
                     {selectedCluster.label}
                   </p>
                 )}
+                {/* The title can now lead to the PDF, so PubMed gets its own
+                    link rather than being the only thing the modal opens. */}
+                <p className="modal-links">
+                  <a href={selected.url} target="_blank" rel="noreferrer">
+                    PubMed ↗
+                  </a>
+                </p>
               </Dialog.Content>
             </Dialog.Overlay>
           </Dialog.Portal>

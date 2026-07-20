@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Paper } from "../types";
 import { api } from "../api";
 import { formatAuthors } from "../lib/format";
+import { openTitle, type PaperOpener } from "../lib/openPaper";
 
 const ABSTRACT_PREVIEW = 320;
 
@@ -10,7 +11,7 @@ const ABSTRACT_PREVIEW = 320;
 // (the Timeline mounts/unmounts cards as you scroll) don't refetch.
 const abstractCache = new Map<string, string>();
 
-export function ArticleCard({ article }: { article: Paper }) {
+export function ArticleCard({ article, opener }: { article: Paper; opener: PaperOpener }) {
   const [expanded, setExpanded] = useState(false);
   // null = still loading; "" = loaded, no abstract available.
   const [abstract, setAbstract] = useState<string | null>(
@@ -53,9 +54,26 @@ export function ArticleCard({ article }: { article: Paper }) {
         <span className="card-date">{article.pub_date_display || article.pub_date}</span>
       </div>
       <h3 className="card-title">
-        <a href={article.url} target="_blank" rel="noreferrer">
+        <button
+          className="paper-open"
+          onClick={() => opener.openPaper(article)}
+          title={openTitle(article, opener.opensStoredPdf)}
+        >
+          {/* Inside the button so it flows with the title's first line — a
+              button is an atomic inline, so a sibling badge gets pushed to its
+              own line. The button's own title attribute names the file. */}
+          {opener.opensStoredPdf(article) && (
+            <span className="file-badge" aria-hidden="true">
+              📄
+            </span>
+          )}
           {article.title || "(untitled)"}
-        </a>
+        </button>
+        {article.file_id != null && !article.file_exists && (
+          <span className="file-missing" title="The stored PDF is missing">
+            file missing
+          </span>
+        )}
       </h3>
       {article.authors.length > 0 && (
         <p className="card-authors">{formatAuthors(article.authors, 4)}</p>

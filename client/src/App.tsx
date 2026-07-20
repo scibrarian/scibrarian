@@ -3,16 +3,13 @@ import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api
 import { errorMessage } from "./lib/format";
 import type { AuthStatus, Collection, Topic, PaperSource } from "./types";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
-import { Timeline } from "./components/Timeline";
-import { CitationGraph } from "./components/CitationGraph";
-import { PapersTable } from "./components/PapersTable";
+import { PaperViews } from "./components/PaperViews";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
-
-type ViewMode = "table" | "timeline" | "graph";
+import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -175,9 +172,9 @@ export default function App() {
     setIsAdmin(false);
   }
 
-  // A title click in the papers table re-fetches /auth to decide PDF access;
-  // fold that fresh snapshot back into app state so the whole UI (share
-  // column, tooltips) reflects a mid-session Open Library or token change.
+  // A title click in any view re-fetches /auth to decide PDF access; fold that
+  // fresh snapshot back into app state so the whole UI (share column, tooltips,
+  // file badges) reflects a mid-session Open Library or token change.
   function handleAuthRefreshed(a: AuthStatus) {
     setIsAdmin(a.admin);
     setTokenRequired(a.token_required);
@@ -233,23 +230,24 @@ export default function App() {
     </>
   );
 
-  const module =
-    source &&
-    (viewMode === "graph" ? (
-      <CitationGraph source={source} reloadToken={reloadToken} />
-    ) : viewMode === "timeline" ? (
-      <Timeline source={source} reloadToken={reloadToken} emptyState={emptyState} />
-    ) : (
-      <PapersTable
-        source={source}
-        reloadToken={reloadToken}
-        emptyState={emptyState}
-        isAdmin={isAdmin}
-        tokenRequired={tokenRequired}
-        libraryOpen={libraryOpen}
-        onAuthRefreshed={handleAuthRefreshed}
-      />
-    ));
+  // Every view opens papers the same way, so they all take the same access
+  // snapshot (see usePaperOpener).
+  const access = {
+    isAdmin,
+    tokenRequired,
+    libraryOpen,
+    onAuthRefreshed: handleAuthRefreshed,
+  };
+
+  const module = source && (
+    <PaperViews
+      source={source}
+      viewMode={viewMode}
+      reloadToken={reloadToken}
+      emptyState={emptyState}
+      access={access}
+    />
+  );
 
   return (
     <div className="app">
@@ -269,26 +267,7 @@ export default function App() {
           ) : (
             <>
               {showViewControls && (
-                <div className="view-toggle" role="group" aria-label="View mode">
-                  <button
-                    className={viewMode === "table" ? "active" : ""}
-                    onClick={() => setViewMode("table")}
-                  >
-                    Papers
-                  </button>
-                  <button
-                    className={viewMode === "timeline" ? "active" : ""}
-                    onClick={() => setViewMode("timeline")}
-                  >
-                    Timeline
-                  </button>
-                  <button
-                    className={viewMode === "graph" ? "active" : ""}
-                    onClick={() => setViewMode("graph")}
-                  >
-                    Graph
-                  </button>
-                </div>
+                <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
               {/* Refresh polls PubMed for the active topic; irrelevant to Library. */}
               {!showSettings && inDiscover && activeTopic && (

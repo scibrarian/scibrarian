@@ -156,9 +156,12 @@ export function Settings({
         <button type="button" className="accent-btn" onClick={() => setManagingJournals(true)}>
           Manage journals…
         </button>
-        <ul className="list">
+        <ul className="list scroll-list">
           {!loaded ? (
-            [0, 1, 2].map((i) => <ListRowSkeleton key={i} w={["30%", "42%", "35%"][i]} pill />)
+            // Six rows to match the fixed height, so the panel doesn't resize on load.
+            ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
+              <ListRowSkeleton key={i} w={w} pill />
+            ))
           ) : (
             <>
               {journals.map((j) => (

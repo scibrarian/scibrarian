@@ -469,9 +469,29 @@ export const saveArticles = transaction((articles: ArticleInsert[], topicId: num
 // The journal name shown to the user: the watched journal's abbreviation (or the
 // catalog abbreviation), resolved by NLM id, falling back to the stored title.
 const JOURNAL_DISPLAY = "COALESCE(j.name, jc.med_abbr, a.journal_name)";
-const ARTICLE_JOINS = `JOIN article_topics ad ON ad.pmid = a.pmid
-       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
+const JOURNAL_LOOKUP = `LEFT JOIN journals j ON j.nlm_id = a.nlm_id
        LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id`;
+const ARTICLE_JOINS = `JOIN article_topics ad ON ad.pmid = a.pmid
+       ${JOURNAL_LOOKUP}`;
+
+// The free-text search condition, shared by the /papers and /graph queries so a
+// query means exactly the same thing in every view — a view that matched on a
+// narrower set of columns would quietly disagree with the others about what a
+// search returns. Appends its own bind params; returns "" for a blank query so
+// callers can drop the clause entirely.
+//
+// `authors` is a JSON array of name strings, so a plain LIKE over the stored
+// text matches any author of the paper. Year is deliberately NOT searched here:
+// it's a range, filtered client-side, and folding it in would make "2019" match
+// every title containing that number.
+function searchPredicate(q: string | undefined, params: (string | number)[]): string {
+  if (!q) return "";
+  const like = `%${escapeLike(q)}%`;
+  params.push(like, like, like);
+  return `(a.title LIKE ? ESCAPE '\\'
+        OR a.abstract LIKE ? ESCAPE '\\'
+        OR a.authors LIKE ? ESCAPE '\\')`;
+}
 
 export function topicArticleCounts(): Record<number, number> {
   const rows = db
@@ -542,12 +562,8 @@ export function listPapers(
   const fileCols = fromTopic
     ? "NULL AS file_id, NULL AS file_name, NULL AS content_hash"
     : "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash";
-  let search = "";
-  if (q) {
-    search = "WHERE (a.title LIKE ? ESCAPE '\\' OR a.abstract LIKE ? ESCAPE '\\')";
-    const like = `%${escapeLike(q)}%`;
-    params.push(like, like);
-  }
+  const predicate = searchPredicate(q, params);
+  const search = predicate ? `WHERE ${predicate}` : "";
   const rows = db
     .prepare(
       `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
@@ -606,25 +622,37 @@ export interface GraphPaper {
   pmid: string;
   title: string;
   url: string;
+  journal_name: string;
   pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
+  // The linked PDF, mirroring listPapers so a graph node and its table row
+  // agree on which file a click opens. Null for topic papers, which have none.
+  file_id: number | null;
+  file_name: string | null;
+  content_hash: string | null; // routes resolves this to file_exists
 }
 
 // The papers that make up a source's graph — the per-source dispatch lives
 // here, not in routes (see journalsForSource).
-export function graphPapersForSource(source: PaperSourceQuery): GraphPaper[] {
-  if ("topicId" in source) return graphPapers(source.topicId);
-  return collectionGraphPapers(source.collectionId);
+export function graphPapersForSource(source: PaperSourceQuery, q?: string): GraphPaper[] {
+  if ("topicId" in source) return graphPapers(source.topicId, q);
+  return collectionGraphPapers(source.collectionId, q);
 }
 
-// The papers that make up one topic's graph (green nodes).
-function graphPapers(topicId: number): GraphPaper[] {
+// The papers that make up one topic's graph (green nodes). Topic papers are
+// never backed by an upload, so the file columns are constant nulls.
+function graphPapers(topicId: number, q?: string): GraphPaper[] {
+  const params: (string | number)[] = [topicId];
+  const predicate = searchPredicate(q, params);
   return db
     .prepare(
-      `SELECT a.pmid, a.title, a.url, a.pub_date FROM articles a
+      `SELECT a.pmid, a.title, a.url, a.pub_date, ${JOURNAL_DISPLAY} AS journal_name,
+              NULL AS file_id, NULL AS file_name, NULL AS content_hash
+       FROM articles a
        JOIN article_topics ad ON ad.pmid = a.pmid
-       WHERE ad.topic_id = ?`
+       ${JOURNAL_LOOKUP}
+       WHERE ad.topic_id = ?${predicate ? ` AND ${predicate}` : ""}`
     )
-    .all(topicId) as unknown as GraphPaper[];
+    .all(...params) as unknown as GraphPaper[];
 }
 
 // PMIDs that have no cached citation row, or whose row is older than maxAgeDays.
@@ -834,15 +862,28 @@ export const upsertArticles = transaction((articles: ArticleInsert[]) => {
 // The papers-list rows for a collection. DISTINCT pmid collapses duplicate
 // copies of the same paper (two files, one PMID) into a single row.
 // The papers that make up one collection's citation graph (same shape as
-// graphPapers, so the /graph route works on either source).
-function collectionGraphPapers(collectionId: number): GraphPaper[] {
+// graphPapers, so the /graph route works on either source). Membership is one
+// row per distinct matched pmid; the linked file is the lowest-id 'matched'
+// one, resolved exactly as listPapers does so a node opens the same PDF its
+// table row does.
+function collectionGraphPapers(collectionId: number, q?: string): GraphPaper[] {
+  const params: (string | number)[] = [collectionId, collectionId];
+  const predicate = searchPredicate(q, params);
   return db
     .prepare(
-      `SELECT DISTINCT a.pmid, a.title, a.url, a.pub_date FROM articles a
-       JOIN collection_files cf ON cf.pmid = a.pmid
-       WHERE cf.collection_id = ?`
+      `SELECT a.pmid, a.title, a.url, a.pub_date, ${JOURNAL_DISPLAY} AS journal_name,
+              cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash
+       FROM articles a
+       JOIN (SELECT DISTINCT pmid FROM collection_files
+             WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
+       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                  WHERE collection_id = ? AND match_status = 'matched'
+                  GROUP BY pmid) mf ON mf.pmid = a.pmid
+       LEFT JOIN collection_files cf ON cf.id = mf.file_id
+       ${JOURNAL_LOOKUP}
+       ${predicate ? `WHERE ${predicate}` : ""}`
     )
-    .all(collectionId) as unknown as GraphPaper[];
+    .all(...params) as unknown as GraphPaper[];
 }
 
 // ---------- journal catalog (NLM J_Medline) ----------
