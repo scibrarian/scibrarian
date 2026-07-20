@@ -4,7 +4,7 @@ import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { sourceKey, type PaperFilterState } from "../lib/papers";
+import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 import { Banner } from "./Banner";
@@ -72,7 +72,7 @@ export function CitationGraph({
   // Stable fetch key: the same source object is re-created each render. The
   // search is part of it — it selects a different set of papers server-side.
   const key = sourceKey(source);
-  const { search, deselected } = filters;
+  const { search, deselected, yearFrom, yearTo } = filters;
   const {
     data: fetched,
     loading,
@@ -145,7 +145,8 @@ export function CitationGraph({
     const active = graphData.nodes.filter(
       (n) =>
         (n.citationCount as number) >= activeMin &&
-        !deselected.has(String(n.journal_name ?? ""))
+        !deselected.has(String(n.journal_name ?? "")) &&
+        inYearRange((n.year as number | null) ?? null, yearFrom, yearTo)
     );
     return clusterGraph(
       active.map((n) => ({
@@ -155,7 +156,7 @@ export function CitationGraph({
       })),
       data.edges
     );
-  }, [data, graphData, activeMin, deselected]);
+  }, [data, graphData, activeMin, deselected, yearFrom, yearTo]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -167,6 +168,9 @@ export function CitationGraph({
     () => (data ? data.nodes.reduce((m, n) => Math.max(m, n.citationCount), 0) : 0),
     [data]
   );
+
+  // The year control's span, from the same node set the citation range uses.
+  const yearBounds = useMemo(() => bounds((data?.nodes ?? []).map((n) => n.year)), [data]);
 
   const isVisible = (pmid: string): boolean => {
     const a = clustering.byPmid.get(pmid);
@@ -241,6 +245,7 @@ export function CitationGraph({
         filters={filters}
         journals={data?.journals ?? []}
         maxCitations={maxCitations}
+        yearBounds={yearBounds}
         loading={loading}
       >
         <label className="graph-check">

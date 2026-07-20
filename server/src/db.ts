@@ -479,11 +479,18 @@ const ARTICLE_JOINS = `JOIN article_topics ad ON ad.pmid = a.pmid
 // narrower set of columns would quietly disagree with the others about what a
 // search returns. Appends its own bind params; returns "" for a blank query so
 // callers can drop the clause entirely.
+//
+// `authors` is a JSON array of name strings, so a plain LIKE over the stored
+// text matches any author of the paper. Year is deliberately NOT searched here:
+// it's a range, filtered client-side, and folding it in would make "2019" match
+// every title containing that number.
 function searchPredicate(q: string | undefined, params: (string | number)[]): string {
   if (!q) return "";
   const like = `%${escapeLike(q)}%`;
-  params.push(like, like);
-  return "(a.title LIKE ? ESCAPE '\\' OR a.abstract LIKE ? ESCAPE '\\')";
+  params.push(like, like, like);
+  return `(a.title LIKE ? ESCAPE '\\'
+        OR a.abstract LIKE ? ESCAPE '\\'
+        OR a.authors LIKE ? ESCAPE '\\')`;
 }
 
 export function topicArticleCounts(): Record<number, number> {

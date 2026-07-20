@@ -1,7 +1,43 @@
-import { type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { PaperFilterState } from "../lib/papers";
 import { JournalFilter } from "./JournalFilter";
 import { FilterSkeleton } from "./Skeleton";
+
+// One end of the year range. Holds its own text so a 4-digit year can be typed
+// without each keystroke re-filtering (and without "19" clamping to the first
+// year on the way to "1990"); the shared value is set on blur or Enter. Empty
+// means unbounded, and the placeholder shows the source's actual bound.
+function YearBox({
+  value,
+  placeholder,
+  label,
+  onCommit,
+}: {
+  value: number | null;
+  placeholder: number;
+  label: string;
+  onCommit: (raw: string) => void;
+}) {
+  const [text, setText] = useState(value == null ? "" : String(value));
+
+  // Follow the shared value when it changes underneath us — a source switch
+  // clearing the range, or the clamp rewriting what was typed.
+  useEffect(() => setText(value == null ? "" : String(value)), [value]);
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      className="year-input"
+      value={text}
+      placeholder={String(placeholder)}
+      aria-label={label}
+      onChange={(e) => setText(e.target.value.replace(/\D/g, "").slice(0, 4))}
+      onBlur={() => onCommit(text)}
+      onKeyDown={(e) => e.key === "Enter" && onCommit(text)}
+    />
+  );
+}
 
 // The filter row for every view. Which controls appear is driven by what the
 // view can actually honour rather than by a view name, so a control is never
@@ -21,6 +57,7 @@ export function PaperFilters({
   searchable = true,
   journals,
   maxCitations,
+  yearBounds,
   loading = false,
   children,
 }: {
@@ -28,6 +65,7 @@ export function PaperFilters({
   searchable?: boolean;
   journals?: string[];
   maxCitations?: number;
+  yearBounds?: { min: number; max: number } | null;
   loading?: boolean;
   children?: ReactNode;
 }) {
@@ -55,11 +93,23 @@ export function PaperFilters({
     setBothMin(clampMin(digits));
   };
 
+  // A year box is empty when unbounded; anything typed is clamped to the
+  // source's span so a stray digit can't filter everything away. Committing on
+  // blur/Enter rather than per keystroke lets a 4-digit year be typed in peace.
+  const commitYear = (raw: string, set: (v: number | null) => void) => {
+    const digits = raw.replace(/\D/g, "");
+    if (digits === "" || !yearBounds) return set(null);
+    const v = Number(digits);
+    set(Math.min(Math.max(v, yearBounds.min), yearBounds.max));
+  };
+
   // The journal slot holds its space during the first load (skeleton) so the
   // row doesn't grow a line once journals arrive; an empty source shows none.
   const showJournals = journals != null && (journals.length > 0 || loading);
   const showCitations = maxCitations != null && maxCitations > 0;
-  const hasRow = showJournals || showCitations || children != null;
+  // A single-year source has no range to pick, so the control would be inert.
+  const showYears = yearBounds != null && yearBounds.min < yearBounds.max;
+  const hasRow = showJournals || showCitations || showYears || children != null;
 
   return (
     <div className="toolbar">
@@ -67,7 +117,7 @@ export function PaperFilters({
         <input
           className="search"
           type="search"
-          placeholder="Search titles & abstracts…"
+          placeholder="Search titles, abstracts & authors…"
           value={filters.query}
           onChange={(e) => filters.setQuery(e.target.value)}
         />
@@ -105,6 +155,25 @@ export function PaperFilters({
                 value={minCitations}
                 onChange={(e) => setBothMin(clampMin(e.target.value))}
                 aria-label="Minimum citations"
+              />
+            </div>
+          )}
+
+          {showYears && (
+            <div className="year-filter">
+              <span>Years:</span>
+              <YearBox
+                value={filters.yearFrom}
+                placeholder={yearBounds.min}
+                label="From year"
+                onCommit={(raw) => commitYear(raw, filters.setYearFrom)}
+              />
+              <span className="year-dash">–</span>
+              <YearBox
+                value={filters.yearTo}
+                placeholder={yearBounds.max}
+                label="To year"
+                onCommit={(raw) => commitYear(raw, filters.setYearTo)}
               />
             </div>
           )}

@@ -30,8 +30,18 @@ export function PapersTable({
   emptyState?: ReactNode;
   filters: PaperFilterState;
 }) {
-  const { key, search, visible, journals, maxCitations, loading, error, allDeselected, filtered } =
-    usePapers(source, reloadToken, filters);
+  const {
+    key,
+    search,
+    visible,
+    journals,
+    maxCitations,
+    yearBounds,
+    loading,
+    error,
+    allDeselected,
+    filtered,
+  } = usePapers(source, reloadToken, filters);
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -93,6 +103,7 @@ export function PapersTable({
         filters={filters}
         journals={journals}
         maxCitations={maxCitations}
+        yearBounds={yearBounds}
         loading={loading}
       />
 

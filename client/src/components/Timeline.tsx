@@ -31,8 +31,18 @@ export function Timeline({
   emptyState?: ReactNode;
   filters: PaperFilterState;
 }) {
-  const { key, search, visible, journals, maxCitations, loading, error, allDeselected, filtered } =
-    usePapers(source, reloadToken, filters);
+  const {
+    key,
+    search,
+    visible,
+    journals,
+    maxCitations,
+    yearBounds,
+    loading,
+    error,
+    allDeselected,
+    filtered,
+  } = usePapers(source, reloadToken, filters);
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     visible,
@@ -49,6 +59,7 @@ export function Timeline({
         filters={filters}
         journals={journals}
         maxCitations={maxCitations}
+        yearBounds={yearBounds}
         loading={loading}
       />
 

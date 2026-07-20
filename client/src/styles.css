@@ -750,6 +750,29 @@ code {
 
 /* ---------- citation graph ---------- */
 
+/* Publication-year range. Sized to 4 digits so the row stays compact; the
+   placeholder carries the source's actual bound when a box is left empty. */
+.year-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* 4 digits plus padding — 6ch clips the last digit at the default font. */
+.year-filter .year-input {
+  flex: none;
+  width: 7.5ch;
+  padding: 5px 6px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.year-dash {
+  color: var(--muted);
+}
+
 .citation-filter {
   display: flex;
   align-items: center;
