@@ -12,6 +12,12 @@ const xml = new XMLParser({
   // Keep everything as strings — otherwise an id like "0255562" (NlmUniqueID)
   // is parsed as the number 255562 and loses its leading zero.
   parseTagValue: false,
+  // Decode numeric character references (&#60;, &#x2265;) as well as the five
+  // predefined named ones. PubMed abstracts are full of them — "p&#60;0.05",
+  // "10&#xB1;2" — and without this they reach the DB and the UI as raw escapes,
+  // which also breaks the abstract LIKE search (db.ts). Off by default, so the
+  // predefined entities were the only ones decoded.
+  htmlEntities: true,
 });
 
 // ---------- query building ----------

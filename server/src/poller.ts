@@ -16,7 +16,7 @@ import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { buildTerm, fetchArticles, search } from "./pubmed.js";
 import type { PollResult } from "./types.js";
-import { chunk, errMessage } from "./util.js";
+import { chunk, errMessage, safeMessage } from "./util.js";
 
 const BATCH_SIZE = 100;
 
@@ -105,7 +105,12 @@ export async function pollTopic(id: number): Promise<PollResult> {
 
     setTopicLastPolled(id, new Date().toISOString());
   } catch (err) {
-    result.error = errMessage(err);
+    // Goes back to the client in /refresh's response body, so it gets the same
+    // treatment as an HTTP error body: real cause to the log, authored message
+    // (or the generic one) to the UI. A raw failure here would otherwise put a
+    // SQLite string or an fs path in the poll banner.
+    console.warn(`[poll] ${topic.name}: ${errMessage(err)}`);
+    result.error = safeMessage(err);
   }
   return result;
 }
@@ -170,7 +175,12 @@ export function startScheduler(): void {
 export function rescheduleFromSettings(): void {
   const { poll_cron, poll_enabled } = getSettings();
   if (task) {
-    task.stop();
+    // destroy(), not stop(): node-cron keeps every task it creates in a global
+    // registry, and only the 'task:destroyed' event removes it from there. A
+    // stopped-but-registered task lives for the process, so stopping and
+    // dropping the reference here would leak one per settings save. destroy()
+    // stops the runner itself and is synchronous for an inline task.
+    task.destroy();
     task = null;
   }
   if (poll_enabled !== "1") {

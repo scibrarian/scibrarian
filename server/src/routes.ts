@@ -82,6 +82,7 @@ import type {
   Settings,
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -279,46 +280,51 @@ api.get(
   })
 );
 
-api.post("/journals", async (req, res) => {
-  const raw = String(req.body?.name ?? "").trim();
-  const nlmId = String(req.body?.nlmId ?? "").trim();
-  if (!raw && !nlmId) return res.status(400).json({ error: "'name' is required." });
-  try {
-    await ensureCatalogLoaded();
-    // An explicit nlmId (the journal manager sends the catalog row's id) skips
-    // name resolution — catalog names aren't unique, so a name round-trip could
-    // land on a different journal than the one the user picked.
-    let resolved: { nlmId: string; name: string } | null = null;
-    if (nlmId) {
-      const cat = findCatalogByNlmId(nlmId);
-      if (!cat) return res.status(422).json({ error: "Unknown journal id." });
-      resolved = { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
-    } else {
-      // Resolve to the stable NLM id + display abbreviation; null means PubMed
-      // doesn't recognize the name, so we never add a journal that returns nothing.
-      resolved = await resolveJournal(raw);
+api.post(
+  "/journals",
+  asyncHandler(async (req, res) => {
+    const raw = String(req.body?.name ?? "").trim();
+    const nlmId = String(req.body?.nlmId ?? "").trim();
+    if (!raw && !nlmId) return res.status(400).json({ error: "'name' is required." });
+    try {
+      await ensureCatalogLoaded();
+      // An explicit nlmId (the journal manager sends the catalog row's id) skips
+      // name resolution — catalog names aren't unique, so a name round-trip could
+      // land on a different journal than the one the user picked.
+      let resolved: { nlmId: string; name: string } | null = null;
+      if (nlmId) {
+        const cat = findCatalogByNlmId(nlmId);
+        if (!cat) return res.status(422).json({ error: "Unknown journal id." });
+        resolved = { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
+      } else {
+        // Resolve to the stable NLM id + display abbreviation; null means PubMed
+        // doesn't recognize the name, so we never add a journal that returns nothing.
+        resolved = await resolveJournal(raw);
+      }
+      if (!resolved) {
+        return res.status(422).json({
+          error: `PubMed doesn't recognize "${raw}" as a journal name. Use its official title or NLM abbreviation.`,
+          suggestions: searchCatalog(raw, 5).map((c) => c.med_abbr || c.title),
+        });
+      }
+      const existing = journalByNlmId(resolved.nlmId);
+      if (existing) {
+        return res
+          .status(409)
+          .json({ error: `That journal is already in the list (${existing.name}).` });
+      }
+      res.status(201).json(createJournal(resolved.name, resolved.nlmId));
+    } catch (err) {
+      // The one error this route reads: a race against another add of the same
+      // journal, which the unique index catches. Anything else is the error
+      // middleware's to log and answer.
+      if (/UNIQUE/i.test(errMessage(err))) {
+        return res.status(409).json({ error: "That journal is already in the list." });
+      }
+      throw err;
     }
-    if (!resolved) {
-      return res.status(422).json({
-        error: `PubMed doesn't recognize "${raw}" as a journal name. Use its official title or NLM abbreviation.`,
-        suggestions: searchCatalog(raw, 5).map((c) => c.med_abbr || c.title),
-      });
-    }
-    const existing = journalByNlmId(resolved.nlmId);
-    if (existing) {
-      return res
-        .status(409)
-        .json({ error: `That journal is already in the list (${existing.name}).` });
-    }
-    res.status(201).json(createJournal(resolved.name, resolved.nlmId));
-  } catch (err) {
-    const msg = errMessage(err);
-    if (/UNIQUE/i.test(msg)) {
-      return res.status(409).json({ error: "That journal is already in the list." });
-    }
-    res.status(500).json({ error: msg });
-  }
-});
+  })
+);
 
 // How many stored papers removing this journal would delete (for the confirm).
 api.get("/journals/:id/article-count", (req, res) => {
@@ -447,16 +453,22 @@ api.get(
 // moves (or discards) each one.
 const upload = multer({
   dest: UPLOAD_TMP_DIR,
-  limits: { fileSize: 100 * 1024 * 1024, files: 50 },
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: MAX_UPLOAD_FILES },
 });
 
 // Wrap multer so its errors (file too large, too many files) come back as the
 // JSON shape the client's error handling expects, not Express's HTML 500.
 function uploadFiles(req: Request, res: Response, next: NextFunction): void {
   upload.array("files")(req, res, (err: unknown) => {
-    if (err) {
+    // A MulterError is a limit the client tripped, and its message ("File too
+    // large") is both safe and the useful thing to say.
+    if (err instanceof multer.MulterError) {
       return res.status(400).json({ error: errMessage(err) });
     }
+    // Anything else came from the disk storage engine writing into
+    // UPLOAD_TMP_DIR — an ENOSPC/EACCES naming that path. Not the client's
+    // fault and not theirs to see, so hand it to the error middleware.
+    if (err) return next(err);
     next();
   });
 }
@@ -554,7 +566,8 @@ api.post(
       await discardTemps();
       // Blobs stored before the failure but never recorded would leak otherwise.
       gcBlobsIfOrphaned(stored.map((s) => s.hash));
-      res.status(500).json({ error: errMessage(err) });
+      // Cleanup done, so the error can go where every other one goes.
+      throw err;
     }
   })
 );

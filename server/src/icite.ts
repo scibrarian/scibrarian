@@ -1,4 +1,5 @@
 import { upsertCitations, type CitationInfo } from "./db.js";
+import { fetchWithTimeout } from "./http.js";
 import { chunk } from "./util.js";
 
 // NIH iCite: free, no API key. Returns per-paper citation_count (for node size)
@@ -31,7 +32,7 @@ export async function fetchCitations(pmids: string[]): Promise<Map<string, Citat
     first = false;
 
     const url = `${ICITE}?pmids=${batch.join(",")}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) {
       throw new Error(`iCite returned ${res.status} ${res.statusText}`);
     }

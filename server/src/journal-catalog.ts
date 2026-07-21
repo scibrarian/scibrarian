@@ -7,6 +7,7 @@ import {
   type CatalogRow,
   type CatalogSeed,
 } from "./db.js";
+import { DOWNLOAD_TIMEOUT_MS, fetchWithTimeout } from "./http.js";
 import { errMessage } from "./util.js";
 
 // NLM's authoritative journals list (full title, MEDLINE abbreviation, ISSNs).
@@ -52,7 +53,7 @@ function startLoad(): Promise<void> {
   loading = (async () => {
     try {
       console.log("[journals] downloading NLM journal catalog…");
-      const res = await fetch(J_MEDLINE_URL);
+      const res = await fetchWithTimeout(J_MEDLINE_URL, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
       if (!res.ok) throw new Error(`NLM returned ${res.status} ${res.statusText}`);
       const rows = parseJMedline(await res.text());
       bulkUpsertCatalog(rows);
@@ -105,7 +106,7 @@ async function fetchOpenAlexByIssns(issns: string[]): Promise<Map<string, number
     `${OPENALEX}?filter=${encodeURIComponent(`issn:${issns.join("|")}`)}` +
     `&select=issn,issn_l,summary_stats&per-page=${Math.min(issns.length, 50)}` +
     (mailto ? `&mailto=${encodeURIComponent(mailto)}` : "");
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) return out;
   const data = (await res.json()) as {
     results?: { issn?: string[]; issn_l?: string; summary_stats?: { "2yr_mean_citedness"?: number } }[];

@@ -8,6 +8,7 @@ import {
   replaceMeshData,
   type MeshSeed,
 } from "./db.js";
+import { DOWNLOAD_TIMEOUT_MS, fetchWithTimeout } from "./http.js";
 import { errMessage } from "./util.js";
 
 // NLM's yearly MeSH descriptor set. ASCII (d<year>.bin) was discontinued in
@@ -22,7 +23,7 @@ const descUrl = (year: string): string => `${MESH_DIR}desc${year}.gz`;
 async function detectLatestVersion(): Promise<string | null> {
   // Primary: scrape the autoindex for desc<year>.gz and take the newest year.
   try {
-    const res = await fetch(MESH_DIR);
+    const res = await fetchWithTimeout(MESH_DIR);
     if (res.ok) {
       const html = await res.text();
       let max = 0;
@@ -39,7 +40,7 @@ async function detectLatestVersion(): Promise<string | null> {
   const y = new Date().getFullYear();
   for (const year of [y + 1, y]) {
     try {
-      const res = await fetch(descUrl(String(year)), { method: "HEAD" });
+      const res = await fetchWithTimeout(descUrl(String(year)), { method: "HEAD" });
       if (res.ok) return String(year);
     } catch {
       /* try the next candidate */
@@ -151,7 +152,7 @@ export function ensureMeshLoaded(): Promise<void> {
         return;
       }
       console.log(`[mesh] downloading NLM MeSH descriptors (version ${latest})…`);
-      const res = await fetch(descUrl(latest));
+      const res = await fetchWithTimeout(descUrl(latest), { timeoutMs: DOWNLOAD_TIMEOUT_MS });
       if (!res.ok || !res.body) throw new Error(`NLM returned ${res.status} ${res.statusText}`);
       const rows = await streamParseDescriptors(res.body);
       replaceMeshData(rows, latest);

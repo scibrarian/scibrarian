@@ -1,7 +1,9 @@
 import { findCatalogByName, getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
+import { fetchWithTimeout } from "./http.js";
 import { parseArticleSet, parseJournalIds, parseSummaries } from "./pubmed-parse.js";
 import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
+import { errMessage, safeError } from "./util.js";
 
 // Fetch/throttle/retry side of the PubMed client; response parsing and query
 // building live in pubmed-parse.ts (pure, tested against fixtures).
@@ -64,28 +66,66 @@ function retryAfterMs(res: Response): number | null {
   return Number.isFinite(when) ? Math.max(0, when - Date.now()) : null;
 }
 
-async function eutilsFetch(endpoint: string, params: URLSearchParams): Promise<Response> {
+// Fetch an eutils endpoint and return the whole response body.
+//
+// The body is read *here*, inside the retry loop, rather than by the caller.
+// fetchWithTimeout's budget covers the entire exchange, not just the headers,
+// so a peer that stalls mid-body aborts the read as well — and a caller reading
+// it after this function returned would take that TimeoutError with every
+// retry already spent, failing a whole poll on one slow response. Reading it
+// here puts body stalls under the same backoff as connection failures.
+async function eutilsText(endpoint: string, params: URLSearchParams): Promise<string> {
   const url = `${EUTILS}/${endpoint}?${withCommonParams(params).toString()}`;
   for (let attempt = 0; ; attempt++) {
     await throttle();
     let res: Response;
     try {
-      res = await fetch(url);
+      res = await fetchWithTimeout(url);
     } catch (err) {
       // Network-level failure (e.g. "terminated", ECONNRESET, timeout).
-      if (attempt >= MAX_RETRIES) throw err;
+      if (attempt >= MAX_RETRIES) {
+        // The undici message ("fetch failed", "terminated") says nothing a user
+        // can act on and isn't ours to show, so keep it in the log and surface
+        // an authored one — this is what a poll or import reports on a PubMed
+        // outage, and it's the most common failure either one hits.
+        console.warn(`[pubmed] ${endpoint} failed after ${MAX_RETRIES} retries: ${errMessage(err)}`);
+        throw safeError(`Couldn't reach PubMed (${endpoint}). Try again in a minute.`);
+      }
       await sleep(backoffMs(attempt));
       continue;
     }
-    if (res.ok) return res;
-    if (isRetryableStatus(res.status) && attempt < MAX_RETRIES) {
-      const wait = retryAfterMs(res) ?? backoffMs(attempt);
-      await res.arrayBuffer().catch(() => {}); // drain the body to free the socket
-      await sleep(wait);
-      continue;
+    if (!res.ok) {
+      if (isRetryableStatus(res.status) && attempt < MAX_RETRIES) {
+        const wait = retryAfterMs(res) ?? backoffMs(attempt);
+        await res.arrayBuffer().catch(() => {}); // drain the body to free the socket
+        await sleep(wait);
+        continue;
+      }
+      // An upstream HTTP status line: no internal detail, and the status is the
+      // one thing that tells a user whether to wait (429/503) or report a bug.
+      throw safeError(`NCBI ${endpoint} returned ${res.status} ${res.statusText}`);
     }
-    throw new Error(`NCBI ${endpoint} returned ${res.status} ${res.statusText}`);
+    try {
+      return await res.text();
+    } catch (err) {
+      // The headers arrived but the body stalled or was cut short, so this
+      // attempt produced nothing usable — same situation as a connection
+      // failure, and it gets the same backoff rather than propagating.
+      if (attempt >= MAX_RETRIES) {
+        console.warn(`[pubmed] ${endpoint} body read failed after ${MAX_RETRIES} retries: ${errMessage(err)}`);
+        throw safeError(`Couldn't read PubMed's response (${endpoint}). Try again in a minute.`);
+      }
+      await sleep(backoffMs(attempt));
+    }
   }
+}
+
+// eutils JSON endpoints (esearch/esummary with retmode=json). Parsing sits
+// outside the retry loop deliberately: a body that parses as anything but JSON
+// is NCBI answering with something other than what we asked for, which retrying
+// won't change.
+async function eutilsJson<T>(endpoint: string, params: URLSearchParams): Promise<T> {
+  return JSON.parse(await eutilsText(endpoint, params)) as T;
 }
 
 // ---------- esearch ----------
@@ -119,10 +159,9 @@ export async function search(term: string, mhdaSince?: string): Promise<string[]
       retstart: String(retstart),
       term: q,
     });
-    const res = await eutilsFetch("esearch.fcgi", params);
-    const data = (await res.json()) as {
+    const data = await eutilsJson<{
       esearchresult?: { idlist?: string[]; count?: string };
-    };
+    }>("esearch.fcgi", params);
     const idlist = data.esearchresult?.idlist ?? [];
     total = Number(data.esearchresult?.count ?? ids.length + idlist.length);
     if (idlist.length === 0) break;
@@ -151,8 +190,10 @@ export async function searchRecent(
     maxdate: "3000", // mindate is ignored unless maxdate is also present
     term,
   });
-  const res = await eutilsFetch("esearch.fcgi", params);
-  const data = (await res.json()) as { esearchresult?: { idlist?: string[] } };
+  const data = await eutilsJson<{ esearchresult?: { idlist?: string[] } }>(
+    "esearch.fcgi",
+    params
+  );
   return data.esearchresult?.idlist ?? [];
 }
 
@@ -167,8 +208,10 @@ export async function resolveDoiToPmid(doi: string): Promise<string | null> {
     retmax: "2",
     term: `"${doi.replace(/"/g, "")}"[doi]`,
   });
-  const res = await eutilsFetch("esearch.fcgi", params);
-  const data = (await res.json()) as { esearchresult?: { idlist?: string[] } };
+  const data = await eutilsJson<{ esearchresult?: { idlist?: string[] } }>(
+    "esearch.fcgi",
+    params
+  );
   const ids = data.esearchresult?.idlist ?? [];
   return ids.length === 1 ? ids[0] : null;
 }
@@ -182,8 +225,7 @@ export async function fetchSummaries(pmids: string[]): Promise<Map<string, Artic
     retmode: "json",
     id: pmids.join(","),
   });
-  const res = await eutilsFetch("esummary.fcgi", params);
-  return parseSummaries(pmids, await res.json());
+  return parseSummaries(pmids, await eutilsJson("esummary.fcgi", params));
 }
 
 // Journal NLM ids for a batch of PMIDs (one per article, repeats intact) — the
@@ -196,8 +238,7 @@ export async function fetchJournalIds(pmids: string[]): Promise<string[]> {
     retmode: "json",
     id: pmids.join(","),
   });
-  const res = await eutilsFetch("esummary.fcgi", params);
-  return parseJournalIds(await res.json());
+  return parseJournalIds(await eutilsJson("esummary.fcgi", params));
 }
 
 // ---------- efetch (abstract + journal identity) ----------
@@ -210,8 +251,7 @@ export async function fetchArticleXml(pmids: string[]): Promise<Map<string, Arti
     retmode: "xml",
     id: pmids.join(","),
   });
-  const res = await eutilsFetch("efetch.fcgi", params);
-  return parseArticleSet(await res.text());
+  return parseArticleSet(await eutilsText("efetch.fcgi", params));
 }
 
 // ---------- combine: fetch full article records for new PMIDs ----------
@@ -254,8 +294,10 @@ export async function resolveJournal(
     retmax: "1",
     term: `"${rawName.replace(/"/g, "")}"[Journal]`,
   });
-  const res = await eutilsFetch("esearch.fcgi", params);
-  const data = (await res.json()) as { esearchresult?: { idlist?: string[] } };
+  const data = await eutilsJson<{ esearchresult?: { idlist?: string[] } }>(
+    "esearch.fcgi",
+    params
+  );
   const pmid = data.esearchresult?.idlist?.[0];
   if (!pmid) return null; // PubMed doesn't recognize this journal name
   const x = (await fetchArticleXml([pmid])).get(pmid);

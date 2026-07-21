@@ -12,10 +12,21 @@ import { useCachedFetch, type FetchCache } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import type { CollectionFile, CollectionFilesResponse, ImportStatus } from "../types";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
 
 // Files per upload request, so huge folder selections don't become one
-// gigantic multipart body (the server also caps files-per-request).
-const UPLOAD_BATCH = 20;
+// gigantic multipart body. Clamped to the server's per-request cap so raising
+// this for speed can't silently start failing every upload.
+const UPLOAD_BATCH = Math.min(20, MAX_UPLOAD_FILES);
+
+const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+
+// "a.pdf, b.pdf, c.pdf and 4 more" — enough to act on without a wall of names.
+function nameList(files: File[], max = 3): string {
+  const shown = files.slice(0, max).map((f) => f.name);
+  const rest = files.length - shown.length;
+  return shown.join(", ") + (rest > 0 ? ` and ${rest} more` : "");
+}
 
 // Consecutive failed status polls before we give up on a running import. A
 // single blip must not freeze the progress UI, but a truly-dead server
@@ -134,22 +145,37 @@ export function CollectionView({
       setNotice("No PDFs found in the selection.");
       return;
     }
+    // Drop oversized files before batching. The server rejects the whole
+    // request when any one file is over the cap, so leaving one in would fail
+    // its 19 batch-mates too and abort the loop below — stranding everything
+    // already uploaded with no scan started. Naming them here also fixes the
+    // part the server can't: its "File too large" doesn't say which file.
+    const oversized = pdfs.filter((f) => f.size > MAX_UPLOAD_BYTES);
+    const uploadable = pdfs.filter((f) => f.size <= MAX_UPLOAD_BYTES);
+    const skipNote = oversized.length
+      ? ` Skipped ${oversized.length} file${oversized.length === 1 ? "" : "s"} over ` +
+        `${MAX_UPLOAD_MB} MB: ${nameList(oversized)}.`
+      : "";
+    if (uploadable.length === 0) {
+      setError(`Nothing left to upload.${skipNote}`);
+      return;
+    }
     try {
       let added = 0;
       let skipped = 0;
-      for (let i = 0; i < pdfs.length; i += UPLOAD_BATCH) {
-        const batch = pdfs.slice(i, i + UPLOAD_BATCH);
-        setNotice(`Uploading ${i + batch.length} / ${pdfs.length}…`);
+      for (let i = 0; i < uploadable.length; i += UPLOAD_BATCH) {
+        const batch = uploadable.slice(i, i + UPLOAD_BATCH);
+        setNotice(`Uploading ${i + batch.length} / ${uploadable.length}…`);
         const res = await api.uploadFiles(collectionId, batch);
         added += res.added;
         skipped += res.skipped;
       }
       setNotice(
-        added > 0
+        (added > 0
           ? `Added ${added} file${added === 1 ? "" : "s"}; scanning for PubMed IDs…`
           : skipped > 0
             ? "Those files are already in this collection."
-            : "No PDFs found in the selection."
+            : "No PDFs found in the selection.") + skipNote
       );
       await api.startImport(collectionId);
       const s = await api.getImportStatus(collectionId);

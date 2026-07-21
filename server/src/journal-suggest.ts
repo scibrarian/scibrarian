@@ -9,7 +9,7 @@ import {
   type JournalSuggestion,
 } from "./journal-rank.js";
 import { fetchJournalIds, searchRecent } from "./pubmed.js";
-import { chunk, errMessage } from "./util.js";
+import { chunk, errMessage, httpError } from "./util.js";
 
 // "Auto" journal suggestions: for each topic, sample its most recent PubMed
 // papers, rank the journals that published them by volume, keep the
@@ -75,7 +75,7 @@ export async function suggestJournals(
     }
   }
   if (topics.length > 0 && failed.length === topics.length) {
-    throw new Error("Couldn't reach PubMed for journal suggestions. Try again in a minute.");
+    throw httpError(503, "Couldn't reach PubMed for journal suggestions. Try again in a minute.");
   }
   return { results: mergeTopicPicks(perTopicPicks), failed };
 }

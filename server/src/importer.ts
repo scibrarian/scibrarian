@@ -13,7 +13,7 @@ import { findDois, findPmid } from "./pdf-match.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
 import type { CollectionFile, ImportJob } from "./types.js";
-import { chunk, errMessage } from "./util.js";
+import { chunk, errMessage, safeMessage } from "./util.js";
 
 // One import job per collection, in memory. Single-user app: a server restart
 // mid-import simply leaves rows in 'pending', and the next import resumes them
@@ -78,7 +78,13 @@ async function runImport(
         try {
           text = await extractPdfText(blobPath(f.content_hash));
         } catch (err) {
-          setFileError(f.id, errMessage(err));
+          // match_error is rendered verbatim next to the file in the UI, and the
+          // raw pdfjs/fs message names the blob path — which embeds the
+          // content_hash that apiFile() strips precisely because it feeds the
+          // share-link MAC. Nothing in it helps the user anyway: the actionable
+          // fact is just that this PDF couldn't be read.
+          console.warn(`[import] ${f.file_name}: text extraction failed: ${errMessage(err)}`);
+          setFileError(f.id, "Couldn't read this PDF.");
           job.errors++;
           job.processed++;
           continue;
@@ -101,8 +107,10 @@ async function runImport(
     job.state = "done";
   } catch (err) {
     job.state = "error";
-    job.error = errMessage(err);
-    console.warn(`[import] ${label}: failed: ${job.error}`);
+    // Served by /collections/:id/import/status, so scrub it like any other
+    // client-facing body; the log keeps the real cause.
+    console.warn(`[import] ${label}: failed: ${errMessage(err)}`);
+    job.error = safeMessage(err);
   } finally {
     job.currentFile = null;
     job.finishedAt = new Date().toISOString();

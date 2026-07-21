@@ -7,6 +7,17 @@
 	# {$DOMAIN}. ACME_EMAIL receives expiry notices.
 	tls {$ACME_EMAIL}
 
+	# HTTP Strict Transport Security: tell browsers to only ever reach this host
+	# over HTTPS, closing the first-visit downgrade / SSL-strip window (Caddy
+	# already redirects HTTP→HTTPS, but that first plain request is otherwise
+	# unprotected). One year, applied to this host's subdomains too. HSTS only
+	# takes effect over HTTPS, so it's inert for the plain-HTTP LAN/Tailscale
+	# setups that don't use this file. Drop `includeSubDomains` if {$DOMAIN} is an
+	# apex with other, non-HTTPS-only services on sibling subdomains; add `preload`
+	# only once you're ready to submit the domain to the browser preload list
+	# (hard to reverse).
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
 	# --- Edge login -----------------------------------------------------------
 	# The app has no view-side login and every GET request is public, so we gate
 	# the whole site behind HTTP basic auth. Generate a hash with:

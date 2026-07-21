@@ -201,6 +201,19 @@ describe("parseArticleSet", () => {
     expect(out.get("41000002")!.abstract).toBe("");
   });
 
+  // Numeric character references are pervasive in PubMed abstracts ("p&#60;0.05",
+  // "10&#xB1;2"). They decode only because the parser sets htmlEntities; without
+  // it the raw escapes reach the DB and the abstract LIKE search, and no other
+  // fixture here would notice (&amp; decodes either way).
+  it("decodes decimal and hex numeric character references", () => {
+    const set = parseArticleSet(
+      "<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>41000004</PMID>" +
+        "<Article><Abstract><AbstractText>TNF-&#945; fell (p&#60;0.05), dose 10&#xB1;2, n&#8805;5&#x2265;3.</AbstractText></Abstract></Article>" +
+        "</MedlineCitation></PubmedArticle></PubmedArticleSet>"
+    );
+    expect(set.get("41000004")!.abstract).toBe("TNF-α fell (p<0.05), dose 10±2, n≥5≥3.");
+  });
+
   it("keeps NLM ids as strings, preserving leading zeros and letters", () => {
     expect(out.get("41000001")!.nlmId).toBe("0255562");
     expect(out.get("41000002")!.nlmId).toBe("2985213R");
