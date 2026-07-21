@@ -8,6 +8,24 @@ are the exception: they're owner-only, or reachable via an expiring share link.
 
 Pick the exposure model that matches who needs access.
 
+Every option below runs the **published image**,
+`ghcr.io/scibrarian/scibrarian`, so a server needs Docker and nothing else —
+no source checkout, no toolchain, no build. Tags:
+
+| Tag | Points at |
+|-----|-----------|
+| `latest` | the newest commit on `master` |
+| `0.5.0` | the current release — re-pushed as fixes land within that version |
+| `sha-<commit>` | one exact build; never moves, so it's what you pin or roll back to |
+
+CI builds and pushes these on every green `master` commit (`linux/amd64` and
+`linux/arm64`).
+
+> **One-time, after the first publish:** GHCR packages start **private**. Open
+> the package on GitHub → *Package settings* → *Change visibility* → **Public**,
+> or every server will need `docker login ghcr.io` with a
+> `read:packages` token before it can pull.
+
 ---
 
 ## Option A — Private network (recommended default)
@@ -15,11 +33,17 @@ Pick the exposure model that matches who needs access.
 Keep it off the public internet and reach it over a private mesh. Nothing to
 brute-force, and you get HTTPS with no domain or certificates to manage.
 
-1. Run the plain local stack on your server:
+1. Run the app on your server, published on the loopback only:
    ```bash
-   printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > .env
-   docker compose up --build -d      # publishes 127.0.0.1:3001 only
+   openssl rand -hex 32                  # save this — it's your ADMIN_TOKEN
+   docker run -d --name scibrarian --restart unless-stopped --init \
+     -p 127.0.0.1:3001:3001 \
+     -e ADMIN_TOKEN='<the token you just generated>' \
+     -v scibrarian-data:/data \
+     ghcr.io/scibrarian/scibrarian:latest
    ```
+   From a source checkout, `docker compose up -d --build` does the same thing
+   with a locally built image.
 2. Install [Tailscale](https://tailscale.com/) on the server and your devices,
    then expose it inside your tailnet with HTTPS:
    ```bash
@@ -45,7 +69,8 @@ so the public read surface isn't wide open.
 - A server with a **public IP** (a cloud VPS is the easy path).
 - **Ports 80 and 443** open to the internet (Caddy needs 80 for the ACME
   challenge and the HTTP→HTTPS redirect).
-- Docker + the Docker Compose plugin installed.
+- Docker + the Docker Compose plugin installed. That's the whole toolchain —
+  the app image is pulled, not built here.
 - A **domain you control** (or a free subdomain — see notes below).
 
 ### 1. Point DNS at the server
@@ -57,18 +82,27 @@ A    scibrarian.example.com   →   203.0.113.10
 Wait for it to resolve (`dig +short scibrarian.example.com`) before continuing —
 Caddy can't get a certificate until the name points here.
 
-### 2. Configure secrets and domain
+### 2. Fetch the three deployment files
+No clone needed — the stack is one compose file plus two config templates:
 ```bash
-cp .env.prod.example .env
-# Edit .env:
-#   ADMIN_TOKEN=<paste `openssl rand -hex 32`>
-#   DOMAIN=scibrarian.example.com
-#   ACME_EMAIL=you@example.com
+mkdir -p ~/scibrarian && cd ~/scibrarian
+base=https://raw.githubusercontent.com/scibrarian/scibrarian/master
+curl -fsSLO "$base/docker-compose.prod.yml"
+curl -fsSL "$base/.env.prod.example" -o .env
+curl -fsSL "$base/Caddyfile.example" -o Caddyfile
 ```
 
-### 3. Set the edge password
+### 3. Configure secrets and domain
+Edit `.env`:
+```ini
+ADMIN_TOKEN=<paste `openssl rand -hex 32`>
+DOMAIN=scibrarian.example.com
+ACME_EMAIL=you@example.com
+#SCIBRARIAN_TAG=0.5.0     # uncomment to pin a release instead of `latest`
+```
+
+### 4. Set the edge password
 ```bash
-cp Caddyfile.example Caddyfile
 docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
 # Paste the printed $2a$… hash into the basic_auth block in Caddyfile,
 # and set the username.
@@ -78,9 +112,9 @@ docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
 > dashboard (and let the app's share links reach outsiders), delete the
 > `basic_auth` block instead.
 
-### 4. Launch
+### 5. Launch
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml up -d
 ```
 Visit `https://scibrarian.example.com`. You'll get the basic-auth prompt, then
 unlock writes with your `ADMIN_TOKEN` (padlock in the header).
@@ -107,9 +141,9 @@ Concrete provisioning for **Option B** on AWS — from a blank instance to a liv
 
 ### 1. Launch the instance
 - **AMI:** Ubuntu Server 24.04 LTS (or 22.04 LTS).
-- **Type:** at least `t3.small` (2 GB RAM). The client is built on the box, and a
-  1 GB `t3.micro` can run out of memory mid-build — use a micro only if you add
-  swap (step 5).
+- **Type:** `t3.micro` (1 GB RAM) is enough — nothing is compiled on the box, so
+  the old build-memory ceiling is gone. `t4g.micro` (Graviton/arm64) works too;
+  the image is published for both architectures.
 - **Storage:** 20 GB gp3 gives comfortable headroom for images and uploaded PDFs.
 
 ### 2. Security group (inbound rules)
@@ -153,20 +187,11 @@ sudo usermod -aG docker $USER
 ```
 Log out and back in (so the group takes effect), then verify: `docker compose version`.
 
-### 5. (Micro instances only) add swap
-```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-### 6. Deploy
-```bash
-git clone <your-repo-url> scibrarian && cd scibrarian
-```
-Now follow **Option B, steps 2–4** above: create `.env` and `Caddyfile`, then
-`docker compose -f docker-compose.prod.yml up -d --build`. Watch the first cert
-issuance with `docker compose -f docker-compose.prod.yml logs -f caddy`.
+### 5. Deploy
+Follow **Option B, steps 2–5** above: fetch the three files, fill in `.env` and
+`Caddyfile`, then `docker compose -f docker-compose.prod.yml up -d`. Watch the
+first cert issuance with
+`docker compose -f docker-compose.prod.yml logs -f caddy`.
 
 > **Tip:** while shaking out DNS / security-group issues, point Caddy at the
 > Let's Encrypt *staging* CA to avoid rate limits — add
@@ -182,17 +207,23 @@ issuance with `docker compose -f docker-compose.prod.yml logs -f caddy`.
 - `scibrarian-data` — the SQLite database and uploaded PDF blobs.
 - `caddy-data` — TLS certificates and the ACME account (prod only).
 
-Example backup of the app data:
+Compose prefixes its volumes with the project name, so under Option B the app
+volume is `scibrarian_scibrarian-data`; the Option A `docker run` creates it
+unprefixed as `scibrarian-data`. `docker volume ls` settles it. Example backup:
 ```bash
 docker run --rm -v scibrarian_scibrarian-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/scibrarian-backup.tar.gz -C /data .
 ```
 
-**Update** to the latest code:
+**Update** to the latest published image:
 ```bash
-git pull
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml up -d   # re-pulls; see pull_policy
+docker image prune -f                             # drop the superseded image
 ```
+If you pinned `SCIBRARIAN_TAG` to a `sha-…` build, change it in `.env` first —
+otherwise you'll keep re-pulling the same image. To roll back, set
+`SCIBRARIAN_TAG` to the previous `sha-…` and run the same command; the data
+volume is untouched either way.
 
 **NCBI email / API key** are configured in the app's Settings UI (gear icon),
 not in any env file.

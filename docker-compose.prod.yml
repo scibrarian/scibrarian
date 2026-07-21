@@ -2,15 +2,21 @@
 # and reverse-proxies to the app over a private Docker network. Only Caddy's
 # 80/443 are published to the host; the app port is never exposed directly.
 #
+# The app image is pulled from GHCR, so a deployment needs only this file, a
+# Caddyfile and a .env — no source checkout and no build on the server.
+#
 # Setup (see DEPLOY.md for the full walkthrough):
 #   1. cp .env.prod.example .env      # then fill in ADMIN_TOKEN, DOMAIN, ACME_EMAIL
 #   2. cp Caddyfile.example Caddyfile  # then paste your basic-auth hash
-#   3. docker compose -f docker-compose.prod.yml up -d --build
+#   3. docker compose -f docker-compose.prod.yml up -d
 
 services:
   scibrarian:
-    build: .
-    image: scibrarian
+    # Pin a release with SCIBRARIAN_TAG in .env (a version like 0.5.0, or a
+    # sha-… tag). `always` because a version tag is re-pushed as fixes land, so
+    # a plain `up -d` would otherwise keep running the cached image.
+    image: ghcr.io/scibrarian/scibrarian:${SCIBRARIAN_TAG:-latest}
+    pull_policy: always
     restart: unless-stopped
     init: true
     environment:
