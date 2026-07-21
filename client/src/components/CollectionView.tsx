@@ -160,9 +160,10 @@ export function CollectionView({
       setError(`Nothing left to upload.${skipNote}`);
       return;
     }
+    let added = 0;
+    let skipped = 0;
+    let failure: unknown = null;
     try {
-      let added = 0;
-      let skipped = 0;
       for (let i = 0; i < uploadable.length; i += UPLOAD_BATCH) {
         const batch = uploadable.slice(i, i + UPLOAD_BATCH);
         setNotice(`Uploading ${i + batch.length} / ${uploadable.length}…`);
@@ -170,21 +171,41 @@ export function CollectionView({
         added += res.added;
         skipped += res.skipped;
       }
-      setNotice(
-        (added > 0
-          ? `Added ${added} file${added === 1 ? "" : "s"}; scanning for PubMed IDs…`
-          : skipped > 0
-            ? "Those files are already in this collection."
-            : "No PDFs found in the selection.") + skipNote
-      );
+    } catch (e) {
+      failure = e;
+    }
+
+    // Start the scan even when a batch failed. Files that uploaded before the
+    // failure are sitting in 'pending' with no job queued, and nothing else in
+    // the UI can queue one — so without this they're stranded until the user
+    // happens to upload again. The job walks every pending row, so this also
+    // sweeps up whatever an earlier partial upload left behind.
+    try {
       await api.startImport(collectionId);
       const s = await api.getImportStatus(collectionId);
       setImportStatus(s);
       if (s.state === "running") startPolling();
-      onChanged();
     } catch (e) {
-      setError(errorMessage(e));
+      if (!failure) failure = e; // the upload error is the more useful one
     }
+    onChanged();
+
+    if (failure) {
+      setError(
+        added > 0
+          ? `${errorMessage(failure)} ${added} file${added === 1 ? "" : "s"} uploaded before the ` +
+            `failure and ${added === 1 ? "is" : "are"} being scanned; re-run to add the rest.`
+          : errorMessage(failure)
+      );
+      return;
+    }
+    setNotice(
+      (added > 0
+        ? `Added ${added} file${added === 1 ? "" : "s"}; scanning for PubMed IDs…`
+        : skipped > 0
+          ? "Those files are already in this collection."
+          : "No PDFs found in the selection.") + skipNote
+    );
   }
 
   async function rename(next: string) {

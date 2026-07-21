@@ -11,9 +11,18 @@
 // on a genuine stall, not on ordinary slowness.
 export const API_TIMEOUT_MS = 30_000;
 
-// The bulk reference-data downloads (NLM J_Medline ~10 MB, MeSH descriptors
-// ~30–40 MB streamed) legitimately take longer, so they get a looser cap that
-// still bounds an infinite hang. Both are background, best-effort refreshes.
+// The bulk reference-data downloads (NLM J_Medline, MeSH descriptors) get a
+// looser cap that still bounds an infinite hang. Both are background,
+// best-effort refreshes with nobody waiting on them.
+//
+// Note this budget covers the whole exchange, parse included, not just a stall:
+// the MeSH descriptors are consumed as a stream, so download, gunzip and record
+// scanning all spend from it. That's fine at the real sizes — desc2026.gz is
+// 16.8 MB on the wire, 298.5 MB decompressed, 31k records, measured end to end
+// at ~1.3s — so tripping 300s needs sustained throughput under ~0.5 Mbps, by
+// which point every eutils call is failing too. Revisit the mechanism (an
+// inactivity timer on the stream rather than a total budget) only if that
+// stops being true.
 export const DOWNLOAD_TIMEOUT_MS = 300_000;
 
 // fetch with a hard overall time budget. Takes one options bag — RequestInit

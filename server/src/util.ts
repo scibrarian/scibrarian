@@ -15,6 +15,13 @@ export function errMessage(err: unknown): string {
 // (fs paths, upstream/library strings, stack messages) must not leak to clients.
 export const GENERIC_SERVER_ERROR = "Something went wrong on the server. Please try again.";
 
+// The same, for a 4xx we can't attribute — a client-side failure whose message
+// came from a library rather than us, so it may carry internal detail (send's
+// ENOENT 404 names the filesystem path). Kept separate from the 5xx body
+// because "went wrong on the server, try again" is false on both counts here:
+// the request was the problem, and repeating it won't help.
+export const GENERIC_CLIENT_ERROR = "That request couldn't be completed.";
+
 // An Error whose message we authored and vetted, so it's safe to show a client.
 // `expose` is the marker every client-facing layer checks — the error middleware
 // (index.ts), poll results, and import jobs all report the raw message only when

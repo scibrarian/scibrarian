@@ -7,7 +7,7 @@ import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
-import { errMessage, GENERIC_SERVER_ERROR } from "./util.js";
+import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
 
 const app = express();
 
@@ -90,7 +90,8 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   // exposable unless explicitly flagged otherwise, plus anything we deliberately
   // marked via httpError().
   const expose = e?.expose === true || (e?.expose == null && status >= 400 && status < 500);
-  res.status(status).json({ error: expose ? errMessage(err) : GENERIC_SERVER_ERROR });
+  const generic = status >= 400 && status < 500 ? GENERIC_CLIENT_ERROR : GENERIC_SERVER_ERROR;
+  res.status(status).json({ error: expose ? errMessage(err) : generic });
 });
 
 // Without a token every request can mutate data, so exposing the server beyond
