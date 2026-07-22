@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# Pinned to the repo's Node (see .nvmrc / engines >=22.13). node:sqlite is built
-# into this runtime and works without a flag at 22.13, so no native build tools
-# are needed.
+# Pinned to the repo's Node major (see .nvmrc / engines >=22.13). node:sqlite is
+# built into this runtime and works without a flag on 22 LTS, so no native build
+# tools are needed. Bump the patch periodically — a stale pin accumulates CVEs.
 
 # ---- Stage 1: build the React client ----
-FROM node:22.13.0-bookworm-slim AS builder
+FROM node:22.23.1-trixie-slim AS builder
 WORKDIR /app
 
 # Install the full workspace so the client build has its toolchain (tsc, vite).
@@ -20,7 +20,7 @@ COPY . .
 RUN npm run build -w client
 
 # ---- Stage 2: runtime ----
-FROM node:22.13.0-bookworm-slim AS runner
+FROM node:22.23.1-trixie-slim AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 
