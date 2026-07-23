@@ -21,6 +21,10 @@ export function Settings({
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // The last-persisted settings, held so the "Save settings" button can tell
+  // whether the form has unsaved edits. Kept in step with `settings` wherever
+  // the server confirms a write (initial load and a successful save).
+  const [baseline, setBaseline] = useState<AppSettings | null>(null);
   // False only until the first reload settles — the panels show skeletons
   // instead of misleading "No journals yet." empty states and a form that pops
   // in. Later reloads (after mutations) keep showing the current data.
@@ -43,6 +47,7 @@ export function Settings({
         setJournals(j);
         setTopics(d);
         setSettings(s);
+        setBaseline(s);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoaded(true));
@@ -113,7 +118,11 @@ export function Settings({
     setSettings({ ...settings, library_open: on }); // optimistic; server confirms below
     try {
       const updated = await api.updateSettings({ library_open: on });
-      setSettings(updated);
+      // Patch only library_open from the server response — replacing the whole
+      // object would clobber unsaved edits in the settings form. Baseline tracks
+      // the same field so the "Save settings" dirty check stays accurate.
+      setSettings((s) => (s ? { ...s, library_open: updated.library_open } : updated));
+      setBaseline((b) => (b ? { ...b, library_open: updated.library_open } : updated));
       setLibrarySaved(true);
       setTimeout(() => setLibrarySaved(false), 2000);
     } catch (err) {
@@ -136,12 +145,24 @@ export function Settings({
       if (apiKey.trim()) payload.ncbi_api_key = apiKey.trim();
       const updated = await api.updateSettings(payload);
       setSettings(updated);
+      setBaseline(updated);
       setApiKey("");
       setSavedMsg("Settings saved.");
     } catch (err) {
       setError(errorMessage(err));
     }
   }
+
+  // Enable "Save settings" only when the form differs from what's persisted.
+  // The API key is write-only (never read back from the server), so any entry
+  // there always counts as a change.
+  const settingsDirty =
+    settings != null &&
+    baseline != null &&
+    (settings.ncbi_email !== baseline.ncbi_email ||
+      settings.poll_cron !== baseline.poll_cron ||
+      settings.poll_enabled !== baseline.poll_enabled ||
+      apiKey.trim() !== "");
 
   return (
     <div className="settings">
@@ -289,7 +310,9 @@ export function Settings({
                 Optional. A free key raises the rate limit from ~3 to ~10 requests/sec.
               </span>
             </label>
-            <button type="submit">Save settings</button>
+            <button type="submit" disabled={!settingsDirty}>
+              Save settings
+            </button>
           </form>
         )}
       </section>

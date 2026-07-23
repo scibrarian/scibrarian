@@ -1,4 +1,4 @@
-import { KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { KeyboardEvent, ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDebounced } from "../lib/hooks";
 
 // A controlled ARIA combobox: the parent owns the input text (value/onChange) so
@@ -67,8 +67,10 @@ export function Typeahead<T>({
 
   const listOpen = !listDismissed && results.length > 0;
 
-  // Keep the keyboard-highlighted option visible in the scrolling list.
-  useEffect(() => {
+  // Keep the keyboard-highlighted option visible in the scrolling list. Runs
+  // before paint so the option scrolls into view in the same frame the highlight
+  // moves, instead of one frame later.
+  useLayoutEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 

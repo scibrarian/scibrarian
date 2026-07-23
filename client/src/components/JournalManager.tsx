@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { api } from "../api";
 import { errorMessage, round1, titleCaseJournal } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
@@ -78,8 +78,9 @@ export function JournalManager({
   const [error, setError] = useState<string | null>(null);
 
   // Each opening starts fresh — stale staging from the last use would be worse
-  // than empty.
-  useEffect(() => {
+  // than empty. Runs in a layout effect (before paint) so the previous session's
+  // filter/results can't flash for a frame before being cleared.
+  useLayoutEffect(() => {
     if (!open) return;
     setCurrent(null);
     setLeftFilter("");
@@ -272,10 +273,10 @@ export function JournalManager({
       title: `Remove ${n} journal${n === 1 ? "" : "s"}?`,
       message:
         m > 0
-          ? `This will remove ${their} papers from Interests and permanently delete ${m} stored paper${
+          ? `This will remove ${their} ${m} stored paper${
               m === 1 ? "" : "s"
-            }. Papers saved in your Library are kept. This cannot be undone.`
-          : `${n === 1 ? "Its" : "Their"} papers will be removed from Interests. Papers saved in your Library are kept.`,
+            } from Interests. Papers saved in your Library are kept. This cannot be undone.`
+          : "No stored papers will be removed.",
     });
   }
 
@@ -338,12 +339,11 @@ export function JournalManager({
     metric: number | null,
     selected: boolean,
     onToggle: () => void,
-    onMove: () => void,
     isNew = false,
     tooltip?: string
   ) {
     return (
-      <li key={key} className="jm-row" onDoubleClick={onMove} title={tooltip ?? name}>
+      <li key={key} className="jm-row" title={tooltip ?? name}>
         <label className="filter-option">
           <input type="checkbox" checked={selected} onChange={onToggle} />
           <span className="filter-option-name">{name}</span>
@@ -424,8 +424,7 @@ export function JournalManager({
                   titleCaseJournal(r.title),
                   r.metric,
                   leftSelected.has(r.nlm_id),
-                  () => setLeftSelected(toggled(leftSelected, r.nlm_id)),
-                  () => moveRight([r])
+                  () => setLeftSelected(toggled(leftSelected, r.nlm_id))
                 )
               )}
               {leftEmpty && <li className="muted jm-empty">{leftEmpty}</li>}
@@ -473,7 +472,6 @@ export function JournalManager({
                   rightMetric(row),
                   rightSelected.has(rightKey(row)),
                   () => setRightSelected(toggled(rightSelected, rightKey(row))),
-                  () => moveLeft([row]),
                   row.kind === "staged",
                   row.kind === "staged" && row.result.topics?.length
                     ? `${rightName(row)} — suggested for: ${row.result.topics.join(", ")}`

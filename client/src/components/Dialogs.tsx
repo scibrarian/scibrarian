@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useLayoutEffect, useState, type FormEvent, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 // Radix-backed replacements for window.prompt/confirm. Radix supplies the
@@ -90,8 +90,9 @@ export function PromptDialog({
   const [value, setValue] = useState(initialValue);
 
   // Each opening starts fresh; a stale draft from the last use would be worse
-  // than empty.
-  useEffect(() => {
+  // than empty. Runs in a layout effect (before paint) so the previous session's
+  // text can't flash for a frame before being reset to initialValue.
+  useLayoutEffect(() => {
     if (open) setValue(initialValue);
   }, [open, initialValue]);
 

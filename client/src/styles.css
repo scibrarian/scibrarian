@@ -74,6 +74,9 @@ body {
 }
 
 .refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   background: var(--accent);
   color: #fff;
   border: none;
@@ -81,6 +84,28 @@ body {
   border-radius: var(--radius);
   font-weight: 600;
   cursor: pointer;
+}
+
+/* Inline "still working" spinner for the refresh button. Rides on currentColor
+   (white on the accent fill) and shares the button text's size. This is the
+   app's only spinner — every other loading state is a skeleton or text — so it
+   is kept small and quiet. Motion is dropped under prefers-reduced-motion
+   (below), where the button's disabled state and "Checking…" label still signal
+   the work. */
+.btn-spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.6s linear infinite;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .refresh-btn:disabled {
@@ -657,6 +682,13 @@ input:focus {
   border-radius: 8px;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* Matches the app's other disabled buttons (e.g. .refresh-btn): dimmed, no
+   pointer affordance. Used by "Save settings" when the form has no edits. */
+.stacked-form button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .list {
@@ -1376,10 +1408,19 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   border-bottom: 1px solid var(--border);
   padding-bottom: 12px;
   margin-bottom: 16px;
+}
+
+/* Topic-scoped controls (last-polled + refresh) ride the right edge of the
+   workspace bar, beside the topic picker they act on. */
+.topic-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .workspace-nav {
@@ -1860,6 +1901,11 @@ code {
 @media (prefers-reduced-motion: reduce) {
   .skeleton::after {
     animation: none;
+  }
+  /* A frozen ring would read as a rendering glitch, so hide it entirely; the
+     disabled button and "Checking…" label carry the state on their own. */
+  .btn-spinner {
+    display: none;
   }
 }
 
