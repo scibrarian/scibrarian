@@ -269,19 +269,6 @@ export default function App() {
               {showViewControls && (
                 <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
-              {/* Refresh polls PubMed for the active topic; irrelevant to Library. */}
-              {!showSettings && inDiscover && activeTopic && (
-                <>
-                  {activeTopic.last_polled_at && (
-                    <span className="updated">Updated {timeAgo(activeTopic.last_polled_at)}</span>
-                  )}
-                  {isAdmin && (
-                    <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-                      {refreshing ? "Checking…" : "Check for new papers"}
-                    </button>
-                  )}
-                </>
-              )}
               {isAdmin && (
                 <button
                   className={`gear-btn ${showSettings ? "active" : ""}`}
@@ -337,6 +324,33 @@ export default function App() {
           onAddTopic={() => setShowSettings(true)}
           onShareError={setStatus}
         />
+        {/* Refresh polls PubMed for the active topic; sits by the topic picker
+            it acts on, and out of the header so the view switcher stays put.
+            During load a placeholder reserves the space so the controls don't
+            pop in and shift the bar once data arrives (mirrors the header
+            skeleton). Gated on mode only — activeTopic and isAdmin aren't known
+            until `loaded`, and the "Updated" line shows for viewers too. */}
+        {!showSettings &&
+          inDiscover &&
+          (!loaded ? (
+            <div className="topic-actions">
+              <SkeletonBar w={190} h={35} style={{ borderRadius: "var(--radius)" }} />
+            </div>
+          ) : (
+            activeTopic && (
+              <div className="topic-actions">
+                {activeTopic.last_polled_at && (
+                  <span className="updated">Updated {timeAgo(activeTopic.last_polled_at)}</span>
+                )}
+                {isAdmin && (
+                  <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+                    {refreshing && <span className="btn-spinner" aria-hidden="true" />}
+                    {refreshing ? "Checking…" : "Check for new papers"}
+                  </button>
+                )}
+              </div>
+            )
+          ))}
       </div>
 
       {status && <Banner kind="info" message={status} onDismiss={() => setStatus(null)} />}
