@@ -47,11 +47,6 @@ function YearBox({
 //   maxCitations — the source's citation range is known
 //   children     — view-specific extras (the graph's hide-unconnected toggle
 //                  and its node/link readout)
-//
-// The graph opts out of search and journals for now: /api/graph takes neither,
-// and filtering its payload client-side would mean the same query returning a
-// different set than the table does (abstracts are deliberately left out of the
-// graph payload). Turn them on once the endpoint accepts them.
 export function PaperFilters({
   filters,
   searchable = true,

@@ -828,6 +828,44 @@ code {
   padding: 0;
 }
 
+/* Cluster-grouping switch (Citations | Topic). A compact sibling of
+   .view-toggle sized to sit inline in the graph's filter row. */
+.group-by {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.group-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.group-toggle button {
+  background: transparent;
+  border: none;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.group-toggle button[data-state="on"] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.group-toggle button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .graph-count {
   margin-left: auto;
   font-size: 13px;
@@ -1092,13 +1130,28 @@ code {
   text-decoration: underline;
 }
 
+/* Now a button: clicking isolates this cluster in the graph (see
+   isolateCluster). Reset the native button chrome and add a hover cue so it
+   reads as the interactive control it is. */
 .modal-cluster {
   display: flex;
   align-items: center;
   gap: 8px;
+  font-family: inherit;
   font-size: 13px;
   color: var(--muted);
   margin: 0 0 10px;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.modal-cluster:hover .cluster-label,
+.modal-cluster:focus-visible .cluster-label {
+  color: var(--text);
+  text-decoration: underline;
 }
 
 /* prompt / confirm dialogs */
