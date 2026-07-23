@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import * as ToggleGroup from "@radix-ui/react-toggle-group";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
-import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
+import { clusterByTitle, clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 import { Banner } from "./Banner";
 import { PaperFilters } from "./PaperFilters";
+
+// How cluster colors are derived: by citation links (the collection's citation
+// structure) or by title similarity (what papers are about, so related-but-
+// uncited work groups together). See clusterByTitle for the v2 abstract upgrade.
+type GroupBy = "citation" | "topic";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -53,6 +59,7 @@ export function CitationGraph({
   // box); hide-unconnected is about edges, so it stays graph-local.
   const { minCitations } = filters;
   const [hideUnconnected, setHideUnconnected] = useState(true);
+  const [groupBy, setGroupBy] = useState<GroupBy>("citation");
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
   // Custom tooltip for cluster names (native title has an un-tunable delay).
@@ -138,8 +145,10 @@ export function CitationGraph({
 
   // Community detection on the *active* subgraph (papers passing the threshold
   // and the journal filter). Recomputes when the data, the debounced threshold,
-  // or the journal selection changes. Filtering here rather than in graphData
-  // keeps it out of the simulation set, so narrowing never restarts the layout.
+  // the journal selection, or the grouping mode changes. Filtering here rather
+  // than in graphData keeps it out of the simulation set, so narrowing never
+  // restarts the layout. "citation" groups by who cites whom (uses the edges);
+  // "topic" groups by title similarity (ignores the edges).
   const clustering = useMemo<ClusteringResult>(() => {
     if (!data) return { byPmid: new Map(), clusters: [] };
     const active = graphData.nodes.filter(
@@ -148,15 +157,13 @@ export function CitationGraph({
         !deselected.has(String(n.journal_name ?? "")) &&
         inYearRange((n.year as number | null) ?? null, yearFrom, yearTo)
     );
-    return clusterGraph(
-      active.map((n) => ({
-        pmid: n.pmid,
-        title: String(n.title ?? ""),
-        citationCount: n.citationCount as number,
-      })),
-      data.edges
-    );
-  }, [data, graphData, activeMin, deselected, yearFrom, yearTo]);
+    const inputs = active.map((n) => ({
+      pmid: n.pmid,
+      title: String(n.title ?? ""),
+      citationCount: n.citationCount as number,
+    }));
+    return groupBy === "topic" ? clusterByTitle(inputs) : clusterGraph(inputs, data.edges);
+  }, [data, graphData, activeMin, deselected, yearFrom, yearTo, groupBy]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -211,6 +218,18 @@ export function CitationGraph({
       return next;
     });
 
+  // Pan/zoom the canvas to frame one cluster's nodes. Deferred a frame so any
+  // just-set visibility state has painted before force-graph measures bounds.
+  const frameCluster = (id: number) => {
+    requestAnimationFrame(() =>
+      fgRef.current?.zoomToFit(
+        600,
+        60,
+        (n) => clustering.byPmid.get((n as FGNode).pmid)?.community === id
+      )
+    );
+  };
+
   const centerCluster = (id: number) => {
     // Make sure it's visible before framing it.
     setHiddenClusters((prev) => {
@@ -219,13 +238,16 @@ export function CitationGraph({
       next.delete(id);
       return next;
     });
-    requestAnimationFrame(() =>
-      fgRef.current?.zoomToFit(
-        600,
-        60,
-        (n) => clustering.byPmid.get((n as FGNode).pmid)?.community === id
-      )
-    );
+    frameCluster(id);
+  };
+
+  // From the paper modal: focus just this cluster — close the modal, hide every
+  // other cluster, and frame what's left. A one-click "Hide all, then show this
+  // one" that also zooms so the surviving cluster isn't left off-screen.
+  const isolateCluster = (id: number) => {
+    setSelected(null);
+    setHiddenClusters(new Set(clustering.clusters.map((c) => c.id).filter((cid) => cid !== id)));
+    frameCluster(id);
   };
 
   const selectedCluster = selected ? clustering.byPmid.get(selected.pmid) : undefined;
@@ -248,6 +270,22 @@ export function CitationGraph({
         yearBounds={yearBounds}
         loading={loading}
       >
+        <div className="group-by">
+          <span>Group by:</span>
+          <ToggleGroup.Root
+            className="group-toggle"
+            type="single"
+            value={groupBy}
+            // Radix allows deselecting the pressed item (firing ""); keep the
+            // current mode rather than leaving the graph with no grouping.
+            onValueChange={(v) => v && setGroupBy(v as GroupBy)}
+            loop
+            aria-label="Cluster grouping"
+          >
+            <ToggleGroup.Item value="citation">Citations</ToggleGroup.Item>
+            <ToggleGroup.Item value="topic">Topic</ToggleGroup.Item>
+          </ToggleGroup.Root>
+        </div>
         <label className="graph-check">
           <input
             type="checkbox"
@@ -401,10 +439,15 @@ export function CitationGraph({
                   </p>
                 )}
                 {selectedCluster && (
-                  <p className="modal-cluster">
+                  <button
+                    type="button"
+                    className="modal-cluster"
+                    onClick={() => isolateCluster(selectedCluster.community)}
+                    title="Show only this cluster"
+                  >
                     <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
-                    {selectedCluster.label}
-                  </p>
+                    <span className="cluster-label">{selectedCluster.label}</span>
+                  </button>
                 )}
                 {/* The title can now lead to the PDF, so PubMed gets its own
                     link rather than being the only thing the modal opens. */}

@@ -107,17 +107,13 @@ function labelFor(
   return top.length ? top.join(" · ") : "(untitled cluster)";
 }
 
-export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): ClusteringResult {
+// Shared tail for every grouping mode: run Louvain on an already-built
+// undirected graph whose nodes are these papers, then label (c-TF-IDF on titles)
+// and color the communities. Citation grouping and topic grouping differ only in
+// which graph they hand in here, so their output stays identical in shape and
+// styling.
+function partition(graph: Graph, nodes: ClusterNodeInput[]): ClusteringResult {
   const result: ClusteringResult = { byPmid: new Map(), clusters: [] };
-  if (nodes.length === 0) return result;
-
-  const present = new Set(nodes.map((n) => n.pmid));
-  const graph = new Graph({ type: "undirected" });
-  for (const n of nodes) graph.addNode(n.pmid);
-  for (const e of edges) {
-    if (e.source === e.target) continue;
-    if (present.has(e.source) && present.has(e.target)) graph.mergeEdge(e.source, e.target);
-  }
 
   const mapping = louvain(graph, { rng: mulberry32(42) }) as Record<string, number>;
 
@@ -171,4 +167,119 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
   }
 
   return result;
+}
+
+// Citation grouping: papers linked by who cites whom. Reveals the collection's
+// citation structure (lineages), and is the graph's default coloring.
+export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): ClusteringResult {
+  if (nodes.length === 0) return { byPmid: new Map(), clusters: [] };
+
+  const present = new Set(nodes.map((n) => n.pmid));
+  const graph = new Graph({ type: "undirected" });
+  for (const n of nodes) graph.addNode(n.pmid);
+  for (const e of edges) {
+    if (e.source === e.target) continue;
+    if (present.has(e.source) && present.has(e.target)) graph.mergeEdge(e.source, e.target);
+  }
+  return partition(graph, nodes);
+}
+
+// --- Topic grouping (v1) ---------------------------------------------------
+// Groups papers by what they're ABOUT rather than by who cites whom, so related
+// work that happens not to cite each other still lands together (and the
+// citation-sparsity "Singletons" pile largely dissolves). v1 clusters on TITLE
+// similarity only, because the title is the one piece of text already on the
+// graph payload — no extra fetch. It reuses the exact Louvain + labeling
+// pipeline via partition(); only the graph fed in differs.
+//
+// TODO(v2): move the similarity basis from titles to ABSTRACTS for much better
+// topic coherence — titles are short and boilerplate-heavy. Abstracts are
+// deliberately kept off the graph payload (see shared/types.ts) because they
+// dominate its size, so v2 should compute topic assignments SERVER-SIDE, where
+// the abstracts already live in the DB and are already searched, and return a
+// compact { pmid -> topicId, label, color } map. Bonus: topic assignments are
+// per-paper and filter-stable, so — unlike citation grouping, which re-runs on
+// the active subgraph — the server can compute them once and cache them; the
+// citation/journal/year filters just hide nodes, no recompute. Optionally fold
+// shared-MeSH overlap in as extra similarity weight for library-mode
+// collections (in discovered mode the seed MeSH is a constant and carries no
+// signal, so abstracts have to do the work there).
+
+const TOPIC_NEIGHBORS = 6; // top-k most-similar titles linked per paper
+const TOPIC_MIN_SIM = 0.2; // cosine floor below which a link is too weak to trust
+// Drop terms appearing in more than this fraction of papers. Relative to n, not
+// a fixed count: those terms carry low idf (weak topic signal), and skipping
+// them also bounds each posting list — so it doubles as the perf guard, unlike
+// an absolute cap that silently discarded discriminative mid-frequency terms on
+// large collections.
+const TOPIC_MAX_DF_RATIO = 0.5;
+
+// Build an undirected k-nearest-neighbour graph over titles: each paper links to
+// its most cosine-similar titles. Vectors are idf-weighted and L2-normalized, so
+// a shared rare term counts for far more than a shared frequent one, and terms
+// in more than TOPIC_MAX_DF_RATIO of papers are dropped outright. Sparse cosine
+// via an inverted index — only titles that share a term are ever compared.
+function buildTitleSimilarityGraph(nodes: ClusterNodeInput[]): Graph {
+  const n = nodes.length;
+
+  // Document frequency over unique title terms.
+  const docTerms = new Map<string, string[]>();
+  const df = new Map<string, number>();
+  for (const node of nodes) {
+    const terms = [...new Set(tokenize(node.title || ""))];
+    docTerms.set(node.pmid, terms);
+    for (const t of terms) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+
+  // L2-normalized idf-weighted vectors + inverted index (term -> pmids).
+  const vectors = new Map<string, Map<string, number>>();
+  const inverted = new Map<string, string[]>();
+  for (const [pmid, terms] of docTerms) {
+    const vec = new Map<string, number>();
+    let sumSq = 0;
+    for (const t of terms) {
+      const dft = df.get(t) ?? 1;
+      if (dft > n * TOPIC_MAX_DF_RATIO) continue; // near-ubiquitous: low idf, noisy links
+      const w = Math.log(n / dft); // idf; > 0 here since dft < n
+      vec.set(t, w);
+      sumSq += w * w;
+      const posting = inverted.get(t);
+      if (posting) posting.push(pmid);
+      else inverted.set(t, [pmid]);
+    }
+    const norm = Math.sqrt(sumSq) || 1;
+    for (const [t, w] of vec) vec.set(t, w / norm);
+    vectors.set(pmid, vec);
+  }
+
+  const graph = new Graph({ type: "undirected" });
+  for (const node of nodes) graph.addNode(node.pmid);
+
+  // For each paper, accumulate cosine similarity against every paper sharing a
+  // term, then keep its top-k above the floor as undirected edges.
+  for (const [pmid, vec] of vectors) {
+    const sims = new Map<string, number>();
+    for (const [t, w] of vec) {
+      // Postings are already bounded by the df filter above; a length-1 posting
+      // is a term unique to this paper, which links to no one.
+      const posting = inverted.get(t)!;
+      for (const other of posting) {
+        if (other === pmid) continue;
+        const ow = vectors.get(other)!.get(t) ?? 0;
+        sims.set(other, (sims.get(other) ?? 0) + w * ow);
+      }
+    }
+    const top = [...sims.entries()]
+      .filter(([, s]) => s >= TOPIC_MIN_SIM)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOPIC_NEIGHBORS);
+    for (const [other] of top) graph.mergeEdge(pmid, other);
+  }
+
+  return graph;
+}
+
+export function clusterByTitle(nodes: ClusterNodeInput[]): ClusteringResult {
+  if (nodes.length === 0) return { byPmid: new Map(), clusters: [] };
+  return partition(buildTitleSimilarityGraph(nodes), nodes);
 }
