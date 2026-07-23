@@ -110,3 +110,26 @@ How you expose it matters:
   anyone sniffing the network — only unlock admin mode on networks you trust.
 - **Public internet:** put the app behind a TLS reverse proxy (e.g. Caddy,
   nginx); never send the token over plain HTTP.
+
+## Contributing
+
+Contributions are welcome. Because the project is offered under the terms
+described in [License](#license) below, every contributor must agree to the
+[Contributor License Agreement](CLA.md) before their code can be merged. This
+is automated: the first time you open a pull request, a bot will ask you to
+sign by leaving a one-line comment. You only sign once.
+
+## License
+
+Copyright © 2026 Anthony Salvato.
+
+Scibrarian is free software, licensed under the **GNU Affero General Public
+License, version 3 (AGPL-3.0-only)**. See the [LICENSE](LICENSE) file for the
+full text. In short: you may use, study, share, and modify it, but if you run a
+modified version to provide a network service, you must offer that service's
+users the corresponding source code.
+
+The project is also available under separate commercial terms. All
+contributions are made under the [CLA](CLA.md), which lets the copyright holder
+offer the project under both the AGPL and other license terms. If you would
+like a commercial license, contact the maintainer.
