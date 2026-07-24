@@ -1,4 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { Search, Library, ChevronDown, Plus, Folder } from "lucide-react";
 import { api } from "../api";
 import type { Collection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -57,10 +58,10 @@ export function WorkspaceNav({
     <nav className="workspace-nav">
       <div className="mode-switch" role="group" aria-label="Workspace">
         <button className={inDiscover && !settingsActive ? "active" : ""} onClick={() => onModeChange("discover")}>
-          🔍 Interests
+          <Search size={16} aria-hidden /> Interests
         </button>
         <button className={!inDiscover && !settingsActive ? "active" : ""} onClick={() => onModeChange("papers")}>
-          📚 Library
+          <Library size={16} aria-hidden /> Library
         </button>
       </div>
 
@@ -77,7 +78,7 @@ export function WorkspaceNav({
             <DropdownMenu.Trigger className="ws-trigger">
               <span className="ws-current">{label}</span>
               {typeof count === "number" && <span className="count">{count}</span>}
-              <span className="ws-caret">▾</span>
+              <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
             </DropdownMenu.Trigger>
 
             <DropdownMenu.Portal>
@@ -97,7 +98,7 @@ export function WorkspaceNav({
                     {topics.length === 0 && <div className="ws-empty">No topics yet.</div>}
                     {isAdmin && (
                       <DropdownMenu.Item className="ws-add" onSelect={onAddTopic}>
-                        ＋ Add topic…
+                        <Plus size={16} aria-hidden /> Add topic…
                       </DropdownMenu.Item>
                     )}
                   </>
@@ -109,14 +110,14 @@ export function WorkspaceNav({
                         className={`ws-option ${c.id === activeCollectionId && !settingsActive ? "active" : ""}`}
                         onSelect={() => onSelectCollection(c.id)}
                       >
-                        <span className="ws-option-name">📁 {c.name}</span>
+                        <span className="ws-option-name"><Folder size={14} className="inline-icon" aria-hidden /> {c.name}</span>
                         <span className="count">{c.matchedCount}</span>
                       </DropdownMenu.Item>
                     ))}
                     {collections.length === 0 && <div className="ws-empty">No collections yet.</div>}
                     {isAdmin && (
                       <DropdownMenu.Item className="ws-add" onSelect={onCreateCollection}>
-                        ＋ New collection
+                        <Plus size={16} aria-hidden /> New collection
                       </DropdownMenu.Item>
                     )}
                   </>

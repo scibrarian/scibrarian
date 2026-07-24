@@ -10,6 +10,7 @@ import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
+import { Dna, Settings as SettingsIcon, Lock, LockOpen, Library, FilePlus, FolderPlus, Plus } from "lucide-react";
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -219,14 +220,17 @@ export default function App() {
     <>No papers here yet. The site owner hasn’t added any.</>
   ) : inDiscover ? (
     <>
-      No papers yet. Add journals &amp; topics in <strong>⚙ Settings</strong>, then click
-      “Check for new papers”.
+      No papers yet. Add journals &amp; topics in{" "}
+      <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>, then
+      click “Check for new papers”.
     </>
   ) : (
     <>
-      No papers yet. Click <strong>+ Add files</strong> or <strong>+ Add folder</strong> to upload
-      PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors, journal,
-      year, and citation count.
+      No papers yet. Click{" "}
+      <strong><FilePlus size={14} className="inline-icon" aria-hidden /> Add files</strong> or{" "}
+      <strong><FolderPlus size={14} className="inline-icon" aria-hidden /> Add folder</strong> to
+      upload PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors,
+      journal, year, and citation count.
     </>
   );
 
@@ -253,7 +257,7 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          <span className="logo">🧬</span>
+          <span className="logo"><Dna aria-hidden /></span>
           <h1>Scibrarian</h1>
         </div>
         <div className="header-actions">
@@ -276,7 +280,7 @@ export default function App() {
                   aria-label="Settings"
                   title="Settings"
                 >
-                  ⚙
+                  <SettingsIcon size={16} aria-hidden />
                 </button>
               )}
               {/* Padlock: viewers can unlock admin mode; an unlocked admin can
@@ -288,7 +292,7 @@ export default function App() {
                   aria-label="Admin unlock"
                   title="Admin unlock"
                 >
-                  🔒
+                  <Lock size={16} aria-hidden />
                 </button>
               )}
               {isAdmin && getAdminToken() != null && (
@@ -298,7 +302,7 @@ export default function App() {
                   aria-label="Leave admin mode"
                   title="Leave admin mode"
                 >
-                  🔓
+                  <LockOpen size={16} aria-hidden />
                 </button>
               )}
             </>
@@ -375,13 +379,17 @@ export default function App() {
               </>
             ) : inDiscover ? (
               <>
-                No topics yet. Open <strong>⚙ Settings</strong> to add a journal and a MeSH topic
-                to watch, or switch to <strong>📚 Library</strong> to import your own PDFs.
+                No topics yet. Open{" "}
+                <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>{" "}
+                to add a journal and a MeSH topic to watch, or switch to{" "}
+                <strong><Library size={14} className="inline-icon" aria-hidden /> Library</strong> to
+                import your own PDFs.
               </>
             ) : (
               <>
-                No collections yet. Click <strong>＋ New collection</strong> in the collections dropdown to
-                import your own PDFs.
+                No collections yet. Click{" "}
+                <strong><Plus size={14} className="inline-icon" aria-hidden /> New collection</strong>{" "}
+                in the collections dropdown to import your own PDFs.
               </>
             )}
           </div>

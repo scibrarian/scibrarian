@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as ToggleGroup from "@radix-ui/react-toggle-group";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
+import { FileText, ExternalLink, X } from "lucide-react";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -403,7 +404,7 @@ export function CitationGraph({
             <Dialog.Overlay className="modal-backdrop">
               <Dialog.Content className="modal" aria-describedby={undefined}>
                 <Dialog.Close className="modal-close" aria-label="Close">
-                  ×
+                  <X size={20} aria-hidden />
                 </Dialog.Close>
                 <div className="modal-head">
                   {/* Marks a node whose title opens the stored PDF rather than
@@ -414,7 +415,7 @@ export function CitationGraph({
                       aria-label="Opens the stored PDF"
                       title={`Opens ${selected.file_name}`}
                     >
-                      📄
+                      <FileText size={15} aria-hidden />
                     </span>
                   )}
                   <p className="modal-meta">
@@ -453,7 +454,7 @@ export function CitationGraph({
                     link rather than being the only thing the modal opens. */}
                 <p className="modal-links">
                   <a href={selected.url} target="_blank" rel="noreferrer">
-                    PubMed ↗
+                    PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
                   </a>
                 </p>
               </Dialog.Content>

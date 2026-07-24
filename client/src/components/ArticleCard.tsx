@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { FileText, ExternalLink } from "lucide-react";
 import type { Paper } from "../types";
 import { api } from "../api";
 import { formatAuthors } from "../lib/format";
@@ -64,7 +65,7 @@ export function ArticleCard({ article, opener }: { article: Paper; opener: Paper
               own line. The button's own title attribute names the file. */}
           {opener.opensStoredPdf(article) && (
             <span className="file-badge" aria-hidden="true">
-              📄
+              <FileText size={14} />
             </span>
           )}
           {article.title || "(untitled)"}
@@ -94,11 +95,11 @@ export function ArticleCard({ article, opener }: { article: Paper; opener: Paper
       )}
       <div className="card-links">
         <a href={article.url} target="_blank" rel="noreferrer">
-          PubMed ↗
+          PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
         </a>
         {article.doi && (
           <a href={`https://doi.org/${article.doi}`} target="_blank" rel="noreferrer">
-            DOI ↗
+            DOI <ExternalLink size={13} className="inline-icon" aria-hidden />
           </a>
         )}
       </div>

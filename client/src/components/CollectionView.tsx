@@ -6,6 +6,7 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
 } from "react";
+import { FilePlus, FolderPlus } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { useCachedFetch, type FetchCache } from "../lib/hooks";
@@ -245,8 +246,12 @@ export function CollectionView({
       {isAdmin && (
         <div className="collection-head">
           <div className="collection-actions">
-            <button onClick={() => filesInputRef.current?.click()}>+ Add files</button>
-            <button onClick={() => folderInputRef.current?.click()}>+ Add folder</button>
+            <button onClick={() => filesInputRef.current?.click()}>
+              <FilePlus size={14} className="inline-icon" aria-hidden /> Add files
+            </button>
+            <button onClick={() => folderInputRef.current?.click()}>
+              <FolderPlus size={14} className="inline-icon" aria-hidden /> Add folder
+            </button>
             <button className="link-btn" onClick={() => setRenaming(true)}>
               Rename
             </button>

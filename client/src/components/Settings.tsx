@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Search, Share2, Check } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage, round1 } from "../lib/format";
@@ -103,7 +104,11 @@ export function Settings({
   }
 
   async function copyUrl(url: string) {
-    await copyTextToClipboard(url);
+    try {
+      await copyTextToClipboard(url);
+    } catch {
+      return; // Copy blocked — skip the "Copied ✓" flash rather than claim success.
+    }
     setCopiedUrl(url);
     setTimeout(() => setCopiedUrl((cur) => (cur === url ? null : cur)), 2000);
   }
@@ -207,7 +212,8 @@ export function Settings({
       <section className="panel">
         <h2>Topics</h2>
         <p className="hint">
-          Each topic appears under <strong>🔍 Interests</strong>. Search the{" "}
+          Each topic appears under{" "}
+          <strong><Search size={14} className="inline-icon" aria-hidden /> Interests</strong>. Search the{" "}
           <strong>MeSH</strong> vocabulary and pick a heading — typing a synonym
           (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds the official
           term (<code>Diabetes Mellitus, Type 2</code>). PubMed is searched by that MeSH heading.
@@ -299,7 +305,7 @@ export function Settings({
               </span>
             </label>
             <label>
-              NCBI API key {settings.has_api_key && <span className="pill">set ✓</span>}
+              NCBI API key {settings.has_api_key && <span className="pill">set <Check size={12} className="inline-icon" aria-hidden /></span>}
               <input
                 type="password"
                 value={apiKey}
@@ -336,7 +342,8 @@ export function Settings({
             <>
               <p className="hint">
                 Send one of these addresses to anyone on your network. They can view
-                everything except stored PDFs — share those with the 🔗 buttons, or turn
+                everything except stored PDFs — share those with the{" "}
+                <Share2 size={14} className="inline-icon" aria-hidden /> buttons, or turn
                 on Open Library below. Changing anything still requires the admin token.
               </p>
               <ul className="list">
@@ -346,14 +353,14 @@ export function Settings({
                       <code>{url}</code>
                     </span>
                     <button className="link-btn" onClick={() => copyUrl(url)}>
-                      {copiedUrl === url ? "Copied ✓" : "Copy"}
+                      {copiedUrl === url ? <>Copied <Check size={13} className="inline-icon" aria-hidden /></> : "Copy"}
                     </button>
                   </li>
                 ))}
               </ul>
               <label className="open-library">
                 <span>
-                  Open Library {librarySaved && <span className="pill">Saved ✓</span>}
+                  Open Library {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
                 </span>
                 <span className="switch-row">
                   <input

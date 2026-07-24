@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { ChevronUp, ChevronDown, ExternalLink } from "lucide-react";
 import { api } from "../api";
 import { formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
@@ -91,7 +92,14 @@ export function PapersTable({
     }
   }
 
-  const arrow = (k: SortKey) => (k === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "");
+  const arrow = (k: SortKey): ReactNode =>
+    k === sortKey ? (
+      sortDir === "asc" ? (
+        <ChevronUp size={14} className="inline-icon sort-arrow" aria-hidden />
+      ) : (
+        <ChevronDown size={14} className="inline-icon sort-arrow" aria-hidden />
+      )
+    ) : null;
 
   // The share-link column only exists for the owner of a token-mode instance;
   // viewers and tokenless single-user setups get the plain table.
@@ -177,11 +185,11 @@ export function PapersTable({
                     <td className="num">{p.citation_count}</td>
                     <td className="links-cell">
                       <a href={p.url} target="_blank" rel="noreferrer">
-                        PubMed ↗
+                        PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
                       </a>
                       {p.doi && (
                         <a href={`https://doi.org/${p.doi}`} target="_blank" rel="noreferrer">
-                          DOI ↗
+                          DOI <ExternalLink size={13} className="inline-icon" aria-hidden />
                         </a>
                       )}
                     </td>

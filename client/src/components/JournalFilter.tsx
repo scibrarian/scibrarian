@@ -1,4 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { ChevronDown } from "lucide-react";
 
 // Multiselect journal filter. A fixed-height dropdown trigger (rather than a
 // wrapping row of chips) keeps the toolbar from cluttering — or shifting the
@@ -35,7 +36,7 @@ export function JournalFilter({
       <DropdownMenu.Root>
         <DropdownMenu.Trigger className="filter-trigger">
           <span className="filter-label">{label}</span>
-          <span className="ws-caret">▾</span>
+          <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
         </DropdownMenu.Trigger>
 
         <DropdownMenu.Portal>

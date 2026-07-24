@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from "react";
+import { ArrowRight, ArrowLeft } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, round1, titleCaseJournal } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
@@ -437,14 +438,14 @@ export function JournalManager({
               onClick={() => moveRight(leftPicked)}
               disabled={applying || leftPicked.length === 0}
             >
-              Add →
+              Add <ArrowRight size={14} className="inline-icon" aria-hidden />
             </button>
             <button
               type="button"
               onClick={() => moveLeft(rightPicked)}
               disabled={applying || rightPicked.length === 0}
             >
-              ← Remove
+              <ArrowLeft size={14} className="inline-icon" aria-hidden /> Remove
             </button>
           </div>
 

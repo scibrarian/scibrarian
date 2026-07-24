@@ -11,7 +11,10 @@ export async function copyTextToClipboard(text: string): Promise<void> {
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand("copy");
+    const ok = document.execCommand("copy");
     ta.remove();
+    // execCommand returns false instead of throwing when the copy is blocked, so
+    // surface it — callers key their "copied" confirmation off a resolved promise.
+    if (!ok) throw new Error("Couldn’t copy to the clipboard");
   }
 }

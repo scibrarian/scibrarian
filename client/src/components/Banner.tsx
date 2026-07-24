@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X } from "lucide-react";
 
 type BannerKind = "error" | "success" | "info";
 
@@ -30,7 +31,7 @@ export function Banner({
           onDismiss?.();
         }}
       >
-        ×
+        <X size={18} aria-hidden />
       </button>
     </div>
   );

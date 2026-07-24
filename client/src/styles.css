@@ -55,7 +55,87 @@ body {
 }
 
 .logo {
-  font-size: 24px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+}
+
+/* ---------- icons ---------- */
+
+/* Icons are sized via the `size` prop in JSX; keep them from shrinking inside
+   flex rows and sitting a touch below the baseline when inline with text.
+   Scoped to lucide's own class so it never touches other SVGs. */
+.lucide {
+  flex: none;
+}
+
+.inline-icon {
+  vertical-align: -0.125em;
+}
+
+.sort-arrow {
+  margin-left: 2px;
+}
+
+/* ---------- toast ---------- */
+
+/* A transient, self-dismissing confirmation (e.g. "Copied link to clipboard").
+   Inverting bg/text against the theme tokens gives the usual dark-on-light /
+   light-on-dark toast look for free. The single animation fades in, holds, then
+   fades out inside its mount window (see TOAST_MS in ShareLinkButton). */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--text);
+  color: var(--bg);
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(16, 24, 40, 0.25);
+  z-index: 200;
+  pointer-events: none;
+  animation: toast-inout 2.2s ease forwards;
+}
+
+@keyframes toast-inout {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  8% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  85% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+}
+
+/* Removal is driven by the toast's `animationend` (see lib/toast.ts), so even
+   with reduced motion it must run a (motionless) animation to the end — hold it
+   fully visible for the same duration instead of fading. */
+@keyframes toast-hold {
+  from,
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation-name: toast-hold;
+    transform: translateX(-50%);
+  }
 }
 
 /* Wraps so a narrow viewport (or a future fourth view) pushes controls onto a
@@ -135,10 +215,12 @@ body {
 }
 
 .banner-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: inherit;
-  font-size: 18px;
   line-height: 1;
   cursor: pointer;
   opacity: 0.7;
@@ -372,8 +454,8 @@ body {
 /* Marks a card whose title opens the stored PDF rather than PubMed. */
 .file-badge {
   margin-right: 6px;
-  font-size: 13px;
-  vertical-align: baseline;
+  color: var(--muted);
+  vertical-align: -0.15em;
 }
 
 .card-authors {
@@ -1086,9 +1168,11 @@ code {
   position: absolute;
   top: 10px;
   right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
-  font-size: 22px;
   line-height: 1;
   color: var(--muted);
   cursor: pointer;
@@ -1105,7 +1189,9 @@ code {
 }
 
 .modal-file-icon {
-  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
   line-height: 1;
 }
 
@@ -1384,11 +1470,13 @@ code {
 /* ---------- workspace nav (Interests / Library) ---------- */
 
 .gear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--muted);
-  font-size: 16px;
   line-height: 1;
   padding: 7px 10px;
   cursor: pointer;
@@ -1438,6 +1526,9 @@ code {
 }
 
 .mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: transparent;
   border: none;
   padding: 8px 16px;
@@ -1497,8 +1588,9 @@ code {
 }
 
 .ws-caret {
+  display: inline-flex;
+  align-items: center;
   color: var(--muted);
-  font-size: 11px;
 }
 
 /* Paper-count badge in the picker trigger and its options — the pill contrast
@@ -1570,7 +1662,9 @@ code {
 }
 
 .ws-add {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   text-align: left;
   background: none;
@@ -1742,12 +1836,14 @@ code {
 }
 
 .share-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
   color: var(--muted);
-  font-size: 14px;
   line-height: 1;
-  padding: 2px 6px;
+  padding: 4px 6px;
   border-radius: 6px;
   cursor: pointer;
 }
