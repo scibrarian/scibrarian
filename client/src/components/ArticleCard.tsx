@@ -62,7 +62,7 @@ export function ArticleCard({ article, opener }: { article: Paper; opener: Paper
         >
           {/* Inside the button so it flows with the title's first line — a
               button is an atomic inline, so a sibling badge gets pushed to its
-              own line. The button's own title attribute names the file. */}
+              own line. The button's own title attribute names the file. test */}
           {opener.opensStoredPdf(article) && (
             <span className="file-badge" aria-hidden="true">
               <FileText size={14} />
