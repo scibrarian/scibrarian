@@ -26,7 +26,9 @@ jobs:
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/scibrarian/scibrarian/blob/master/CLA.md'
-          # Branch where the signatures file is stored/committed.
-          branch: 'master'
+          # Branch where the signatures file is stored/committed. Must be a
+          # branch WITHOUT branch-protection/rulesets, or the bot can't commit
+          # signatures. Keep it off master so protection stays intact there.
+          branch: 'cla-signatures'
           # Contributors who never need to sign (maintainer + bots).
           allowlist: anthonysalvato3,dependabot[bot],bot*
