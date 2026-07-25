@@ -54,6 +54,16 @@ body {
   margin: 0;
 }
 
+/* Sits just under the wordmark's baseline so it reads as a subscript. */
+.brand .version {
+  align-self: flex-end;
+  margin-left: -4px;
+  padding-bottom: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
 .logo {
   display: inline-flex;
   align-items: center;
