@@ -259,6 +259,7 @@ export default function App() {
         <div className="brand">
           <span className="logo"><Dna aria-hidden /></span>
           <h1>Scibrarian</h1>
+          <span className="version">v{__APP_VERSION__}</span>
         </div>
         <div className="header-actions">
           {!loaded ? (

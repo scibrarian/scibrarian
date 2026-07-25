@@ -54,6 +54,16 @@ body {
   margin: 0;
 }
 
+/* Sits just under the wordmark's baseline so it reads as a subscript. */
+.brand .version {
+  align-self: flex-end;
+  margin-left: -4px;
+  padding-bottom: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
 .logo {
   display: inline-flex;
   align-items: center;
@@ -1139,6 +1149,135 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Banner naming the pinned paper while "Show citation paths" is in effect. */
+.path-focus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+
+/* The pin is set but its anchor is off screen, so nothing on the canvas is
+   filtered by it. Recede — the banner is a standing note here, not a label for
+   what's being shown — while staying legible enough to find the exit. */
+.path-focus-dormant {
+  background: none;
+  border-style: dashed;
+}
+
+.path-focus-dormant .path-focus-title {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.path-focus-label {
+  flex: none;
+  color: var(--muted);
+}
+
+.path-focus-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.path-focus-counts {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.path-focus-counts i,
+.graph-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.path-focus-counts i:not(:first-child) {
+  margin-left: 6px;
+}
+
+.path-focus-exit {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.path-focus-exit:hover,
+.path-focus-exit:focus-visible {
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* "Show citation paths", under the cluster chip in the paper dialog. */
+.modal-paths {
+  display: block;
+  margin: 0 0 12px;
+  padding: 5px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.modal-paths:hover:not(:disabled),
+.modal-paths:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.modal-paths:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* Key for the hover-path colors; only rendered while a node is hovered. */
+.graph-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ---------- modal / popup ---------- */
