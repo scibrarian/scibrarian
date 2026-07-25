@@ -1164,6 +1164,19 @@ code {
   font-size: 13px;
 }
 
+/* The pin is set but its anchor is off screen, so nothing on the canvas is
+   filtered by it. Recede — the banner is a standing note here, not a label for
+   what's being shown — while staying legible enough to find the exit. */
+.path-focus-dormant {
+  background: none;
+  border-style: dashed;
+}
+
+.path-focus-dormant .path-focus-title {
+  font-weight: 500;
+  color: var(--muted);
+}
+
 .path-focus-label {
   flex: none;
   color: var(--muted);

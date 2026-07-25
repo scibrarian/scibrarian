@@ -9,6 +9,14 @@ import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterByTitle, clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
+import {
+  buildAdjacency,
+  depthAlpha,
+  linkKey,
+  walkPaths,
+  type PathClosure,
+  type PathHit,
+} from "../lib/paths";
 import { Banner } from "./Banner";
 import { PaperFilters } from "./PaperFilters";
 
@@ -34,47 +42,13 @@ function nodeValFromCount(count: number): number {
   return r * r;
 }
 
-// --- citation paths --------------------------------------------------------
-// Every path into and out of one paper: the full transitive closure, not just
-// its neighbors. Drives two features off the same walk — hovering dims whatever
-// isn't on a path, and "Show citation paths" hides it outright. The two
-// directions get their own hue, so which way a path runs reads without having to
-// resolve the arrowheads, and each hop fades a little further so distance from
-// the anchor paper is visible too. "cites" = what this paper builds on;
-// "citedBy" = what builds on it.
-//
-// These counts are surfaced as the "citation chain" and "reference chain", never
-// as citations, because they differ from a paper's citationCount on two axes at
-// once: they are transitive rather than direct, and confined to this collection
-// rather than all of PubMed (citationCount is iCite's global tally, and edges
-// exist only where both endpoints are in the dataset). The two effects push in
-// opposite directions, so neither number bounds the other — keep the vocabulary
-// distinct so they are never read as the same measure.
-type Dir = "self" | "cites" | "citedBy";
-interface PathHit {
-  dir: Dir;
-  depth: number;
-}
-interface PathClosure {
-  nodes: Map<string, PathHit>;
-  links: Map<string, PathHit>;
-  cites: number;
-  citedBy: number;
-}
-
 const DIM_ALPHA = 0.1; // everything outside the anchor paper's reach
-const HOP_FALLOFF = 0.8; // alpha multiplier per extra hop
-const MIN_HOP_ALPHA = 0.3; // floor, so deep lineage stays visible
 // How long the pointer must settle on a paper before its paths light up. Without
 // it, sweeping the pointer across a dense graph clips dozens of nodes in a
 // second and the whole canvas strobes between lit and dimmed. Waiting for intent
 // means transited nodes never trigger at all, and moving between two nodes holds
 // the previous highlight through the gap instead of flashing back to full color.
 const HOVER_SETTLE_MS = 140;
-
-function depthAlpha(depth: number): number {
-  return depth <= 1 ? 1 : Math.max(MIN_HOP_ALPHA, HOP_FALLOFF ** (depth - 1));
-}
 
 // Canvas accepts #rrggbbaa; cluster colors past the curated palette are hsl(),
 // which becomes hsla(). Node colors are re-resolved on every frame, so the
@@ -94,49 +68,14 @@ function fade(color: string, alpha: number): string {
   return out;
 }
 
-const linkKey = (source: string, target: string): string => `${source}>${target}`;
+// Controls that already mean something by Escape: clearing the search box,
+// reverting a number field, closing the journal menu (Radix handles that one on
+// the document and lets the event through to the window). The focus-exit
+// listener has to sit on the window to catch an Escape aimed at the canvas,
+// which has nothing focusable in it — so it filters by origin instead.
+const ESCAPE_OWNERS =
+  "input, textarea, select, [contenteditable='true'], [role='menu'], [role='dialog']";
 
-// Walk both directions from `root`, recording each node's hop distance and every
-// link on a path through it. `canVisit` gates what the walk may cross: a path may
-// not route through a paper that isn't on screen, so hidden and filtered-out
-// papers stop it. Returns null when the root itself isn't visitable.
-function walkPaths(
-  root: string,
-  adjacency: { out: Map<string, string[]>; inc: Map<string, string[]> },
-  canVisit: (pmid: string) => boolean
-): PathClosure | null {
-  if (!canVisit(root)) return null;
-  const nodes = new Map<string, PathHit>([[root, { dir: "self", depth: 0 }]]);
-  const links = new Map<string, PathHit>();
-  const counts = { cites: 0, citedBy: 0 };
-
-  // Breadth-first, so the first arrival at a node carries its true hop distance.
-  // Each node enters the frontier at most once, which both bounds the walk and
-  // makes it safe against cycles (a real citation graph is acyclic, but nothing
-  // guarantees the upstream data is).
-  const walk = (dir: "cites" | "citedBy") => {
-    const next = dir === "cites" ? adjacency.out : adjacency.inc;
-    let frontier = [root];
-    for (let depth = 1; frontier.length > 0; depth++) {
-      const level: string[] = [];
-      for (const from of frontier) {
-        for (const to of next.get(from) ?? []) {
-          if (!canVisit(to)) continue;
-          // Links are stored source-cites-target, whichever way we walked.
-          links.set(dir === "cites" ? linkKey(from, to) : linkKey(to, from), { dir, depth });
-          if (nodes.has(to)) continue; // already reached, by this walk or the other one
-          nodes.set(to, { dir, depth });
-          counts[dir]++;
-          level.push(to);
-        }
-      }
-      frontier = level;
-    }
-  };
-  walk("citedBy");
-  walk("cites");
-  return { nodes, links, ...counts };
-}
 
 // Cache the last successful graph fetch per source. Remounting the graph — e.g.
 // flipping the view toggle back to Graph — then paints from cache instead of
@@ -237,16 +176,25 @@ export function CitationGraph({
     return m;
   }, [data]);
 
+  // iCite reference lists sometimes carry the paper's own pmid — 4% of papers in
+  // a real collection here. A paper cannot cite itself, and the edge is invisible
+  // on the canvas either way (force-graph only draws a loop when linkCurvature is
+  // set, which it isn't), so it can only ever surface as a wrong answer: it
+  // inflates the link readout, and it makes "hide unconnected" count a paper as
+  // connected to itself, leaving a lone dot in the one view meant to exclude it.
+  // Dropped once, here, rather than at each of the places that read edges.
+  const edges = useMemo(() => (data?.edges ?? []).filter((e) => e.source !== e.target), [data]);
+
   // The set of nodes/links the *simulation* lays out. Only changes with the data
   // or the "hide unconnected" choice — never with the slider — so filtering and
   // clustering never restart (jolt) the layout.
   const graphData = useMemo(() => {
     if (!data) return { nodes: [] as FGNode[], links: [] as FGLink[] };
-    const links: FGLink[] = data.edges.map((e) => ({ source: e.source, target: e.target }));
+    const links: FGLink[] = edges.map((e) => ({ source: e.source, target: e.target }));
     let pmids = data.nodes.map((n) => n.pmid);
     if (hideUnconnected) {
       const connected = new Set<string>();
-      for (const e of data.edges) {
+      for (const e of edges) {
         connected.add(e.source);
         connected.add(e.target);
       }
@@ -254,26 +202,11 @@ export function CitationGraph({
     }
     const nodes = pmids.map((p) => allNodes.get(p)).filter(Boolean) as FGNode[];
     return { nodes, links };
-  }, [data, allNodes, hideUnconnected]);
+  }, [data, edges, allNodes, hideUnconnected]);
 
   // Both directions of the citation graph, keyed by pmid, for the hover walk.
-  // Built once per fetch: an edge P -> R means P cites R, so `out` reaches what a
-  // paper builds on and `inc` reaches what builds on it.
-  const adjacency = useMemo(() => {
-    const out = new Map<string, string[]>();
-    const inc = new Map<string, string[]>();
-    const add = (m: Map<string, string[]>, from: string, to: string) => {
-      const list = m.get(from);
-      if (list) list.push(to);
-      else m.set(from, [to]);
-    };
-    for (const e of data?.edges ?? []) {
-      if (e.source === e.target) continue; // a paper citing itself is bad data, not a path
-      add(out, e.source, e.target);
-      add(inc, e.target, e.source);
-    }
-    return { out, inc };
-  }, [data]);
+  // Built once per fetch.
+  const adjacency = useMemo(() => buildAdjacency(edges), [edges]);
 
   // Community detection on the *active* subgraph (papers passing the threshold
   // and the journal filter). Recomputes when the data, the debounced threshold,
@@ -294,8 +227,8 @@ export function CitationGraph({
       title: String(n.title ?? ""),
       citationCount: n.citationCount as number,
     }));
-    return groupBy === "topic" ? clusterByTitle(inputs) : clusterGraph(inputs, data.edges);
-  }, [data, graphData, activeMin, deselected, yearFrom, yearTo, groupBy]);
+    return groupBy === "topic" ? clusterByTitle(inputs) : clusterGraph(inputs, edges);
+  }, [data, edges, graphData, activeMin, deselected, yearFrom, yearTo, groupBy]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -341,24 +274,30 @@ export function CitationGraph({
   // Gated on the settled pointer, not the raw one; force-graph's own tooltip
   // still tracks the raw hover, so pointing at a paper stays instantly responsive.
   const settledHover = useDebounced(hovered, HOVER_SETTLE_MS);
-  const highlight = useMemo(
-    () => (settledHover ? walkPaths(settledHover, adjacency, isVisible) : null),
-    [settledHover, adjacency, isVisible]
-  );
+  const highlight = useMemo(() => {
+    if (!settledHover) return null;
+    const found = walkPaths(settledHover, adjacency, isVisible);
+    // A closure of just the anchor is nothing to show: dimming the entire canvas
+    // to spotlight one dot presents "this paper reaches nothing on screen" as if
+    // it were a finding, and the legend can only report it as two zeroes. Both
+    // an unconnected paper (with the hide toggle off) and one whose neighbours
+    // all fall below the threshold land here. Same floor the modal button
+    // applies before it will pin anything.
+    return found && found.nodes.size > 1 ? found : null;
+  }, [settledHover, adjacency, isVisible]);
 
   // Counts for the readout (respect threshold, hidden clusters and any focus).
   const shown = useMemo(() => {
     let nodes = 0;
     for (const pmid of clustering.byPmid.keys()) if (isVisible(pmid)) nodes++;
     let links = 0;
-    if (data)
-      for (const e of data.edges) {
-        if (!isVisible(e.source) || !isVisible(e.target)) continue;
-        if (focusPaths && !focusPaths.links.has(linkKey(e.source, e.target))) continue;
-        links++;
-      }
+    for (const e of edges) {
+      if (!isVisible(e.source) || !isVisible(e.target)) continue;
+      if (focusPaths && !focusPaths.links.has(linkKey(e.source, e.target))) continue;
+      links++;
+    }
     return { nodes, links };
-  }, [clustering, data, isVisible, focusPaths]);
+  }, [clustering, edges, isVisible, focusPaths]);
 
   // Spread the cluster out so it reads as a network, not a hairball. Re-applied
   // when the simulation set changes (data or hide-unconnected), not on filtering.
@@ -426,9 +365,10 @@ export function CitationGraph({
   // (the simulation still holds every node at the position it settled into), so
   // without the zoom the survivors stay scattered across a canvas sized for the
   // whole collection.
-  const showPaths = (pmid: string) => {
-    const paths = walkPaths(pmid, adjacency, inVisibleCluster);
-    if (!paths || paths.nodes.size <= 1) return;
+  // Takes the closure the modal button already walked for its label and enabled
+  // state rather than repeating the walk on click, so there is one traversal and
+  // one copy of the "worth pinning" threshold instead of two to keep in step.
+  const showPaths = (pmid: string, paths: PathClosure) => {
     setSelected(null);
     setHovered(null);
     setFocus(pmid);
@@ -441,18 +381,32 @@ export function CitationGraph({
   // the corner the pinned lineage happened to occupy.
   const clearFocus = useCallback(() => {
     setFocus(null);
-    requestAnimationFrame(() => fgRef.current?.zoomToFit(600, 40));
-  }, []);
+    setHovered(null);
+    // Frame what is about to be on screen, not the whole simulation: getGraphBbox
+    // measures every node its filter admits and ignores nodeVisibility entirely,
+    // so an unfiltered fit sizes the canvas for papers that are never drawn and
+    // leaves the survivors as a knot in one corner. Gated on inVisibleCluster
+    // rather than isVisible because the focus is being dropped — isVisible still
+    // has it folded in until this render commits.
+    requestAnimationFrame(() =>
+      fgRef.current?.zoomToFit(600, 40, (n) => inVisibleCluster((n as FGNode).pmid))
+    );
+  }, [inVisibleCluster]);
 
   // Escape exits focus — but not while the modal is open, where Radix owns it.
+  // Bound to the pin, not to its closure, so Escape still cancels a pin whose
+  // anchor is currently hidden (the banner is showing in that state too).
   useEffect(() => {
-    if (!focusPaths || selected) return;
+    if (!focus || selected) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") clearFocus();
+      if (e.key !== "Escape") return;
+      const el = e.target instanceof Element ? e.target : null;
+      if (el?.closest(ESCAPE_OWNERS)) return;
+      clearFocus();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focusPaths, selected, clearFocus]);
+  }, [focus, selected, clearFocus]);
 
   // The neutral (uncolored/singleton) color must flip for dark mode so those
   // nodes don't disappear against the dark canvas. Cluster palette colors are
@@ -543,19 +497,30 @@ export function CitationGraph({
       )}
 
       {/* Names the pinned state, so a sparse canvas is never a mystery, and
-          carries the only obvious way out (Escape works too). */}
-      {focusPaths && (
-        <div className="path-focus">
+          carries the only obvious way out (Escape works too). Keyed on `focus`
+          rather than `focusPaths` so it survives the anchor going off screen —
+          hiding the anchor's cluster, or filtering past it, leaves the pin set
+          but produces no closure, and binding the banner to the closure made the
+          pin invisible and uncancellable for as long as that lasted. */}
+      {focus && (
+        <div className={`path-focus${focusPaths ? "" : " path-focus-dormant"}`}>
           <span className="path-focus-label">Paths through</span>
           <span className="path-focus-title" title={focusTitle}>
             {focusTitle || "(untitled)"}
           </span>
-          <span className="path-focus-counts">
-            <i style={{ backgroundColor: citedByColor }} aria-hidden />
-            {focusPaths.citedBy} in citation chain
-            <i style={{ backgroundColor: citesColor }} aria-hidden />
-            {focusPaths.cites} in reference chain
-          </span>
+          {focusPaths ? (
+            <span className="path-focus-counts">
+              <i style={{ backgroundColor: citedByColor }} aria-hidden />
+              {focusPaths.citedBy} in citation chain
+              <i style={{ backgroundColor: citesColor }} aria-hidden />
+              {focusPaths.cites} in reference chain
+            </span>
+          ) : (
+            // No closure to count, and the full graph is on screen. Say why the
+            // pin is doing nothing rather than letting it look discarded, since
+            // it comes back the moment the anchor does.
+            <span className="path-focus-counts">anchor hidden — paths return when it does</span>
+          )}
           <button
             type="button"
             className="path-focus-exit"
@@ -569,7 +534,12 @@ export function CitationGraph({
       )}
 
       <div className="graph-body">
-        <div className="graph-canvas" ref={wrapRef}>
+        {/* force-graph updates its pointer position only from its own
+            pointermove/pointerdown handlers and registers no leave handler, so
+            leaving the canvas from a node — onto the cluster panel, or straight
+            off an edge in one flick — leaves its last hover standing and the
+            dim and legend up for good. Clear it on the way out. */}
+        <div className="graph-canvas" ref={wrapRef} onPointerLeave={() => setHovered(null)}>
           {showLoading ? (
             <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
           ) : !data || data.nodes.length === 0 ? (
@@ -761,7 +731,7 @@ export function CitationGraph({
                 <button
                   type="button"
                   className="modal-paths"
-                  onClick={() => showPaths(selected.pmid)}
+                  onClick={() => selectedPaths && showPaths(selected.pmid, selectedPaths)}
                   disabled={!selectedPaths || selectedPaths.nodes.size <= 1}
                   title={
                     selectedPaths && selectedPaths.nodes.size > 1
