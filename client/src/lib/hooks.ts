@@ -62,8 +62,9 @@ export function useIncrementalList<T>(items: T[], resetKey: string) {
 }
 
 // A module-level cache for useCachedFetch: one entry per key, invalidated when
-// `token` no longer matches (bumped whenever the underlying data changes, e.g.
-// by "Check for new papers").
+// `token` no longer matches. Callers pass the token for the source they're
+// showing (see lib/reload), bumped whenever that source's data changes, e.g. by
+// "Check for new papers".
 export type FetchCache<T> = Map<string, { token: number; data: T }>;
 
 // Cap each cache so a long session — every distinct search prefix mints a key —

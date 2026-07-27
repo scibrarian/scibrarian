@@ -39,8 +39,9 @@ const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInpu
 
 // Cache the last file listing per collection, same pattern as papersCache:
 // re-entering Library paints from cache instead of refetching. Every mutation
-// (upload, import, match, delete) reports through onChanged, which bumps
-// reloadToken and thereby invalidates this cache along with the modules'.
+// (upload, import, match, delete) reports through onChanged, which bumps this
+// collection's reload token and thereby invalidates this cache along with the
+// modules'.
 const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 
 // The collection management shell: upload/import/rename/delete chrome and the
