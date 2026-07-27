@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useAbstracts } from "../lib/abstracts";
 import type { Bookmarking } from "../lib/bookmarking";
 import { useIncrementalList } from "../lib/hooks";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -54,6 +55,10 @@ export function Timeline({
     visible,
     `${key}|${search}|${reloadToken}`
   );
+  // One request for the chunk on screen, rather than one per card (see
+  // useAbstracts). Keyed off `shown`, so scrolling a page into view fetches
+  // only the newly rendered papers.
+  const abstracts = useAbstracts(shown.map((p) => p.pmid));
   const groups = groupByMonth(shown);
   // One opener for the whole timeline, so a failed open surfaces in a single
   // banner rather than per-card.
@@ -117,6 +122,7 @@ export function Timeline({
                   <div className="timeline-dot" />
                   <ArticleCard
                     article={p}
+                    abstract={abstracts.get(p.pmid)}
                     opener={opener}
                     bookmarking={isAdmin ? bookmarking : null}
                     onError={setActionError}

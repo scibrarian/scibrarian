@@ -100,7 +100,7 @@ export type ImportStatus = ImportJob | { state: "idle" };
 // first matched uploaded copy and are only populated for collection sources —
 // null for topics, which have no files. The abstract is deliberately NOT here:
 // it dominates the payload size, so the card view fetches it on demand by pmid
-// (GET /api/articles/:pmid/abstract). Free-text search still covers abstracts —
+// (GET /api/abstracts, a chunk at a time). Free-text search still covers abstracts —
 // that runs against the DB column server-side.
 export interface Paper {
   pmid: string;
@@ -120,6 +120,12 @@ export interface Paper {
 export interface PapersResponse {
   papers: Paper[];
   journals: string[]; // distinct journal display names, for the filter chips
+}
+
+// Abstracts for a batch of papers, keyed by pmid. A requested pmid that isn't
+// stored is absent rather than empty, so the caller can tell the two apart.
+export interface AbstractsResponse {
+  abstracts: Record<string, string>;
 }
 
 // A minted expiring download link for one stored PDF. `path` is relative so

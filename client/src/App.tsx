@@ -502,40 +502,20 @@ export default function App() {
           onAddTopic={() => setShowSettings(true)}
           onShareError={setStatus}
         />
-        {/* Refresh polls PubMed for the active topic; sits by the topic picker
-            it acts on, and out of the header so the view switcher stays put.
-            During load a placeholder reserves the space so the controls don't
-            pop in and shift the bar once data arrives (mirrors the header
-            skeleton). Gated on mode only — activeTopic and isAdmin aren't known
-            until `loaded`, and the "Updated" line shows for viewers too. */}
-        {!showSettings &&
-          inDiscover &&
-          (!loaded ? (
-            <div className="topic-actions">
-              <SkeletonBar w={190} h={35} style={{ borderRadius: "var(--radius)" }} />
-            </div>
-          ) : (
-            activeTopic && (
-              <div className="topic-actions">
-                {activeTopic.last_polled_at && (
-                  <span className="updated">Updated {timeAgo(activeTopic.last_polled_at)}</span>
-                )}
-                {isAdmin && (
-                  <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
-                    {refreshing && <span className="btn-spinner" aria-hidden="true" />}
-                    {refreshing ? "Checking…" : "Check for new papers"}
-                  </button>
-                )}
-              </div>
-            )
-          ))}
       </div>
 
       {status && <Banner kind="info" message={status} onDismiss={() => setStatus(null)} />}
 
       <main className="app-main">
         {!loaded ? (
-          <TimelineSkeleton withToolbar />
+          // Reserve the action row too, so the papers don't jump down a row's
+          // height the moment the skeleton is replaced (mirrors the header).
+          <div className="source-view">
+            <div className="source-head" aria-hidden="true">
+              <SkeletonBar w={190} h={33} style={{ borderRadius: "var(--radius)" }} />
+            </div>
+            <TimelineSkeleton withToolbar />
+          </div>
         ) : showSettings ? (
           <Settings
             onDataChanged={loadTopics}
@@ -546,18 +526,38 @@ export default function App() {
           />
         ) : !source ? (
           <div className="empty">{noSourceState}</div>
-        ) : inDiscover || viewMode === "graph" ? (
-          // The graph fills the main area itself, so its workspace's management
-          // shell is skipped there; the shells wrap only the table/timeline,
-          // where their chrome belongs. Topics have no shell at all — nothing
-          // about a MeSH feed is the user's to rename or delete here.
-          module
+        ) : inDiscover ? (
+          // Every workspace puts its source-scoped actions in the same row, in
+          // the same place, in every view — so the papers below start at one
+          // vertical position and switching workspace or view doesn't shift
+          // them. A topic's actions are polling ones: when it last ran, and
+          // running it now.
+          <div className="source-view">
+            <div className="source-head">
+              <div className="source-actions">
+                {activeTopic?.last_polled_at && (
+                  <span className="updated">Updated {timeAgo(activeTopic.last_polled_at)}</span>
+                )}
+                {isAdmin && (
+                  <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+                    {refreshing && <span className="btn-spinner" aria-hidden="true" />}
+                    {refreshing ? "Checking…" : "Check for new papers"}
+                  </button>
+                )}
+              </div>
+            </div>
+            {module}
+          </div>
         ) : inLibrary ? (
           <CollectionView
             key={activeCollectionId}
             collectionId={activeCollectionId!}
             isAdmin={isAdmin}
             reloadToken={reloadToken}
+            // The graph fills the main area itself, so the collection's long
+            // unmatched-files list is suppressed under it; the action row and
+            // any live import progress still show, as they do in every view.
+            showUnmatched={viewMode !== "graph"}
             onChanged={handleCollectionChanged}
             onDeleted={async () => {
               const cs = await loadCollections();

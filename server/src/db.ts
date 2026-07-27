@@ -448,13 +448,14 @@ export function existingPmids(pmids: string[]): Set<string> {
   return new Set(rows.map((r) => r.pmid));
 }
 
-// The papers list omits abstracts (they dominate its size); the card view
-// fetches one on demand by pmid. Returns null for an unknown pmid.
-export function getArticleAbstract(pmid: string): string | null {
-  const row = db.prepare("SELECT abstract FROM articles WHERE pmid = ?").get(pmid) as
-    | { abstract: string }
-    | undefined;
-  return row?.abstract ?? null;
+// The papers list omits abstracts (they dominate its size); the timeline
+// fetches them on demand, a rendered chunk at a time rather than a card at a
+// time. Unknown pmids are simply absent from the result.
+export function getArticleAbstracts(pmids: string[]): { pmid: string; abstract: string }[] {
+  return queryByPmids<{ pmid: string; abstract: string }>(
+    pmids,
+    (ph) => `SELECT pmid, abstract FROM articles WHERE pmid IN (${ph})`
+  );
 }
 
 const upsertArticleStmt = db.prepare(`

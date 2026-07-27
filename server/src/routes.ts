@@ -24,7 +24,7 @@ import {
   topicArticleCounts,
   existingPmids,
   gcBlobsIfOrphaned,
-  getArticleAbstract,
+  getArticleAbstracts,
   getBookmarkFolder,
   getCitations,
   getCollection,
@@ -86,6 +86,7 @@ import {
   type ShareVerdict,
 } from "./signing.js";
 import type {
+  AbstractsResponse,
   CollectionFile,
   GraphEdge,
   GraphNode,
@@ -403,10 +404,22 @@ api.get(
   })
 );
 
-// The papers list omits abstracts (they dominate its size); the card view
-// fetches one here on demand. Public article metadata, so open like /papers.
-api.get("/articles/:pmid/abstract", (req, res) => {
-  res.json({ abstract: getArticleAbstract(String(req.params.pmid)) ?? "" });
+// The papers list omits abstracts (they dominate its size); the timeline
+// fetches them here on demand. Batched deliberately: it renders 50 cards at a
+// time, and a per-card route meant 50 requests the browser would serialise
+// about six at a time, so the last cards' text landed seconds after the first.
+// Public article metadata, so open like /papers.
+api.get("/abstracts", (req, res) => {
+  const pmids = String(req.query.pmids ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const abstracts: Record<string, string> = {};
+  if (pmids.length > 0) {
+    for (const row of getArticleAbstracts(pmids)) abstracts[row.pmid] = row.abstract;
+  }
+  const body: AbstractsResponse = { abstracts };
+  res.json(body);
 });
 
 // ---------- citation graph ----------

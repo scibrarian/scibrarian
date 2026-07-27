@@ -1,6 +1,7 @@
 // Row/API shapes shared with the client live in shared/types.ts; only
 // server-private types are defined here.
 export type {
+  AbstractsResponse,
   Article,
   BookmarkEntry,
   BookmarkFolder,

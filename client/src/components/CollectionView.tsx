@@ -51,6 +51,7 @@ export function CollectionView({
   collectionId,
   isAdmin,
   reloadToken,
+  showUnmatched = true,
   onChanged,
   onDeleted,
   children,
@@ -58,6 +59,10 @@ export function CollectionView({
   collectionId: number;
   isAdmin: boolean;
   reloadToken: number;
+  // The unmatched-files section is the one piece of chrome that doesn't suit
+  // every view — a long list under a full-height graph. The action row and
+  // import progress are not gated: they belong wherever the collection is.
+  showUnmatched?: boolean;
   onChanged: () => void;
   onDeleted: () => void;
   children: ReactNode;
@@ -304,7 +309,7 @@ export function CollectionView({
 
       {children}
 
-      {isAdmin && unresolved.length > 0 && (
+      {isAdmin && showUnmatched && unresolved.length > 0 && (
         <UnresolvedFiles files={unresolved} onChanged={onChanged} onError={setError} />
       )}
 

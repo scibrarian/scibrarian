@@ -474,17 +474,48 @@ body {
   margin: 0 0 8px;
 }
 
+/* Collapsed abstracts are clamped to a number of LINES, not a number of
+   characters, and the block reserves exactly that height before the text
+   arrives. Reserved and rendered heights then match by construction at any card
+   width — a character cap couldn't promise that, since 320 characters is three
+   lines on a wide card and five on a narrow one. The reservation covers the
+   "Show more" line too, so the block is this tall whether the abstract is
+   loading, long, short, or missing. */
 .card-abstract {
+  --abstract-lines: 3;
   font-size: 14px;
+  line-height: 1.5;
   margin: 0 0 10px;
   color: #333a47;
+  /* The clamped lines plus one line for the toggle, counted in line-heights —
+     "Show more" is shorter than a line but occupies a whole line box, so
+     measuring its own height here would under-reserve by 6px per card. The 1.5
+     must track line-height above. */
+  min-height: calc((var(--abstract-lines) + 1) * 1.5em);
 }
 
+/* A -webkit-box in both states, so the toggle sits below the text either way
+   rather than jumping from inline to its own line on expand. */
 .abstract-text {
   white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
 }
 
-.card-abstract.muted {
+.abstract-text.clamped {
+  -webkit-line-clamp: var(--abstract-lines);
+  line-clamp: var(--abstract-lines);
+  overflow: hidden;
+}
+
+.abstract-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 3px;
+}
+
+.abstract-empty {
   color: var(--muted);
   font-style: italic;
 }
@@ -1649,14 +1680,6 @@ code {
   margin-bottom: 16px;
 }
 
-/* Topic-scoped controls (last-polled + refresh) ride the right edge of the
-   workspace bar, beside the topic picker they act on. */
-.topic-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .workspace-nav {
   display: flex;
   align-items: center;
@@ -1987,9 +2010,10 @@ code {
   display: inline-flex;
 }
 
-/* The management shell wrapped around a source's table/timeline — a Library
-   collection or a Bookmarks folder. Source-neutral names because both use it;
-   only the buttons inside the action bar differ. */
+/* The shell wrapped around a source's papers, in every workspace and every
+   view. Its head is the one row for actions on the selected source — a topic's
+   refresh, a collection's uploads, a folder's rename — which is what puts the
+   filters and papers below at the same vertical position everywhere. */
 .source-view {
   display: flex;
   flex-direction: column;

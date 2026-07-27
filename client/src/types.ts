@@ -2,6 +2,7 @@
 // unchanged; others are extended below with the extra fields the API attaches
 // to its responses.
 import type {
+  AbstractsResponse,
   BookmarkEntry,
   BookmarkFolder as BookmarkFolderRow,
   Collection as CollectionRow,
@@ -22,6 +23,7 @@ import type {
 } from "../../shared/types";
 
 export type {
+  AbstractsResponse,
   BookmarkEntry,
   CollectionFileStatus,
   GraphEdge,

@@ -1,4 +1,5 @@
 import type {
+  AbstractsResponse,
   AppSettings,
   AuthStatus,
   BookmarkEntry,
@@ -118,8 +119,10 @@ export const api = {
     return req<PapersResponse>(`/api/papers?${qs}`);
   },
 
-  // Abstracts are kept out of the papers list payload; the card fetches one lazily.
-  getAbstract: (pmid: string) => req<{ abstract: string }>(`/api/articles/${pmid}/abstract`),
+  // Abstracts are kept out of the papers list payload; the timeline fetches
+  // them lazily, one rendered chunk per request rather than one per card.
+  getAbstracts: (pmids: string[]) =>
+    req<AbstractsResponse>(`/api/abstracts?pmids=${pmids.join(",")}`),
 
   // Takes the same `q` as getPapers, resolved server-side by the same SQL.
   getGraph: (source: PaperSource, q?: string) => {
