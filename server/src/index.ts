@@ -8,6 +8,7 @@ import { startScheduler } from "./poller.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
+import { MAX_BULK_BOOKMARK_BYTES } from "../../shared/limits.js";
 
 const app = express();
 
@@ -51,6 +52,16 @@ app.use((_req, res, next) => {
 // machine. Both dev (Vite proxies /api) and prod (Express serves the client)
 // are same-origin, so remote viewers never need CORS headers.
 app.use(cors({ origin: [/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/] }));
+
+// The bulk bookmark save posts one PMID per paper in the filtered set, which is
+// thousands of them by design — past body-parser's 100kb default at around nine
+// thousand. It gets its own parser rather than a raised global limit, so no
+// other endpoint starts accepting megabyte bodies. This has to be mounted
+// *before* the general parser: the first parser to run marks the body as read
+// and the other then skips it, so ordering these the other way round would
+// leave the big saves being rejected by the 100kb one before ever reaching the
+// route. The count is capped in the handler, which is what reports it.
+app.use("/api/bookmark-folders/:id/papers", express.json({ limit: MAX_BULK_BOOKMARK_BYTES }));
 app.use(express.json());
 
 app.use("/api", api);

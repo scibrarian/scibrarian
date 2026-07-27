@@ -95,7 +95,7 @@ import type {
   Settings,
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
+import { MAX_BULK_BOOKMARK_PMIDS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -564,6 +564,14 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
   const raw: unknown = req.body?.pmids;
   const pmids = Array.isArray(raw) ? raw.map((p) => String(p).trim()).filter(Boolean) : [];
   if (pmids.length === 0) return res.status(400).json({ error: "'pmids' must be a non-empty array." });
+  // Below the parser's byte limit for this route (see shared/limits), so an
+  // oversized save is refused with a reason rather than by body-parser, whose
+  // payload-too-large says nothing about what to do next.
+  if (pmids.length > MAX_BULK_BOOKMARK_PMIDS) {
+    return res.status(400).json({
+      error: `A single save is limited to ${MAX_BULK_BOOKMARK_PMIDS.toLocaleString()} papers. Narrow the filters and save again.`,
+    });
+  }
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
 
   const present = existingPmids(pmids);
@@ -577,7 +585,10 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
     });
   }
   const added = addBookmarks(id, storable);
-  res.json({ added, alreadySaved: storable.length - added, missing: pmids.length - storable.length });
+  // Counted against the de-duplicated request: `storable` is a Set, so a pmid
+  // sent twice would otherwise be reported as a paper that isn't stored.
+  const asked = new Set(pmids).size;
+  res.json({ added, alreadySaved: storable.length - added, missing: asked - storable.length });
 });
 
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {

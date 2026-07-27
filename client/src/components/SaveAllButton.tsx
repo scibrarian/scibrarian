@@ -4,6 +4,7 @@ import { Bookmark, ChevronDown, Plus } from "lucide-react";
 import { errorMessage } from "../lib/format";
 import type { Bookmarking } from "../lib/bookmarking";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { MAX_BULK_BOOKMARK_PMIDS } from "../../../shared/limits";
 
 // Where a folder for a bulk save comes from: one that already exists, or one
 // named in the prompt and created on confirm. Held rather than acted on
@@ -37,6 +38,20 @@ export function SaveAllButton({
   const papers = `${count.toLocaleString()} paper${count === 1 ? "" : "s"}`;
 
   if (count === 0) return null;
+
+  // The size of the set is known before anything is sent, so a save the server
+  // would refuse is reported here — and reported instead of the confirmation,
+  // which would otherwise promise to save a number that can't be saved.
+  function choose(to: Target) {
+    if (count > MAX_BULK_BOOKMARK_PMIDS) {
+      onError(
+        `A single save is limited to ${MAX_BULK_BOOKMARK_PMIDS.toLocaleString()} papers, ` +
+          `and ${papers} match. Narrow the filters and save again.`
+      );
+      return;
+    }
+    setTarget(to);
+  }
 
   async function save(to: Target) {
     setTarget(null);
@@ -74,7 +89,7 @@ export function SaveAllButton({
               <DropdownMenu.Item
                 key={f.id}
                 className="bookmark-option"
-                onSelect={() => setTarget({ kind: "existing", id: f.id, name: f.name })}
+                onSelect={() => choose({ kind: "existing", id: f.id, name: f.name })}
               >
                 <span className="bookmark-name">{f.name}</span>
                 <span className="count">{f.paperCount}</span>
@@ -97,7 +112,7 @@ export function SaveAllButton({
         submitLabel="Continue"
         onSubmit={(name) => {
           setNaming(false);
-          setTarget({ kind: "new", name });
+          choose({ kind: "new", name });
         }}
         onCancel={() => setNaming(false)}
       />
