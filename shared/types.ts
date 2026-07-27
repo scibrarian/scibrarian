@@ -36,6 +36,25 @@ export interface Article {
   first_seen_at: string;
 }
 
+// A user-created bookmark folder: the Bookmarks workspace's counterpart to a
+// topic or a collection. Holds papers saved out of Interests (membership lives
+// in the bookmarks table), so unlike a collection it has no files behind it.
+export interface BookmarkFolder {
+  id: number;
+  name: string;
+  created_at: string;
+}
+
+// One saved paper, as GET /api/bookmarks returns it. The client holds the whole
+// set in memory rather than having /papers and /graph carry a per-row flag:
+// bookmarks are a hand-curated list, orders of magnitude smaller than the
+// article table, and one shared map keeps every view's icons in agreement
+// without refetching a 2,000-row payload after each toggle.
+export interface BookmarkEntry {
+  folder_id: number;
+  pmid: string;
+}
+
 export interface Collection {
   id: number;
   name: string;

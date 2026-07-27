@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
-import type { AuthStatus, Collection, Topic, PaperSource } from "./types";
+import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from "./types";
+import type { Bookmarking } from "./lib/bookmarking";
 import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
 import { PaperViews } from "./components/PaperViews";
+import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
@@ -14,18 +16,26 @@ import { Dna, Settings as SettingsIcon, Lock, LockOpen, Library, FilePlus, Folde
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [folders, setFolders] = useState<BookmarkFolder[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mode, setMode] = useState<Mode>("discover");
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
   // Each workspace remembers its own view; the defaults match what each is
-  // usually for (reading new papers vs. managing a library).
+  // usually for (reading new papers vs. working through papers you've kept).
   const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
     discover: "timeline",
+    bookmarks: "table",
     papers: "table",
   });
+  // Which folders each paper is saved in, keyed by pmid — the whole bookmarks
+  // table, held here so every view's icons agree and a toggle repaints without
+  // refetching a source's papers (see BookmarkEntry in shared/types).
+  const [savedByPmid, setSavedByPmid] = useState<Map<string, Set<number>>>(new Map());
   const [reloadToken, setReloadToken] = useState(0);
+  const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -58,6 +68,31 @@ export default function App() {
       .catch(() => []);
   }
 
+  function loadFolders(): Promise<BookmarkFolder[]> {
+    return api
+      .getBookmarkFolders()
+      .then((fs) => {
+        setFolders(fs);
+        return fs;
+      })
+      .catch(() => []);
+  }
+
+  function loadBookmarks(): Promise<void> {
+    return api
+      .getBookmarks()
+      .then((rows) => {
+        const map = new Map<string, Set<number>>();
+        for (const r of rows) {
+          const folders = map.get(r.pmid);
+          if (folders) folders.add(r.folder_id);
+          else map.set(r.pmid, new Set([r.folder_id]));
+        }
+        setSavedByPmid(map);
+      })
+      .catch(() => {});
+  }
+
   function loadCollections(): Promise<Collection[]> {
     return api
       .getCollections()
@@ -77,18 +112,23 @@ export default function App() {
     const auth = api
       .getAuth()
       .catch(() => ({ admin: false, token_required: true, library_open: false }));
-    Promise.all([loadTopics(), loadCollections(), auth]).then(
-      ([ds, cs, { admin, token_required, library_open }]) => {
+    Promise.all([loadTopics(), loadFolders(), loadCollections(), auth, loadBookmarks()]).then(
+      ([ds, fs, cs, { admin, token_required, library_open }]) => {
         setIsAdmin(admin);
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
-        // Land in whichever workspace actually has something in it.
+        // Preselect each workspace's first entry, then land in the first one
+        // that actually has something in it (nav order: Interests, Bookmarks,
+        // Library) so switching modes never opens on an empty picker.
+        if (fs.length > 0) setActiveFolderId(fs[0].id);
+        if (cs.length > 0) setActiveCollectionId(cs[0].id);
         if (ds.length > 0) {
           setMode("discover");
           setActiveTopicId(ds[0].id);
+        } else if (fs.length > 0) {
+          setMode("bookmarks");
         } else if (cs.length > 0) {
           setMode("papers");
-          setActiveCollectionId(cs[0].id);
         }
         setLoaded(true);
       }
@@ -97,9 +137,11 @@ export default function App() {
   }, []);
 
   const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
+  const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
   const inDiscover = mode === "discover";
+  const inLibrary = mode === "papers";
   const viewMode = viewByMode[mode];
 
   function setViewMode(v: ViewMode) {
@@ -109,8 +151,13 @@ export default function App() {
   function changeMode(m: Mode) {
     setShowSettings(false);
     setMode(m);
+    // Entering a workspace with nothing selected falls back to its first entry,
+    // so a mode switch always lands on something.
     if (m === "discover" && activeTopicId == null && topics.length > 0) {
       setActiveTopicId(topics[0].id);
+    }
+    if (m === "bookmarks" && activeFolderId == null && folders.length > 0) {
+      setActiveFolderId(folders[0].id);
     }
     if (m === "papers" && activeCollectionId == null && collections.length > 0) {
       setActiveCollectionId(collections[0].id);
@@ -121,6 +168,12 @@ export default function App() {
     setShowSettings(false);
     setMode("discover");
     setActiveTopicId(id);
+  }
+
+  function selectFolder(id: number) {
+    setShowSettings(false);
+    setMode("bookmarks");
+    setActiveFolderId(id);
   }
 
   function selectCollection(id: number) {
@@ -135,6 +188,68 @@ export default function App() {
     setReloadToken((t) => t + 1);
   }
 
+  // Create a folder and stay put — what the bookmark menu needs, since the
+  // point there is to save the paper you're looking at, not to navigate away.
+  async function createFolderNamed(name: string): Promise<BookmarkFolder> {
+    const created = await api.createBookmarkFolder(name);
+    await loadFolders();
+    return created;
+  }
+
+  // The picker's "New folder" instead opens the folder it just made.
+  async function createFolder(name: string) {
+    setNamingFolder(false);
+    try {
+      const created = await createFolderNamed(name);
+      setShowSettings(false);
+      setMode("bookmarks");
+      setActiveFolderId(created.id);
+      setViewByMode((prev) => ({ ...prev, bookmarks: "table" }));
+    } catch (e) {
+      setStatus(errorMessage(e));
+    }
+  }
+
+  // A bookmark toggle updates the in-memory map rather than invalidating the
+  // papers cache: in Interests the rows themselves don't change, only the icon,
+  // and refetching a few thousand papers per click would be absurd. The
+  // Bookmarks workspace is the exception — there the folder's membership *is*
+  // the list, so removing a paper has to make it leave.
+  function applySaved(pmid: string, update: (folders: Set<number>) => void) {
+    setSavedByPmid((prev) => {
+      const next = new Map(prev);
+      const folders = new Set(next.get(pmid) ?? []);
+      update(folders);
+      if (folders.size > 0) next.set(pmid, folders);
+      else next.delete(pmid);
+      return next;
+    });
+  }
+
+  async function addBookmark(folderId: number, pmid: string) {
+    await api.addBookmarks(folderId, [pmid]);
+    applySaved(pmid, (folders) => folders.add(folderId));
+    await loadFolders();
+    if (mode === "bookmarks") bumpReloadToken();
+  }
+
+  // The bulk save. Papers the server skipped as unstored would leave the map
+  // claiming they're saved, so the whole map is reloaded from the server rather
+  // than patched — one request, and it can't drift.
+  async function addBookmarks(folderId: number, pmids: string[]) {
+    const result = await api.addBookmarks(folderId, pmids);
+    await Promise.all([loadBookmarks(), loadFolders()]);
+    if (mode === "bookmarks") bumpReloadToken();
+    return result;
+  }
+
+  async function removeBookmark(folderId: number, pmid: string) {
+    await api.removeBookmark(folderId, pmid);
+    applySaved(pmid, (folders) => folders.delete(folderId));
+    await loadFolders();
+    if (mode === "bookmarks") bumpReloadToken();
+  }
+
   async function createCollection(name: string) {
     setNamingCollection(false);
     try {
@@ -147,6 +262,11 @@ export default function App() {
     } catch (e) {
       setStatus(errorMessage(e));
     }
+  }
+
+  async function handleFolderChanged() {
+    await loadFolders();
+    bumpReloadToken();
   }
 
   async function handleCollectionChanged() {
@@ -207,15 +327,17 @@ export default function App() {
     }
   }
 
-  // The active paper source, if a topic/collection is selected in this mode.
+  // The active paper source, if this mode has something selected.
   const source: PaperSource | null = inDiscover
     ? activeTopic && { topic: activeTopic.id }
-    : activeCollection && { collection: activeCollection.id };
+    : inLibrary
+      ? activeCollection && { collection: activeCollection.id }
+      : activeFolder && { folder: activeFolder.id };
   const showViewControls = !showSettings && source != null;
 
   // The truly-empty message differs by source: topics fill from PubMed,
-  // collections fill from uploads. Viewers get a variant that doesn't point
-  // at controls they don't have.
+  // collections fill from uploads, folders from papers the user saves. Viewers
+  // get a variant that doesn't point at controls they don't have.
   const emptyState = !isAdmin ? (
     <>No papers here yet. The site owner hasn’t added any.</>
   ) : inDiscover ? (
@@ -224,13 +346,44 @@ export default function App() {
       <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>, then
       click “Check for new papers”.
     </>
-  ) : (
+  ) : inLibrary ? (
     <>
       No papers yet. Click{" "}
       <strong><FilePlus size={14} className="inline-icon" aria-hidden /> Add files</strong> or{" "}
       <strong><FolderPlus size={14} className="inline-icon" aria-hidden /> Add folder</strong> to
       upload PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors,
       journal, year, and citation count.
+    </>
+  ) : (
+    <>No papers in this folder yet.</>
+  );
+
+  // Same idea one level up: nothing is selected because this workspace has no
+  // entries at all.
+  const noSourceState = !isAdmin ? (
+    <>
+      Nothing here yet. The site owner hasn’t added any{" "}
+      {inDiscover ? "topics" : inLibrary ? "collections" : "bookmark folders"}.
+    </>
+  ) : inDiscover ? (
+    <>
+      No topics yet. Open{" "}
+      <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong> to add
+      a journal and a MeSH topic to watch, or switch to{" "}
+      <strong><Library size={14} className="inline-icon" aria-hidden /> Library</strong> to import
+      your own PDFs.
+    </>
+  ) : inLibrary ? (
+    <>
+      No collections yet. Click{" "}
+      <strong><Plus size={14} className="inline-icon" aria-hidden /> New collection</strong> in the
+      collections dropdown to import your own PDFs.
+    </>
+  ) : (
+    <>
+      No bookmark folders yet. Click{" "}
+      <strong><Plus size={14} className="inline-icon" aria-hidden /> New folder</strong> in the
+      folders dropdown to make one.
     </>
   );
 
@@ -243,6 +396,21 @@ export default function App() {
     onAuthRefreshed: handleAuthRefreshed,
   };
 
+  // Bookmarking is offered where a paper is still a candidate: Interests (save
+  // what the search turned up) and Bookmarks (unsave, or file it into a second
+  // folder). Not the Library — those are papers you already own, not ones
+  // you're deciding about — and null is what keeps the control out of it.
+  const bookmarking: Bookmarking | null = inLibrary
+    ? null
+    : {
+        folders,
+        saved: savedByPmid,
+        add: addBookmark,
+        addMany: addBookmarks,
+        remove: removeBookmark,
+        createFolder: createFolderNamed,
+      };
+
   const module = source && (
     <PaperViews
       source={source}
@@ -250,6 +418,7 @@ export default function App() {
       reloadToken={reloadToken}
       emptyState={emptyState}
       access={access}
+      bookmarking={bookmarking}
     />
   );
 
@@ -317,14 +486,18 @@ export default function App() {
           isAdmin={isAdmin}
           onModeChange={changeMode}
           topics={topics}
+          folders={folders}
           collections={collections}
           activeTopicId={activeTopicId}
+          activeFolderId={activeFolderId}
           activeCollectionId={activeCollectionId}
           settingsActive={showSettings}
           loaded={loaded}
           tokenRequired={tokenRequired}
           onSelectTopic={selectTopic}
+          onSelectFolder={selectFolder}
           onSelectCollection={selectCollection}
+          onCreateFolder={() => setNamingFolder(true)}
           onCreateCollection={() => setNamingCollection(true)}
           onAddTopic={() => setShowSettings(true)}
           onShareError={setStatus}
@@ -372,33 +545,14 @@ export default function App() {
             }}
           />
         ) : !source ? (
-          <div className="empty">
-            {!isAdmin ? (
-              <>
-                Nothing here yet. The site owner hasn’t added any{" "}
-                {inDiscover ? "topics" : "collections"}.
-              </>
-            ) : inDiscover ? (
-              <>
-                No topics yet. Open{" "}
-                <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>{" "}
-                to add a journal and a MeSH topic to watch, or switch to{" "}
-                <strong><Library size={14} className="inline-icon" aria-hidden /> Library</strong> to
-                import your own PDFs.
-              </>
-            ) : (
-              <>
-                No collections yet. Click{" "}
-                <strong><Plus size={14} className="inline-icon" aria-hidden /> New collection</strong>{" "}
-                in the collections dropdown to import your own PDFs.
-              </>
-            )}
-          </div>
+          <div className="empty">{noSourceState}</div>
         ) : inDiscover || viewMode === "graph" ? (
-          // The graph fills the main area itself; the collection shell wraps
-          // only the table/timeline, where its chrome belongs.
+          // The graph fills the main area itself, so its workspace's management
+          // shell is skipped there; the shells wrap only the table/timeline,
+          // where their chrome belongs. Topics have no shell at all — nothing
+          // about a MeSH feed is the user's to rename or delete here.
           module
-        ) : (
+        ) : inLibrary ? (
           <CollectionView
             key={activeCollectionId}
             collectionId={activeCollectionId!}
@@ -413,8 +567,31 @@ export default function App() {
           >
             {module}
           </CollectionView>
+        ) : (
+          <BookmarkFolderView
+            key={activeFolderId}
+            folderId={activeFolderId!}
+            isAdmin={isAdmin}
+            onChanged={handleFolderChanged}
+            onDeleted={async () => {
+              const fs = await loadFolders();
+              setActiveFolderId(fs.length > 0 ? fs[0].id : null);
+              bumpReloadToken();
+            }}
+          >
+            {module}
+          </BookmarkFolderView>
         )}
       </main>
+
+      <PromptDialog
+        open={namingFolder}
+        title="New folder"
+        placeholder="Folder name"
+        submitLabel="Create"
+        onSubmit={createFolder}
+        onCancel={() => setNamingFolder(false)}
+      />
 
       <PromptDialog
         open={namingCollection}

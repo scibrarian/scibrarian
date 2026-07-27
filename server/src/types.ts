@@ -2,6 +2,8 @@
 // server-private types are defined here.
 export type {
   Article,
+  BookmarkEntry,
+  BookmarkFolder,
   Collection,
   CollectionFile,
   CollectionFileStatus,

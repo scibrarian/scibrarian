@@ -4,20 +4,28 @@ import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
 import {
+  addBookmarks,
   addCollectionFiles,
+  bookmarkCounts,
+  bookmarkFolderByName,
+  collectionByName,
   collectionCounts,
   countJournalArticles,
+  createBookmarkFolder,
   createCollection,
   countTopicArticles,
   createTopic,
   createJournal,
+  deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
   removeTopicWithArticles,
   topicByTerm,
   topicArticleCounts,
+  existingPmids,
   gcBlobsIfOrphaned,
   getArticleAbstract,
+  getBookmarkFolder,
   getCitations,
   getCollection,
   getCollectionFile,
@@ -26,6 +34,8 @@ import {
   findCatalogByNlmId,
   journalByNlmId,
   journalsForSource,
+  listBookmarkFolders,
+  listBookmarks,
   listCollectionFiles,
   listPapers,
   listCollections,
@@ -33,7 +43,9 @@ import {
   listJournals,
   findMeshByName,
   missingOrStaleCitations,
+  removeBookmark,
   removeJournalWithArticles,
+  renameBookmarkFolder,
   renameCollection,
   searchCatalog,
   searchMesh,
@@ -337,20 +349,22 @@ api.delete("/journals/:id", (req, res) => {
 
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
-// The paper source both /papers and /graph accept: ?topic= or ?collection=
-// (topic wins when both are sent, as before). null = neither given (400).
-// Everything downstream dispatches on the source inside db.ts (listPapers,
-// journalsForSource, graphPapersForSource) — a new source kind is added there,
-// not by branching in each route.
+// The paper source both /papers and /graph accept: ?topic=, ?folder= or
+// ?collection= (the first one given wins when several are sent, as before).
+// null = none given (400). Everything downstream dispatches on the source
+// inside db.ts (listPapers, journalsForSource, graphPapersForSource) — a new
+// source kind is added there, not by branching in each route.
 function parseSource(req: Request): PaperSourceQuery | null {
   const topicId = Number(req.query.topic);
+  const folderId = Number(req.query.folder);
   const collectionId = Number(req.query.collection);
   if (topicId) return { topicId };
+  if (folderId) return { folderId };
   if (collectionId) return { collectionId };
   return null;
 }
 
-const SOURCE_REQUIRED = "'topic' or 'collection' query param is required.";
+const SOURCE_REQUIRED = "'topic', 'folder' or 'collection' query param is required.";
 
 api.get(
   "/papers",
@@ -447,6 +461,117 @@ api.get(
   })
 );
 
+// ---------- workspace entry names (collections + bookmark folders) ----------
+
+// Names within a workspace are unique case-insensitively (see the unique index
+// in db.ts) — two entries with the same name are indistinguishable in the
+// picker. Sends the 409 and returns true when the requested name belongs to a
+// different row; `selfId` is the row being renamed, so re-saving an entry's own
+// name (or just changing its case) isn't a conflict.
+function nameTaken(
+  res: Response,
+  label: string,
+  existing: { id: number; name: string } | undefined,
+  selfId: number | null
+): boolean {
+  if (!existing || existing.id === selfId) return false;
+  res.status(409).json({ error: `A ${label} named “${existing.name}” already exists.` });
+  return true;
+}
+
+// The lookup above and the write below aren't atomic, so two same-name requests
+// can both pass the check. The unique index is the real arbiter; translate its
+// error into the same 409 the check would have sent, as POST /journals does for
+// its own unique constraint. Anything else is the error middleware's to handle.
+function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
+  if (!/UNIQUE/i.test(errMessage(err))) throw err;
+  res.status(409).json({ error: `That ${label} name is already taken.` });
+}
+
+// ---------- bookmark folders (saved papers) ----------
+
+// The Bookmarks workspace's picker list, shaped like /collections: the stored
+// row plus the count the dropdown badges. Papers themselves come from
+// /api/papers?folder=<id>, since a folder is just another paper source.
+api.get("/bookmark-folders", (_req, res) => {
+  const counts = bookmarkCounts();
+  res.json(listBookmarkFolders().map((f) => ({ ...f, paperCount: counts[f.id] ?? 0 })));
+});
+
+api.post("/bookmark-folders", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (nameTaken(res, "folder", bookmarkFolderByName(name), null)) return;
+  try {
+    res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 });
+  } catch (err) {
+    rethrowUnlessNameRace(err, res, "folder");
+  }
+});
+
+api.put("/bookmark-folders/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+  if (nameTaken(res, "folder", bookmarkFolderByName(name), id)) return;
+  try {
+    renameBookmarkFolder(id, name);
+  } catch (err) {
+    return rethrowUnlessNameRace(err, res, "folder");
+  }
+  res.json({ ...getBookmarkFolder(id)!, paperCount: bookmarkCounts()[id] ?? 0 });
+});
+
+api.delete("/bookmark-folders/:id", (req, res) => {
+  // The folder's bookmark rows cascade; the papers they pointed at stay.
+  deleteBookmarkFolder(Number(req.params.id));
+  res.status(204).end();
+});
+
+// Every (folder, paper) pair in one payload. Deliberately not folded into
+// /papers or /graph as a per-row flag: the client keeps this whole set in
+// memory, so toggling one paper repaints every view's icons without refetching
+// a source's entire paper list (see BookmarkEntry in shared/types).
+api.get("/bookmarks", (_req, res) => {
+  res.json(listBookmarks());
+});
+
+// Save papers into a folder. Takes a list so the single-paper toggle and the
+// bulk "save everything the filters left" are the same operation — the bulk
+// case is just a longer array, and both get the same atomicity and the same
+// already-saved accounting.
+//
+// Papers that aren't stored are skipped rather than failing the request: a bulk
+// save shouldn't be lost because one paper was swept up by a topic removal
+// mid-session. Only a request where nothing at all could be saved is an error,
+// which is what turns a stale single-paper toggle into a 404.
+api.post("/bookmark-folders/:id/papers", (req, res) => {
+  const id = Number(req.params.id);
+  const raw: unknown = req.body?.pmids;
+  const pmids = Array.isArray(raw) ? raw.map((p) => String(p).trim()).filter(Boolean) : [];
+  if (pmids.length === 0) return res.status(400).json({ error: "'pmids' must be a non-empty array." });
+  if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+
+  const present = existingPmids(pmids);
+  const storable = [...new Set(pmids.filter((p) => present.has(p)))];
+  if (storable.length === 0) {
+    return res.status(404).json({
+      error:
+        pmids.length === 1
+          ? `Paper ${pmids[0]} isn't stored, so it can't be saved.`
+          : "None of those papers are stored any more.",
+    });
+  }
+  const added = addBookmarks(id, storable);
+  res.json({ added, alreadySaved: storable.length - added, missing: pmids.length - storable.length });
+});
+
+api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
+  removeBookmark(Number(req.params.id), String(req.params.pmid));
+  res.status(204).end();
+});
+
 // ---------- collections (uploaded PDF libraries) ----------
 
 // Uploads land in the blob store's temp dir; storeBlobFromTemp then hashes and
@@ -487,7 +612,12 @@ api.get("/collections", (_req, res) => {
 api.post("/collections", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return res.status(400).json({ error: "'name' is required." });
-  res.status(201).json(createCollection(name));
+  if (nameTaken(res, "collection", collectionByName(name), null)) return;
+  try {
+    res.status(201).json(createCollection(name));
+  } catch (err) {
+    rethrowUnlessNameRace(err, res, "collection");
+  }
 });
 
 api.put("/collections/:id", (req, res) => {
@@ -495,7 +625,12 @@ api.put("/collections/:id", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return res.status(400).json({ error: "'name' is required." });
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  renameCollection(id, name);
+  if (nameTaken(res, "collection", collectionByName(name), id)) return;
+  try {
+    renameCollection(id, name);
+  } catch (err) {
+    return rethrowUnlessNameRace(err, res, "collection");
+  }
   res.json(getCollection(id));
 });
 

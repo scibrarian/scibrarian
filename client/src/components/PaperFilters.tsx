@@ -47,6 +47,9 @@ function YearBox({
 //   maxCitations — the source's citation range is known
 //   children     — view-specific extras (the graph's hide-unconnected toggle
 //                  and its node/link readout)
+//   action       — an action *on* the filtered result (the bulk save), pushed
+//                  to the far end so it reads as "…and do this with it" rather
+//                  than as one more control that narrows
 export function PaperFilters({
   filters,
   searchable = true,
@@ -55,6 +58,7 @@ export function PaperFilters({
   yearBounds,
   loading = false,
   children,
+  action,
 }: {
   filters: PaperFilterState;
   searchable?: boolean;
@@ -63,6 +67,7 @@ export function PaperFilters({
   yearBounds?: { min: number; max: number } | null;
   loading?: boolean;
   children?: ReactNode;
+  action?: ReactNode;
 }) {
   const { minCitations, setMinCitations, minText, setMinText } = filters;
 
@@ -104,7 +109,9 @@ export function PaperFilters({
   const showCitations = maxCitations != null && maxCitations > 0;
   // A single-year source has no range to pick, so the control would be inert.
   const showYears = yearBounds != null && yearBounds.min < yearBounds.max;
-  const hasRow = showJournals || showCitations || showYears || children != null;
+  // The action counts: a source with nothing to filter by still needs the row
+  // if there's something to do with the result.
+  const hasRow = showJournals || showCitations || showYears || children != null || action != null;
 
   return (
     <div className="toolbar">
@@ -174,6 +181,8 @@ export function PaperFilters({
           )}
 
           {children}
+
+          {action && <div className="filter-action">{action}</div>}
         </div>
       )}
     </div>

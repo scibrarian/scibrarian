@@ -240,12 +240,12 @@ export function CollectionView({
   const progressPct = job && job.total ? Math.round((job.processed / job.total) * 100) : 0;
 
   return (
-    <div className="collection-view">
+    <div className="source-view">
       {/* Management chrome is admin-only; viewers just see the papers module
           (and, below, live progress of any admin-triggered import). */}
       {isAdmin && (
-        <div className="collection-head">
-          <div className="collection-actions">
+        <div className="source-head">
+          <div className="source-actions">
             <button onClick={() => filesInputRef.current?.click()}>
               <FilePlus size={14} className="inline-icon" aria-hidden /> Add files
             </button>

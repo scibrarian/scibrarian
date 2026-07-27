@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { FileText, ExternalLink } from "lucide-react";
 import type { Paper } from "../types";
 import { api } from "../api";
+import type { Bookmarking } from "../lib/bookmarking";
 import { formatAuthors } from "../lib/format";
 import { openTitle, type PaperOpener } from "../lib/openPaper";
+import { BookmarkMenu } from "./BookmarkMenu";
 
 const ABSTRACT_PREVIEW = 320;
 
@@ -12,7 +14,18 @@ const ABSTRACT_PREVIEW = 320;
 // (the Timeline mounts/unmounts cards as you scroll) don't refetch.
 const abstractCache = new Map<string, string>();
 
-export function ArticleCard({ article, opener }: { article: Paper; opener: PaperOpener }) {
+export function ArticleCard({
+  article,
+  opener,
+  bookmarking,
+  onError,
+}: {
+  article: Paper;
+  opener: PaperOpener;
+  // null where the workspace doesn't bookmark, or for a viewer who can't write.
+  bookmarking: Bookmarking | null;
+  onError: (message: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   // null = still loading; "" = loaded, no abstract available.
   const [abstract, setAbstract] = useState<string | null>(
@@ -101,6 +114,13 @@ export function ArticleCard({ article, opener }: { article: Paper; opener: Paper
           <a href={`https://doi.org/${article.doi}`} target="_blank" rel="noreferrer">
             DOI <ExternalLink size={13} className="inline-icon" aria-hidden />
           </a>
+        )}
+        {/* Pushed to the far end of the row: it's the card's one action, and
+            grouping it with the links would read as a third destination. */}
+        {bookmarking && (
+          <span className="card-bookmark">
+            <BookmarkMenu pmid={article.pmid} bookmarking={bookmarking} onError={onError} />
+          </span>
         )}
       </div>
     </article>

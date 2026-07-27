@@ -1,4 +1,5 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import type { Bookmarking } from "../lib/bookmarking";
 import { useIncrementalList } from "../lib/hooks";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers, type PaperFilterState } from "../lib/papers";
@@ -6,6 +7,7 @@ import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
 import { Banner } from "./Banner";
 import { PaperFilters } from "./PaperFilters";
+import { SaveAllButton } from "./SaveAllButton";
 import { TimelineSkeleton } from "./Skeleton";
 
 interface MonthGroup {
@@ -25,12 +27,16 @@ export function Timeline({
   libraryOpen,
   onAuthRefreshed,
   filters,
+  bookmarking,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
   filters: PaperFilterState;
+  bookmarking: Bookmarking | null;
 }) {
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const {
     key,
     search,
@@ -61,15 +67,35 @@ export function Timeline({
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
+        action={
+          isAdmin &&
+          bookmarking && (
+            // The full filtered list; the timeline renders it a chunk at a time.
+            <SaveAllButton
+              pmids={visible.map((p) => p.pmid)}
+              bookmarking={bookmarking}
+              onError={setActionError}
+              onDone={setNotice}
+            />
+          )
+        }
       />
 
-      {(error ?? opener.openError) && (
+      {(error ?? actionError ?? opener.openError) && (
         <Banner
           kind="error"
-          message={(error ?? opener.openError)!}
-          onDismiss={opener.openError ? opener.clearOpenError : undefined}
+          message={(error ?? actionError ?? opener.openError)!}
+          onDismiss={
+            actionError || opener.openError
+              ? () => {
+                  setActionError(null);
+                  opener.clearOpenError();
+                }
+              : undefined
+          }
         />
       )}
+      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
 
       {loading ? (
         <TimelineSkeleton />
@@ -89,7 +115,12 @@ export function Timeline({
               {g.items.map((p) => (
                 <div key={p.pmid} className="timeline-row">
                   <div className="timeline-dot" />
-                  <ArticleCard article={p} opener={opener} />
+                  <ArticleCard
+                    article={p}
+                    opener={opener}
+                    bookmarking={isAdmin ? bookmarking : null}
+                    onError={setActionError}
+                  />
                 </div>
               ))}
             </section>

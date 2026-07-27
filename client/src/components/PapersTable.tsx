@@ -1,13 +1,16 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronUp, ChevronDown, ExternalLink } from "lucide-react";
 import { api } from "../api";
+import type { Bookmarking } from "../lib/bookmarking";
 import { formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
+import { BookmarkMenu } from "./BookmarkMenu";
 import { PaperFilters } from "./PaperFilters";
+import { SaveAllButton } from "./SaveAllButton";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
@@ -25,11 +28,13 @@ export function PapersTable({
   libraryOpen,
   onAuthRefreshed,
   filters,
+  bookmarking,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
   filters: PaperFilterState;
+  bookmarking: Bookmarking | null;
 }) {
   const {
     key,
@@ -46,6 +51,7 @@ export function PapersTable({
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
     isAdmin,
     tokenRequired,
@@ -104,6 +110,9 @@ export function PapersTable({
   // The share-link column only exists for the owner of a token-mode instance;
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
+  // Saving is a mutation, so viewers never get the column — the server would
+  // reject the write anyway, and a control that always fails is worse than none.
+  const showBookmarkCol = bookmarking != null && isAdmin;
 
   return (
     <div className="papers-table-view">
@@ -113,6 +122,18 @@ export function PapersTable({
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
+        action={
+          showBookmarkCol && (
+            // The whole filtered list, not the rows currently rendered — the
+            // table lazy-renders, so `shown` would silently save a scroll depth.
+            <SaveAllButton
+              pmids={visible.map((p) => p.pmid)}
+              bookmarking={bookmarking!}
+              onError={setActionError}
+              onDone={setNotice}
+            />
+          )
+        }
       />
 
       {(error ?? actionError ?? openError) && (
@@ -125,9 +146,10 @@ export function PapersTable({
           }}
         />
       )}
+      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
 
       {loading && visible.length === 0 ? (
-        <PapersTableSkeleton share={showShareCol} />
+        <PapersTableSkeleton share={showShareCol} bookmark={showBookmarkCol} />
       ) : visible.length === 0 ? (
         <div className="empty">
           {allDeselected
@@ -140,7 +162,7 @@ export function PapersTable({
         <>
           <div className="papers-table-wrap">
             <table className="papers-table">
-              <PapersColgroup share={showShareCol} />
+              <PapersColgroup share={showShareCol} bookmark={showBookmarkCol} />
               <thead>
                 <tr>
                   <th className="sortable" onClick={() => toggleSort("title")}>
@@ -159,6 +181,7 @@ export function PapersTable({
                     Citations{arrow("citations")}
                   </th>
                   <th>Links</th>
+                  {showBookmarkCol && <th className="bookmark-col" aria-label="Bookmark" />}
                   {showShareCol && <th className="share-col" aria-label="Share" />}
                 </tr>
               </thead>
@@ -193,6 +216,15 @@ export function PapersTable({
                         </a>
                       )}
                     </td>
+                    {showBookmarkCol && (
+                      <td className="bookmark-cell">
+                        <BookmarkMenu
+                          pmid={p.pmid}
+                          bookmarking={bookmarking!}
+                          onError={setActionError}
+                        />
+                      </td>
+                    )}
                     {showShareCol && (
                       <td className="share-cell">
                         {p.file_id != null && p.file_exists && (
