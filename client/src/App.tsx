@@ -554,6 +554,12 @@ export default function App() {
               // A journal or topic removal sweeps papers out of any number of
               // topics at once, so nothing narrower than everything is safe.
               reloadEverything();
+              // Those papers take their bookmarks with them (the rows cascade
+              // from articles), so the saved map has to be refetched as well.
+              // A removed paper renders nowhere, so nothing looks wrong until a
+              // later poll brings the same pmid back — and it would arrive
+              // already wearing a filled icon for a save that no longer exists.
+              void loadBookmarks();
             }}
           />
         ) : !source ? (
