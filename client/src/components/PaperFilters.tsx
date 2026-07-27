@@ -110,8 +110,11 @@ export function PaperFilters({
   // A single-year source has no range to pick, so the control would be inert.
   const showYears = yearBounds != null && yearBounds.min < yearBounds.max;
   // The action counts: a source with nothing to filter by still needs the row
-  // if there's something to do with the result.
-  const hasRow = showJournals || showCitations || showYears || children != null || action != null;
+  // if there's something to do with the result. Tested for truthiness, not for
+  // null: a caller writing `action={cond && <Button/>}` passes `false` when the
+  // button is suppressed, and a row rendered for that is an empty one — its
+  // gap, with nothing in it.
+  const hasRow = showJournals || showCitations || showYears || Boolean(children) || Boolean(action);
 
   return (
     <div className="toolbar">

@@ -473,7 +473,6 @@ export function CitationGraph({
         yearBounds={yearBounds}
         loading={loading}
         action={
-          isAdmin &&
           bookmarking && (
             // visiblePmids, not the filter row's set: in this view clusters can
             // be hidden and a focus pinned, and the button must mean the same
@@ -795,7 +794,7 @@ export function CitationGraph({
                   <a href={selected.url} target="_blank" rel="noreferrer">
                     PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
                   </a>
-                  {isAdmin && bookmarking && (
+                  {bookmarking && (
                     <BookmarkMenu
                       pmid={selected.pmid}
                       bookmarking={bookmarking}

@@ -73,7 +73,6 @@ export function Timeline({
         yearBounds={yearBounds}
         loading={loading}
         action={
-          isAdmin &&
           bookmarking && (
             // The full filtered list; the timeline renders it a chunk at a time.
             <SaveAllButton
@@ -124,7 +123,7 @@ export function Timeline({
                     article={p}
                     abstract={abstracts.get(p.pmid)}
                     opener={opener}
-                    bookmarking={isAdmin ? bookmarking : null}
+                    bookmarking={bookmarking}
                     onError={setActionError}
                   />
                 </div>

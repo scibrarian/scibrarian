@@ -110,9 +110,9 @@ export function PapersTable({
   // The share-link column only exists for the owner of a token-mode instance;
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
-  // Saving is a mutation, so viewers never get the column — the server would
-  // reject the write anyway, and a control that always fails is worse than none.
-  const showBookmarkCol = bookmarking != null && isAdmin;
+  // Whether saving is offered at all is App's call (viewers and the Library
+  // don't get it); the column follows from that rather than re-deciding it.
+  const showBookmarkCol = bookmarking != null;
 
   return (
     <div className="papers-table-view">

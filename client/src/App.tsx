@@ -421,17 +421,25 @@ export default function App() {
   // Bookmarking is offered where a paper is still a candidate: Interests (save
   // what the search turned up) and Bookmarks (unsave, or file it into a second
   // folder). Not the Library — those are papers you already own, not ones
-  // you're deciding about — and null is what keeps the control out of it.
-  const bookmarking: Bookmarking | null = inLibrary
-    ? null
-    : {
-        folders,
-        saved: savedByPmid,
-        add: addBookmark,
-        addMany: addBookmarks,
-        remove: removeBookmark,
-        createFolder: createFolderNamed,
-      };
+  // you're deciding about — and not for viewers, since saving is a mutation the
+  // server would refuse and a control that always fails is worse than none.
+  // null is what keeps the control out.
+  //
+  // Both halves of that rule live here rather than in the views. Each view used
+  // to re-derive the viewer half itself, three ways, and one of them answered
+  // `false` where the others answered null — which is how an empty filter row
+  // ended up rendering for anyone who wasn't the owner.
+  const bookmarking: Bookmarking | null =
+    inLibrary || !isAdmin
+      ? null
+      : {
+          folders,
+          saved: savedByPmid,
+          add: addBookmark,
+          addMany: addBookmarks,
+          remove: removeBookmark,
+          createFolder: createFolderNamed,
+        };
 
   const module = source && (
     <PaperViews
