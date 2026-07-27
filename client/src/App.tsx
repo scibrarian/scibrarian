@@ -606,7 +606,12 @@ export default function App() {
             isAdmin={isAdmin}
             onChanged={handleFolderChanged}
             onDeleted={async () => {
-              const fs = await loadFolders();
+              // The folder's bookmarks are deleted with it (the rows cascade),
+              // so the map of what's saved has to come back from the server
+              // too. Reloading only the folder list leaves every paper it held
+              // showing a filled icon and "Saved in 1 folder" for a folder that
+              // no longer exists — a claim nothing in the UI can then undo.
+              const [, fs] = await Promise.all([loadBookmarks(), loadFolders()]);
               setActiveFolderId(fs.length > 0 ? fs[0].id : null);
               reloadEverything();
             }}
