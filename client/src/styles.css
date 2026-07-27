@@ -2023,6 +2023,18 @@ code {
 .source-head {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  /* One row's height, held whether or not this workspace has actions and
+     whether or not the person looking may use them: the 15px line of a button's
+     text between the 9px of vertical padding above and below it. A viewer's
+     Bookmarks row is empty, and a topic's holds only a 13px "Updated …" line;
+     both must still occupy what Library's four buttons do, or the papers below
+     move when you switch workspace. Stated as one number rather than derived
+     from 1lh, which resolves against the body's line-height here (24px, since
+     .source-head holds no text of its own) and would overshoot the buttons by
+     9px. The first load's SkeletonBar reserves this row at the same 33 — the
+     two are a pair. */
+  min-height: 33px;
 }
 
 .source-actions {

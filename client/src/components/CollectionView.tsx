@@ -247,10 +247,12 @@ export function CollectionView({
 
   return (
     <div className="source-view">
-      {/* Management chrome is admin-only; viewers just see the papers module
-          (and, below, live progress of any admin-triggered import). */}
-      {isAdmin && (
-        <div className="source-head">
+      {/* The row is always here, because the papers below it start at one
+          height in every workspace; the management chrome inside it is
+          admin-only, so viewers just see the papers module (and, below, live
+          progress of any admin-triggered import). */}
+      <div className="source-head">
+        {isAdmin && (
           <div className="source-actions">
             <button onClick={() => filesInputRef.current?.click()}>
               <FilePlus size={14} className="inline-icon" aria-hidden /> Add files
@@ -286,8 +288,8 @@ export function CollectionView({
               {...folderInputProps}
             />
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {(error ?? filesError) && (
         <Banner kind="error" message={error ?? filesError!} onDismiss={() => setError(null)} />

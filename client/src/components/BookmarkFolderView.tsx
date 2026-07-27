@@ -52,9 +52,11 @@ export function BookmarkFolderView({
 
   return (
     <div className="source-view">
-      {/* Management chrome is admin-only; viewers just see the papers module. */}
-      {isAdmin && (
-        <div className="source-head">
+      {/* The row is always here, because the papers below it start at one
+          height in every workspace; only the management chrome inside it is
+          admin-only, so a viewer gets the reserved space and nothing in it. */}
+      <div className="source-head">
+        {isAdmin && (
           <div className="source-actions">
             <button className="link-btn" onClick={() => setRenaming(true)}>
               Rename
@@ -63,8 +65,8 @@ export function BookmarkFolderView({
               Delete folder
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
 
