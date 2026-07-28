@@ -1054,15 +1054,16 @@ code {
    it's above the canvas, so it takes the drag too. Everything above the canvas
    cancels out of that: the page scrolls exactly as much as they push it down,
    leaving `viewport - height - 60px of .app padding` as the canvas's distance
-   from the top. So the ceiling is 100vh - 140px, and it's the floor that has to
-   carry it — 70vh is already self-limiting, and min-height beats max-height, so
-   capping alongside a 420px floor wouldn't take. Bites under a 560px viewport,
-   the point where a fixed 420px stops fitting. */
+   from the top. The bar paints 75px of that (59px tall, plus the 16px gap its
+   shadow covers), so the ceiling is 100vh - 140px and lands 5px clear.
+   Capping the height, not a min-height floor. The floor isn't what binds on a
+   short viewport — 70vh is, and it goes on overshooting after the floor stops
+   applying — and min-height would beat max-height anyway. Below ~467px the
+   graph shrinks rather than holding a fixed size and hiding its own top edge. */
 .graph-body {
   display: flex;
   gap: 14px;
-  height: 70vh;
-  min-height: min(420px, calc(100vh - 140px));
+  height: min(70vh, calc(100vh - 140px));
 }
 
 .graph-canvas {
@@ -1702,8 +1703,8 @@ code {
 /* Anything the browser scrolls to of its own accord — a tabbed-to control below
    the fold, scrollIntoView — is otherwise parked flush against the viewport top,
    which is where .workspace-bar sits, so it lands underneath the bar and its
-   focus ring is invisible. Hold those landings clear of it: the bar is 64px
-   (12 + 39 + 12 + 1px border) and its gap to the content another 16px. */
+   focus ring is invisible. Hold those landings clear of it: the bar measures
+   59px and its gap to the content another 16px, so 80px clears both. */
 html {
   scroll-padding-top: 80px;
 }
