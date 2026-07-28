@@ -230,31 +230,11 @@ for (const [key, value] of Object.entries(SETTING_DEFAULTS)) {
   }
 }
 
-// ---------- first-run example data ----------
-
-// Names are NLM abbreviations (e.g. the full title PubMed registers for the
-// first is "The New England journal of medicine"). The nlm_id must be present:
-// journal removal matches articles by it, so a journal without one can never
-// clean up its papers.
-const SEED_JOURNALS: ReadonlyArray<[name: string, nlmId: string]> = [
-  ["N Engl J Med", "0255562"],
-  ["Lancet", "2985213R"],
-  ["JAMA", "7501160"],
-  ["Nat Med", "9502015"],
-];
-
-const seedFlag = getSettingStmt.get("seeded") as { value: string } | undefined;
-if (!seedFlag) {
-  const journalCount = (db.prepare("SELECT COUNT(*) AS c FROM journals").get() as { c: number }).c;
-  const topicCount = (db.prepare("SELECT COUNT(*) AS c FROM topics").get() as { c: number }).c;
-  if (journalCount === 0 && topicCount === 0) {
-    const insJ = db.prepare("INSERT OR IGNORE INTO journals (name, nlm_id) VALUES (?, ?)");
-    for (const [name, nlmId] of SEED_JOURNALS) {
-      insJ.run(name, nlmId);
-    }
-  }
-  setSettingStmt.run("seeded", "1");
-}
+// A new database starts empty — no seeded journals or topics. The user picks
+// their own from the catalog (Manage journals) and MeSH (Add topic); "Auto"
+// suggests journals once topics exist. Older databases may still carry a
+// `seeded` settings row and the four journals it gated; nothing reads that
+// flag anymore, and the journals are removable like any other.
 
 // ---------- topics ----------
 
@@ -1094,8 +1074,8 @@ export function meshDescriptorCount(): number {
 }
 
 // The loaded MeSH year, tracked in settings — but managed by the importer, so
-// it's deliberately kept out of SETTING_DEFAULTS (never shown/edited in the UI).
-// Read/written through the raw statements, like the `seeded` first-run flag.
+// it's deliberately kept out of SETTING_DEFAULTS (never shown/edited in the UI)
+// and read/written through the raw statements instead.
 export function getMeshVersion(): string {
   const row = getSettingStmt.get("mesh_version") as { value: string } | undefined;
   return row?.value ?? "";
