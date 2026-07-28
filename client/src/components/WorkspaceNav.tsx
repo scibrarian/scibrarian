@@ -122,15 +122,21 @@ export function WorkspaceNav({
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
   const label = active?.name ?? picker.placeholder;
   // Non-null: MODES covers every Mode.
-  const ModeIcon = MODES.find((m) => m.value === mode)!.icon;
+  const activeMode = MODES.find((m) => m.value === mode)!;
+  const ModeIcon = activeMode.icon;
 
   return (
     <nav className="workspace-nav">
       <div className="mode-switch" role="group" aria-label="Workspace">
+        {/* aria-pressed, not just the class: which workspace you're in is state,
+            and drawn on its own it reaches only the people who can see the fill.
+            Same condition as the class so the two can't disagree — under
+            Settings none of them is pressed, because none of them is current. */}
         {MODES.map((m) => (
           <button
             key={m.value}
             className={mode === m.value && !settingsActive ? "active" : ""}
+            aria-pressed={mode === m.value && !settingsActive}
             onClick={() => onModeChange(m.value)}
           >
             <m.icon size={16} aria-hidden /> {m.label}
@@ -152,8 +158,13 @@ export function WorkspaceNav({
               {/* Which workspace this name belongs to. A topic, a bookmark
                   folder and a collection can all be called "Cardiac Imaging",
                   and the trigger is the part of the nav that changes — without
-                  the icon the three render identically. */}
+                  the icon the three render identically. The label carries the
+                  same thing for a screen reader, which gets nothing from the
+                  icon: the trigger's name reads "Interests, Cardiac Imaging,
+                  240", so it stands apart from its namesakes when read on its
+                  own, away from the pressed button in the switch. */}
               <ModeIcon size={16} className="ws-mode-icon" aria-hidden />
+              <span className="sr-only">{activeMode.label}</span>
               <span className="ws-current">{label}</span>
               {active && <span className="count">{active.count}</span>}
               <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
