@@ -15,6 +15,18 @@ interface PickerItem {
   count: number;
 }
 
+// The three workspaces in nav order, and the single source for each one's icon:
+// the mode switch renders the list, and the picker trigger below it looks up the
+// active mode's icon from the same entry. Two literals would let the switch and
+// the trigger drift onto different icons for the same workspace. Module scope
+// because it never varies — this component re-renders on every id, banner and
+// refresh change, and rebuilding a constant array each time is waste.
+const MODES: { value: Mode; label: string; icon: typeof Search }[] = [
+  { value: "interests", label: "Interests", icon: Search },
+  { value: "bookmarks", label: "Bookmarks", icon: Bookmark },
+  { value: "papers", label: "Library", icon: Library },
+];
+
 // Two-part navigation: an Interests / Bookmarks / Library mode switch, plus a
 // dropdown that picks the active topic (MeSH search), bookmark folder, or
 // collection within that mode. The dropdown replaces per-item tabs so a long
@@ -109,17 +121,13 @@ export function WorkspaceNav({
 
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
   const label = active?.name ?? picker.placeholder;
-
-  const modes: { value: Mode; label: string; icon: typeof Search }[] = [
-    { value: "interests", label: "Interests", icon: Search },
-    { value: "bookmarks", label: "Bookmarks", icon: Bookmark },
-    { value: "papers", label: "Library", icon: Library },
-  ];
+  // Non-null: MODES covers every Mode.
+  const ModeIcon = MODES.find((m) => m.value === mode)!.icon;
 
   return (
     <nav className="workspace-nav">
       <div className="mode-switch" role="group" aria-label="Workspace">
-        {modes.map((m) => (
+        {MODES.map((m) => (
           <button
             key={m.value}
             className={mode === m.value && !settingsActive ? "active" : ""}
@@ -141,6 +149,11 @@ export function WorkspaceNav({
         ) : (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger className="ws-trigger">
+              {/* Which workspace this name belongs to. A topic, a bookmark
+                  folder and a collection can all be called "Cardiac Imaging",
+                  and the trigger is the part of the nav that changes — without
+                  the icon the three render identically. */}
+              <ModeIcon size={16} className="ws-mode-icon" aria-hidden />
               <span className="ws-current">{label}</span>
               {active && <span className="count">{active.count}</span>}
               <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>

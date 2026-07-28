@@ -40,7 +40,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 0 14px;
+  /* The 14px that used to sit here moved into .workspace-bar's padding-top, so
+     the bar has breathing room above its controls once it's stuck to the
+     viewport edge. The gap between the two is unchanged: 2 + 12. */
+  padding: 20px 0 2px;
 }
 
 .brand {
@@ -1669,14 +1672,25 @@ code {
   background: var(--accent-soft);
 }
 
+/* Pinned to the top of the viewport: which workspace you're in is exactly what
+   you lose track of while scrolling a few hundred papers, and Interests and
+   Bookmarks render the same table, so the nav is the only thing telling them
+   apart. It has to carry a background of its own — the rows scroll underneath,
+   and margin-bottom is outside the sticky box, so without one they'd show
+   through the gap. Above the table's sticky header (z-index 10) and below the
+   dropdowns and modals (30+). */
 .workspace-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 12px;
+  padding: 12px 0;
   margin-bottom: 16px;
 }
 
@@ -1748,6 +1762,14 @@ code {
 
 .ws-trigger-loading:hover {
   border-color: var(--border);
+}
+
+/* Muted so it names the workspace without competing with the entry's own name,
+   and unshrinkable: the trigger is capped at 320px and the name ellipsizes into
+   whatever is left, which would otherwise squash the icon first. */
+.ws-trigger .ws-mode-icon {
+  flex-shrink: 0;
+  color: var(--muted);
 }
 
 .ws-current {
@@ -2112,9 +2134,23 @@ code {
   overflow-wrap: break-word;
 }
 
+/* `top` must stay 0 — it is not the knob for clearing the sticky workspace bar.
+   .papers-table-wrap above is overflow-x: auto, which makes it a scroll
+   container on both axes, so this sticks to *its* scrollport rather than the
+   viewport. That scrollport has no height of its own, so it never scrolls and
+   the header never actually pins; it leaves with the page like any other row.
+   A non-zero `top` doesn't change that — it just displaces the header downward
+   by that much, since sticky holds an element at least `top` away from its
+   scrollport's edge and here the two start out flush. The header ends up
+   sitting on the first rows. Clearing the nav would mean giving the wrap a real
+   scrollport, not an offset here.
+   The z-index only makes the existing order explicit — the header passes under
+   the workspace bar on the way out, which it already did on `auto`, since the
+   bar's 20 beats an auto-positioned element either way. */
 .papers-table thead th {
   position: sticky;
   top: 0;
+  z-index: 10;
   background: var(--panel);
   text-align: left;
   font-size: 12px;
