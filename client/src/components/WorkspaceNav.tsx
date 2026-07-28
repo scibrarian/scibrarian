@@ -68,38 +68,44 @@ export function WorkspaceNav({
   // an admin-only "add" row — so each is described here and rendered by one
   // block below. Three hand-written arms would be three places for the markup
   // to drift.
-  const picker = {
-    discover: {
-      items: topics.map((d) => ({ id: d.id, name: d.name, count: d.articleCount ?? 0 })),
-      activeId: activeTopicId,
-      onSelect: onSelectTopic,
-      folderIcon: false,
-      empty: "No topics yet.",
-      placeholder: topics.length ? "Select a topic" : "No topics yet",
-      addLabel: "Add topic…",
-      onAdd: onAddTopic,
-    },
-    bookmarks: {
-      items: folders.map((f) => ({ id: f.id, name: f.name, count: f.paperCount })),
-      activeId: activeFolderId,
-      onSelect: onSelectFolder,
-      folderIcon: true,
-      empty: "No folders yet.",
-      placeholder: folders.length ? "Select a folder" : "No folders yet",
-      addLabel: "New folder",
-      onAdd: onCreateFolder,
-    },
-    papers: {
-      items: collections.map((c) => ({ id: c.id, name: c.name, count: c.matchedCount })),
-      activeId: activeCollectionId,
-      onSelect: onSelectCollection,
-      folderIcon: true,
-      empty: "No collections yet.",
-      placeholder: collections.length ? "Select a collection" : "No collections yet",
-      addLabel: "New collection",
-      onAdd: onCreateCollection,
-    },
-  }[mode];
+  //
+  // Chosen before it's built, not built and then subscripted: this component
+  // re-renders on every change to the active ids, the status banner and the
+  // refreshing flag, and describing all three arms up front re-mapped every
+  // topic, folder and collection each time to throw two of the lists away.
+  const picker =
+    mode === "discover"
+      ? {
+          items: topics.map((d) => ({ id: d.id, name: d.name, count: d.articleCount ?? 0 })),
+          activeId: activeTopicId,
+          onSelect: onSelectTopic,
+          folderIcon: false,
+          empty: "No topics yet.",
+          placeholder: topics.length ? "Select a topic" : "No topics yet",
+          addLabel: "Add topic…",
+          onAdd: onAddTopic,
+        }
+      : mode === "bookmarks"
+        ? {
+            items: folders.map((f) => ({ id: f.id, name: f.name, count: f.paperCount })),
+            activeId: activeFolderId,
+            onSelect: onSelectFolder,
+            folderIcon: true,
+            empty: "No folders yet.",
+            placeholder: folders.length ? "Select a folder" : "No folders yet",
+            addLabel: "New folder",
+            onAdd: onCreateFolder,
+          }
+        : {
+            items: collections.map((c) => ({ id: c.id, name: c.name, count: c.matchedCount })),
+            activeId: activeCollectionId,
+            onSelect: onSelectCollection,
+            folderIcon: true,
+            empty: "No collections yet.",
+            placeholder: collections.length ? "Select a collection" : "No collections yet",
+            addLabel: "New collection",
+            onAdd: onCreateCollection,
+          };
 
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
   const label = active?.name ?? picker.placeholder;

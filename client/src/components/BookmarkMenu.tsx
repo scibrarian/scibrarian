@@ -1,9 +1,10 @@
 import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Bookmark, Check, Plus } from "lucide-react";
+import { Bookmark, Check } from "lucide-react";
 import { errorMessage } from "../lib/format";
 import { NO_FOLDERS, type Bookmarking } from "../lib/bookmarking";
 import { PromptDialog } from "./Dialogs";
+import { FolderMenuContent } from "./FolderMenu";
 
 // The per-paper bookmark control, used identically by the table, the timeline
 // card and the graph's paper dialog.
@@ -76,33 +77,27 @@ export function BookmarkMenu({
           <Bookmark size={15} fill={savedCount > 0 ? "currentColor" : "none"} aria-hidden />
         </DropdownMenu.Trigger>
 
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content className="bookmark-menu" align="end" sideOffset={4} loop>
-            {folders.map((f) => (
-              <DropdownMenu.CheckboxItem
-                key={f.id}
-                className="bookmark-option"
-                checked={inFolders.has(f.id)}
-                // preventDefault keeps the menu open across a toggle.
-                onSelect={(e) => {
-                  e.preventDefault();
-                  toggle(f.id);
-                }}
-              >
-                <span className="bookmark-check" aria-hidden>
-                  {inFolders.has(f.id) && <Check size={14} />}
-                </span>
-                <span className="bookmark-name">{f.name}</span>
-              </DropdownMenu.CheckboxItem>
-            ))}
-            {folders.length === 0 && (
-              <div className="bookmark-empty">No folders yet.</div>
-            )}
-            <DropdownMenu.Item className="bookmark-add" onSelect={() => setNaming(true)}>
-              <Plus size={14} aria-hidden /> New folder…
-            </DropdownMenu.Item>
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
+        <FolderMenuContent
+          folders={folders}
+          onNewFolder={() => setNaming(true)}
+          renderFolder={(f) => (
+            <DropdownMenu.CheckboxItem
+              key={f.id}
+              className="bookmark-option"
+              checked={inFolders.has(f.id)}
+              // preventDefault keeps the menu open across a toggle.
+              onSelect={(e) => {
+                e.preventDefault();
+                toggle(f.id);
+              }}
+            >
+              <span className="bookmark-check" aria-hidden>
+                {inFolders.has(f.id) && <Check size={14} />}
+              </span>
+              <span className="bookmark-name">{f.name}</span>
+            </DropdownMenu.CheckboxItem>
+          )}
+        />
       </DropdownMenu.Root>
 
       <PromptDialog

@@ -1,9 +1,10 @@
 import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Bookmark, ChevronDown, Plus } from "lucide-react";
+import { Bookmark, ChevronDown } from "lucide-react";
 import { errorMessage } from "../lib/format";
 import type { Bookmarking } from "../lib/bookmarking";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { FolderMenuContent } from "./FolderMenu";
 import { MAX_BULK_BOOKMARK_PMIDS } from "../../../shared/limits";
 
 // Where a folder for a bulk save comes from: one that already exists, or one
@@ -83,26 +84,20 @@ export function SaveAllButton({
           <ChevronDown size={14} aria-hidden />
         </DropdownMenu.Trigger>
 
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content className="bookmark-menu" align="end" sideOffset={4} loop>
-            {bookmarking.folders.map((f) => (
-              <DropdownMenu.Item
-                key={f.id}
-                className="bookmark-option"
-                onSelect={() => choose({ kind: "existing", id: f.id, name: f.name })}
-              >
-                <span className="bookmark-name">{f.name}</span>
-                <span className="count">{f.paperCount}</span>
-              </DropdownMenu.Item>
-            ))}
-            {bookmarking.folders.length === 0 && (
-              <div className="bookmark-empty">No folders yet.</div>
-            )}
-            <DropdownMenu.Item className="bookmark-add" onSelect={() => setNaming(true)}>
-              <Plus size={14} aria-hidden /> New folder…
+        <FolderMenuContent
+          folders={bookmarking.folders}
+          onNewFolder={() => setNaming(true)}
+          renderFolder={(f) => (
+            <DropdownMenu.Item
+              key={f.id}
+              className="bookmark-option"
+              onSelect={() => choose({ kind: "existing", id: f.id, name: f.name })}
+            >
+              <span className="bookmark-name">{f.name}</span>
+              <span className="count">{f.paperCount}</span>
             </DropdownMenu.Item>
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
+          )}
+        />
       </DropdownMenu.Root>
 
       <PromptDialog
