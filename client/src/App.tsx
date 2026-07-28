@@ -20,7 +20,7 @@ export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [folders, setFolders] = useState<BookmarkFolder[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [mode, setMode] = useState<Mode>("discover");
+  const [mode, setMode] = useState<Mode>("interests");
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
@@ -28,7 +28,7 @@ export default function App() {
   // Each workspace remembers its own view; the defaults match what each is
   // usually for (reading new papers vs. working through papers you've kept).
   const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
-    discover: "timeline",
+    interests: "timeline",
     bookmarks: "table",
     papers: "table",
   });
@@ -127,7 +127,7 @@ export default function App() {
         if (fs.length > 0) setActiveFolderId(fs[0].id);
         if (cs.length > 0) setActiveCollectionId(cs[0].id);
         if (ds.length > 0) {
-          setMode("discover");
+          setMode("interests");
           setActiveTopicId(ds[0].id);
         } else if (fs.length > 0) {
           setMode("bookmarks");
@@ -144,7 +144,7 @@ export default function App() {
   const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
-  const inDiscover = mode === "discover";
+  const inInterests = mode === "interests";
   const inLibrary = mode === "papers";
   const viewMode = viewByMode[mode];
 
@@ -157,7 +157,7 @@ export default function App() {
     setMode(m);
     // Entering a workspace with nothing selected falls back to its first entry,
     // so a mode switch always lands on something.
-    if (m === "discover" && activeTopicId == null && topics.length > 0) {
+    if (m === "interests" && activeTopicId == null && topics.length > 0) {
       setActiveTopicId(topics[0].id);
     }
     if (m === "bookmarks" && activeFolderId == null && folders.length > 0) {
@@ -170,7 +170,7 @@ export default function App() {
 
   function selectTopic(id: number) {
     setShowSettings(false);
-    setMode("discover");
+    setMode("interests");
     setActiveTopicId(id);
   }
 
@@ -347,7 +347,7 @@ export default function App() {
   }
 
   // The active paper source, if this mode has something selected.
-  const source: PaperSource | null = inDiscover
+  const source: PaperSource | null = inInterests
     ? activeTopic && { topic: activeTopic.id }
     : inLibrary
       ? activeCollection && { collection: activeCollection.id }
@@ -362,7 +362,7 @@ export default function App() {
   // get a variant that doesn't point at controls they don't have.
   const emptyState = !isAdmin ? (
     <>No papers here yet. The site owner hasn’t added any.</>
-  ) : inDiscover ? (
+  ) : inInterests ? (
     <>
       No papers yet. Add journals &amp; topics in{" "}
       <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>, then
@@ -385,9 +385,9 @@ export default function App() {
   const noSourceState = !isAdmin ? (
     <>
       Nothing here yet. The site owner hasn’t added any{" "}
-      {inDiscover ? "topics" : inLibrary ? "collections" : "bookmark folders"}.
+      {inInterests ? "topics" : inLibrary ? "collections" : "bookmark folders"}.
     </>
-  ) : inDiscover ? (
+  ) : inInterests ? (
     <>
       No topics yet. Open{" "}
       <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong> to add
@@ -558,7 +558,7 @@ export default function App() {
           />
         ) : !source ? (
           <div className="empty">{noSourceState}</div>
-        ) : inDiscover ? (
+        ) : inInterests ? (
           // Every workspace puts its source-scoped actions in the same row, in
           // the same place, in every view — so the papers below start at one
           // vertical position and switching workspace or view doesn't shift

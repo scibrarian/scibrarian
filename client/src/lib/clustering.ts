@@ -202,7 +202,7 @@ export function clusterGraph(nodes: ClusterNodeInput[], edges: EdgeInput[]): Clu
 // the active subgraph — the server can compute them once and cache them; the
 // citation/journal/year filters just hide nodes, no recompute. Optionally fold
 // shared-MeSH overlap in as extra similarity weight for library-mode
-// collections (in discovered mode the seed MeSH is a constant and carries no
+// collections (in interests mode the seed MeSH is a constant and carries no
 // signal, so abstracts have to do the work there).
 
 const TOPIC_NEIGHBORS = 6; // top-k most-similar titles linked per paper

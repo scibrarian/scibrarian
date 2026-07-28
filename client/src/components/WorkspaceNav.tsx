@@ -5,7 +5,7 @@ import type { BookmarkFolder, Collection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { SkeletonBar } from "./Skeleton";
 
-export type Mode = "discover" | "bookmarks" | "papers";
+export type Mode = "interests" | "bookmarks" | "papers";
 
 // One entry in the picker, normalized across the three workspaces so the menu
 // renders from a single loop.
@@ -74,7 +74,7 @@ export function WorkspaceNav({
   // refreshing flag, and describing all three arms up front re-mapped every
   // topic, folder and collection each time to throw two of the lists away.
   const picker =
-    mode === "discover"
+    mode === "interests"
       ? {
           items: topics.map((d) => ({ id: d.id, name: d.name, count: d.articleCount ?? 0 })),
           activeId: activeTopicId,
@@ -111,7 +111,7 @@ export function WorkspaceNav({
   const label = active?.name ?? picker.placeholder;
 
   const modes: { value: Mode; label: string; icon: typeof Search }[] = [
-    { value: "discover", label: "Interests", icon: Search },
+    { value: "interests", label: "Interests", icon: Search },
     { value: "bookmarks", label: "Bookmarks", icon: Bookmark },
     { value: "papers", label: "Library", icon: Library },
   ];
