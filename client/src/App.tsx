@@ -353,9 +353,24 @@ export default function App() {
       ? activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
   const showViewControls = !showSettings && source != null;
+  const sourceId = source ? sourceKey(source) : null;
   // The token every cached fetch under this source is stamped with; a bump to
   // any other source leaves it alone, so the views keep painting from cache.
-  const reloadToken = source ? tokenFor(reloads, sourceKey(source)) : 0;
+  const reloadToken = sourceId ? tokenFor(reloads, sourceId) : 0;
+
+  // A new source starts at the top, the same rule its filters follow (see
+  // usePaperFilters). Nothing carries the offset over deliberately — scroll
+  // belongs to the document, not to the view, so it simply outlives the swap
+  // underneath it. That leaves it pointing at rows the new view hasn't
+  // rendered, since both views re-paginate from their first chunk on every
+  // switch; the browser then clamps it to the new list's height, so where you
+  // land is decided by how long the *previous* list happened to be.
+  //
+  // Keyed on the source rather than the mode so picking another topic within
+  // Interests resets too — same carried-over offset, same non-reason.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [sourceId]);
 
   // The truly-empty message differs by source: topics fill from PubMed,
   // collections fill from uploads, folders from papers the user saves. Viewers
