@@ -5,7 +5,7 @@ import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from 
 import type { Bookmarking } from "./lib/bookmarking";
 import { sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
-import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
+import { WorkspaceNav, MODES, type Mode } from "./components/WorkspaceNav";
 import { PaperViews } from "./components/PaperViews";
 import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
@@ -14,7 +14,13 @@ import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
-import { Dna, Settings as SettingsIcon, Lock, LockOpen, Library, FilePlus, FolderPlus, Plus } from "lucide-react";
+import { Dna, Settings as SettingsIcon, Lock, LockOpen, FilePlus, FolderPlus, Plus } from "lucide-react";
+
+// The prose below points at the Library workspace by name and glyph, so it
+// takes both from the nav's MODES rather than picking an icon of its own that
+// could drift from the one the mode switch draws. Aliased because JSX needs a
+// capitalized binding to treat it as a component.
+const LibraryIcon = MODES.papers.icon;
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -431,8 +437,8 @@ export default function App() {
       No topics yet. Open{" "}
       <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong> to add
       a journal and a MeSH topic to watch, or switch to{" "}
-      <strong><Library size={14} className="inline-icon" aria-hidden /> Library</strong> to import
-      your own PDFs.
+      <strong><LibraryIcon size={14} className="inline-icon" aria-hidden /> {MODES.papers.label}</strong>{" "}
+      to import your own PDFs.
     </>
   ) : inLibrary ? (
     <>

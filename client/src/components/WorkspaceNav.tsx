@@ -15,17 +15,25 @@ interface PickerItem {
   count: number;
 }
 
-// The three workspaces in nav order, and the single source for each one's icon:
-// the mode switch renders the list, and the picker trigger below it looks up the
-// active mode's icon from the same entry. Two literals would let the switch and
-// the trigger drift onto different icons for the same workspace. Module scope
-// because it never varies — this component re-renders on every id, banner and
-// refresh change, and rebuilding a constant array each time is waste.
-const MODES: { value: Mode; label: string; icon: typeof Search }[] = [
-  { value: "interests", label: "Interests", icon: Search },
-  { value: "bookmarks", label: "Bookmarks", icon: Bookmark },
-  { value: "papers", label: "Library", icon: Library },
-];
+// How each workspace is named and drawn, and the only place that decides it:
+// the mode switch renders all three, the picker trigger looks up the active
+// one, and App's empty states name workspaces in prose. Separate literals would
+// let them drift onto different icons for the same workspace.
+//
+// Keyed by Mode rather than a list of them so adding a fourth workspace without
+// describing it here is a type error instead of an undefined at render. Module
+// scope because it never varies — this component re-renders on every id, banner
+// and refresh change, and rebuilding a constant each time is waste.
+export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
+  interests: { label: "Interests", icon: Search },
+  bookmarks: { label: "Bookmarks", icon: Bookmark },
+  papers: { label: "Library", icon: Library },
+};
+
+// Nav order, which is the literal's own: Object.entries preserves insertion
+// order for string keys, so the switch stays in step with MODES for free rather
+// than repeating the three names in a second list that could fall behind.
+const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
 
 // Two-part navigation: an Interests / Bookmarks / Library mode switch, plus a
 // dropdown that picks the active topic (MeSH search), bookmark folder, or
@@ -121,8 +129,7 @@ export function WorkspaceNav({
 
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
   const label = active?.name ?? picker.placeholder;
-  // Non-null: MODES covers every Mode.
-  const activeMode = MODES.find((m) => m.value === mode)!;
+  const activeMode = MODES[mode];
   const ModeIcon = activeMode.icon;
 
   return (
@@ -132,12 +139,12 @@ export function WorkspaceNav({
             and drawn on its own it reaches only the people who can see the fill.
             Same condition as the class so the two can't disagree — under
             Settings none of them is pressed, because none of them is current. */}
-        {MODES.map((m) => (
+        {MODE_ORDER.map(([value, m]) => (
           <button
-            key={m.value}
-            className={mode === m.value && !settingsActive ? "active" : ""}
-            aria-pressed={mode === m.value && !settingsActive}
-            onClick={() => onModeChange(m.value)}
+            key={value}
+            className={mode === value && !settingsActive ? "active" : ""}
+            aria-pressed={mode === value && !settingsActive}
+            onClick={() => onModeChange(value)}
           >
             <m.icon size={16} aria-hidden /> {m.label}
           </button>
