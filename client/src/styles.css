@@ -1712,8 +1712,8 @@ html {
    you lose track of while scrolling a few hundred papers, and Interests and
    Bookmarks render the same table, so the nav is the only thing telling them
    apart. It has to carry a background of its own, since the rows scroll
-   underneath it. Above the table's sticky header (z-index 10) and below the
-   dropdowns and modals (30+). */
+   underneath it. High enough to clear anything positioned that scrolls past,
+   and below the dropdowns and modals (30+). */
 .workspace-bar {
   position: sticky;
   top: 0;
@@ -1805,11 +1805,10 @@ html {
   border-color: var(--border);
 }
 
-/* Muted so it names the workspace without competing with the entry's own name,
-   and unshrinkable: the trigger is capped at 320px and the name ellipsizes into
-   whatever is left, which would otherwise squash the icon first. */
+/* Muted so it names the workspace without competing with the entry's own name.
+   Nothing here about shrinking: the trigger is capped at 320px and the name
+   ellipsizes into what's left, but .lucide already carries flex: none. */
 .ws-trigger .ws-mode-icon {
-  flex-shrink: 0;
   color: var(--muted);
 }
 
@@ -2185,13 +2184,12 @@ html {
    scrollport's edge and here the two start out flush. The header ends up
    sitting on the first rows. Clearing the nav would mean giving the wrap a real
    scrollport, not an offset here.
-   The z-index only makes the existing order explicit — the header passes under
-   the workspace bar on the way out, which it already did on `auto`, since the
-   bar's 20 beats an auto-positioned element either way. */
+   No z-index for the same reason: never pinning, it never overlaps the rows,
+   and it passes under the workspace bar on the way out however it's stacked,
+   since the bar's 20 beats an auto-positioned element either way. */
 .papers-table thead th {
   position: sticky;
   top: 0;
-  z-index: 10;
   background: var(--panel);
   text-align: left;
   font-size: 12px;
