@@ -13,6 +13,7 @@ export function ArticleCard({
   opener,
   bookmarking,
   onError,
+  onNewFolder,
 }: {
   article: Paper;
   // Abstracts aren't in the papers list payload (they'd dominate its size), so
@@ -24,6 +25,9 @@ export function ArticleCard({
   // null where the workspace doesn't bookmark, or for a viewer who can't write.
   bookmarking: Bookmarking | null;
   onError: (message: string) => void;
+  // Naming a new folder belongs to the timeline, not the card: one prompt for
+  // the whole list instead of one behind every card's menu.
+  onNewFolder: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   // Whether the clamped text is actually hiding anything, and so whether to
@@ -123,7 +127,12 @@ export function ArticleCard({
             grouping it with the links would read as a third destination. */}
         {bookmarking && (
           <span className="card-bookmark">
-            <BookmarkMenu pmid={article.pmid} bookmarking={bookmarking} onError={onError} />
+            <BookmarkMenu
+              pmid={article.pmid}
+              bookmarking={bookmarking}
+              onError={onError}
+              onNewFolder={onNewFolder}
+            />
           </span>
         )}
       </div>

@@ -9,6 +9,7 @@ import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
+import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -52,6 +53,9 @@ export function PapersTable({
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The paper waiting on a new folder, if any — one prompt for the table
+  // rather than one per row (see NewFolderDialog).
+  const [namingFor, setNamingFor] = useState<string | null>(null);
   const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
     isAdmin,
     tokenRequired,
@@ -222,6 +226,7 @@ export function PapersTable({
                           pmid={p.pmid}
                           bookmarking={bookmarking!}
                           onError={setActionError}
+                          onNewFolder={() => setNamingFor(p.pmid)}
                         />
                       </td>
                     )}
@@ -249,6 +254,15 @@ export function PapersTable({
               : `${sortedPapers.length} paper${sortedPapers.length === 1 ? "" : "s"}`}
           </p>
         </>
+      )}
+
+      {bookmarking && (
+        <NewFolderDialog
+          pmid={namingFor}
+          bookmarking={bookmarking}
+          onError={setActionError}
+          onClose={() => setNamingFor(null)}
+        />
       )}
     </div>
   );

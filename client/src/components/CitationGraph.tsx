@@ -20,6 +20,7 @@ import {
 } from "../lib/paths";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
+import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 
@@ -107,6 +108,8 @@ export function CitationGraph({
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The paper waiting on a new folder, if any (see NewFolderDialog).
+  const [namingFor, setNamingFor] = useState<string | null>(null);
   // The citation threshold is shared with the other views (instant: slider +
   // box); hide-unconnected is about edges, so it stays graph-local.
   const { minCitations } = filters;
@@ -799,6 +802,7 @@ export function CitationGraph({
                       pmid={selected.pmid}
                       bookmarking={bookmarking}
                       onError={setActionError}
+                      onNewFolder={() => setNamingFor(selected.pmid)}
                     />
                   )}
                 </p>
@@ -815,6 +819,18 @@ export function CitationGraph({
         >
           {tip.text}
         </div>
+      )}
+
+      {/* Outside the paper dialog rather than inside it: the prompt outlives
+          nothing here, but stacking it as a sibling keeps the two dialogs'
+          focus handling independent. */}
+      {bookmarking && (
+        <NewFolderDialog
+          pmid={namingFor}
+          bookmarking={bookmarking}
+          onError={setActionError}
+          onClose={() => setNamingFor(null)}
+        />
       )}
     </div>
   );

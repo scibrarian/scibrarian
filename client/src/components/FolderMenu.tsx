@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Plus } from "lucide-react";
+import { errorMessage } from "../lib/format";
+import type { Bookmarking } from "../lib/bookmarking";
 import type { BookmarkFolder } from "../types";
+import { PromptDialog } from "./Dialogs";
 
 // The dropdown body both bookmark controls open: the list of folders, the
 // empty state, and the row that starts a new one.
@@ -34,5 +37,50 @@ export function FolderMenuContent({
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Portal>
+  );
+}
+
+// The "New folder…" prompt for a whole view, holding the paper that asked for
+// one — null when nothing is waiting, which is also what closes it.
+//
+// One per view rather than one per menu. BookmarkMenu used to carry its own,
+// so a table scrolled to the end of a large topic held a Radix dialog root per
+// row — thousands of identical dialogs standing by for a prompt that only ever
+// opens once, and only for one paper. Lifting it also puts the create-then-save
+// pair in one place instead of repeating it in every view that lists papers.
+export function NewFolderDialog({
+  pmid,
+  bookmarking,
+  onError,
+  onClose,
+}: {
+  pmid: string | null;
+  bookmarking: Bookmarking;
+  onError: (message: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <PromptDialog
+      open={pmid != null}
+      title="New folder"
+      placeholder="Folder name"
+      submitLabel="Create & save"
+      onSubmit={(name) => {
+        onClose();
+        if (pmid == null) return;
+        // Creating from here saves the paper into the new folder straight away
+        // — otherwise the folder you just made for this paper wouldn't contain
+        // it.
+        void (async () => {
+          try {
+            const folder = await bookmarking.createFolder(name);
+            await bookmarking.add(folder.id, pmid);
+          } catch (e) {
+            onError(errorMessage(e));
+          }
+        })();
+      }}
+      onCancel={onClose}
+    />
   );
 }

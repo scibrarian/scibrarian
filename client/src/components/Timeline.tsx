@@ -7,6 +7,7 @@ import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
 import { Banner } from "./Banner";
+import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 import { TimelineSkeleton } from "./Skeleton";
@@ -38,6 +39,9 @@ export function Timeline({
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The paper waiting on a new folder, if any — one prompt for the whole
+  // timeline rather than one behind every card (see NewFolderDialog).
+  const [namingFor, setNamingFor] = useState<string | null>(null);
   const {
     key,
     search,
@@ -125,6 +129,7 @@ export function Timeline({
                     opener={opener}
                     bookmarking={bookmarking}
                     onError={setActionError}
+                    onNewFolder={() => setNamingFor(p.pmid)}
                   />
                 </div>
               ))}
@@ -137,6 +142,15 @@ export function Timeline({
               : `${visible.length} paper${visible.length === 1 ? "" : "s"}`}
           </p>
         </div>
+      )}
+
+      {bookmarking && (
+        <NewFolderDialog
+          pmid={namingFor}
+          bookmarking={bookmarking}
+          onError={setActionError}
+          onClose={() => setNamingFor(null)}
+        />
       )}
     </div>
   );
