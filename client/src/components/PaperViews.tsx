@@ -1,4 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react";
+import type { Bookmarking } from "../lib/bookmarking";
 import type { PaperAccess } from "../lib/openPaper";
 import { usePaperFilters } from "../lib/papers";
 import type { PaperSource } from "../types";
@@ -31,15 +32,18 @@ export function PaperViews({
   reloadToken,
   emptyState,
   access,
+  bookmarking,
 }: {
   source: PaperSource;
   viewMode: ViewMode;
   reloadToken: number;
   emptyState?: ReactNode;
   access: PaperAccess;
+  // null in a workspace that doesn't bookmark (the Library) — see Bookmarking.
+  bookmarking: Bookmarking | null;
 }) {
   const filters = usePaperFilters(source);
-  const common = { source, reloadToken, filters, ...access };
+  const common = { source, reloadToken, filters, bookmarking, ...access };
 
   if (viewMode === "graph") {
     // The boundary sits outside Suspense: Suspense handles the chunk being slow,

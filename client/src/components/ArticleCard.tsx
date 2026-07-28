@@ -1,52 +1,58 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { FileText, ExternalLink } from "lucide-react";
 import type { Paper } from "../types";
-import { api } from "../api";
+import type { Bookmarking } from "../lib/bookmarking";
 import { formatAuthors } from "../lib/format";
 import { openTitle, type PaperOpener } from "../lib/openPaper";
+import { BookmarkMenu } from "./BookmarkMenu";
+import { SkeletonBar } from "./Skeleton";
 
-const ABSTRACT_PREVIEW = 320;
-
-// Abstracts aren't in the papers list payload (they'd dominate its size), so
-// each card fetches its own by pmid. Cache per pmid so re-renders and re-scrolls
-// (the Timeline mounts/unmounts cards as you scroll) don't refetch.
-const abstractCache = new Map<string, string>();
-
-export function ArticleCard({ article, opener }: { article: Paper; opener: PaperOpener }) {
+export function ArticleCard({
+  article,
+  abstract,
+  opener,
+  bookmarking,
+  onError,
+  onNewFolder,
+}: {
+  article: Paper;
+  // Abstracts aren't in the papers list payload (they'd dominate its size), so
+  // the timeline fetches them for the whole rendered chunk at once and hands
+  // each card its own — undefined while that request is still out, "" for a
+  // paper with none stored.
+  abstract: string | undefined;
+  opener: PaperOpener;
+  // null where the workspace doesn't bookmark, or for a viewer who can't write.
+  bookmarking: Bookmarking | null;
+  onError: (message: string) => void;
+  // Naming a new folder belongs to the timeline, not the card: one prompt for
+  // the whole list instead of one behind every card's menu.
+  onNewFolder: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
-  // null = still loading; "" = loaded, no abstract available.
-  const [abstract, setAbstract] = useState<string | null>(
-    () => abstractCache.get(article.pmid) ?? null
-  );
+  // Whether the clamped text is actually hiding anything, and so whether to
+  // offer "Show more". Measured rather than inferred from a character count:
+  // how much text fits in three lines depends on the card's width, and a count
+  // that guessed wrong would either hide text with no way to reach it or offer
+  // to expand text that is already whole.
+  const [overflows, setOverflows] = useState(false);
+  const textRef = useRef<HTMLSpanElement>(null);
 
-  useEffect(() => {
-    const cached = abstractCache.get(article.pmid);
-    if (cached !== undefined) {
-      setAbstract(cached);
-      return;
-    }
-    setAbstract(null);
-    let active = true;
-    api
-      .getAbstract(article.pmid)
-      .then((r) => {
-        abstractCache.set(article.pmid, r.abstract);
-        if (active) setAbstract(r.abstract);
-      })
-      .catch(() => {
-        if (active) setAbstract(""); // treat a failed fetch as "no abstract"
-      });
-    return () => {
-      active = false;
-    };
-  }, [article.pmid]);
+  const loading = abstract === undefined;
 
-  const loading = abstract === null;
-  const longAbstract = !!abstract && abstract.length > ABSTRACT_PREVIEW;
-  const shown =
-    !abstract || expanded || !longAbstract
-      ? abstract ?? ""
-      : abstract.slice(0, ABSTRACT_PREVIEW).trimEnd() + "…";
+  // Re-measured on width changes too — narrowing the card can push text that
+  // fitted in three lines out of them, and "Show more" has to appear with it.
+  // Skipped while expanded (nothing is clamped then), which leaves the flag at
+  // the true it must have had to get there.
+  useLayoutEffect(() => {
+    const el = textRef.current;
+    if (!el || !abstract || expanded) return;
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [abstract, expanded]);
 
   return (
     <article className="card">
@@ -79,20 +85,35 @@ export function ArticleCard({ article, opener }: { article: Paper; opener: Paper
       {article.authors.length > 0 && (
         <p className="card-authors">{formatAuthors(article.authors, 4)}</p>
       )}
-      {loading ? (
-        <p className="card-abstract muted">Loading abstract…</p>
-      ) : abstract ? (
-        <div className="card-abstract">
-          <span className="abstract-text">{shown}</span>{" "}
-          {longAbstract && (
-            <button className="link-btn" onClick={() => setExpanded(!expanded)}>
-              {expanded ? "Show less" : "Show more"}
-            </button>
-          )}
-        </div>
-      ) : (
-        <p className="card-abstract muted">No abstract available.</p>
-      )}
+      {/* One block whichever state we're in, and it reserves the collapsed
+          height up front — the abstract arrives after the card is already on
+          screen, so a block that grew to fit it would shunt every card below
+          this one down the timeline as you read. */}
+      <div className="card-abstract">
+        {loading ? (
+          <div className="abstract-skeleton" aria-hidden="true">
+            <SkeletonBar w="100%" h={12} />
+            <SkeletonBar w="100%" h={12} />
+            <SkeletonBar w="58%" h={12} />
+          </div>
+        ) : abstract ? (
+          <>
+            <span
+              ref={textRef}
+              className={expanded ? "abstract-text" : "abstract-text clamped"}
+            >
+              {abstract}
+            </span>
+            {overflows && (
+              <button className="link-btn" onClick={() => setExpanded(!expanded)}>
+                {expanded ? "Show less" : "Show more"}
+              </button>
+            )}
+          </>
+        ) : (
+          <span className="abstract-empty">No abstract available.</span>
+        )}
+      </div>
       <div className="card-links">
         <a href={article.url} target="_blank" rel="noreferrer">
           PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
@@ -101,6 +122,18 @@ export function ArticleCard({ article, opener }: { article: Paper; opener: Paper
           <a href={`https://doi.org/${article.doi}`} target="_blank" rel="noreferrer">
             DOI <ExternalLink size={13} className="inline-icon" aria-hidden />
           </a>
+        )}
+        {/* Pushed to the far end of the row: it's the card's one action, and
+            grouping it with the links would read as a third destination. */}
+        {bookmarking && (
+          <span className="card-bookmark">
+            <BookmarkMenu
+              pmid={article.pmid}
+              bookmarking={bookmarking}
+              onError={onError}
+              onNewFolder={onNewFolder}
+            />
+          </span>
         )}
       </div>
     </article>

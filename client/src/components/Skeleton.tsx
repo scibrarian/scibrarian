@@ -111,7 +111,13 @@ export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
 // reflowing when real titles arrive. `share` adds the admin-only headerless
 // share-link column, and must match between skeleton and table for the same
 // reason.
-export function PapersColgroup({ share = false }: { share?: boolean }) {
+export function PapersColgroup({
+  share = false,
+  bookmark = false,
+}: {
+  share?: boolean;
+  bookmark?: boolean;
+}) {
   return (
     <colgroup>
       <col style={{ width: "36%" }} />
@@ -120,17 +126,26 @@ export function PapersColgroup({ share = false }: { share?: boolean }) {
       <col style={{ width: "8%" }} />
       <col style={{ width: "11%" }} />
       <col style={{ width: "15%" }} />
+      {bookmark && <col style={{ width: 40 }} />}
       {share && <col style={{ width: 40 }} />}
     </colgroup>
   );
 }
 
 // Mirrors the collection papers table: real headers, shimmering rows.
-export function PapersTableSkeleton({ rows = 5, share = false }: { rows?: number; share?: boolean }) {
+export function PapersTableSkeleton({
+  rows = 5,
+  share = false,
+  bookmark = false,
+}: {
+  rows?: number;
+  share?: boolean;
+  bookmark?: boolean;
+}) {
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
       <table className="papers-table">
-        <PapersColgroup share={share} />
+        <PapersColgroup share={share} bookmark={bookmark} />
         <thead>
           <tr>
             <th>Title</th>
@@ -139,6 +154,7 @@ export function PapersTableSkeleton({ rows = 5, share = false }: { rows?: number
             <th className="num">Year</th>
             <th className="num">Citations</th>
             <th>Links</th>
+            {bookmark && <th className="bookmark-col" />}
             {share && <th className="share-col" />}
           </tr>
         </thead>
@@ -163,6 +179,7 @@ export function PapersTableSkeleton({ rows = 5, share = false }: { rows?: number
               <td>
                 <SkeletonBar w={70} h={12} />
               </td>
+              {bookmark && <td className="bookmark-cell" />}
               {share && <td className="share-cell" />}
             </tr>
           ))}

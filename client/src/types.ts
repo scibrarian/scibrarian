@@ -2,6 +2,9 @@
 // unchanged; others are extended below with the extra fields the API attaches
 // to its responses.
 import type {
+  AbstractsResponse,
+  BookmarkEntry,
+  BookmarkFolder as BookmarkFolderRow,
   Collection as CollectionRow,
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
@@ -20,6 +23,8 @@ import type {
 } from "../../shared/types";
 
 export type {
+  AbstractsResponse,
+  BookmarkEntry,
   CollectionFileStatus,
   GraphEdge,
   GraphNode,
@@ -97,6 +102,10 @@ export interface AppSettings {
   share_urls: string[];
 }
 
+export interface BookmarkFolder extends BookmarkFolderRow {
+  paperCount: number;
+}
+
 export interface Collection extends CollectionRow {
   fileCount: number;
   matchedCount: number;
@@ -121,6 +130,7 @@ export interface ImportStartResponse {
   total: number; // pending files the job will scan
 }
 
-// Which paper set a view reads from: a Discover topic or a Library
-// collection. Every analysis module (table, timeline, graph) takes one.
-export type PaperSource = { topic: number } | { collection: number };
+// Which paper set a view reads from: an Interests topic, a Bookmarks folder, or
+// a Library collection. Every analysis module (table, timeline, graph) takes
+// one.
+export type PaperSource = { topic: number } | { folder: number } | { collection: number };

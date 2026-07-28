@@ -6,6 +6,7 @@ import { FileText, ExternalLink, X } from "lucide-react";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
+import type { Bookmarking } from "../lib/bookmarking";
 import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterByTitle, clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
@@ -18,12 +19,15 @@ import {
   type PathHit,
 } from "../lib/paths";
 import { Banner } from "./Banner";
+import { BookmarkMenu } from "./BookmarkMenu";
+import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
+import { SaveAllButton } from "./SaveAllButton";
 
 // How cluster colors are derived: by citation links (the collection's citation
 // structure) or by title similarity (what papers are about, so related-but-
 // uncited work groups together). See clusterByTitle for the v2 abstract upgrade.
-type GroupBy = "citation" | "topic";
+type GroupBy = "citation" | "content";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -80,8 +84,9 @@ const ESCAPE_OWNERS =
 // Cache the last successful graph fetch per source. Remounting the graph — e.g.
 // flipping the view toggle back to Graph — then paints from cache instead of
 // refetching and re-showing the "Loading citation data…" state. reloadToken is
-// bumped when the data actually changes ("Check for new papers", collection imports and
-// file edits), which invalidates the entry. Only the raw server response is
+// bumped when this source's data actually changes ("Check for new papers",
+// collection imports and file edits), which invalidates the entry — a change to
+// some other source leaves it alone. Only the raw server response is
 // cached; the settled node positions still recompute on remount (the layout
 // re-runs from scratch).
 const graphCache: FetchCache<GraphResponse> = new Map();
@@ -94,11 +99,17 @@ export function CitationGraph({
   libraryOpen,
   onAuthRefreshed,
   filters,
+  bookmarking,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   filters: PaperFilterState;
+  bookmarking: Bookmarking | null;
 }) {
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // The paper waiting on a new folder, if any (see NewFolderDialog).
+  const [namingFor, setNamingFor] = useState<string | null>(null);
   // The citation threshold is shared with the other views (instant: slider +
   // box); hide-unconnected is about edges, so it stays graph-local.
   const { minCitations } = filters;
@@ -213,7 +224,7 @@ export function CitationGraph({
   // the journal selection, or the grouping mode changes. Filtering here rather
   // than in graphData keeps it out of the simulation set, so narrowing never
   // restarts the layout. "citation" groups by who cites whom (uses the edges);
-  // "topic" groups by title similarity (ignores the edges).
+  // "content" groups by title similarity (ignores the edges).
   const clustering = useMemo<ClusteringResult>(() => {
     if (!data) return { byPmid: new Map(), clusters: [] };
     const active = graphData.nodes.filter(
@@ -227,7 +238,7 @@ export function CitationGraph({
       title: String(n.title ?? ""),
       citationCount: n.citationCount as number,
     }));
-    return groupBy === "topic" ? clusterByTitle(inputs) : clusterGraph(inputs, edges);
+    return groupBy === "content" ? clusterByTitle(inputs) : clusterGraph(inputs, edges);
   }, [data, edges, graphData, activeMin, deselected, yearFrom, yearTo, groupBy]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
@@ -286,18 +297,26 @@ export function CitationGraph({
     return found && found.nodes.size > 1 ? found : null;
   }, [settledHover, adjacency, isVisible]);
 
+  // The papers actually on the canvas: the filter row's set, minus hidden
+  // clusters and anything outside a pinned focus. The readout's node count and
+  // the bulk-save button's both come from this one list, so the number beside
+  // "Save …" is provably the number the readout is reporting — in this view
+  // "what's visible" is narrower than what the filters alone select.
+  const visiblePmids = useMemo(
+    () => [...clustering.byPmid.keys()].filter(isVisible),
+    [clustering, isVisible]
+  );
+
   // Counts for the readout (respect threshold, hidden clusters and any focus).
   const shown = useMemo(() => {
-    let nodes = 0;
-    for (const pmid of clustering.byPmid.keys()) if (isVisible(pmid)) nodes++;
     let links = 0;
     for (const e of edges) {
       if (!isVisible(e.source) || !isVisible(e.target)) continue;
       if (focusPaths && !focusPaths.links.has(linkKey(e.source, e.target))) continue;
       links++;
     }
-    return { nodes, links };
-  }, [clustering, edges, isVisible, focusPaths]);
+    return { nodes: visiblePmids.length, links };
+  }, [visiblePmids, edges, isVisible, focusPaths]);
 
   // Spread the cluster out so it reads as a network, not a hairball. Re-applied
   // when the simulation set changes (data or hide-unconnected), not on filtering.
@@ -456,6 +475,19 @@ export function CitationGraph({
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
+        action={
+          bookmarking && (
+            // visiblePmids, not the filter row's set: in this view clusters can
+            // be hidden and a focus pinned, and the button must mean the same
+            // thing as the "N of M papers" readout it sits beside.
+            <SaveAllButton
+              pmids={visiblePmids}
+              bookmarking={bookmarking}
+              onError={setActionError}
+              onDone={setNotice}
+            />
+          )
+        }
       >
         <div className="group-by">
           <span>Group by:</span>
@@ -470,7 +502,7 @@ export function CitationGraph({
             aria-label="Cluster grouping"
           >
             <ToggleGroup.Item value="citation">Citations</ToggleGroup.Item>
-            <ToggleGroup.Item value="topic">Topic</ToggleGroup.Item>
+            <ToggleGroup.Item value="content">Content</ToggleGroup.Item>
           </ToggleGroup.Root>
         </div>
         <label className="graph-check">
@@ -488,13 +520,21 @@ export function CitationGraph({
         )}
       </PaperFilters>
 
-      {(error ?? openError) && (
+      {(error ?? actionError ?? openError) && (
         <Banner
           kind="error"
-          message={(error ?? openError)!}
-          onDismiss={openError ? clearOpenError : undefined}
+          message={(error ?? actionError ?? openError)!}
+          onDismiss={
+            actionError || openError
+              ? () => {
+                  setActionError(null);
+                  clearOpenError();
+                }
+              : undefined
+          }
         />
       )}
+      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
 
       {/* Names the pinned state, so a sparse canvas is never a mystery, and
           carries the only obvious way out (Escape works too). Keyed on `focus`
@@ -749,11 +789,22 @@ export function CitationGraph({
                     : "No citation paths"}
                 </button>
                 {/* The title can now lead to the PDF, so PubMed gets its own
-                    link rather than being the only thing the modal opens. */}
+                    link rather than being the only thing the modal opens. The
+                    dialog is the graph's only per-paper surface — nodes are
+                    canvas-drawn dots with nowhere to hang an icon — so it's
+                    also where saving lives. */}
                 <p className="modal-links">
                   <a href={selected.url} target="_blank" rel="noreferrer">
                     PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
                   </a>
+                  {bookmarking && (
+                    <BookmarkMenu
+                      pmid={selected.pmid}
+                      bookmarking={bookmarking}
+                      onError={setActionError}
+                      onNewFolder={() => setNamingFor(selected.pmid)}
+                    />
+                  )}
                 </p>
               </Dialog.Content>
             </Dialog.Overlay>
@@ -768,6 +819,18 @@ export function CitationGraph({
         >
           {tip.text}
         </div>
+      )}
+
+      {/* Outside the paper dialog rather than inside it: the prompt outlives
+          nothing here, but stacking it as a sibling keeps the two dialogs'
+          focus handling independent. */}
+      {bookmarking && (
+        <NewFolderDialog
+          pmid={namingFor}
+          bookmarking={bookmarking}
+          onError={setActionError}
+          onClose={() => setNamingFor(null)}
+        />
       )}
     </div>
   );

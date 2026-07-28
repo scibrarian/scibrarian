@@ -1,6 +1,9 @@
 import type {
+  AbstractsResponse,
   AppSettings,
   AuthStatus,
+  BookmarkEntry,
+  BookmarkFolder,
   Collection,
   CollectionFile,
   CollectionFilesResponse,
@@ -71,7 +74,9 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 // The query param naming both source-driven endpoints share.
 function sourceQuery(source: PaperSource): string {
-  return "topic" in source ? `topic=${source.topic}` : `collection=${source.collection}`;
+  if ("topic" in source) return `topic=${source.topic}`;
+  if ("folder" in source) return `folder=${source.folder}`;
+  return `collection=${source.collection}`;
 }
 
 export const api = {
@@ -114,14 +119,41 @@ export const api = {
     return req<PapersResponse>(`/api/papers?${qs}`);
   },
 
-  // Abstracts are kept out of the papers list payload; the card fetches one lazily.
-  getAbstract: (pmid: string) => req<{ abstract: string }>(`/api/articles/${pmid}/abstract`),
+  // Abstracts are kept out of the papers list payload; the timeline fetches
+  // them lazily, one rendered chunk per request rather than one per card.
+  getAbstracts: (pmids: string[]) =>
+    req<AbstractsResponse>(`/api/abstracts?pmids=${pmids.join(",")}`),
 
   // Takes the same `q` as getPapers, resolved server-side by the same SQL.
   getGraph: (source: PaperSource, q?: string) => {
     const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
     return req<GraphResponse>(`/api/graph?${qs}`);
   },
+
+  getBookmarkFolders: () => req<BookmarkFolder[]>("/api/bookmark-folders"),
+  createBookmarkFolder: (name: string) =>
+    req<BookmarkFolder>("/api/bookmark-folders", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  renameBookmarkFolder: (id: number, name: string) =>
+    req<BookmarkFolder>(`/api/bookmark-folders/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
+  deleteBookmarkFolder: (id: number) =>
+    req<void>(`/api/bookmark-folders/${id}`, { method: "DELETE" }),
+  getBookmarks: () => req<BookmarkEntry[]>("/api/bookmarks"),
+  // One call for both the single-paper toggle and the bulk save — the bulk case
+  // is just a longer list. `alreadySaved` is what lets the bulk result say how
+  // many papers actually landed rather than overclaiming.
+  addBookmarks: (folderId: number, pmids: string[]) =>
+    req<{ added: number; alreadySaved: number; missing: number }>(
+      `/api/bookmark-folders/${folderId}/papers`,
+      { method: "POST", body: JSON.stringify({ pmids }) }
+    ),
+  removeBookmark: (folderId: number, pmid: string) =>
+    req<void>(`/api/bookmark-folders/${folderId}/papers/${pmid}`, { method: "DELETE" }),
 
   getCollections: () => req<Collection[]>("/api/collections"),
   createCollection: (name: string) =>

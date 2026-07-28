@@ -474,23 +474,55 @@ body {
   margin: 0 0 8px;
 }
 
+/* Collapsed abstracts are clamped to a number of LINES, not a number of
+   characters, and the block reserves exactly that height before the text
+   arrives. Reserved and rendered heights then match by construction at any card
+   width — a character cap couldn't promise that, since 320 characters is three
+   lines on a wide card and five on a narrow one. The reservation covers the
+   "Show more" line too, so the block is this tall whether the abstract is
+   loading, long, short, or missing. */
 .card-abstract {
+  --abstract-lines: 3;
   font-size: 14px;
+  line-height: 1.5;
   margin: 0 0 10px;
   color: #333a47;
+  /* The clamped lines plus one line for the toggle, counted in line-heights —
+     "Show more" is shorter than a line but occupies a whole line box, so
+     measuring its own height here would under-reserve by 6px per card. The 1.5
+     must track line-height above. */
+  min-height: calc((var(--abstract-lines) + 1) * 1.5em);
 }
 
+/* A -webkit-box in both states, so the toggle sits below the text either way
+   rather than jumping from inline to its own line on expand. */
 .abstract-text {
   white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
 }
 
-.card-abstract.muted {
+.abstract-text.clamped {
+  -webkit-line-clamp: var(--abstract-lines);
+  line-clamp: var(--abstract-lines);
+  overflow: hidden;
+}
+
+.abstract-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 3px;
+}
+
+.abstract-empty {
   color: var(--muted);
   font-style: italic;
 }
 
 .card-links {
   display: flex;
+  align-items: center;
   gap: 14px;
   font-size: 13px;
 }
@@ -1372,9 +1404,15 @@ code {
 
 .modal-links {
   display: flex;
+  align-items: center;
   gap: 14px;
   font-size: 13px;
   margin: 0;
+}
+
+/* Same placement as on a timeline card: the row's one action, at the far end. */
+.modal-links .bookmark-btn {
+  margin-left: auto;
 }
 
 .modal-links a {
@@ -1642,14 +1680,6 @@ code {
   margin-bottom: 16px;
 }
 
-/* Topic-scoped controls (last-polled + refresh) ride the right edge of the
-   workspace bar, beside the topic picker they act on. */
-.topic-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .workspace-nav {
   display: flex;
   align-items: center;
@@ -1823,25 +1853,208 @@ code {
   outline: none;
 }
 
-.collection-view {
+/* ---------- bookmark control ---------- */
+
+/* The per-paper save button. Outline = saved nowhere, filled + accent = saved,
+   which is what makes "have I kept this one?" answerable while scanning. */
+.bookmark-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.bookmark-btn:hover,
+.bookmark-btn[data-state="open"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.bookmark-btn.saved {
+  color: var(--accent);
+}
+
+.bookmark-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Narrower than the workspace picker's menu: it lists bare folder names, with
+   no counts or icons to leave room for. */
+.bookmark-menu {
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(16, 24, 40, 0.2);
+  padding: 4px;
+  z-index: 60;
+}
+
+.bookmark-option,
+.bookmark-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+.bookmark-option:hover,
+.bookmark-option[data-highlighted],
+.bookmark-add:hover,
+.bookmark-add[data-highlighted] {
+  background: var(--accent-soft);
+}
+
+/* Fixed-width gutter so names line up whether or not they're checked. */
+.bookmark-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.bookmark-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-add {
+  color: var(--accent);
+  font-weight: 600;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  margin-top: 4px;
+}
+
+.bookmark-empty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* The bulk save sits at the far end of the filter row, past the controls that
+   narrow — it acts on their result rather than being one of them. */
+.filter-action {
+  margin-left: auto;
+}
+
+.save-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.save-all-btn:hover:not(:disabled),
+.save-all-btn[data-state="open"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.save-all-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* The bulk menu lists folders with their current size, so you can see what
+   you're about to add to. */
+.bookmark-option .count {
+  margin-left: auto;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+}
+
+/* Table column: same narrow, headerless treatment as the share column. */
+.bookmark-col {
+  width: 40px;
+}
+
+.bookmark-cell {
+  text-align: center;
+}
+
+/* On a timeline card the save button sits at the far end of the links row. */
+.card-bookmark {
+  margin-left: auto;
+  display: inline-flex;
+}
+
+/* The shell wrapped around a source's papers, in every workspace and every
+   view. Its head is the one row for actions on the selected source — a topic's
+   refresh, a collection's uploads, a folder's rename — which is what puts the
+   filters and papers below at the same vertical position everywhere. */
+.source-view {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-.collection-head {
+.source-head {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  /* One row's height, held whether or not this workspace has actions and
+     whether or not the person looking may use them: the 15px line of a button's
+     text between the 9px of vertical padding above and below it. A viewer's
+     Bookmarks row is empty, and a topic's holds only a 13px "Updated …" line;
+     both must still occupy what Library's four buttons do, or the papers below
+     move when you switch workspace. Stated as one number rather than derived
+     from 1lh, which resolves against the body's line-height here (24px, since
+     .source-head holds no text of its own) and would overshoot the buttons by
+     9px. The first load's SkeletonBar reserves this row at the same 33 — the
+     two are a pair. */
+  min-height: 33px;
 }
 
-.collection-actions {
+.source-actions {
   display: flex;
   align-items: center;
   gap: 14px;
 }
 
+/* Every action is the same height: the text-only ones take the filled buttons'
+   vertical padding rather than hugging their text. Without this a row of only
+   text actions (Bookmarks) is 18px shorter than one that also has buttons
+   (Library), so switching workspaces shifts the papers underneath. Padding
+   rather than a fixed row height keeps the two in step if the type scale
+   changes. */
+.source-actions > button {
+  padding: 9px 0;
+}
+
 /* Both "add" buttons are primary actions; Rename/Delete opt out via .link-btn. */
-.collection-actions > button:not(.link-btn) {
+.source-actions > button:not(.link-btn) {
   background: var(--accent);
   color: #fff;
   border: none;

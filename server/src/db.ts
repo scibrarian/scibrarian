@@ -5,6 +5,8 @@ import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import type {
   Article,
+  BookmarkEntry,
+  BookmarkFolder,
   Collection,
   CollectionFile,
   Topic,
@@ -149,6 +151,38 @@ db.exec(`
     FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
   );
 
+  -- User-created folders of saved papers. A folder is a paper source in its own
+  -- right (papers/timeline/graph read it exactly like a topic), but it stores
+  -- nothing itself: membership is the bookmarks table below.
+  CREATE TABLE IF NOT EXISTS bookmark_folders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- One saved paper in one folder. Unlike collection_files this is a hard FK on
+  -- articles.pmid: a bookmark is only ever made from a paper already stored, so
+  -- a dangling row would be meaningless. Deleting a folder takes its bookmarks
+  -- with it; the articles themselves stay (they may be in a topic feed too).
+  -- Topic and journal removals deliberately never delete a bookmarked article —
+  -- see DELETABLE_TOPIC_ARTICLES / DELETABLE_JOURNAL_ARTICLES.
+  CREATE TABLE IF NOT EXISTS bookmarks (
+    folder_id INTEGER NOT NULL,
+    pmid TEXT NOT NULL,
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (folder_id, pmid),
+    FOREIGN KEY (folder_id) REFERENCES bookmark_folders(id) ON DELETE CASCADE,
+    FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
+  );
+
+  -- Two collections (or two bookmark folders) sharing a name are
+  -- indistinguishable in the picker, so names are unique case-insensitively
+  -- within each. An index rather than an inline UNIQUE because only an index
+  -- can carry the NOCASE collation.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name ON collections(name COLLATE NOCASE);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmark_folders_name ON bookmark_folders(name COLLATE NOCASE);
+
+  CREATE INDEX IF NOT EXISTS idx_bookmarks_pmid ON bookmarks(pmid);
   CREATE INDEX IF NOT EXISTS idx_collection_files_collection ON collection_files(collection_id);
   CREATE INDEX IF NOT EXISTS idx_collection_files_pmid ON collection_files(pmid);
   CREATE INDEX IF NOT EXISTS idx_collection_files_hash ON collection_files(content_hash);
@@ -254,7 +288,10 @@ export function createTopic(name: string, term: string): Topic {
 
 // Which of a topic's articles a removal would permanently delete: papers whose
 // only topic link is this one (papers under other topics keep those feeds) and
-// that aren't referenced by a collection file (library copies are kept). Like
+// that nothing the user has saved points at — a collection file (library
+// copies) or a bookmark. Saving a paper is what makes it the user's, so it
+// outlives the feed it was found in; a bookmark whose paper vanished would be
+// a silently empty row (the FK would cascade it away). Like
 // DELETABLE_JOURNAL_ARTICLES below, the confirm-dialog count and the
 // destructive DELETE share this fragment so they can't disagree. Binds the
 // topic id twice.
@@ -270,7 +307,8 @@ export function createTopic(name: string, term: string): Topic {
 // Narrowing is safe by default: stale links merely keep papers alive.
 const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
    AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
-   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`;
+   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)
+   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 // How many stored articles a topic removal would permanently delete (for the
 // confirmation).
@@ -282,11 +320,11 @@ export function countTopicArticles(id: number): number {
   ).c;
 }
 
-// Remove a topic: papers exclusive to it (and not saved in the library) are
-// permanently deleted; papers that also appear under other topics survive with
-// those links intact. Deleting a topic's articles is recoverable in principle —
-// re-adding the topic re-seeds from an all-time PubMed scan. article_topics
-// rows cascade via both foreign keys.
+// Remove a topic: papers exclusive to it (and neither bookmarked nor saved in
+// the library) are permanently deleted; papers that also appear under other
+// topics survive with those links intact. Deleting a topic's articles is
+// recoverable in principle — re-adding the topic re-seeds from an all-time
+// PubMed scan. article_topics rows cascade via both foreign keys.
 export const removeTopicWithArticles = transaction((id: number): TopicRemovalResult => {
   const deletedArticles = Number(
     db.prepare(`DELETE FROM articles WHERE ${DELETABLE_TOPIC_ARTICLES}`).run(id, id).changes
@@ -323,13 +361,15 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
 }
 
 // Which of a journal's articles a removal would permanently delete: the
-// journal's articles minus those referenced by a collection file (library
-// copies are kept). One WHERE fragment, bound to a single nlm_id param, shared
+// journal's articles minus anything the user has saved — a collection file
+// (library copies) or a bookmark, the same pinning rule the topic predicate
+// applies. One WHERE fragment, bound to a single nlm_id param, shared
 // by the confirm-dialog count and the destructive DELETE below — if the
 // pinning rule ever changes, both move together, so the dialog can't promise
 // one thing and the delete do another.
 const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
-   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)`;
+   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)
+   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 function journalNlmId(id: number): string | null {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
@@ -339,8 +379,8 @@ function journalNlmId(id: number): string | null {
 }
 
 // How many stored articles a journal removal would permanently delete (for the
-// confirmation). Articles referenced by a collection file are kept, so they
-// are excluded from the count.
+// confirmation). Bookmarked articles and those referenced by a collection file
+// are kept, so they are excluded from the count.
 export function countJournalArticles(id: number): number {
   const nlmId = journalNlmId(id);
   if (!nlmId) return 0;
@@ -352,9 +392,9 @@ export function countJournalArticles(id: number): number {
 }
 
 // Remove a journal (matched by NLM id): its articles leave every topic feed,
-// but articles referenced by a collection file survive so the user's library is
-// untouched. Unreferenced articles are permanently deleted (article_topics
-// rows cascade via the foreign key).
+// but bookmarked articles and those referenced by a collection file survive so
+// the user's saved papers are untouched. Unreferenced articles are permanently
+// deleted (article_topics rows cascade via the foreign key).
 export const removeJournalWithArticles = transaction((id: number): JournalRemovalResult => {
   const nlmId = journalNlmId(id);
   let deletedArticles = 0;
@@ -408,13 +448,14 @@ export function existingPmids(pmids: string[]): Set<string> {
   return new Set(rows.map((r) => r.pmid));
 }
 
-// The papers list omits abstracts (they dominate its size); the card view
-// fetches one on demand by pmid. Returns null for an unknown pmid.
-export function getArticleAbstract(pmid: string): string | null {
-  const row = db.prepare("SELECT abstract FROM articles WHERE pmid = ?").get(pmid) as
-    | { abstract: string }
-    | undefined;
-  return row?.abstract ?? null;
+// The papers list omits abstracts (they dominate its size); the timeline
+// fetches them on demand, a rendered chunk at a time rather than a card at a
+// time. Unknown pmids are simply absent from the result.
+export function getArticleAbstracts(pmids: string[]): { pmid: string; abstract: string }[] {
+  return queryByPmids<{ pmid: string; abstract: string }>(
+    pmids,
+    (ph) => `SELECT pmid, abstract FROM articles WHERE pmid IN (${ph})`
+  );
 }
 
 const upsertArticleStmt = db.prepare(`
@@ -471,8 +512,6 @@ export const saveArticles = transaction((articles: ArticleInsert[], topicId: num
 const JOURNAL_DISPLAY = "COALESCE(j.name, jc.med_abbr, a.journal_name)";
 const JOURNAL_LOOKUP = `LEFT JOIN journals j ON j.nlm_id = a.nlm_id
        LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id`;
-const ARTICLE_JOINS = `JOIN article_topics ad ON ad.pmid = a.pmid
-       ${JOURNAL_LOOKUP}`;
 
 // The free-text search condition, shared by the /papers and /graph queries so a
 // query means exactly the same thing in every view — a view that matched on a
@@ -502,31 +541,73 @@ export function topicArticleCounts(): Record<number, number> {
   return out;
 }
 
-// Distinct journal display names that have articles for a topic (filter chips).
-// Journal filter-chip names for either paper source. Routes dispatch through
-// this (and graphPapersForSource / listPapers) rather than picking per-source
-// functions themselves — a new source kind extends the union and these
-// dispatchers, and the compiler flags every spot that must learn about it.
-export function journalsForSource(source: PaperSourceQuery): string[] {
-  if ("topicId" in source) return journalsForTopic(source.topicId);
-  return journalsForCollection(source.collectionId);
+// Which paper set /api/papers reads: a topic's articles, a bookmark folder's
+// saved papers, or a collection's matched uploads. Mirrors the client's
+// PaperSource.
+export type PaperSourceQuery =
+  | { topicId: number }
+  | { folderId: number }
+  | { collectionId: number };
+
+// The join that narrows `articles a` down to one source's papers, plus the
+// params it binds. Every per-source query — the papers list, the journal chips,
+// the graph — is built on this single fragment, so the views can't disagree
+// about what a source contains, and a new source kind is added here instead of
+// in three near-identical queries. Routes dispatch through the exported
+// wrappers (journalsForSource / listPapers / graphPapersForSource) rather than
+// picking per-source functions themselves.
+function sourceMembership(source: PaperSourceQuery): {
+  join: string;
+  params: (string | number)[];
+} {
+  if ("topicId" in source) {
+    return {
+      join: "JOIN article_topics ad ON ad.pmid = a.pmid AND ad.topic_id = ?",
+      params: [source.topicId],
+    };
+  }
+  if ("folderId" in source) {
+    return {
+      join: "JOIN bookmarks bm ON bm.pmid = a.pmid AND bm.folder_id = ?",
+      params: [source.folderId],
+    };
+  }
+  // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
+  // and links the lowest-id 'matched' file for it, if any.
+  return {
+    join: `JOIN (SELECT DISTINCT pmid FROM collection_files
+              WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
+       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                  WHERE collection_id = ? AND match_status = 'matched'
+                  GROUP BY pmid) mf ON mf.pmid = a.pmid
+       LEFT JOIN collection_files cf ON cf.id = mf.file_id`,
+    params: [source.collectionId, source.collectionId],
+  };
 }
 
-function journalsForTopic(topicId: number): string[] {
+// The linked-PDF columns for a source. Only a collection has uploaded files
+// behind its papers; topics and bookmark folders select constant nulls so every
+// source hands back the same row shape.
+function sourceFileCols(source: PaperSourceQuery): string {
+  return "collectionId" in source
+    ? "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash"
+    : "NULL AS file_id, NULL AS file_name, NULL AS content_hash";
+}
+
+// Distinct journal display names present in a source (the filter chips).
+export function journalsForSource(source: PaperSourceQuery): string[] {
+  const { join, params } = sourceMembership(source);
   const rows = db
     .prepare(
-      `SELECT DISTINCT ${JOURNAL_DISPLAY} AS j FROM articles a
-       ${ARTICLE_JOINS}
-       WHERE ad.topic_id = ? AND ${JOURNAL_DISPLAY} <> ''
-       ORDER BY j ASC`
+      `SELECT DISTINCT ${JOURNAL_DISPLAY} AS jn FROM articles a
+       ${join}
+       ${JOURNAL_LOOKUP}
+       WHERE ${JOURNAL_DISPLAY} <> ''
+       ORDER BY jn ASC`
     )
-    .all(topicId) as { j: string }[];
-  return rows.map((r) => r.j);
+    .all(...params) as { jn: string }[];
+  return rows.map((r) => r.jn);
 }
-
-// Which paper set /api/papers reads: a topic's articles or a collection's
-// matched uploads. Mirrors the client's PaperSource.
-export type PaperSourceQuery = { topicId: number } | { collectionId: number };
 
 // Escape LIKE wildcards so a literal % or _ in a user query (e.g. "100%",
 // "COVID_19") matches itself instead of acting as a wildcard. Callers wrap the
@@ -536,7 +617,7 @@ function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-// The unified rows behind the table and timeline views, for either source:
+// The unified rows behind the table and timeline views, for any source:
 // article metadata, cached citation count, and — for collections — the first
 // matched uploaded file per pmid (the copy a title click opens; same rule as
 // the old per-client fileByPmid). content_hash is returned so the route can
@@ -545,23 +626,7 @@ export function listPapers(
   source: PaperSourceQuery,
   q?: string
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
-  const fromTopic = "topicId" in source;
-  const params: (string | number)[] = fromTopic
-    ? [source.topicId]
-    : [source.collectionId, source.collectionId];
-  // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
-  // and links the lowest-id 'matched' file for it, if any.
-  const membership = fromTopic
-    ? "JOIN article_topics ad ON ad.pmid = a.pmid AND ad.topic_id = ?"
-    : `JOIN (SELECT DISTINCT pmid FROM collection_files
-             WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
-       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                  WHERE collection_id = ? AND match_status = 'matched'
-                  GROUP BY pmid) mf ON mf.pmid = a.pmid
-       LEFT JOIN collection_files cf ON cf.id = mf.file_id`;
-  const fileCols = fromTopic
-    ? "NULL AS file_id, NULL AS file_name, NULL AS content_hash"
-    : "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash";
+  const { join, params } = sourceMembership(source);
   const predicate = searchPredicate(q, params);
   const search = predicate ? `WHERE ${predicate}` : "";
   const rows = db
@@ -569,11 +634,10 @@ export function listPapers(
       `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
               a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
               COALESCE(pc.citation_count, 0) AS citation_count,
-              ${fileCols}
+              ${sourceFileCols(source)}
        FROM articles a
-       ${membership}
-       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
-       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id
+       ${join}
+       ${JOURNAL_LOOKUP}
        LEFT JOIN paper_citations pc ON pc.pmid = a.pmid
        ${search}
        ORDER BY a.pub_date DESC, a.pmid DESC`
@@ -582,24 +646,6 @@ export function listPapers(
     Omit<Paper, "file_exists" | "authors"> & { authors: string; content_hash: string | null }
   >;
   return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
-}
-
-// Distinct journal display names present in a collection (filter chips) —
-// the collection-source counterpart of journalsForTopic.
-function journalsForCollection(collectionId: number): string[] {
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT ${JOURNAL_DISPLAY} AS jn
-       FROM (SELECT DISTINCT pmid FROM collection_files
-             WHERE collection_id = ? AND pmid IS NOT NULL) cp
-       JOIN articles a ON a.pmid = cp.pmid
-       LEFT JOIN journals j ON j.nlm_id = a.nlm_id
-       LEFT JOIN journal_catalog jc ON jc.nlm_id = a.nlm_id
-       WHERE ${JOURNAL_DISPLAY} <> ''
-       ORDER BY jn ASC`
-    )
-    .all(collectionId) as { jn: string }[];
-  return rows.map((r) => r.jn);
 }
 
 function safeParseAuthors(raw: string): string[] {
@@ -625,32 +671,26 @@ export interface GraphPaper {
   journal_name: string;
   pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
   // The linked PDF, mirroring listPapers so a graph node and its table row
-  // agree on which file a click opens. Null for topic papers, which have none.
+  // agree on which file a click opens. Null for topic and bookmark papers,
+  // which have none.
   file_id: number | null;
   file_name: string | null;
   content_hash: string | null; // routes resolves this to file_exists
 }
 
-// The papers that make up a source's graph — the per-source dispatch lives
-// here, not in routes (see journalsForSource).
+// The papers that make up a source's graph — same membership and same linked
+// file as listPapers, so a node opens the PDF its table row does.
 export function graphPapersForSource(source: PaperSourceQuery, q?: string): GraphPaper[] {
-  if ("topicId" in source) return graphPapers(source.topicId, q);
-  return collectionGraphPapers(source.collectionId, q);
-}
-
-// The papers that make up one topic's graph (green nodes). Topic papers are
-// never backed by an upload, so the file columns are constant nulls.
-function graphPapers(topicId: number, q?: string): GraphPaper[] {
-  const params: (string | number)[] = [topicId];
+  const { join, params } = sourceMembership(source);
   const predicate = searchPredicate(q, params);
   return db
     .prepare(
       `SELECT a.pmid, a.title, a.url, a.pub_date, ${JOURNAL_DISPLAY} AS journal_name,
-              NULL AS file_id, NULL AS file_name, NULL AS content_hash
+              ${sourceFileCols(source)}
        FROM articles a
-       JOIN article_topics ad ON ad.pmid = a.pmid
+       ${join}
        ${JOURNAL_LOOKUP}
-       WHERE ad.topic_id = ?${predicate ? ` AND ${predicate}` : ""}`
+       ${predicate ? `WHERE ${predicate}` : ""}`
     )
     .all(...params) as unknown as GraphPaper[];
 }
@@ -713,6 +753,86 @@ function safeParseRefs(raw: string): string[] {
   }
 }
 
+// ---------- bookmarks (papers saved out of Interests, grouped into folders) ----------
+
+const FOLDER_SELECT = "SELECT id, name, created_at FROM bookmark_folders";
+
+export function listBookmarkFolders(): BookmarkFolder[] {
+  return db.prepare(`${FOLDER_SELECT} ORDER BY id ASC`).all() as unknown as BookmarkFolder[];
+}
+
+export function getBookmarkFolder(id: number): BookmarkFolder | undefined {
+  return db.prepare(`${FOLDER_SELECT} WHERE id = ?`).get(id) as BookmarkFolder | undefined;
+}
+
+// Used to reject a create/rename that would duplicate a name. NOCASE matches
+// the unique index, so this finds exactly what the index would refuse.
+export function bookmarkFolderByName(name: string): BookmarkFolder | undefined {
+  return db.prepare(`${FOLDER_SELECT} WHERE name = ? COLLATE NOCASE`).get(name) as
+    | BookmarkFolder
+    | undefined;
+}
+
+export function createBookmarkFolder(name: string): BookmarkFolder {
+  const info = db.prepare("INSERT INTO bookmark_folders (name) VALUES (?)").run(name);
+  return getBookmarkFolder(Number(info.lastInsertRowid))!;
+}
+
+export function renameBookmarkFolder(id: number, name: string): void {
+  db.prepare("UPDATE bookmark_folders SET name = ? WHERE id = ?").run(name, id);
+}
+
+// Delete a folder and, by cascade, its bookmark rows. The papers themselves are
+// untouched — they're shared cache, still reachable from any topic feed or
+// collection that has them. Nothing else to clean up: unlike a collection, a
+// folder owns no blobs.
+export function deleteBookmarkFolder(id: number): void {
+  db.prepare("DELETE FROM bookmark_folders WHERE id = ?").run(id);
+}
+
+// Every (folder, paper) pair, for the client's saved-state map.
+export function listBookmarks(): BookmarkEntry[] {
+  return db
+    .prepare("SELECT folder_id, pmid FROM bookmarks ORDER BY folder_id ASC, pmid ASC")
+    .all() as unknown as BookmarkEntry[];
+}
+
+const insertBookmarkStmt = db.prepare(
+  "INSERT OR IGNORE INTO bookmarks (folder_id, pmid) VALUES (?, ?)"
+);
+
+// Save papers into a folder, atomically. Saving one that's already there is a
+// no-op rather than an error — the primary key already says a paper is in a
+// folder once, so a double-click, or a bulk save overlapping an earlier one, is
+// harmless. Returns how many rows were actually new, so the caller can report
+// what changed rather than claiming it saved papers it didn't.
+//
+// One function for both the single-paper toggle and the bulk save: a bulk save
+// of a filtered set is thousands of these, and a per-row transaction each would
+// be thousands of fsyncs.
+export const addBookmarks = transaction((folderId: number, pmids: string[]): number => {
+  let added = 0;
+  for (const pmid of pmids) added += Number(insertBookmarkStmt.run(folderId, pmid).changes);
+  return added;
+});
+
+// Un-saving something that isn't saved is likewise a no-op, so the toggle can
+// be driven from a possibly-stale client view without erroring.
+export function removeBookmark(folderId: number, pmid: string): void {
+  db.prepare("DELETE FROM bookmarks WHERE folder_id = ? AND pmid = ?").run(folderId, pmid);
+}
+
+// Saved papers per folder, for the picker's count badges. Folders with no
+// bookmarks are absent, so callers default to 0 (as collectionCounts does).
+export function bookmarkCounts(): Record<number, number> {
+  const rows = db
+    .prepare("SELECT folder_id, COUNT(*) AS c FROM bookmarks GROUP BY folder_id")
+    .all() as { folder_id: number; c: number }[];
+  const out: Record<number, number> = {};
+  for (const r of rows) out[r.folder_id] = r.c;
+  return out;
+}
+
 // ---------- collections (local PDF libraries) ----------
 
 export function listCollections(): Collection[] {
@@ -725,6 +845,13 @@ export function getCollection(id: number): Collection | undefined {
   return db
     .prepare("SELECT id, name, created_at FROM collections WHERE id = ?")
     .get(id) as Collection | undefined;
+}
+
+// The collection-side counterpart of bookmarkFolderByName.
+export function collectionByName(name: string): Collection | undefined {
+  return db
+    .prepare("SELECT id, name, created_at FROM collections WHERE name = ? COLLATE NOCASE")
+    .get(name) as Collection | undefined;
 }
 
 export function createCollection(name: string): Collection {
@@ -858,33 +985,6 @@ export function deleteCollectionFile(fileId: number): void {
 export const upsertArticles = transaction((articles: ArticleInsert[]) => {
   for (const a of articles) upsertArticle(a);
 });
-
-// The papers-list rows for a collection. DISTINCT pmid collapses duplicate
-// copies of the same paper (two files, one PMID) into a single row.
-// The papers that make up one collection's citation graph (same shape as
-// graphPapers, so the /graph route works on either source). Membership is one
-// row per distinct matched pmid; the linked file is the lowest-id 'matched'
-// one, resolved exactly as listPapers does so a node opens the same PDF its
-// table row does.
-function collectionGraphPapers(collectionId: number, q?: string): GraphPaper[] {
-  const params: (string | number)[] = [collectionId, collectionId];
-  const predicate = searchPredicate(q, params);
-  return db
-    .prepare(
-      `SELECT a.pmid, a.title, a.url, a.pub_date, ${JOURNAL_DISPLAY} AS journal_name,
-              cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash
-       FROM articles a
-       JOIN (SELECT DISTINCT pmid FROM collection_files
-             WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
-       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                  WHERE collection_id = ? AND match_status = 'matched'
-                  GROUP BY pmid) mf ON mf.pmid = a.pmid
-       LEFT JOIN collection_files cf ON cf.id = mf.file_id
-       ${JOURNAL_LOOKUP}
-       ${predicate ? `WHERE ${predicate}` : ""}`
-    )
-    .all(...params) as unknown as GraphPaper[];
-}
 
 // ---------- journal catalog (NLM J_Medline) ----------
 

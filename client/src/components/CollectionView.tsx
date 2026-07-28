@@ -39,8 +39,9 @@ const folderInputProps = { webkitdirectory: "" } as InputHTMLAttributes<HTMLInpu
 
 // Cache the last file listing per collection, same pattern as papersCache:
 // re-entering Library paints from cache instead of refetching. Every mutation
-// (upload, import, match, delete) reports through onChanged, which bumps
-// reloadToken and thereby invalidates this cache along with the modules'.
+// (upload, import, match, delete) reports through onChanged, which bumps this
+// collection's reload token and thereby invalidates this cache along with the
+// modules'.
 const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 
 // The collection management shell: upload/import/rename/delete chrome and the
@@ -51,6 +52,7 @@ export function CollectionView({
   collectionId,
   isAdmin,
   reloadToken,
+  showUnmatched = true,
   onChanged,
   onDeleted,
   children,
@@ -58,6 +60,10 @@ export function CollectionView({
   collectionId: number;
   isAdmin: boolean;
   reloadToken: number;
+  // The unmatched-files section is the one piece of chrome that doesn't suit
+  // every view — a long list under a full-height graph. The action row and
+  // import progress are not gated: they belong wherever the collection is.
+  showUnmatched?: boolean;
   onChanged: () => void;
   onDeleted: () => void;
   children: ReactNode;
@@ -240,12 +246,14 @@ export function CollectionView({
   const progressPct = job && job.total ? Math.round((job.processed / job.total) * 100) : 0;
 
   return (
-    <div className="collection-view">
-      {/* Management chrome is admin-only; viewers just see the papers module
-          (and, below, live progress of any admin-triggered import). */}
-      {isAdmin && (
-        <div className="collection-head">
-          <div className="collection-actions">
+    <div className="source-view">
+      {/* The row is always here, because the papers below it start at one
+          height in every workspace; the management chrome inside it is
+          admin-only, so viewers just see the papers module (and, below, live
+          progress of any admin-triggered import). */}
+      <div className="source-head">
+        {isAdmin && (
+          <div className="source-actions">
             <button onClick={() => filesInputRef.current?.click()}>
               <FilePlus size={14} className="inline-icon" aria-hidden /> Add files
             </button>
@@ -280,8 +288,8 @@ export function CollectionView({
               {...folderInputProps}
             />
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {(error ?? filesError) && (
         <Banner kind="error" message={error ?? filesError!} onDismiss={() => setError(null)} />
@@ -304,7 +312,7 @@ export function CollectionView({
 
       {children}
 
-      {isAdmin && unresolved.length > 0 && (
+      {isAdmin && showUnmatched && unresolved.length > 0 && (
         <UnresolvedFiles files={unresolved} onChanged={onChanged} onError={setError} />
       )}
 

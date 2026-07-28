@@ -36,6 +36,25 @@ export interface Article {
   first_seen_at: string;
 }
 
+// A user-created bookmark folder: the Bookmarks workspace's counterpart to a
+// topic or a collection. Holds papers saved out of Interests (membership lives
+// in the bookmarks table), so unlike a collection it has no files behind it.
+export interface BookmarkFolder {
+  id: number;
+  name: string;
+  created_at: string;
+}
+
+// One saved paper, as GET /api/bookmarks returns it. The client holds the whole
+// set in memory rather than having /papers and /graph carry a per-row flag:
+// bookmarks are a hand-curated list, orders of magnitude smaller than the
+// article table, and one shared map keeps every view's icons in agreement
+// without refetching a 2,000-row payload after each toggle.
+export interface BookmarkEntry {
+  folder_id: number;
+  pmid: string;
+}
+
 export interface Collection {
   id: number;
   name: string;
@@ -81,7 +100,7 @@ export type ImportStatus = ImportJob | { state: "idle" };
 // first matched uploaded copy and are only populated for collection sources —
 // null for topics, which have no files. The abstract is deliberately NOT here:
 // it dominates the payload size, so the card view fetches it on demand by pmid
-// (GET /api/articles/:pmid/abstract). Free-text search still covers abstracts —
+// (GET /api/abstracts, a chunk at a time). Free-text search still covers abstracts —
 // that runs against the DB column server-side.
 export interface Paper {
   pmid: string;
@@ -101,6 +120,12 @@ export interface Paper {
 export interface PapersResponse {
   papers: Paper[];
   journals: string[]; // distinct journal display names, for the filter chips
+}
+
+// Abstracts for a batch of papers, keyed by pmid. A requested pmid that isn't
+// stored is absent rather than empty, so the caller can tell the two apart.
+export interface AbstractsResponse {
+  abstracts: Record<string, string>;
 }
 
 // A minted expiring download link for one stored PDF. `path` is relative so
