@@ -15,6 +15,26 @@ interface PickerItem {
   count: number;
 }
 
+// How each workspace is named and drawn, and the only place that decides it:
+// the mode switch renders all three, the picker trigger looks up the active
+// one, and App's empty states name workspaces in prose. Separate literals would
+// let them drift onto different icons for the same workspace.
+//
+// Keyed by Mode rather than a list of them so adding a fourth workspace without
+// describing it here is a type error instead of an undefined at render. Module
+// scope because it never varies — this component re-renders on every id, banner
+// and refresh change, and rebuilding a constant each time is waste.
+export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
+  interests: { label: "Interests", icon: Search },
+  bookmarks: { label: "Bookmarks", icon: Bookmark },
+  papers: { label: "Library", icon: Library },
+};
+
+// Nav order, which is the literal's own: Object.entries preserves insertion
+// order for string keys, so the switch stays in step with MODES for free rather
+// than repeating the three names in a second list that could fall behind.
+const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
+
 // Two-part navigation: an Interests / Bookmarks / Library mode switch, plus a
 // dropdown that picks the active topic (MeSH search), bookmark folder, or
 // collection within that mode. The dropdown replaces per-item tabs so a long
@@ -109,21 +129,22 @@ export function WorkspaceNav({
 
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
   const label = active?.name ?? picker.placeholder;
-
-  const modes: { value: Mode; label: string; icon: typeof Search }[] = [
-    { value: "interests", label: "Interests", icon: Search },
-    { value: "bookmarks", label: "Bookmarks", icon: Bookmark },
-    { value: "papers", label: "Library", icon: Library },
-  ];
+  const activeMode = MODES[mode];
+  const ModeIcon = activeMode.icon;
 
   return (
     <nav className="workspace-nav">
       <div className="mode-switch" role="group" aria-label="Workspace">
-        {modes.map((m) => (
+        {/* aria-pressed, not just the class: which workspace you're in is state,
+            and drawn on its own it reaches only the people who can see the fill.
+            Same condition as the class so the two can't disagree — under
+            Settings none of them is pressed, because none of them is current. */}
+        {MODE_ORDER.map(([value, m]) => (
           <button
-            key={m.value}
-            className={mode === m.value && !settingsActive ? "active" : ""}
-            onClick={() => onModeChange(m.value)}
+            key={value}
+            className={mode === value && !settingsActive ? "active" : ""}
+            aria-pressed={mode === value && !settingsActive}
+            onClick={() => onModeChange(value)}
           >
             <m.icon size={16} aria-hidden /> {m.label}
           </button>
@@ -136,11 +157,25 @@ export function WorkspaceNav({
             flashing the "No topics yet" empty state. */}
         {!loaded ? (
           <div className="ws-trigger ws-trigger-loading" aria-hidden="true">
+            {/* Stands in for the mode icon. Without it the trigger gains the
+                icon's 16px and the row's 8px gap on the handoff, widening
+                itself and shoving the share button along beside it. */}
+            <SkeletonBar w={16} h={16} />
             <SkeletonBar w={128} h={14} />
           </div>
         ) : (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger className="ws-trigger">
+              {/* Which workspace this name belongs to. A topic, a bookmark
+                  folder and a collection can all be called "Cardiac Imaging",
+                  and the trigger is the part of the nav that changes — without
+                  the icon the three render identically. The label carries the
+                  same thing for a screen reader, which gets nothing from the
+                  icon: the trigger's name reads "Interests, Cardiac Imaging,
+                  240", so it stands apart from its namesakes when read on its
+                  own, away from the pressed button in the switch. */}
+              <ModeIcon size={16} className="ws-mode-icon" aria-hidden />
+              <span className="sr-only">{activeMode.label}</span>
               <span className="ws-current">{label}</span>
               {active && <span className="count">{active.count}</span>}
               <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>

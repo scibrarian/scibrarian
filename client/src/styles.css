@@ -34,13 +34,33 @@ body {
   padding: 0 20px 60px;
 }
 
+/* Read out but not drawn — for naming something the sighted reading takes from
+   an icon or from position. Clipped to a 1px box rather than display: none or
+   visibility: hidden, which would drop it from the accessibility tree too and
+   leave nothing to announce. Absolute so it adds no width and, inside a flex
+   row, no gap. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---------- header ---------- */
 
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 0 14px;
+  /* The 14px that used to sit here moved into .workspace-bar's padding-top, so
+     the bar has breathing room above its controls once it's stuck to the
+     viewport edge. The gap between the two is unchanged: 2 + 12. */
+  padding: 20px 0 2px;
 }
 
 .brand {
@@ -1028,11 +1048,22 @@ code {
   color: var(--muted);
 }
 
+/* 70vh where there's room, but never tall enough that the page scrolls far
+   enough to slide the canvas under .workspace-bar, which paints the top 80px of
+   the viewport and would leave those nodes both invisible and unclickable —
+   it's above the canvas, so it takes the drag too. Everything above the canvas
+   cancels out of that: the page scrolls exactly as much as they push it down,
+   leaving `viewport - height - 60px of .app padding` as the canvas's distance
+   from the top. The bar paints 75px of that (59px tall, plus the 16px gap its
+   shadow covers), so the ceiling is 100vh - 140px and lands 5px clear.
+   Capping the height, not a min-height floor. The floor isn't what binds on a
+   short viewport — 70vh is, and it goes on overshooting after the floor stops
+   applying — and min-height would beat max-height anyway. Below ~467px the
+   graph shrinks rather than holding a fixed size and hiding its own top edge. */
 .graph-body {
   display: flex;
   gap: 14px;
-  height: 70vh;
-  min-height: 420px;
+  height: min(70vh, calc(100vh - 140px));
 }
 
 .graph-canvas {
@@ -1669,15 +1700,40 @@ code {
   background: var(--accent-soft);
 }
 
+/* Anything the browser scrolls to of its own accord — a tabbed-to control below
+   the fold, scrollIntoView — is otherwise parked flush against the viewport top,
+   which is where .workspace-bar sits, so it lands underneath the bar and its
+   focus ring is invisible. Hold those landings clear of it: the bar measures
+   59px and its gap to the content another 16px, so 80px clears both. */
+html {
+  scroll-padding-top: 80px;
+}
+
+/* Pinned to the top of the viewport: which workspace you're in is exactly what
+   you lose track of while scrolling a few hundred papers, and Interests and
+   Bookmarks render the same table, so the nav is the only thing telling them
+   apart. It has to carry a background of its own, since the rows scroll
+   underneath it. High enough to clear anything positioned that scrolls past,
+   and below the dropdowns and modals (30+). */
 .workspace-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 12px;
+  padding: 12px 0;
   margin-bottom: 16px;
+  /* The background stops at the border, so the 16px margin below it is bare —
+     rows scrolling past show through that strip before they reach the bar and
+     disappear. Paint the strip too: an unblurred shadow, offset by exactly the
+     margin and in the same colour, is the background box extended 16px down
+     without moving the border off the controls. */
+  box-shadow: 0 16px 0 var(--bg);
 }
 
 .workspace-nav {
@@ -1748,6 +1804,13 @@ code {
 
 .ws-trigger-loading:hover {
   border-color: var(--border);
+}
+
+/* Muted so it names the workspace without competing with the entry's own name.
+   Nothing here about shrinking: the trigger is capped at 320px and the name
+   ellipsizes into what's left, but .lucide already carries flex: none. */
+.ws-trigger .ws-mode-icon {
+  color: var(--muted);
 }
 
 .ws-current {
@@ -2112,6 +2175,19 @@ code {
   overflow-wrap: break-word;
 }
 
+/* `top` must stay 0 — it is not the knob for clearing the sticky workspace bar.
+   .papers-table-wrap above is overflow-x: auto, which makes it a scroll
+   container on both axes, so this sticks to *its* scrollport rather than the
+   viewport. That scrollport has no height of its own, so it never scrolls and
+   the header never actually pins; it leaves with the page like any other row.
+   A non-zero `top` doesn't change that — it just displaces the header downward
+   by that much, since sticky holds an element at least `top` away from its
+   scrollport's edge and here the two start out flush. The header ends up
+   sitting on the first rows. Clearing the nav would mean giving the wrap a real
+   scrollport, not an offset here.
+   No z-index for the same reason: never pinning, it never overlaps the rows,
+   and it passes under the workspace bar on the way out however it's stacked,
+   since the bar's 20 beats an auto-positioned element either way. */
 .papers-table thead th {
   position: sticky;
   top: 0;

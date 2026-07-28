@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
 import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
 import { sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
-import { WorkspaceNav, type Mode } from "./components/WorkspaceNav";
+import { WorkspaceNav, MODES, type Mode } from "./components/WorkspaceNav";
 import { PaperViews } from "./components/PaperViews";
 import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
@@ -14,7 +14,13 @@ import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
-import { Dna, Settings as SettingsIcon, Lock, LockOpen, Library, FilePlus, FolderPlus, Plus } from "lucide-react";
+import { Dna, Settings as SettingsIcon, Lock, LockOpen, FilePlus, FolderPlus, Plus } from "lucide-react";
+
+// The prose below points at the Library workspace by name and glyph, so it
+// takes both from the nav's MODES rather than picking an icon of its own that
+// could drift from the one the mode switch draws. Aliased because JSX needs a
+// capitalized binding to treat it as a component.
+const LibraryIcon = MODES.papers.icon;
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -353,9 +359,53 @@ export default function App() {
       ? activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
   const showViewControls = !showSettings && source != null;
+  const sourceId = source ? sourceKey(source) : null;
   // The token every cached fetch under this source is stamped with; a bump to
   // any other source leaves it alone, so the views keep painting from cache.
-  const reloadToken = source ? tokenFor(reloads, sourceKey(source)) : 0;
+  const reloadToken = sourceId ? tokenFor(reloads, sourceId) : 0;
+
+  // A new source starts at the top, the same rule its filters follow (see
+  // usePaperFilters). Nothing carries the offset over deliberately — scroll
+  // belongs to the document, not to the view, so it simply outlives the swap
+  // underneath it. That leaves it pointing at rows the new view hasn't
+  // rendered, since both views re-paginate from their first chunk on every
+  // switch; the browser then clamps it to the new list's height, so where you
+  // land is decided by how long the *previous* list happened to be.
+  //
+  // Keyed on the source rather than the mode so picking another topic within
+  // Interests resets too — same carried-over offset, same non-reason — and on
+  // showSettings, which swaps the list for a page of a completely different
+  // height while the source underneath it stays put. The gear can't reach that
+  // state from a scrolled page (it rides in the non-sticky header, so you're
+  // back at the top by the time you click it), but the picker's "Add topic…"
+  // row can: it sits in the sticky bar, clickable however deep you've scrolled.
+  //
+  // Not keyed on reloadToken. That bumps on in-place data changes too — see
+  // removeBookmark, which invalidates the very folder you're reading — and
+  // yanking the page to the top mid-read is worse than the offset it'd fix.
+  //
+  // Only *swaps* reset, never the first view we settle on: reloading a scrolled
+  // page has the browser restore that offset, and a scroll to top on arrival
+  // would throw it away. Arriving is two renders — sourceId is null until the
+  // sources load, then becomes the active one — so it can't be recognised by
+  // mount alone; record the first view seen and reset only once it changes.
+  // Comparing keys rather than counting runs also absorbs StrictMode's
+  // double-invoke, which repeats the effect with the deps untouched.
+  //
+  // Before paint, not after: the new view is already committed and the browser
+  // has already clamped the carried-over offset to it, so a passive effect
+  // would show one frame of the wrong place before the jump — a shorter version
+  // of the glitch this exists to remove.
+  const lastView = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    // Nothing to land on yet: no source, and not the standalone Settings page.
+    if (sourceId == null && !showSettings) return;
+    const view = `${sourceId}|${showSettings}|${viewMode}`;
+    if (lastView.current === view) return;
+    const arriving = lastView.current == null;
+    lastView.current = view;
+    if (!arriving) window.scrollTo(0, 0);
+  }, [sourceId, showSettings, viewMode]);
 
   // The truly-empty message differs by source: topics fill from PubMed,
   // collections fill from uploads, folders from papers the user saves. Viewers
@@ -392,8 +442,8 @@ export default function App() {
       No topics yet. Open{" "}
       <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong> to add
       a journal and a MeSH topic to watch, or switch to{" "}
-      <strong><Library size={14} className="inline-icon" aria-hidden /> Library</strong> to import
-      your own PDFs.
+      <strong><LibraryIcon size={14} className="inline-icon" aria-hidden /> {MODES.papers.label}</strong>{" "}
+      to import your own PDFs.
     </>
   ) : inLibrary ? (
     <>

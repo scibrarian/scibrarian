@@ -26,7 +26,7 @@ export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolea
           <input
             className="search"
             type="search"
-            placeholder="Search titles & abstracts…"
+            placeholder="Search titles, abstracts & authors…"
             readOnly
             aria-hidden="true"
             tabIndex={-1}
