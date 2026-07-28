@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
 import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from "./types";
@@ -391,8 +391,13 @@ export default function App() {
   // mount alone; record the first view seen and reset only once it changes.
   // Comparing keys rather than counting runs also absorbs StrictMode's
   // double-invoke, which repeats the effect with the deps untouched.
+  //
+  // Before paint, not after: the new view is already committed and the browser
+  // has already clamped the carried-over offset to it, so a passive effect
+  // would show one frame of the wrong place before the jump — a shorter version
+  // of the glitch this exists to remove.
   const lastView = useRef<string | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Nothing to land on yet: no source, and not the standalone Settings page.
     if (sourceId == null && !showSettings) return;
     const view = `${sourceId}|${showSettings}|${viewMode}`;

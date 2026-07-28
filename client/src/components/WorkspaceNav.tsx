@@ -157,6 +157,10 @@ export function WorkspaceNav({
             flashing the "No topics yet" empty state. */}
         {!loaded ? (
           <div className="ws-trigger ws-trigger-loading" aria-hidden="true">
+            {/* Stands in for the mode icon. Without it the trigger gains the
+                icon's 16px and the row's 8px gap on the handoff, widening
+                itself and shoving the share button along beside it. */}
+            <SkeletonBar w={16} h={16} />
             <SkeletonBar w={128} h={14} />
           </div>
         ) : (
