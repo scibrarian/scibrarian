@@ -39,6 +39,20 @@ describe("rankCandidates", () => {
     expect(rankCandidates(cands, 3).map((c) => c.row.nlm_id)).toEqual(["2", "1", "4"]);
   });
 
+  it("subtracts excluded journals after the cut instead of backfilling", () => {
+    const cands = [
+      { row: row("1", "Elite Journal", 40.2), count: 12 },
+      { row: row("2", "Strong Journal", 10.0), count: 30 },
+      { row: row("3", "Runner Up", 5.0), count: 40 },
+      { row: row("4", "Also Ran", 4.0), count: 50 },
+    ];
+    // Top 2 are both already held: the topic contributes nothing, rather than
+    // promoting #3 and #4 into the freed slots.
+    expect(rankCandidates(cands, 2, new Set(["1", "2"]))).toEqual([]);
+    // Partial overlap leaves only the un-held member of the top 2.
+    expect(rankCandidates(cands, 2, new Set(["1"])).map((c) => c.row.nlm_id)).toEqual(["2"]);
+  });
+
   it("does not mutate the input order", () => {
     const cands = [
       { row: row("1", "A", 1), count: 1 },

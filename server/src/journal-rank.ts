@@ -34,7 +34,16 @@ export function topByCount(nlmIds: string[], limit: number): { nlmId: string; co
 // Impact ranking of a topic's candidate pool: metric desc with unknown metrics
 // sinking (mirrors /journals/search), sample volume breaking ties. Without this
 // cut, raw volume would put mega-journals on top of every topic.
-export function rankCandidates(cands: Candidate[], limit: number): Candidate[] {
+//
+// `exclude` (journals the user already has) is applied *after* the cut, so a
+// topic's top `limit` never shifts: once its picks are added, pressing Auto
+// again contributes nothing for that topic instead of backfilling with the
+// next `limit` journals down the list.
+export function rankCandidates(
+  cands: Candidate[],
+  limit: number,
+  exclude?: ReadonlySet<string>
+): Candidate[] {
   return [...cands]
     .sort(
       (a, b) =>
@@ -42,7 +51,8 @@ export function rankCandidates(cands: Candidate[], limit: number): Candidate[] {
         b.count - a.count ||
         a.row.title.localeCompare(b.row.title)
     )
-    .slice(0, limit);
+    .slice(0, limit)
+    .filter((c) => !exclude?.has(c.row.nlm_id));
 }
 
 // Union the per-topic picks, accumulating which topics wanted each journal.

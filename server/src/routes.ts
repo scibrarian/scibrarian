@@ -273,8 +273,10 @@ api.get(
 // "Auto" suggestions: for each of the user's topics, sample its most recent
 // PubMed papers, rank the journals publishing them, and return the
 // highest-impact per-topic picks not already in the list (journal-suggest.ts).
-// `per_topic` caps how many journals each topic contributes. Suggestions are
-// only staged client-side — adding still goes through POST /journals.
+// `per_topic` is each topic's top-N cut, taken before already-added journals
+// are subtracted — so a topic already covered contributes nothing on a re-run.
+// Suggestions are only staged client-side — adding still goes through
+// POST /journals.
 api.get(
   "/journals/suggest",
   asyncHandler(async (req, res) => {
