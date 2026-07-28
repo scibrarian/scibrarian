@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
 import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from "./types";
@@ -367,10 +367,34 @@ export default function App() {
   // land is decided by how long the *previous* list happened to be.
   //
   // Keyed on the source rather than the mode so picking another topic within
-  // Interests resets too — same carried-over offset, same non-reason.
+  // Interests resets too — same carried-over offset, same non-reason — and on
+  // showSettings, which swaps the list for a page of a completely different
+  // height while the source underneath it stays put. The gear can't reach that
+  // state from a scrolled page (it rides in the non-sticky header, so you're
+  // back at the top by the time you click it), but the picker's "Add topic…"
+  // row can: it sits in the sticky bar, clickable however deep you've scrolled.
+  //
+  // Not keyed on reloadToken. That bumps on in-place data changes too — see
+  // removeBookmark, which invalidates the very folder you're reading — and
+  // yanking the page to the top mid-read is worse than the offset it'd fix.
+  //
+  // Only *swaps* reset, never the first view we settle on: reloading a scrolled
+  // page has the browser restore that offset, and a scroll to top on arrival
+  // would throw it away. Arriving is two renders — sourceId is null until the
+  // sources load, then becomes the active one — so it can't be recognised by
+  // mount alone; record the first view seen and reset only once it changes.
+  // Comparing keys rather than counting runs also absorbs StrictMode's
+  // double-invoke, which repeats the effect with the deps untouched.
+  const lastView = useRef<string | null>(null);
   useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [sourceId]);
+    // Nothing to land on yet: no source, and not the standalone Settings page.
+    if (sourceId == null && !showSettings) return;
+    const view = `${sourceId}|${showSettings}|${viewMode}`;
+    if (lastView.current === view) return;
+    const arriving = lastView.current == null;
+    lastView.current = view;
+    if (!arriving) window.scrollTo(0, 0);
+  }, [sourceId, showSettings, viewMode]);
 
   // The truly-empty message differs by source: topics fill from PubMed,
   // collections fill from uploads, folders from papers the user saves. Viewers
