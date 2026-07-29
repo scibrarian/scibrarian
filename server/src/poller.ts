@@ -3,11 +3,13 @@ import { DEFAULT_POLL_CRON } from "./config.js";
 import {
   db,
   existingPmids,
+  getLastPollAttemptAt,
   getTopic,
   getSettings,
   listTopics,
   listJournals,
   saveArticles,
+  setLastPollAttemptAt,
   setTopicLastPolled,
   transaction,
 } from "./db.js";
@@ -116,6 +118,12 @@ export async function pollTopic(id: number): Promise<PollResult> {
 }
 
 export async function pollAll(): Promise<PollResult[]> {
+  // Stamped up front, not on completion: the desktop launch catch-up reads this
+  // to decide whether to poll, and quitting the app mid-poll must not leave it
+  // looking like no attempt was ever made — that would poll again on the next
+  // launch, and the next. The cost is that an interrupted run waits for the
+  // schedule (or the next stale window) rather than resuming on relaunch.
+  setLastPollAttemptAt(new Date().toISOString());
   const results: PollResult[] = [];
   for (const topic of listTopics()) {
     results.push(await pollTopic(topic.id));
@@ -170,6 +178,110 @@ export function startScheduler(): void {
     void refreshCatalogIfStale();
     void recheckMeshVersion();
   });
+  scheduleLaunchCatchUp();
+}
+
+// ---------- launch catch-up ----------
+
+// A cron schedule only fires while the process is running, and no deployment
+// runs forever. A desktop app is the extreme case — closed most of the day, so
+// with the default 06:00 poll someone who opens it at lunch would never once be
+// there when the timer fires — but a container stopped overnight, a host
+// rebooted for updates, and a laptop running `npm start` all miss schedules the
+// same way, and none of them has any recourse but clicking Refresh. So a
+// startup that finds the schedule was missed runs the poll it missed, whatever
+// the process happens to be.
+//
+// Deliberately not gated on IS_DESKTOP: that's the packaging format, which
+// correlates with the problem without being it. What bounds this everywhere is
+// the attempt watermark in catchUpIsDue — one poll per stale window no matter
+// how often the process restarts.
+
+// Let startup finish and the first requests land before adding PubMed traffic;
+// the catch-up is never the reason anyone started the process.
+const CATCH_UP_DELAY_MS = 5_000;
+
+// Fraction of the schedule's own period that counts as "missed". Shaved below a
+// full period so the common case lands reliably: on a daily schedule, a process
+// started around the same time each day would otherwise sit right on the
+// boundary, and a start 23h58m after yesterday's would read as not-yet-due and
+// skip the day. Five sixths of a daily schedule is 20 hours, which is the window
+// this used before it was derived from the cron.
+const STALE_FRACTION = 5 / 6;
+
+// Used only when the schedule can't be measured (see staleWindowMs).
+const FALLBACK_STALE_MS = 20 * 60 * 60 * 1000;
+
+// How long without a poll means the schedule was missed — read off the schedule
+// itself rather than assumed. Someone who sets a weekly cron is asking to be
+// polled weekly, and a fixed 20-hour window would have caught up on nearly every
+// start from the first day onward, quietly polling several times more often than
+// the setting they chose while Settings still showed the weekly cron.
+//
+// The *longest* gap between upcoming runs, not the shortest or the next one: an
+// irregular schedule like "0 6 * * 1,2" alternates 24h and 144h gaps, and only
+// the 144h figure guarantees that a window this long means a run was genuinely
+// missed rather than simply not due yet. Measured against `task`, so it always
+// reflects what is actually scheduled — including the fallback to
+// DEFAULT_POLL_CRON that rescheduleFromSettings applies to an invalid
+// expression.
+function staleWindowMs(): number {
+  const runs = task?.getNextRuns(6) ?? [];
+  let maxGap = 0;
+  for (let i = 1; i < runs.length; i++) {
+    maxGap = Math.max(maxGap, runs[i].getTime() - runs[i - 1].getTime());
+  }
+  return maxGap > 0 ? maxGap * STALE_FRACTION : FALLBACK_STALE_MS;
+}
+
+// Whether a watermark is old enough to act on. A missing value — a topic added
+// but never polled, or a database that has never polled at all — counts as
+// stale: that's exactly when someone is waiting to see results. So does a value
+// that won't parse, since the alternative is letting one corrupt timestamp
+// freeze a feed forever. `now` is passed in so every check in a single decision
+// is judged against one instant rather than a clock that moves down the list.
+function isStale(watermark: string | null, now: number, windowMs: number): boolean {
+  if (!watermark) return true;
+  const at = Date.parse(watermark);
+  if (Number.isNaN(at)) return true;
+  return at < now - windowMs;
+}
+
+// Two questions, and the catch-up needs both to answer yes.
+//
+// "Have we tried lately?" comes first and is the load-bearing one. Topics only
+// get a watermark when a poll *succeeds*, so a topic with a malformed term —
+// or every topic, for as long as NCBI is unreachable — stays overdue forever.
+// On staleness alone, that state would run a full poll five seconds after every
+// start, for good: restart five times and NCBI gets five polls, which is the
+// traffic amplification the poll lock exists to prevent. This is also what keeps
+// the catch-up safe for a crash-looping container now that it isn't scoped to
+// desktop. The attempt watermark advances whether the poll worked or not, so a
+// permanent failure costs one poll per stale window instead of one per start.
+//
+// "Is anything actually stale?" then keeps a machine that polls on schedule, or
+// by hand, from catching up on top of it. One overdue topic is enough: pollAll
+// covers every topic, and the per-topic MeSH-date window keeps the ones already
+// current cheap.
+function catchUpIsDue(windowMs: number): boolean {
+  const now = Date.now();
+  if (!isStale(getLastPollAttemptAt(), now, windowMs)) return false;
+  return listTopics().some((t) => isStale(t.last_polled_at, now, windowMs));
+}
+
+function scheduleLaunchCatchUp(): void {
+  // Gated on the same setting as the schedule itself: someone who turned
+  // scheduled polling off is asking not to be polled for, and a poll on every
+  // start would be a louder version of what they just disabled.
+  if (getSettings().poll_enabled !== "1") return;
+  const windowMs = staleWindowMs();
+  if (!catchUpIsDue(windowMs)) return;
+  const hours = Math.round(windowMs / 3_600_000);
+  console.log(`[scheduler] nothing polled in ${hours}h — catching up on startup`);
+  // unref so a pending catch-up is never what keeps the process alive. Nothing
+  // is awaiting the promise this drops on the floor — runPoll not rejecting is
+  // what makes that safe.
+  setTimeout(() => void runPoll("catch-up"), CATCH_UP_DELAY_MS).unref();
 }
 
 export function rescheduleFromSettings(): void {
@@ -197,18 +309,42 @@ export function rescheduleFromSettings(): void {
   console.log(`[scheduler] polling scheduled: "${expr}"`);
 }
 
-async function runScheduled(): Promise<void> {
-  const results = await withPollLock(() => {
-    console.log("[scheduler] running scheduled poll...");
-    return pollAll();
-  });
-  if (results === null) {
-    console.log("[scheduler] skipped: a poll is already running");
-    return;
-  }
-  const added = results.reduce((s, r) => s + r.added, 0);
-  console.log(`[scheduler] poll complete: ${added} new paper(s) across ${results.length} topic(s)`);
-  for (const r of results) {
-    if (r.error) console.warn(`[scheduler]   ${r.topicName}: ${r.error}`);
+function runScheduled(): Promise<void> {
+  return runPoll("scheduled");
+}
+
+// `label` only distinguishes the log lines — a cron firing and a desktop launch
+// catch-up run the identical poll, through the same lock, so neither can stack
+// on the other or on a manual /refresh.
+//
+// Never rejects, by design. Both callers are fire-and-forget triggers with
+// nowhere to put an error, and the launch catch-up's timer fires long after
+// main() returned, so in the desktop build an unhandled rejection would be
+// thrown into the Electron main process — killing the window and the in-process
+// server together, showing the user nothing. Failing quietly in the log is the
+// right trade for a poll nobody asked for; a manual /refresh still reports its
+// errors to the client. Note that pollTopic's own try/catch is not enough here:
+// listTopics() in pollAll and getTopic() in pollTopic both read the database
+// outside it, and withPollLock rethrows, so a locked or unreadable DB arrives
+// as a rejection rather than a per-topic result.error.
+async function runPoll(label: string): Promise<void> {
+  try {
+    const results = await withPollLock(() => {
+      console.log(`[scheduler] running ${label} poll...`);
+      return pollAll();
+    });
+    if (results === null) {
+      console.log(`[scheduler] ${label} poll skipped: a poll is already running`);
+      return;
+    }
+    const added = results.reduce((s, r) => s + r.added, 0);
+    console.log(
+      `[scheduler] poll complete: ${added} new paper(s) across ${results.length} topic(s)`
+    );
+    for (const r of results) {
+      if (r.error) console.warn(`[scheduler]   ${r.topicName}: ${r.error}`);
+    }
+  } catch (err) {
+    console.error(`[scheduler] ${label} poll failed: ${errMessage(err)}`);
   }
 }

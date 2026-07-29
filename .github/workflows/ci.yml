@@ -17,8 +17,14 @@ jobs:
           # majors, so CI guards the oldest version we claim to support.
           node-version: 22
           cache: npm
+      # Scoped to the two workspaces this job builds. A plain `npm ci` would also
+      # install the electron workspace, whose postinstall pulls a ~350 MB
+      # Chromium binary from GitHub releases — minutes added to every push and
+      # pull request, and a rate limit or network blip there would fail a job
+      # that never launches Electron. --include-workspace-root keeps the root
+      # devDependencies (vitest) that the Test step needs.
       - name: Install
-        run: npm ci
+        run: npm ci -w server -w client --include-workspace-root
       - name: Test
         run: npm test
       - name: Typecheck server

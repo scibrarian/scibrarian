@@ -1,0 +1,31 @@
+{
+  "name": "desktop",
+  "productName": "Scibrarian",
+  "version": "0.0.0-managed-by-root",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "author": "Scibrarian contributors",
+  "description": "Desktop shell: runs the Scibrarian server in-process on loopback and shows it in a window. Version comes from the root package.json via electron-builder.config.cjs; the version field here is an unused placeholder npm requires.",
+  "main": "main.mjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node start.mjs",
+    "pack": "node build.mjs && electron-builder --dir --config electron-builder.config.cjs",
+    "dist": "node build.mjs && electron-builder --config electron-builder.config.cjs"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "fast-xml-parser": "^5.10.1",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "pdfjs-dist": "^4.10.38"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.0"
+  }
+}

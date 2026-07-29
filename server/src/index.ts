@@ -1,7 +1,10 @@
 import fs from "node:fs";
+import path from "node:path";
+import type { Server } from "node:http";
+import { fileURLToPath } from "node:url";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
-import { ADMIN_TOKEN, CLIENT_DIST, HOST, HOST_IS_LOOPBACK, PORT } from "./config.js";
+import { ADMIN_TOKEN, CLIENT_DIST, HOST, HOST_IS_LOOPBACK, PORT, setBoundPort } from "./config.js";
 import "./db.js"; // initialize schema + seed on startup
 import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
@@ -105,21 +108,89 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   res.status(status).json({ error: expose ? errMessage(err) : generic });
 });
 
-// Without a token every request can mutate data, so exposing the server beyond
-// this machine in that state would let anyone who can reach it change anything.
-if (!HOST_IS_LOOPBACK && !ADMIN_TOKEN) {
-  console.error(
-    `[server] Refusing to start: HOST=${HOST} is reachable by other machines but ` +
-      `ADMIN_TOKEN is not set. Set ADMIN_TOKEN in server/.env so only you can modify data.`
-  );
-  process.exit(1);
-}
+// Bind and start the background work, resolving once the port is known.
+//
+// The port is read back off the listening socket rather than echoed from
+// config: PORT=0 asks the OS for a free port, which the desktop build relies on
+// (see config.ts), and only the socket knows which one it got. Exported so an
+// embedder — the Electron main process — can start the server in-process and
+// learn where to point its window. Rejects instead of exiting so a failed bind
+// is the caller's to report; the CLI path below turns that back into an exit.
+export async function start(): Promise<{ port: number; url: string }> {
+  // Without a token every request can mutate data, so exposing the server beyond
+  // this machine in that state would let anyone who can reach it change anything.
+  if (!HOST_IS_LOOPBACK && !ADMIN_TOKEN) {
+    throw new Error(
+      `Refusing to start: HOST=${HOST} is reachable by other machines but ` +
+        `ADMIN_TOKEN is not set. Set ADMIN_TOKEN in server/.env so only you can modify data.`
+    );
+  }
 
-app.listen(PORT, HOST, () => {
-  const url = HOST_IS_LOOPBACK ? `http://localhost:${PORT}` : `http://${HOST}:${PORT}`;
+  const server = await new Promise<Server>((resolve, reject) => {
+    const s = app.listen(PORT, HOST);
+    // Whichever fires first wins; the loser is detached so a later socket error
+    // can't settle an already-settled promise.
+    s.once("listening", () => {
+      s.removeListener("error", reject);
+      // Something must stay attached in its place: an 'error' event with no
+      // listener is rethrown by EventEmitter and takes the process down. Here
+      // that would be long after this promise settled and after main()'s startup
+      // try/catch returned, so in the desktop build it would kill the window and
+      // the in-process server together, silently. A server-level error after a
+      // successful bind (an accept failure, a socket-level fault) doesn't mean
+      // the listener is finished, so log it and keep serving.
+      s.on("error", (err) => console.error(`[server] ${errMessage(err)}`));
+      resolve(s);
+    });
+    s.once("error", reject);
+  });
+
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : PORT;
+  // Publish it before anything can serve a request: the sharing panel builds
+  // its URLs from this, and PORT is the wrong answer whenever PORT=0.
+  setBoundPort(port);
+  const url = HOST_IS_LOOPBACK ? `http://localhost:${port}` : `http://${HOST}:${port}`;
   console.log(`[server] API listening on ${url}`);
   if (ADMIN_TOKEN) console.log("[server] Admin mode on: mutations require ADMIN_TOKEN");
   startScheduler();
   void refreshCatalogIfStale(); // warm (or refresh a stale) journal catalog in the background
   void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
-});
+  return { port, url };
+}
+
+// Start automatically only when this file is the process entry (`tsx
+// src/index.ts`, the Dockerfile's CMD). When Electron imports it for `start()`
+// the check fails and nothing binds until it asks — importing a module must not
+// have the side effect of taking a port.
+//
+// Both sides are canonicalized through realpath, not just resolved. Node follows
+// symlinks when it loads an ES module, so import.meta.url is always the real
+// path on disk, while argv[1] is whatever the caller typed. Any checkout reached
+// through a link — macOS's /tmp, which is really /private/tmp, a CI workspace
+// symlink, a Windows junction, a Docker bind mount through one — would compare
+// unequal on resolve alone, and the process would exit 0 having printed nothing
+// and bound no port: a failure wearing success's clothes. Compared
+// case-insensitively on Windows, which hands back the same path with an
+// inconsistent drive-letter case.
+function isProcessEntry(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const normalize = (p: string) => {
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync(p);
+    } catch {
+      resolved = path.resolve(p); // nothing at that path: compare it as given
+    }
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(entry) === normalize(fileURLToPath(import.meta.url));
+}
+
+if (isProcessEntry()) {
+  start().catch((err: unknown) => {
+    console.error(`[server] ${errMessage(err)}`);
+    process.exit(1);
+  });
+}

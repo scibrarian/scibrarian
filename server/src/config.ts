@@ -9,7 +9,39 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Project root is one level up from server/src -> server -> project root
 export const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
-export const PORT = Number(process.env.PORT) || 3001;
+// The desktop (Electron) build sets this. It pins the server to loopback with
+// no admin token, so the sharing features — which only make sense for a server
+// other machines can reach — are inert; the UI reads it to say so plainly
+// instead of pointing at a server/.env that a packaged app doesn't have.
+export const IS_DESKTOP = process.env.SCIBRARIAN_DESKTOP === "1";
+
+// PORT=0 means "let the OS assign a free port" — the desktop build relies on it
+// so a packaged app can't collide with a dev server or a second instance. A
+// plain `Number(...) || 3001` would swallow that 0, so parse explicitly and
+// keep the default for unset/garbage values.
+function parsePort(raw: string | undefined): number {
+  if (!raw?.trim()) return 3001;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 65535 ? n : 3001;
+}
+
+export const PORT = parsePort(process.env.PORT);
+
+// The port actually bound. PORT above is only the *request*: with PORT=0 the
+// real one is chosen by the OS at bind time, and it is the only one anything can
+// connect to. Anything that prints, shares, or links to this server's address
+// must read this rather than PORT, or a PORT=0 deployment advertises
+// "http://192.168.1.20:0". start() fills it in; the fallback covers the window
+// before the bind resolves, when the answer is not yet knowable anyway.
+let bound: number | null = null;
+
+export function setBoundPort(port: number): void {
+  bound = port;
+}
+
+export function boundPort(): number {
+  return bound ?? PORT;
+}
 
 // Host/interface to bind. Default loopback = this machine only. Anything else
 // (0.0.0.0, a LAN/Tailscale IP) requires ADMIN_TOKEN — enforced in index.ts.
@@ -53,5 +85,10 @@ export const SETTING_DEFAULTS = {
   library_open: "0",
 };
 
-// Path to the built client (used in production / `npm start`)
-export const CLIENT_DIST = path.join(PROJECT_ROOT, "client", "dist");
+// Path to the built client (used in production / `npm start`). Overridable
+// because PROJECT_ROOT is only meaningful when the server runs from a checkout:
+// the desktop build points this at the client bundle inside the app's
+// resources, where nothing sits at the expected offset from server/src.
+export const CLIENT_DIST = process.env.CLIENT_DIST
+  ? path.resolve(process.env.CLIENT_DIST)
+  : path.join(PROJECT_ROOT, "client", "dist");

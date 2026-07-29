@@ -62,7 +62,14 @@ import {
   isPdfFile,
   storeBlobFromTemp,
 } from "./blobstore.js";
-import { ADMIN_TOKEN, HOST, HOST_IS_LOOPBACK, PORT, UPLOAD_TMP_DIR } from "./config.js";
+import {
+  ADMIN_TOKEN,
+  boundPort,
+  HOST,
+  HOST_IS_LOOPBACK,
+  IS_DESKTOP,
+  UPLOAD_TMP_DIR,
+} from "./config.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
@@ -935,13 +942,19 @@ api.post(
 // Where other machines can reach this server, for the Settings sharing panel.
 // A loopback bind isn't shareable; a wildcard bind maps to every external IPv4
 // address this machine has (LAN, Tailscale, …).
+//
+// boundPort(), not PORT: these are addresses someone is about to type into
+// another machine's browser, so they have to name the port the socket is
+// actually on. With PORT=0 the configured value is 0 and the OS picked the real
+// one at bind time.
 function shareUrls(): string[] {
   if (HOST_IS_LOOPBACK) return [];
-  if (HOST !== "0.0.0.0" && HOST !== "::") return [`http://${HOST}:${PORT}`];
+  const port = boundPort();
+  if (HOST !== "0.0.0.0" && HOST !== "::") return [`http://${HOST}:${port}`];
   const urls: string[] = [];
   for (const infos of Object.values(os.networkInterfaces())) {
     for (const info of infos ?? []) {
-      if (info.family === "IPv4" && !info.internal) urls.push(`http://${info.address}:${PORT}`);
+      if (info.family === "IPv4" && !info.internal) urls.push(`http://${info.address}:${port}`);
     }
   }
   return urls;
@@ -983,6 +996,11 @@ function settingsResponse() {
     else out[rule.expose] = Boolean(s[key]); // never echo the secret itself
   }
   out.share_urls = shareUrls(); // derived from the bind address, not a setting
+  // Also not a setting: how the server was launched. share_urls is empty for
+  // both a loopback server and a desktop app, but the fix differs — one can be
+  // rebound via server/.env, the other has no .env to edit — so the UI needs to
+  // tell the two apart.
+  out.desktop = IS_DESKTOP;
   return out;
 }
 

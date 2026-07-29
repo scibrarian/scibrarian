@@ -11,7 +11,11 @@ on your laptop or on a server you control.
 - You specify the journals and the topics in **Settings** (the gear icon in the
   header). Each topic is a MeSH heading, so PubMed is searched by that heading.
 - **Check for new papers** polls on demand; optional scheduled polling (off by
-  default) runs on a cron expression you set in Settings.
+  default) runs on a cron expression you set in Settings. A cron only fires while
+  the process is up, so if a schedule was missed while it was down — a closed
+  desktop app, a stopped container, a rebooted host — the next startup runs that
+  poll a few seconds in. How long counts as "missed" comes from your own cron, so
+  a weekly schedule stays weekly.
 - Reference data (the NLM journal catalog, OpenAlex impact metrics, and the MeSH
   vocabulary) refreshes itself on startup and on a daily background check.
 - Papers (title, authors, journal, date, abstract, PubMed/DOI link) are stored locally
@@ -77,6 +81,26 @@ Two separate places, split by who owns the value:
 npm run build      # builds the client
 npm start          # serves the built UI + API from http://localhost:3001
 ```
+
+## Desktop app
+
+The same app also runs as a native window, with no browser and no URL to
+remember:
+
+```bash
+npm run desktop    # builds the client + server bundle, then opens the app
+```
+
+It is the ordinary server running inside Electron, bound to `127.0.0.1` on an
+OS-assigned port, so nothing is reachable from the network and no admin token is
+involved. Sharing is therefore unavailable in the desktop build by design — to
+share a library, run the server (see [Sharing your server](#sharing-your-server)).
+Your database and PDFs live in the per-user app data directory
+(`%APPDATA%\Scibrarian`, `~/Library/Application Support/Scibrarian`, or
+`~/.config/Scibrarian`) rather than in `data/`.
+
+To build installers — and for code signing, which is what stands between a build
+and something other people can install — see **[DESKTOP.md](DESKTOP.md)**.
 
 ## Deploying
 
