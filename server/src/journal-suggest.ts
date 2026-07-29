@@ -41,8 +41,9 @@ export async function suggestJournals(
   perTopic: number
 ): Promise<SuggestResult> {
   const mindate = windowStart();
-  // Already-added journals are dropped before the per-topic cut, so each topic
-  // still contributes up to `perTopic` *new* journals.
+  // Already-added journals stay in the pool so they can occupy their rank, and
+  // are dropped after the per-topic cut (see rankCandidates) — a topic whose
+  // top `perTopic` are all present suggests nothing on a re-run.
   const have = new Set(
     listJournals()
       .map((j) => j.nlm_id)
@@ -60,13 +61,12 @@ export async function suggestJournals(
       }
       const cands: Candidate[] = [];
       for (const { nlmId, count } of topByCount(ids, CANDIDATE_POOL)) {
-        if (have.has(nlmId)) continue;
         const row = findCatalogByNlmId(nlmId);
         if (row) cands.push({ row, count });
       }
       // Pool ≤ CANDIDATE_POOL rows, within attachMetrics's 50-ISSN per-call cap.
       await attachMetrics(cands.map((c) => c.row));
-      perTopicPicks.push({ topic: t.name, picks: rankCandidates(cands, perTopic) });
+      perTopicPicks.push({ topic: t.name, picks: rankCandidates(cands, perTopic, have) });
     } catch (err) {
       // One topic failing (throttle exhaustion, transient NCBI error) shouldn't
       // sink the rest; the caller reports which topics were skipped.
