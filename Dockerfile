@@ -34,8 +34,10 @@ RUN npm ci --omit=dev \
     && npm install -g tsx@4 \
     && npm cache clean --force
 
-# Server source (executed untranspiled) and the client bundle from the builder.
+# Server source (executed untranspiled), the shared/ modules it imports by
+# relative path, and the client bundle from the builder.
 COPY server/ server/
+COPY shared/ shared/
 COPY --from=builder /app/client/dist client/dist
 
 # Config baked for the container:
