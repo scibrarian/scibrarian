@@ -332,7 +332,18 @@ export function Settings({
           </p>
         )}
         {loaded && settings &&
-          (settings.share_urls.length === 0 ? (
+          (settings.desktop ? (
+            // The desktop app binds to loopback with no admin token and no
+            // server/.env, so there is nothing to configure here — pointing at
+            // the server instructions would send someone looking for files the
+            // installer never created. Run the server build to share.
+            <p className="hint">
+              The desktop app is private to this computer — nothing it stores is reachable
+              from the network, and nobody else can connect. To share your library with
+              other people, run Scibrarian as a server instead: see the README&rsquo;s
+              &ldquo;Sharing your server&rdquo; section.
+            </p>
+          ) : settings.share_urls.length === 0 ? (
             <p className="hint">
               Only this machine can connect right now. To let others view your server, set{" "}
               <code>HOST</code> and <code>ADMIN_TOKEN</code> in <code>server/.env</code> and

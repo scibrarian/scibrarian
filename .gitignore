@@ -9,3 +9,4 @@ data/
 Caddyfile
 .DS_Store
 .claude
+electron/bundle/

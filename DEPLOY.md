@@ -8,6 +8,9 @@ are the exception: they're owner-only, or reachable via an expiring share link.
 
 Pick the exposure model that matches who needs access.
 
+> Looking for the **desktop app** instead? It runs on loopback only, shares
+> nothing, and needs none of this — see [DESKTOP.md](DESKTOP.md).
+
 Every option below runs the **published image**,
 `ghcr.io/scibrarian/scibrarian`, so a server needs Docker and nothing else —
 no source checkout, no toolchain, no build. Tags:

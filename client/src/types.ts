@@ -100,6 +100,9 @@ export interface AppSettings {
   has_api_key: boolean;
   // URLs where other machines can reach this server; empty when bound to loopback.
   share_urls: string[];
+  // True in the desktop build, which is loopback-only by construction — so
+  // share_urls is always empty there and can never be filled in.
+  desktop: boolean;
 }
 
 export interface BookmarkFolder extends BookmarkFolderRow {

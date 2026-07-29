@@ -317,6 +317,24 @@ export function setTopicLastPolled(id: number, iso: string): void {
   db.prepare("UPDATE topics SET last_polled_at = ? WHERE id = ?").run(iso, id);
 }
 
+// When a poll of every topic was last *attempted* (ISO timestamp; "" if never).
+//
+// Distinct from topics.last_polled_at, which is a record of success: a topic
+// whose term is malformed, or every topic while NCBI is unreachable, never gets
+// a watermark at all. Anything that asks "have we polled recently?" to decide
+// whether to poll again needs this one instead, or a permanent failure answers
+// "no" forever and it polls on a loop. Scheduler-managed like
+// journal_catalog_loaded_at, so deliberately kept out of SETTING_DEFAULTS and
+// never shown in the UI.
+export function getLastPollAttemptAt(): string {
+  const row = getSettingStmt.get("last_poll_attempt_at") as { value: string } | undefined;
+  return row?.value ?? "";
+}
+
+export function setLastPollAttemptAt(iso: string): void {
+  setSettingStmt.run("last_poll_attempt_at", iso);
+}
+
 // ---------- journals ----------
 
 // Journal rows carry the catalog's metric (when the nlm_id matches a catalog
