@@ -81,8 +81,14 @@ this if you skip it.
 | Platform | Target | Artifact |
 |---|---|---|
 | Windows | NSIS | `Scibrarian Setup <version>.exe` |
-| macOS | dmg | `Scibrarian-<version>.dmg` (arm64 builds add `-arm64`) |
+| macOS | dmg | `Scibrarian-<version>.dmg` (non-x64 adds the arch: `-arm64`, `-universal`) |
 | Linux | AppImage | `Scibrarian-<version>.AppImage` |
+
+Note the macOS suffix if you are scripting a download URL against a release:
+every dmg CI publishes is built `--universal` (see [Releasing from CI](#releasing-from-ci)),
+so the released name is always `Scibrarian-<version>-universal.dmg`. The bare
+`Scibrarian-<version>.dmg` is what a plain local build gives you on an Intel Mac,
+and it is not what ends up attached to a release.
 
 **You can only build for the platform you are on.** electron-builder can cross-
 compile some targets, but macOS signing and notarization require macOS. Use a
@@ -137,8 +143,36 @@ with `The built client is missing from …`; on a tree that still has an old
 Unsigned builds work on the machine that made them and are fine for testing.
 Distributing them is a different matter, and the two platforms fail differently.
 
-Nothing in `electron/electron-builder.config.cjs` needs to change when you have
-certificates — electron-builder reads them from the environment.
+### How it is wired
+
+`electron/signing.config.cjs` holds the signing setup and is merged into `win`
+and `mac` by `electron-builder.config.cjs`. It holds no secrets and is meant to
+be committed: certificates, passwords and API keys are read from the
+environment, and signing switches itself on when they appear.
+
+So an unsigned build is not something anyone opts out of — it is what you get
+with nothing set, locally and in a fork's CI alike. Every build prints one line
+per platform it is producing:
+
+```
+[signing] windows: unsigned
+[signing] macos: certificate file, notarized via App Store Connect API key
+```
+
+Per platform *built*, not per platform you happen to be on: `--linux` from a Mac
+prints the Linux line alone, and `-mwl` prints all three. Worth reading — a
+release you believe is signed and isn't is the failure this arrangement exists
+to catch, and a line about an artifact the run never produced would defeat it.
+
+For signed builds on your own machine, copy the environment template once:
+
+```bash
+cp .env.signing.example .env.signing     # gitignored
+```
+
+Fill in the section for your platform and `npm run desktop:dist` picks it up
+with no further ceremony. In CI the same variables are repository secrets — see
+[Releasing from CI](#releasing-from-ci).
 
 ### Windows
 
@@ -149,36 +183,132 @@ Since the 2023 CA/Browser Forum rules, newly issued OV certificates require a
 hardware token or a cloud HSM, so the old "point `CSC_LINK` at a `.pfx`" flow
 only works for certificates issued before that. Current options:
 
-- **Azure Trusted Signing** — roughly $10/month, cloud-based, no hardware. Add
-  an `azureSignOptions` block to `win:` in the config and set `AZURE_TENANT_ID`,
-  `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. Requires identity validation;
-  individuals need about three years of verifiable operating history.
+- **Azure Trusted Signing** — roughly $10/month, cloud-based, no hardware.
+  Requires identity validation; individuals need about three years of verifiable
+  operating history. Set `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+  `AZURE_CLIENT_SECRET` for a service principal holding the *Trusted Signing
+  Certificate Profile Signer* role, then replace the four account details in the
+  `REPLACE ME` block at the top of `signing.config.cjs`. Signing shells out to
+  PowerShell's `Invoke-TrustedSigning`, so it only runs on a Windows machine.
+
+  Authentication is Azure's `EnvironmentCredential`, not anything
+  electron-builder implements, so the two alternatives it accepts work as well:
+  `AZURE_CLIENT_CERTIFICATE_PATH` in place of the secret, or an
+  `AZURE_USERNAME` + `AZURE_PASSWORD` pair. As with notarization, set a
+  credential set completely — a partial one is refused rather than ignored,
+  since ignoring it means shipping an unsigned installer from a green build.
 - **EV certificate on a hardware token** — expensive, but carries SmartScreen
   reputation immediately.
-- **A pre-2023 OV certificate** — `CSC_LINK` (path or base64 of the `.pfx`) plus
-  `CSC_KEY_PASSWORD`. Reputation still accrues over the first few hundred
-  downloads.
+- **A pre-2023 OV certificate** — `WIN_CSC_LINK` (path or base64 of the `.pfx`)
+  plus `WIN_CSC_KEY_PASSWORD`, and nothing to configure beyond that. Reputation
+  still accrues over the first few hundred downloads.
+
+Setting the Azure credentials while leaving the account details as `REPLACE_ME`
+fails the build immediately, on purpose: the alternative is a ten-minute build
+that dies inside PowerShell with an Azure error naming none of them.
 
 ### macOS
 
 Gatekeeper is stricter than SmartScreen: an unsigned app downloaded from the
 internet is **refused outright** on other people's machines, with no obvious way
-past it. Signing is not optional for distribution.
+past it. Signing is not optional for distribution — and signing alone is not
+enough, because the app also has to be notarized by Apple.
 
 1. Join the Apple Developer Program ($99/year) and create a **Developer ID
    Application** certificate.
-2. Export it as a `.p12`; set `CSC_LINK` and `CSC_KEY_PASSWORD`.
-3. Add `notarize: true` under `mac:` and authenticate with an App Store Connect
-   API key — `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`. (An
-   `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` triple also
-   works, but API keys are better suited to CI.)
+2. Export it as a `.p12`; set `CSC_LINK` (path or base64) and `CSC_KEY_PASSWORD`.
+3. Create an App Store Connect API key and set `APPLE_API_KEY`,
+   `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`. (An `APPLE_ID` +
+   `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` triple also works, but API
+   keys are better suited to CI.)
 
-`hardenedRuntime: true` is already set in the config; notarization rejects
-builds without it.
+There is no `notarize: true` to set. electron-builder 26 notarizes whenever one
+of those credential sets is in the environment — it is opt-*out* — so
+`signing.config.cjs` sets `notarize: false` when there is nothing to notarize
+with, and a build without credentials says so plainly instead of warning about
+options it "was unable to generate".
+
+Set a credential set **completely or not at all**. Two of the three variables is
+the dangerous state: it reads as "no notarization", and an opted-out build
+produces a signed dmg that Gatekeeper still refuses, discovered by users rather
+than by you. `signing.config.cjs` refuses to start such a build and names the
+missing variable.
+
+`APPLE_API_KEY` is a **path to the `.p8` file**, not its contents; notarytool
+takes it as `--key`. Apple also lets you download any given `.p8` exactly once.
+
+`hardenedRuntime: true` is already set in the packaging config — notarization
+rejects builds without it — and electron-builder's default entitlements
+(`allow-jit`, `allow-unsigned-executable-memory`, `disable-library-validation`)
+are the ones an Electron app needs, so there is no entitlements file to add.
+
+On a Mac that already has a Developer ID in its keychain, electron-builder finds
+and uses it even with nothing set, which is convenient right up until you are
+trying to reproduce what a contributor without certificates gets.
+`CSC_IDENTITY_AUTO_DISCOVERY=false` turns that off.
 
 ### Linux
 
-AppImages are conventionally distributed unsigned.
+AppImages are conventionally distributed unsigned. Nothing to configure.
+
+### Releasing from CI
+
+`.github/workflows/desktop-release.yml` builds all three platforms on a `v*` tag
+push or a manual run, then drafts a GitHub release with the installers attached.
+It is a template in the same sense as everything above: it runs today and
+produces unsigned artifacts, and it starts signing once the secrets exist — no
+edit either way, because an unset secret arrives as an empty string and empty
+counts as unset.
+
+| Secret | For |
+|---|---|
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Windows, Azure Trusted Signing (see above for the other two credential shapes) |
+| `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` | Windows, pre-2023 `.pfx` (base64) |
+| `CSC_LINK`, `CSC_KEY_PASSWORD` | macOS Developer ID `.p12` (base64) |
+| `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | macOS notarization |
+
+`APPLE_API_KEY_P8` holds the *contents* of the `.p8` — the workflow writes it to
+a file on the runner and points `APPLE_API_KEY` at that path, since the variable
+is a path. The four Azure account names can be repository **variables** of the
+same name instead of living in `signing.config.cjs`.
+
+Two things there are deliberate. It is a separate workflow from `ci.yml` because
+it installs the electron workspace, whose postinstall pulls a ~350 MB Chromium
+per runner — three of them — which has no business on the per-push path. And the
+macOS build passes `--universal`, because `macos-latest` is arm64 and a default
+build there produces a dmg that silently will not run on any Intel Mac.
+
+The release is created as a **draft**: installers are worth downloading and
+launching once before anyone else gets them. Re-running the workflow uploads
+into that draft. Once the release is published the workflow refuses to touch it
+and fails instead — a manual run takes its tag from `package.json`, which still
+reads the last released version until the next bump, so without that guard a
+dispatch from `master` would replace shipped installers with a fresh build under
+an unchanged version number.
+
+### Checking the result
+
+The `[signing]` lines report what the build intended. These report what it
+actually produced:
+
+```powershell
+# Windows
+Get-AuthenticodeSignature electron\dist\*.exe | Format-List Path, Status, SignerCertificate
+```
+
+```bash
+# macOS — signature, Gatekeeper's verdict, then the notarization ticket
+codesign --verify --deep --strict --verbose=2 electron/dist/mac*/Scibrarian.app
+spctl --assess --type execute --verbose electron/dist/mac*/Scibrarian.app
+xcrun stapler validate electron/dist/mac*/Scibrarian.app
+```
+
+`spctl` is the one that matters: it is the same check the user's Mac runs.
+
+Ignore electron-builder's own `signing with signtool.exe` line on Windows. It
+names the step that stamps icon and version metadata into the executable, and it
+is printed whether or not a certificate exists — an unsigned build logs it and
+then produces a binary `Get-AuthenticodeSignature` reports as `NotSigned`.
 
 ## Auto-update
 
