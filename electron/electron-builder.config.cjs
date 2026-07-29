@@ -6,10 +6,12 @@
 // alongside a 0.6.0 Docker image is the kind of mismatch nobody notices until a
 // user reports it. Reading the root manifest here keeps one source of truth.
 //
-// Signing is deliberately absent: electron-builder reads certificates from the
-// environment (see DESKTOP.md), so nothing here needs to change when you have
-// them, and an unsigned local build stays the default.
+// Signing lives in signing.config.cjs, merged into `win` and `mac` below. It
+// stays out of this file because it is the part you are expected to edit: it
+// turns itself on when certificates are present in the environment and off when
+// they aren't, so an unsigned local build remains the default here.
 const { version } = require("../package.json");
+const signing = require("./signing.config.cjs");
 
 module.exports = {
   appId: "com.scibrarian.desktop",
@@ -73,6 +75,7 @@ module.exports = {
   win: {
     target: "nsis",
     icon: "build/icon.ico",
+    ...signing.win,
   },
 
   nsis: {
@@ -88,6 +91,7 @@ module.exports = {
     // Required for a notarised build; harmless before then.
     hardenedRuntime: true,
     gatekeeperAssess: false,
+    ...signing.mac,
   },
 
   linux: {
