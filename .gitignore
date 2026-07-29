@@ -6,7 +6,15 @@ data/
 *.db-wal
 *.db-shm
 .env
+.env.signing
 Caddyfile
 .DS_Store
 .claude
 electron/bundle/
+
+# Signing material, in case a certificate or key gets exported into the tree
+# while wiring up a desktop release.
+*.pfx
+*.p12
+*.p8
+
