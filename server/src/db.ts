@@ -4,7 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import { toFtsQuery } from "./fts-query.js";
-import { MESH_SETTLED_STATUSES, MESH_STATUS_UNAVAILABLE } from "./pubmed-parse.js";
+import {
+  MESH_SETTLED_STATUSES,
+  MESH_STATUS_NEVER,
+  MESH_STATUS_UNAVAILABLE,
+} from "./pubmed-parse.js";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
 import type {
   Article,
@@ -1025,9 +1029,16 @@ export function meshFacetsForSource(
 // something entirely different depending on whether the other 260 are
 // non-MEDLINE (nothing to file, nothing to fix) or simply not looked at yet.
 //
-// The status ladder mirrors meshOutlook — see SETTLED_PLACEHOLDERS — except that
-// headings win over any status: a paper we hold headings for is filed, whatever
-// PubMed last said about its indexing state.
+// The status ladder mirrors meshOutlook rung for rung — 'none'/'indexed'/
+// 'pending'/'unchecked' are its four outcomes — except that headings win over
+// any status: a paper we hold headings for is filed, whatever PubMed last said
+// about its indexing state.
+//
+// PubMed-not-MEDLINE is tested before the settled list it belongs to, exactly as
+// meshOutlook tests it before its own. Collapsing the two rungs — every settled
+// status with no headings into one bucket — reported a fully MEDLINE-indexed
+// paper that NLM happened to file under nothing as "not indexed for MEDLINE",
+// which is the opposite of what its status says.
 export function meshFilingForSource(source: PaperSourceQuery): MeshFiling {
   const { join, params } = sourceMembership(source);
   const rows = db
@@ -1036,7 +1047,8 @@ export function meshFilingForSource(source: PaperSourceQuery): MeshFiling {
          SELECT CASE
            WHEN EXISTS (SELECT 1 FROM article_mesh am WHERE am.pmid = a.pmid) THEN 'filed'
            WHEN a.mesh_status = '' THEN 'unchecked'
-           WHEN a.mesh_status IN (${SETTLED_PLACEHOLDERS}) THEN 'none'
+           WHEN a.mesh_status = ? THEN 'none'
+           WHEN a.mesh_status IN (${SETTLED_PLACEHOLDERS}) THEN 'indexed'
            ELSE 'pending'
          END AS bucket
          FROM articles a
@@ -1044,13 +1056,16 @@ export function meshFilingForSource(source: PaperSourceQuery): MeshFiling {
        )
        GROUP BY bucket`
     )
-    // Bind order follows the *textual* order of the placeholders, and here the
-    // status list sits inside the SELECT list — ahead of the join that carries
-    // the source's own params. Reversing these binds a collection id as a status
+    // Bind order follows the *textual* order of the placeholders: the never-
+    // indexed status, then the settled list, then the join that carries the
+    // source's own params. Reversing these binds a collection id as a status
     // and the join matches nothing, which reads as a source with no papers at
     // all rather than as an error.
-    .all(...SETTLED_PARAMS, ...params) as { bucket: keyof MeshFiling; c: number }[];
-  const out: MeshFiling = { filed: 0, none: 0, pending: 0, unchecked: 0 };
+    .all(MESH_STATUS_NEVER, ...SETTLED_PARAMS, ...params) as {
+    bucket: keyof MeshFiling;
+    c: number;
+  }[];
+  const out: MeshFiling = { filed: 0, indexed: 0, none: 0, pending: 0, unchecked: 0 };
   for (const r of rows) out[r.bucket] = r.c;
   return out;
 }

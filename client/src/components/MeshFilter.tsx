@@ -15,17 +15,23 @@ const facetCache: FetchCache<MeshHeadingsResponse> = new Map();
 // papers match".
 //
 // Every paper a source holds is in exactly one bucket, so a facet list covering
-// 40 of 300 papers has a reason attached: the rest are either non-MEDLINE (there
-// are no headings to file them under, and never will be), still working through
-// NLM's indexing queue, or simply not looked at yet. Without this the filing
-// looks broken in exactly the case where it is working correctly.
+// 40 of 300 papers has a reason attached, and the reasons are worth telling
+// apart: two of them resolve on their own (the queue, and the ones nobody has
+// asked about), two never will (non-MEDLINE, and indexed-under-nothing). Only
+// the non-empty ones are listed, so the note names causes that are real here.
+// Without this the filing looks broken in exactly the case where it is working
+// correctly.
 function filingNote(filing: MeshFiling): string | null {
   const parts: string[] = [];
   if (filing.unchecked > 0) parts.push(`${filing.unchecked} not looked up yet`);
   if (filing.pending > 0) parts.push(`${filing.pending} awaiting MeSH indexing`);
+  if (filing.indexed > 0) parts.push(`${filing.indexed} indexed under no subject`);
   if (filing.none > 0) parts.push(`${filing.none} not indexed for MEDLINE`);
   if (parts.length === 0) return null;
-  return `${filing.filed} of ${filing.filed + filing.none + filing.pending + filing.unchecked} papers filed — ${parts.join(", ")}.`;
+  // Summed over the buckets rather than spelled out, so a bucket added to the
+  // ladder can't leave the denominator quietly short of the source's papers.
+  const total = Object.values(filing).reduce((a, b) => a + b, 0);
+  return `${filing.filed} of ${total} papers filed — ${parts.join(", ")}.`;
 }
 
 // The facet list for a source, with its own search state.

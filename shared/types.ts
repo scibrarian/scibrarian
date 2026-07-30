@@ -68,10 +68,13 @@ export interface MeshFacet extends MeshDescriptorRef {
 
 // How completely a source's papers are filed, so a short facet list can say why
 // instead of looking like the filing simply failed. Every paper in the source
-// falls in exactly one bucket.
+// falls in exactly one bucket, and the four unfiled ones are the four outcomes
+// of meshOutlook — they are reported separately because what the reader should
+// do about them differs: two resolve on their own, two never will.
 export interface MeshFiling {
   filed: number; // has at least one heading
-  none: number; // settled with no headings — PubMed holds it, MEDLINE won't index it
+  indexed: number; // NLM indexed it and filed it under nothing; no headings are coming
+  none: number; // MEDLINE will never index it (PubMed-not-MEDLINE), so likewise
   pending: number; // in PubMed but not through MeSH indexing yet; headings may still arrive
   unchecked: number; // we haven't asked PubMed for this one's headings yet
 }

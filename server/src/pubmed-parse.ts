@@ -162,8 +162,12 @@ export const MESH_SETTLED_STATUSES = [
   "PubMed-not-MEDLINE",
 ] as const;
 
-// The one settled status that means no headings will ever exist.
-const MESH_STATUS_NEVER = "PubMed-not-MEDLINE";
+// The one settled status that means no headings will ever exist. The other
+// settled statuses mean the opposite — NLM indexed the record and this is the
+// filing it arrived at, empty or not — so anything bucketing stored rows has to
+// tell the two apart rather than reading "settled" as "unindexed"; exported for
+// db.ts, which does exactly that in SQL.
+export const MESH_STATUS_NEVER = "PubMed-not-MEDLINE";
 
 // Our own marker, not PubMed's, for a record efetch didn't return (a PMID
 // withdrawn from PubMed, a response that omitted it) or returned without a
