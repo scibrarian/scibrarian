@@ -152,7 +152,9 @@ export function MeshFilter({
                   checked={majorOnly}
                   onChange={(e) => onMajorOnlyChange(e.target.checked)}
                 />
-                Main subject only
+                {/* Accent-colored to match .filter-count em: same blue as the
+                    major-topic number this checkbox filters down to. */}
+                <span className="filter-check-label">Main subject only</span>
               </label>
             </div>
 

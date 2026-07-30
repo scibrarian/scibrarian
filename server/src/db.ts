@@ -63,7 +63,9 @@ db.exec(`
   -- Only 0 is worth showing the user: topics are MeSH terms and an unindexed
   -- journal's papers carry no MeSH headings, so it can never contribute to a
   -- topic feed. Written at add time (POST /journals); the background backfill
-  -- (journal-catalog.ts) settles the rows that add-time check missed.
+  -- (journal-catalog.ts) settles the rows that add-time check missed. On an
+  -- installed base this CREATE is a no-op, so the column is also added via
+  -- addColumnIfMissing() below.
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -317,6 +319,9 @@ function addColumnIfMissing(table: string, column: string, definition: string): 
 // which is what puts them on the backfill's work list.
 addColumnIfMissing("articles", "mesh_status", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("articles", "mesh_checked_at", "TEXT");
+// journals predates this column; NULL here is exactly "not established yet",
+// which is also what journalsMissingIndexing() uses to find its work list.
+addColumnIfMissing("journals", "medline_indexed", "INTEGER");
 
 // Indexes over migrated columns go here, not in the schema block above: on a
 // database that predates the column, that block runs first and would fail on a

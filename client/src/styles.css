@@ -448,6 +448,10 @@ body {
   color: var(--accent);
 }
 
+.filter-check-label {
+  color: var(--accent);
+}
+
 .filter-empty,
 .filter-note {
   margin: 0;
