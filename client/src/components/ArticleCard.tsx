@@ -6,6 +6,7 @@ import { formatAuthors } from "../lib/format";
 import { openTitle, type PaperOpener } from "../lib/openPaper";
 import { BookmarkMenu } from "./BookmarkMenu";
 import { SkeletonBar } from "./Skeleton";
+import { Snippet } from "./Snippet";
 
 export function ArticleCard({
   article,
@@ -85,35 +86,47 @@ export function ArticleCard({
       {article.authors.length > 0 && (
         <p className="card-authors">{formatAuthors(article.authors, 4)}</p>
       )}
-      {/* One block whichever state we're in, and it reserves the collapsed
-          height up front — the abstract arrives after the card is already on
-          screen, so a block that grew to fit it would shunt every card below
-          this one down the timeline as you read. */}
-      <div className="card-abstract">
-        {loading ? (
-          <div className="abstract-skeleton" aria-hidden="true">
-            <SkeletonBar w="100%" h={12} />
-            <SkeletonBar w="100%" h={12} />
-            <SkeletonBar w="58%" h={12} />
-          </div>
-        ) : abstract ? (
-          <>
-            <span
-              ref={textRef}
-              className={expanded ? "abstract-text" : "abstract-text clamped"}
-            >
-              {abstract}
-            </span>
-            {overflows && (
-              <button className="link-btn" onClick={() => setExpanded(!expanded)}>
-                {expanded ? "Show less" : "Show more"}
-              </button>
-            )}
-          </>
-        ) : (
-          <span className="abstract-empty">No abstract available.</span>
-        )}
-      </div>
+      {/* Exactly one block of prose per card, in one slot. When the search
+          matched inside the PDF, the excerpt *replaces* the abstract rather than
+          stacking above it: two runs of grey body text read as a single
+          paragraph, and of the two, the excerpt is the one that answers "why is
+          this card in my results?". A card matched only on metadata has no
+          excerpt and keeps its abstract, so the slot always holds whichever text
+          is actually relevant — and the timeline never shows two card shapes for
+          the same reason. */}
+      {article.snippet ? (
+        <Snippet text={article.snippet} className="paper-snippet card-snippet" />
+      ) : (
+        /* One block whichever state we're in, and it reserves the collapsed
+           height up front — the abstract arrives after the card is already on
+           screen, so a block that grew to fit it would shunt every card below
+           this one down the timeline as you read. */
+        <div className="card-abstract">
+          {loading ? (
+            <div className="abstract-skeleton" aria-hidden="true">
+              <SkeletonBar w="100%" h={12} />
+              <SkeletonBar w="100%" h={12} />
+              <SkeletonBar w="58%" h={12} />
+            </div>
+          ) : abstract ? (
+            <>
+              <span
+                ref={textRef}
+                className={expanded ? "abstract-text" : "abstract-text clamped"}
+              >
+                {abstract}
+              </span>
+              {overflows && (
+                <button className="link-btn" onClick={() => setExpanded(!expanded)}>
+                  {expanded ? "Show less" : "Show more"}
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="abstract-empty">No abstract available.</span>
+          )}
+        </div>
+      )}
       <div className="card-links">
         <a href={article.url} target="_blank" rel="noreferrer">
           PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />

@@ -3,6 +3,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
+import { toFtsQuery } from "./fts-query.js";
+import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
 import type {
   Article,
   BookmarkEntry,
@@ -186,6 +188,51 @@ db.exec(`
   -- indistinguishable in the picker, so names are unique case-insensitively
   -- within each. An index rather than an inline UNIQUE because only an index
   -- can carry the NOCASE collation.
+  -- Extracted PDF body text, for full-text search. Keyed by content_hash, not
+  -- by file id: the blob store is content-addressed, so the same PDF uploaded
+  -- to three collections is one blob, one extraction and one index entry.
+  -- Rows outlive the collection_files that caused them (a re-upload of the same
+  -- bytes reuses the extraction) and are cleaned up with their blob.
+  --
+  -- truncated records that the document ran past the extractor's page/char
+  -- cap, so a future "why didn't this match?" has an answer.
+  CREATE TABLE IF NOT EXISTS pdf_text (
+    content_hash TEXT PRIMARY KEY,       -- sha256 hex, joins to collection_files
+    text TEXT NOT NULL,
+    pages INTEGER NOT NULL,              -- pages actually read
+    truncated INTEGER NOT NULL DEFAULT 0,
+    chars INTEGER NOT NULL,
+    extracted_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- External-content FTS5 index over pdf_text.text: the index stores only its
+  -- own structures and reads column values back from pdf_text, so the body text
+  -- isn't duplicated. That makes pdf_text the single writable copy and the
+  -- triggers below the only thing keeping the two in step -- an INSERT/UPDATE/
+  -- DELETE on pdf_text that bypassed them would leave the index lying.
+  --
+  -- porter stemming so "resistance" answers a search for "resist"; unicode61 so
+  -- accented author names and Greek letters tokenize as words.
+  CREATE VIRTUAL TABLE IF NOT EXISTS pdf_text_fts USING fts5(
+    text,
+    content='pdf_text',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+  );
+
+  CREATE TRIGGER IF NOT EXISTS pdf_text_ai AFTER INSERT ON pdf_text BEGIN
+    INSERT INTO pdf_text_fts(rowid, text) VALUES (new.rowid, new.text);
+  END;
+  -- External-content deletes/updates must hand FTS5 the *old* value so it can
+  -- unindex the right terms; there is no way for it to look them up itself.
+  CREATE TRIGGER IF NOT EXISTS pdf_text_ad AFTER DELETE ON pdf_text BEGIN
+    INSERT INTO pdf_text_fts(pdf_text_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS pdf_text_au AFTER UPDATE ON pdf_text BEGIN
+    INSERT INTO pdf_text_fts(pdf_text_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO pdf_text_fts(rowid, text) VALUES (new.rowid, new.text);
+  END;
+
   CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name ON collections(name COLLATE NOCASE);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmark_folders_name ON bookmark_folders(name COLLATE NOCASE);
 
@@ -566,13 +613,72 @@ const JOURNAL_LOOKUP = `LEFT JOIN journals j ON j.nlm_id = a.nlm_id
 // text matches any author of the paper. Year is deliberately NOT searched here:
 // it's a range, filtered client-side, and folding it in would make "2019" match
 // every title containing that number.
-function searchPredicate(q: string | undefined, params: (string | number)[]): string {
+//
+// For a collection the same query also searches the body text of the PDFs that
+// collection holds. That asymmetry is the point rather than an oversight: a
+// collection is what the user *holds*, so there is a document to search, while
+// a topic or bookmark folder is a list of papers seen — mostly with no file
+// behind them — where body matching would return a subset that depended on
+// which papers happened to have been imported somewhere else.
+//
+// The body clause is an uncorrelated subquery, so SQLite evaluates the FTS
+// match once rather than per candidate row. Deliberately no snippet() here:
+// FTS5's auxiliary functions are only legal where the index is scanned
+// directly, and this shape has to survive being embedded in two different outer
+// queries. Snippets come from snippetsForSearch below, over the rows that
+// actually came back.
+function searchPredicate(
+  q: string | undefined,
+  params: (string | number)[],
+  source?: PaperSourceQuery
+): string {
   if (!q) return "";
+  // Bind order follows the *textual* order of the ? placeholders below, so the
+  // three LIKEs are pushed before the body clause that trails them. Getting this
+  // backwards binds the collection id to an author LIKE and silently returns
+  // nothing at all, which no type checks and no schema catches.
   const like = `%${escapeLike(q)}%`;
   params.push(like, like, like);
+  let body = "";
+  const match = source && "collectionId" in source ? toFtsQuery(q) : null;
+  if (match && source && "collectionId" in source) {
+    params.push(match, source.collectionId);
+    body = `
+        OR a.pmid IN (SELECT cf2.pmid FROM pdf_text_fts
+                      JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
+                      JOIN collection_files cf2 ON cf2.content_hash = pt.content_hash
+                      WHERE pdf_text_fts MATCH ? AND cf2.collection_id = ?
+                        AND cf2.pmid IS NOT NULL)`;
+  }
   return `(a.title LIKE ? ESCAPE '\\'
         OR a.abstract LIKE ? ESCAPE '\\'
-        OR a.authors LIKE ? ESCAPE '\\')`;
+        OR a.authors LIKE ? ESCAPE '\\'${body})`;
+}
+
+// Highlighted excerpts for the papers a body-text search matched, keyed by pmid.
+// Runs as its own statement because snippet() cannot be used in a query that
+// also groups or is flattened into a join (see searchPredicate) — and because
+// only the papers view wants excerpts, so the graph shouldn't pay for them.
+//
+// One pmid can have several matching files; the first excerpt wins, which is
+// arbitrary but stable enough (rows come back in rowid order) and no worse than
+// picking by a relevance the user never sees.
+function snippetsForSearch(collectionId: number, q: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const match = toFtsQuery(q);
+  if (!match) return out;
+  const rows = db
+    .prepare(
+      `SELECT cf.pmid AS pmid,
+              snippet(pdf_text_fts, 0, ?, ?, '…', 14) AS snip
+       FROM pdf_text_fts
+       JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
+       JOIN collection_files cf ON cf.content_hash = pt.content_hash
+       WHERE pdf_text_fts MATCH ? AND cf.collection_id = ? AND cf.pmid IS NOT NULL`
+    )
+    .all(SNIPPET_OPEN, SNIPPET_CLOSE, match, collectionId) as { pmid: string; snip: string }[];
+  for (const r of rows) if (!out.has(r.pmid)) out.set(r.pmid, r.snip);
+  return out;
 }
 
 export function topicArticleCounts(): Record<number, number> {
@@ -670,7 +776,7 @@ export function listPapers(
   q?: string
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
   const { join, params } = sourceMembership(source);
-  const predicate = searchPredicate(q, params);
+  const predicate = searchPredicate(q, params, source);
   const search = predicate ? `WHERE ${predicate}` : "";
   const rows = db
     .prepare(
@@ -686,9 +792,21 @@ export function listPapers(
        ORDER BY a.pub_date DESC, a.pmid DESC`
     )
     .all(...params) as Array<
-    Omit<Paper, "file_exists" | "authors"> & { authors: string; content_hash: string | null }
+    Omit<Paper, "file_exists" | "authors" | "snippet"> & {
+      authors: string;
+      content_hash: string | null;
+    }
   >;
-  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
+  // Excerpts exist only for a collection search, and only for papers the query
+  // matched *inside the document*. A paper matched on title alone gets none, so
+  // the excerpt's presence tells the reader the words are actually in the file.
+  const snippets =
+    q && "collectionId" in source ? snippetsForSearch(source.collectionId, q) : null;
+  return rows.map((r) => ({
+    ...r,
+    authors: safeParseAuthors(r.authors),
+    snippet: snippets?.get(r.pmid) ?? null,
+  }));
 }
 
 function safeParseAuthors(raw: string): string[] {
@@ -725,7 +843,7 @@ export interface GraphPaper {
 // file as listPapers, so a node opens the PDF its table row does.
 export function graphPapersForSource(source: PaperSourceQuery, q?: string): GraphPaper[] {
   const { join, params } = sourceMembership(source);
-  const predicate = searchPredicate(q, params);
+  const predicate = searchPredicate(q, params, source);
   return db
     .prepare(
       `SELECT a.pmid, a.title, a.url, a.pub_date, ${JOURNAL_DISPLAY} AS journal_name,
@@ -958,8 +1076,17 @@ function countFilesByHash(hash: string): number {
 // The row-deleting functions here call it themselves, so no route has to
 // remember the capture-hashes-then-GC dance. Exported for the one non-row
 // case: uploads whose blobs were stored but whose rows were never recorded.
+//
+// The extracted text goes with the blob. It is keyed by content_hash and can
+// outlive any single file row (that is the point — a re-upload reuses it), so
+// the moment the last row referencing the hash is gone, keeping the text would
+// leave an unreachable document permanently answering searches.
 export function gcBlobsIfOrphaned(hashes: string[]): void {
-  deleteBlobs([...new Set(hashes)].filter((h) => countFilesByHash(h) === 0));
+  const orphaned = [...new Set(hashes)].filter((h) => countFilesByHash(h) === 0);
+  if (orphaned.length === 0) return;
+  const deleteText = db.prepare("DELETE FROM pdf_text WHERE content_hash = ?");
+  for (const h of orphaned) deleteText.run(h); // triggers unindex it from FTS
+  deleteBlobs(orphaned);
 }
 
 // The blobs a collection's rows reference, captured before deletion for GC.
@@ -1021,6 +1148,69 @@ export function deleteCollectionFile(fileId: number): void {
     .get(fileId) as { content_hash: string } | undefined;
   db.prepare("DELETE FROM collection_files WHERE id = ?").run(fileId);
   if (row) gcBlobsIfOrphaned([row.content_hash]);
+}
+
+// ---------- extracted PDF text (full-text search) ----------
+
+export interface PdfTextInsert {
+  contentHash: string;
+  text: string;
+  pages: number;
+  truncated: boolean;
+}
+
+// Store (or replace) one PDF's extracted text. Replace rather than ignore, so
+// re-running extraction after an extractor improvement actually updates the
+// index; the AFTER UPDATE trigger re-indexes it.
+export function savePdfText(t: PdfTextInsert): void {
+  db.prepare(
+    `INSERT INTO pdf_text (content_hash, text, pages, truncated, chars)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(content_hash) DO UPDATE SET
+       text = excluded.text, pages = excluded.pages,
+       truncated = excluded.truncated, chars = excluded.chars,
+       extracted_at = datetime('now')`
+  ).run(t.contentHash, t.text, t.pages, Number(t.truncated), t.text.length);
+}
+
+export function hasPdfText(contentHash: string): boolean {
+  return (
+    db.prepare("SELECT 1 FROM pdf_text WHERE content_hash = ?").get(contentHash) !== undefined
+  );
+}
+
+// The backfill's work list: distinct blobs behind uploaded files that have no
+// extracted text yet. Re-queried each pass rather than snapshotted, which is
+// what makes the job resumable — a restart mid-backfill just asks again, and
+// files deleted in the meantime drop out on their own.
+export function fileHashesMissingText(limit: number): { hash: string; name: string }[] {
+  return db
+    .prepare(
+      `SELECT cf.content_hash AS hash, MIN(cf.file_name) AS name
+       FROM collection_files cf
+       LEFT JOIN pdf_text pt ON pt.content_hash = cf.content_hash
+       WHERE pt.content_hash IS NULL
+       GROUP BY cf.content_hash
+       ORDER BY MIN(cf.id)
+       LIMIT ?`
+    )
+    .all(limit) as { hash: string; name: string }[];
+}
+
+export function pdfTextStats(): { indexed: number; pending: number } {
+  const indexed = (
+    db.prepare("SELECT COUNT(*) AS c FROM pdf_text").get() as { c: number }
+  ).c;
+  const pending = (
+    db
+      .prepare(
+        `SELECT COUNT(DISTINCT cf.content_hash) AS c FROM collection_files cf
+         LEFT JOIN pdf_text pt ON pt.content_hash = cf.content_hash
+         WHERE pt.content_hash IS NULL`
+      )
+      .get() as { c: number }
+  ).c;
+  return { indexed, pending };
 }
 
 // Insert/refresh articles without linking them to a topic (collections track

@@ -2337,6 +2337,51 @@ html {
   text-decoration: underline;
 }
 
+/* An excerpt from a stored PDF's body, shown when that is what the current
+   search matched. Quiet by design: it is evidence for the row above it, not a
+   second title. The rule on the left is what marks it as quoted material; no
+   decorative quote glyphs, so selecting the excerpt copies only its text. */
+.paper-snippet {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  /* Excerpts are one sentence of context, not an abstract; two lines keeps a
+     table row from doubling in height. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The matched terms inside an excerpt. <mark>'s UA default is a yellow block
+   that fights the badge palette, so it is restyled to a weight-and-tint
+   emphasis that still reads as "this is the bit you searched for". */
+/* In a card the excerpt stands in for the abstract, so it takes that block's
+   type size rather than the table row's smaller one, and up to three lines
+   instead of two.
+   Deliberately no min-height, unlike .card-abstract: that reservation exists
+   because abstracts arrive after the card is painted, and an excerpt ships with
+   the papers payload. Reserving for it would only draw the quote rule down
+   through empty space under a one-line excerpt. */
+.card-snippet {
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 10px;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.paper-snippet mark {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
 .file-missing {
   display: inline-block;
   margin-left: 8px;

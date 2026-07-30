@@ -53,6 +53,7 @@ function YearBox({
 export function PaperFilters({
   filters,
   searchable = true,
+  fullText = false,
   journals,
   maxCitations,
   yearBounds,
@@ -62,6 +63,11 @@ export function PaperFilters({
 }: {
   filters: PaperFilterState;
   searchable?: boolean;
+  // Collections also search the body text of the PDFs they hold; topics and
+  // bookmark folders have no files behind their papers. Only the placeholder
+  // changes -- the server decides what a query actually covers, from the
+  // source -- but promising "& PDF text" where there are no PDFs would be a lie.
+  fullText?: boolean;
   journals?: string[];
   maxCitations?: number;
   yearBounds?: { min: number; max: number } | null;
@@ -122,7 +128,11 @@ export function PaperFilters({
         <input
           className="search"
           type="search"
-          placeholder="Search titles, abstracts & authors…"
+          placeholder={
+            fullText
+              ? "Search titles, abstracts, authors & PDF text…"
+              : "Search titles, abstracts & authors…"
+          }
           value={filters.query}
           onChange={(e) => filters.setQuery(e.target.value)}
         />

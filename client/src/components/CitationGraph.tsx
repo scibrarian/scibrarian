@@ -471,6 +471,7 @@ export function CitationGraph({
           returns journal names, so all three views filter identically. */}
       <PaperFilters
         filters={filters}
+        fullText={"collection" in source}
         journals={data?.journals ?? []}
         maxCitations={maxCitations}
         yearBounds={yearBounds}

@@ -62,7 +62,12 @@ export function Timeline({
   // One request for the chunk on screen, rather than one per card (see
   // useAbstracts). Keyed off `shown`, so scrolling a page into view fetches
   // only the newly rendered papers.
-  const abstracts = useAbstracts(shown.map((p) => p.pmid));
+  //
+  // Cards showing a PDF excerpt are left out: their abstract is not rendered, so
+  // fetching it would be a round trip for text nobody sees. Clearing the search
+  // drops the excerpts, which puts those pmids back in this list and fetches
+  // them then — by which point the store may already have them cached.
+  const abstracts = useAbstracts(shown.filter((p) => !p.snippet).map((p) => p.pmid));
   const groups = groupByMonth(shown);
   // One opener for the whole timeline, so a failed open surfaces in a single
   // banner rather than per-card.
@@ -72,6 +77,7 @@ export function Timeline({
     <div className="timeline-wrap">
       <PaperFilters
         filters={filters}
+        fullText={"collection" in source}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}

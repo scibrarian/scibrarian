@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import {
   existingPmids,
   pendingCollectionFiles,
+  savePdfText,
   setFileError,
   setFileMatched,
   setFileUnmatched,
   upsertArticles,
 } from "./db.js";
 import { blobPath } from "./blobstore.js";
-import { extractPdfText } from "./pdf-text.js";
+import { extractPdf } from "./pdf-text.js";
 import { findDois, findPmid } from "./pdf-match.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
@@ -76,7 +77,19 @@ async function runImport(
         job.currentFile = f.file_name;
         let text: string;
         try {
-          text = await extractPdfText(blobPath(f.content_hash));
+          // One parse yields both texts: the 3-page slice the matcher is allowed
+          // to see, and the capped full text for the search index.
+          const extracted = await extractPdf(blobPath(f.content_hash));
+          text = extracted.matchText;
+          // Indexed even when the file goes on to be unmatched. The text belongs
+          // to the blob, not to whether we could pin it to a PubMed record, and
+          // re-running the import shouldn't have to parse it again.
+          savePdfText({
+            contentHash: f.content_hash,
+            text: extracted.fullText,
+            pages: extracted.pages,
+            truncated: extracted.truncated,
+          });
         } catch (err) {
           // match_error is rendered verbatim next to the file in the UI, and the
           // raw pdfjs/fs message names the blob path — which embeds the

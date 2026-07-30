@@ -13,6 +13,7 @@ import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 import { ShareLinkButton } from "./ShareLinkButton";
+import { Snippet } from "./Snippet";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
@@ -122,6 +123,7 @@ export function PapersTable({
     <div className="papers-table-view">
       <PaperFilters
         filters={filters}
+        fullText={"collection" in source}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}
@@ -204,6 +206,11 @@ export function PapersTable({
                         <span className="file-missing" title="The stored PDF is missing">
                           file missing
                         </span>
+                      )}
+                      {p.snippet && (
+                        // Present only when the PDF's body is what matched, so
+                        // it doubles as the answer to "why is this row here?"
+                        <Snippet text={p.snippet} className="paper-snippet" />
                       )}
                     </td>
                     <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>

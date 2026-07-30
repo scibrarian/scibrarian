@@ -121,12 +121,32 @@ export interface Paper {
   file_id: number | null;
   file_name: string | null;
   file_exists: boolean; // false when file_id is null
+  // An excerpt from the PDF's body around the current search terms, present
+  // whenever the query matched inside the document (whether or not it also
+  // matched the title/abstract/authors). Null for a paper matched only on
+  // metadata, for every non-collection source, and when there's no search — so
+  // its presence says "the words you typed are in this file", which is the one
+  // thing a title alone can't tell you.
+  //
+  // Matched terms are wrapped in the sentinels below. Deliberately not HTML: the
+  // client renders this as text, and a server that emitted <mark> would be
+  // asking it to trust markup assembled from PDF contents.
+  snippet: string | null;
 }
 
 export interface PapersResponse {
   papers: Paper[];
   journals: string[]; // distinct journal display names, for the filter chips
 }
+
+// Delimiters marking the matched terms inside Paper.snippet. ASCII STX/ETX:
+// control codes with no textual meaning, which the extractor strips from stored
+// PDF text (see pdf-text.ts) precisely so a document can never contain them and
+// forge a highlight. The client splits on these and renders the enclosed runs;
+// anything that shows them literally has failed to, which is visible rather
+// than silent.
+export const SNIPPET_OPEN = "\u0002";
+export const SNIPPET_CLOSE = "\u0003";
 
 // Abstracts for a batch of papers, keyed by pmid. A requested pmid that isn't
 // stored is absent rather than empty, so the caller can tell the two apart.
