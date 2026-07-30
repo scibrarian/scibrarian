@@ -113,7 +113,7 @@ export function CitationGraph({
   // The citation threshold is shared with the other views (instant: slider +
   // box); hide-unconnected is about edges, so it stays graph-local.
   const { minCitations } = filters;
-  const [hideUnconnected, setHideUnconnected] = useState(true);
+  const [hideUnconnected, setHideUnconnected] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>("citation");
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
