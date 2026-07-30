@@ -42,6 +42,9 @@ import {
   listTopics,
   listJournals,
   findMeshByName,
+  libraryFilingCounts,
+  meshFacetsForSource,
+  meshFilingForSource,
   missingOrStaleCitations,
   removeBookmark,
   removeJournalWithArticles,
@@ -51,7 +54,9 @@ import {
   searchMesh,
   setFileMatched,
   setSetting,
+  suggestTopicsFromLibrary,
   upsertArticles,
+  type PaperFilter,
   type PaperSourceQuery,
 } from "./db.js";
 import {
@@ -98,8 +103,10 @@ import type {
   GraphEdge,
   GraphNode,
   GraphResponse,
+  MeshHeadingsResponse,
   PapersResponse,
   Settings,
+  TopicSuggestResponse,
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
@@ -222,6 +229,23 @@ api.post(
   })
 );
 
+// Topics worth watching, derived from the subjects the user's own held papers
+// cluster around (suggestTopicsFromLibrary). The counterpart of
+// /journals/suggest: both turn what's already here into the next thing to add,
+// rather than asking someone to guess a term cold.
+//
+// Registered ahead of /topics/:id/... so a literal path segment can't be read
+// as an id — they don't collide today (there is no GET /topics/:id), but the
+// ordering is what keeps that true if one is ever added.
+api.get("/topics/suggest", (req, res) => {
+  const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 12));
+  const body: TopicSuggestResponse = {
+    results: suggestTopicsFromLibrary(limit),
+    ...libraryFilingCounts(),
+  };
+  res.json(body);
+});
+
 // How many stored papers removing this topic would delete (for the confirm):
 // papers exclusive to the topic and not saved in a library collection.
 api.get("/topics/:id/article-count", (req, res) => {
@@ -242,6 +266,33 @@ api.get(
     res.json({ results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name })) });
   })
 );
+
+// The subjects one paper source is actually filed under, most-used first — the
+// facet list behind the toolbar's subject filter. Distinct from /mesh/search
+// above, which searches the whole MeSH vocabulary to pick a topic to watch;
+// this only ever returns headings some paper here carries.
+//
+// Deliberately server-side rather than derived on the client from the papers
+// payload: a MEDLINE paper carries ten to fifteen headings, so shipping them per
+// row would add more to a two-thousand-paper response than the rows themselves.
+const MESH_FACET_LIMIT = 200;
+
+api.get("/mesh/headings", (req, res) => {
+  const source = parseSource(req);
+  if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
+  const q = String(req.query.q ?? "").trim();
+  // One past the limit, purely to learn whether there are more without a second
+  // COUNT over the same grouping.
+  const rows = meshFacetsForSource(source, q || undefined, MESH_FACET_LIMIT + 1);
+  const body: MeshHeadingsResponse = {
+    headings: rows.slice(0, MESH_FACET_LIMIT),
+    // Over the whole source, not the search — it answers "why are only some of
+    // my papers in this list", which a filtered count can't.
+    filing: meshFilingForSource(source),
+    truncated: rows.length > MESH_FACET_LIMIT,
+  };
+  res.json(body);
+});
 
 // ---------- journals ----------
 
@@ -382,13 +433,37 @@ function parseSource(req: Request): PaperSourceQuery | null {
 
 const SOURCE_REQUIRED = "'topic', 'folder' or 'collection' query param is required.";
 
+// A ceiling on how many descriptors one request may filter by. The UIs are
+// bound parameters, so this isn't about injection — it's that each one is
+// another placeholder in an IN list, and a hand-written URL shouldn't be able to
+// hand SQLite a few thousand of them.
+const MAX_MESH_FILTER = 50;
+
+// The filters both /papers and /graph accept, so a query means the same thing in
+// either view: free text (?q=), MeSH descriptors (?mesh=D003924,D009369 — a
+// paper filed under any of them), and ?mesh_major=1 to keep only papers a
+// descriptor is a main point of. Ids are shape-checked purely to bound the list;
+// an unrecognized one simply matches nothing.
+function parseFilter(req: Request): PaperFilter {
+  const mesh = String(req.query.mesh ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^[A-Za-z0-9]{1,16}$/.test(s))
+    .slice(0, MAX_MESH_FILTER);
+  return {
+    q: req.query.q ? String(req.query.q) : undefined,
+    mesh: mesh.length > 0 ? mesh : undefined,
+    meshMajor: req.query.mesh_major === "1",
+  };
+}
+
 api.get(
   "/papers",
   asyncHandler(async (req, res) => {
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
-    const q = req.query.q ? String(req.query.q) : undefined;
-    let rows = listPapers(source, q);
+    const filter = parseFilter(req);
+    let rows = listPapers(source, filter);
 
     // Backfill missing/stale citation counts, like /graph does. Poll and import
     // pre-warm them, so this is usually a no-op; re-query only when it wasn't.
@@ -402,7 +477,7 @@ api.get(
       // local rows now, warm the cache for next load — to drop both the latency
       // and the re-query. Freshness-vs-latency tradeoff; synchronous for now.
       await warmCitations(stale, "papers");
-      rows = listPapers(source, q);
+      rows = listPapers(source, filter);
     }
 
     // One directory read instead of a stat per row. Only collection rows carry
@@ -444,10 +519,9 @@ api.get(
   asyncHandler(async (req, res) => {
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
-    // Same free-text query the papers list takes, resolved by the same SQL, so
-    // a search selects the same papers whichever view is showing.
-    const q = req.query.q ? String(req.query.q) : undefined;
-    const papers = graphPapersForSource(source, q);
+    // Same filters the papers list takes, resolved by the same SQL, so they
+    // select the same papers whichever view is showing.
+    const papers = graphPapersForSource(source, parseFilter(req));
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 

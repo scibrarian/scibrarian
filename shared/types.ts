@@ -40,6 +40,60 @@ export interface Article {
   doi: string;
   url: string;
   first_seen_at: string;
+  // MedlineCitation/@Status as PubMed last reported it ("" = never looked).
+  // What it means for this paper's headings is meshOutlook() in pubmed-parse.
+  mesh_status: string;
+}
+
+// Enough to name a MeSH descriptor: the id everything keys on, plus the heading
+// to show for it. Every subject shape below carries these two and adds whatever
+// its own context measures.
+export interface MeshDescriptorRef {
+  ui: string; // descriptor id, e.g. D003924
+  name: string; // canonical heading, e.g. "Diabetes Mellitus, Type 2"
+}
+
+// One MeSH descriptor a paper is filed under. `major` mirrors PubMed's star:
+// the paper is *about* this subject rather than merely mentioning it.
+export interface MeshHeading extends MeshDescriptorRef {
+  major: boolean;
+}
+
+// One descriptor present in a paper source, with how much of it the descriptor
+// accounts for — the subject facet the toolbar browses and filters by.
+export interface MeshFacet extends MeshDescriptorRef {
+  count: number; // papers in the source filed under it
+  majorCount: number; // of those, the ones it's a major topic for
+}
+
+// How completely a source's papers are filed, so a short facet list can say why
+// instead of looking like the filing simply failed. Every paper in the source
+// falls in exactly one bucket.
+export interface MeshFiling {
+  filed: number; // has at least one heading
+  none: number; // settled with no headings — PubMed holds it, MEDLINE won't index it
+  pending: number; // in PubMed but not through MeSH indexing yet; headings may still arrive
+  unchecked: number; // we haven't asked PubMed for this one's headings yet
+}
+
+export interface MeshHeadingsResponse {
+  headings: MeshFacet[];
+  filing: MeshFiling;
+  // True when `headings` was cut short by the limit, so the UI can say the list
+  // is the most common subjects rather than all of them.
+  truncated: boolean;
+}
+
+// A MeSH heading the user's own holdings suggest as a topic worth watching.
+export interface TopicSuggestion extends MeshDescriptorRef {
+  papers: number; // held papers filed under it
+  majorPapers: number; // of those, the ones it's a major topic for
+}
+
+export interface TopicSuggestResponse {
+  results: TopicSuggestion[];
+  heldPapers: number; // distinct papers in the Library the ranking drew on
+  unchecked: number; // held papers whose headings haven't been fetched yet
 }
 
 // A user-created bookmark folder: the Bookmarks workspace's counterpart to a

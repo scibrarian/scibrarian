@@ -15,12 +15,15 @@ import type {
   JournalRemovalResult,
   JournalSearchResponse,
   JournalSuggestResponse,
+  MeshHeadingsResponse,
   MeshSearchResponse,
+  PaperQuery,
   PaperSource,
   PapersResponse,
   RefreshResponse,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestResponse,
   UploadResponse,
 } from "./types";
 
@@ -79,6 +82,21 @@ function sourceQuery(source: PaperSource): string {
   return `collection=${source.collection}`;
 }
 
+// The server-side filters, appended to a source query. One builder for /papers
+// and /graph so a filter can't reach one endpoint and be dropped by the other.
+// mesh_major is only sent alongside a selection, since on its own it narrows
+// nothing and would just split the cache.
+function filterQuery(filter?: PaperQuery): string {
+  if (!filter) return "";
+  let qs = "";
+  if (filter.q) qs += `&q=${encodeURIComponent(filter.q)}`;
+  if (filter.mesh && filter.mesh.length > 0) {
+    qs += `&mesh=${filter.mesh.map(encodeURIComponent).join(",")}`;
+    if (filter.meshMajor) qs += "&mesh_major=1";
+  }
+  return qs;
+}
+
 export const api = {
   getAuth: () => req<AuthStatus>("/api/auth"),
 
@@ -92,6 +110,14 @@ export const api = {
     req<TopicRemovalResult>(`/api/topics/${id}`, { method: "DELETE" }),
   searchMesh: (q: string) =>
     req<MeshSearchResponse>(`/api/mesh/search?q=${encodeURIComponent(q)}`),
+  // The subjects one source is filed under (the toolbar facet), not the whole
+  // MeSH vocabulary — `q` searches within them.
+  getMeshHeadings: (source: PaperSource, q?: string) =>
+    req<MeshHeadingsResponse>(
+      `/api/mesh/headings?${sourceQuery(source)}${q ? `&q=${encodeURIComponent(q)}` : ""}`
+    ),
+  // Topics the user's own held papers suggest, for the Settings picker.
+  suggestTopics: () => req<TopicSuggestResponse>("/api/topics/suggest"),
 
   getJournals: () => req<Journal[]>("/api/journals"),
   searchJournals: (q: string, limit?: number) =>
@@ -114,21 +140,17 @@ export const api = {
   deleteJournal: (id: number) =>
     req<JournalRemovalResult>(`/api/journals/${id}`, { method: "DELETE" }),
 
-  getPapers: (source: PaperSource, q?: string) => {
-    const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
-    return req<PapersResponse>(`/api/papers?${qs}`);
-  },
+  getPapers: (source: PaperSource, filter?: PaperQuery) =>
+    req<PapersResponse>(`/api/papers?${sourceQuery(source)}${filterQuery(filter)}`),
 
   // Abstracts are kept out of the papers list payload; the timeline fetches
   // them lazily, one rendered chunk per request rather than one per card.
   getAbstracts: (pmids: string[]) =>
     req<AbstractsResponse>(`/api/abstracts?pmids=${pmids.join(",")}`),
 
-  // Takes the same `q` as getPapers, resolved server-side by the same SQL.
-  getGraph: (source: PaperSource, q?: string) => {
-    const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
-    return req<GraphResponse>(`/api/graph?${qs}`);
-  },
+  // Takes the same filters as getPapers, resolved server-side by the same SQL.
+  getGraph: (source: PaperSource, filter?: PaperQuery) =>
+    req<GraphResponse>(`/api/graph?${sourceQuery(source)}${filterQuery(filter)}`),
 
   getBookmarkFolders: () => req<BookmarkFolder[]>("/api/bookmark-folders"),
   createBookmarkFolder: (name: string) =>

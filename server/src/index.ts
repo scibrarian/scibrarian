@@ -10,6 +10,7 @@ import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
 import { backfillJournalIndexing, refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
+import { backfillArticleMesh } from "./mesh-index.js";
 import { backfillPdfText } from "./pdf-index.js";
 import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
 import { MAX_BULK_BOOKMARK_BYTES } from "../../shared/limits.js";
@@ -159,6 +160,7 @@ export async function start(): Promise<{ port: number; url: string }> {
   void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
   void backfillJournalIndexing(); // settle "can this journal match a MeSH topic?" for watched rows
   void backfillPdfText(); // index any PDFs uploaded before full-text search existed
+  void backfillArticleMesh(); // file stored papers under their MeSH headings
   return { port, url };
 }
 

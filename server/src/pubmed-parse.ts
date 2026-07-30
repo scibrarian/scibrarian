@@ -1,4 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
+import type { MeshHeading } from "../../shared/types.js";
 
 // Pure parsing and query-building for PubMed E-utilities responses. No I/O and
 // no imports from db/config, so tests can feed fixture payloads directly;
@@ -102,17 +103,20 @@ export function parseJournalIds(body: unknown): string[] {
   return out;
 }
 
-// ---------- efetch (abstract + journal identity) ----------
+// ---------- efetch (abstract + journal identity + MeSH filing) ----------
 
 export interface ArticleXml {
   abstract: string;
   nlmId: string; // NLM Unique journal ID — the stable journal identity
   medlineTa: string; // NLM journal abbreviation
+  mesh: MeshHeading[]; // [] when the record carries no MeshHeadingList
+  status: string; // MedlineCitation/@Status verbatim; "" when absent
 }
 
 // Parse an efetch.fcgi XML body (rettype=abstract). The XML carries the
 // journal's NlmUniqueID/MedlineTA per article, so we get a rock-solid journal
-// identifier for free alongside the abstract.
+// identifier for free alongside the abstract — and the MeSH headings NLM filed
+// the paper under, which is the whole of automatic filing at no extra request.
 export function parseArticleSet(xmlText: string): Map<string, ArticleXml> {
   const out = new Map<string, ArticleXml>();
   const parsed = xml.parse(xmlText);
@@ -121,14 +125,59 @@ export function parseArticleSet(xmlText: string): Map<string, ArticleXml> {
   for (const art of asArray(set.PubmedArticle)) {
     const pmid = getPmid(art);
     if (!pmid) continue;
-    const info = (art as any)?.MedlineCitation?.MedlineJournalInfo;
+    const citation = (art as any)?.MedlineCitation;
+    const info = citation?.MedlineJournalInfo;
     out.set(pmid, {
       abstract: parseAbstract(art),
       nlmId: nodeValue(info?.NlmUniqueID),
       medlineTa: nodeValue(info?.MedlineTA),
+      mesh: parseMeshHeadings(citation),
+      status: String(citation?.["@_Status"] ?? "").trim(),
     });
   }
   return out;
+}
+
+// ---------- MeSH filing status ----------
+
+// What a MedlineCitation/@Status says about a record's MeSH headings. The
+// distinction the library depends on is "this paper will never have headings"
+// versus "they haven't arrived yet" — without it, a library holding non-MEDLINE
+// papers looks permanently half-filed and there is no way to tell which rows are
+// worth asking PubMed about again.
+export type MeshOutlook =
+  | "indexed" // NLM finished indexing it; its headings (or lack of them) are final
+  | "pending" // in PubMed, not yet through MeSH indexing — ask again later
+  | "none" // PubMed holds it but MEDLINE never will, so no headings are coming
+  | "unknown"; // we have not looked yet
+
+// Statuses that settle the question for good, so a record carrying one is never
+// re-fetched. Exported because db.ts buckets stored rows by the same vocabulary
+// in SQL and the two must not drift; everything outside this set is treated as
+// still in flight, which is the safe direction for a status NLM adds later.
+export const MESH_SETTLED_STATUSES = [
+  "MEDLINE",
+  "OLDMEDLINE",
+  "Completed",
+  "PubMed-not-MEDLINE",
+] as const;
+
+// The one settled status that means no headings will ever exist.
+const MESH_STATUS_NEVER = "PubMed-not-MEDLINE";
+
+// Our own marker, not PubMed's, for a record efetch didn't return (a PMID
+// withdrawn from PubMed, a response that omitted it) or returned without a
+// Status. Deliberately outside MESH_SETTLED_STATUSES so it reads as "pending"
+// and is retried on the next recheck window rather than written off — a missing
+// record is as likely to be a transient upstream gap as a permanent one. It
+// still has to be *stored*, or the row would have no status, stay on the
+// backfill's work list, and be re-fetched forever.
+export const MESH_STATUS_UNAVAILABLE = "Unavailable";
+
+export function meshOutlook(status: string): MeshOutlook {
+  if (!status) return "unknown";
+  if (status === MESH_STATUS_NEVER) return "none";
+  return (MESH_SETTLED_STATUSES as readonly string[]).includes(status) ? "indexed" : "pending";
 }
 
 // ---------- helpers ----------
@@ -182,6 +231,49 @@ function parseAbstract(article: any): string {
 function cleanTitle(t: string): string {
   // esummary titles sometimes carry trailing punctuation/markup artifacts.
   return t.replace(/\s+/g, " ").trim();
+}
+
+// An XML boolean attribute ("Y"/"N").
+function isYes(v: unknown): boolean {
+  return String(v ?? "").trim().toUpperCase() === "Y";
+}
+
+// The MeSH descriptors one MedlineCitation is filed under.
+//
+//   <MeshHeadingList>
+//     <MeshHeading>
+//       <DescriptorName UI="D003924" MajorTopicYN="N">Diabetes Mellitus, Type 2</DescriptorName>
+//       <QualifierName UI="Q000188" MajorTopicYN="Y">drug therapy</QualifierName>
+//     </MeshHeading>
+//   </MeshHeadingList>
+//
+// Qualifiers ("/drug therapy") are deliberately dropped: they multiply the rows
+// per paper severalfold to describe an *aspect* of a subject, and what filing
+// needs is the subject. The star does survive them, though — PubMed writes it on
+// the descriptor or on any one of its qualifiers, and its own [majr] search
+// counts either, so a heading starred only through a qualifier is still major
+// here. Losing that would silently demote a large share of exactly the headings
+// a paper is most about.
+//
+// Keyed by UI so a record that repeated a descriptor collapses to one row (the
+// article_mesh primary key is (pmid, ui)) with the star OR'd across the
+// duplicates rather than decided by whichever came last.
+function parseMeshHeadings(citation: any): MeshHeading[] {
+  const headings = new Map<string, MeshHeading>();
+  for (const h of asArray(citation?.MeshHeadingList?.MeshHeading)) {
+    const descriptor = (h as any)?.DescriptorName;
+    if (!descriptor) continue;
+    const ui = String(descriptor["@_UI"] ?? "").trim();
+    const name = nodeValue(descriptor);
+    if (!ui || !name) continue;
+    const major =
+      isYes(descriptor["@_MajorTopicYN"]) ||
+      asArray((h as any).QualifierName).some((q) => isYes((q as any)?.["@_MajorTopicYN"]));
+    const existing = headings.get(ui);
+    if (existing) existing.major ||= major;
+    else headings.set(ui, { ui, name, major });
+  }
+  return [...headings.values()];
 }
 
 const MONTHS: Record<string, string> = {

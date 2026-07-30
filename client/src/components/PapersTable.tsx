@@ -39,8 +39,7 @@ export function PapersTable({
   bookmarking: Bookmarking | null;
 }) {
   const {
-    key,
-    search,
+    fetchKey,
     visible,
     journals,
     maxCitations,
@@ -92,7 +91,7 @@ export function PapersTable({
   // A new source or query starts from the top; re-sorting keeps scroll depth.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     sortedPapers,
-    `${key}|${search}|${reloadToken}`
+    `${fetchKey}|${reloadToken}`
   );
 
   function toggleSort(next: SortKey) {
@@ -127,6 +126,8 @@ export function PapersTable({
     <div className="papers-table-view">
       <PaperFilters
         filters={filters}
+        source={source}
+        reloadToken={reloadToken}
         fullText={"collection" in source}
         journals={journals}
         maxCitations={maxCitations}

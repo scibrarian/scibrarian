@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Search, Share2, Check } from "lucide-react";
+import { Search, Share2, Check, Plus } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage, round1 } from "../lib/format";
@@ -8,7 +8,16 @@ import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { Typeahead } from "./Typeahead";
-import type { AppSettings, Topic, Journal, MeshSearchResult } from "../types";
+import type {
+  AppSettings,
+  Topic,
+  Journal,
+  MeshSearchResult,
+  TopicSuggestResponse,
+} from "../types";
+
+// What the library's own filing suggests watching, when it has anything to say.
+const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
 
 export function Settings({
   onDataChanged,
@@ -21,6 +30,7 @@ export function Settings({
 }) {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [suggested, setSuggested] = useState<TopicSuggestResponse>(NO_SUGGESTIONS);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
@@ -43,12 +53,20 @@ export function Settings({
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
 
   function reload() {
-    Promise.all([api.getJournals(), api.getTopics(), api.getSettings()])
-      .then(([j, d, s]) => {
+    Promise.all([
+      api.getJournals(),
+      api.getTopics(),
+      api.getSettings(),
+      // Advisory, and the panel is useful without it — a failure here must not
+      // take the journals and topics down with it.
+      api.suggestTopics().catch(() => NO_SUGGESTIONS),
+    ])
+      .then(([j, d, s, sug]) => {
         setJournals(j);
         setTopics(d);
         setSettings(s);
         setBaseline(s);
+        setSuggested(sug);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoaded(true));
@@ -242,6 +260,46 @@ export function Settings({
           />
           <button type="submit">Add</button>
         </form>
+
+        {/* Topics the Library's own filing points at, so the first topic doesn't
+            have to be guessed cold. Drawn from papers the user holds files for
+            rather than from the topic feeds, which would mostly recommend the
+            topics that put those papers there. Ranked by how many held papers
+            each heading is a *main* subject of; the count shown is how many
+            carry it at all. */}
+        {loaded && suggested.results.length > 0 && (
+          <div className="topic-suggest">
+            <span className="hint">
+              From your Library ({suggested.heldPapers} filed paper
+              {suggested.heldPapers === 1 ? "" : "s"}):
+            </span>
+            <div className="topic-suggest-chips">
+              {suggested.results.map((s) => (
+                <button
+                  key={s.ui}
+                  type="button"
+                  className="suggest-chip"
+                  onClick={() => addTopic(s.name)}
+                  title={`${s.majorPapers} of ${s.papers} are mainly about this`}
+                >
+                  <Plus size={13} className="inline-icon" aria-hidden />
+                  {s.name}
+                  <span className="suggest-count">{s.papers}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* The one case worth explaining rather than leaving blank: there are
+            held papers, but their headings haven't been fetched yet. */}
+        {loaded && suggested.results.length === 0 && suggested.unchecked > 0 && (
+          <p className="hint">
+            Still reading MeSH headings for {suggested.unchecked} paper
+            {suggested.unchecked === 1 ? "" : "s"} in your Library — suggestions will appear
+            here once that finishes.
+          </p>
+        )}
+
         <ul className="list">
           {!loaded ? (
             [0, 1].map((i) => <ListRowSkeleton key={i} w={["55%", "40%"][i]} />)

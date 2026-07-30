@@ -15,11 +15,17 @@ import type {
   ImportStatus,
   Journal,
   JournalRemovalResult,
+  MeshDescriptorRef,
+  MeshFacet,
+  MeshFiling,
+  MeshHeadingsResponse,
   Paper,
   PapersResponse,
   PollResult,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestion,
+  TopicSuggestResponse,
 } from "../../shared/types";
 
 export type {
@@ -32,12 +38,28 @@ export type {
   ImportStatus,
   Journal,
   JournalRemovalResult,
+  MeshDescriptorRef,
+  MeshFacet,
+  MeshFiling,
+  MeshHeadingsResponse,
   Paper,
   PapersResponse,
   PollResult,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestion,
+  TopicSuggestResponse,
 };
+
+// What narrows a paper source server-side, shared by /api/papers and /api/graph
+// so both views select the same papers. Journals, the citation threshold and
+// the year range are deliberately not here: those are applied client-side over
+// an already-fetched list, so toggling them never costs a request.
+export interface PaperQuery {
+  q?: string;
+  mesh?: string[]; // MeSH descriptor UIs; a paper filed under any of them matches
+  meshMajor?: boolean; // keep only papers a selected descriptor is a main point of
+}
 
 export interface Topic extends TopicRow {
   articleCount?: number;

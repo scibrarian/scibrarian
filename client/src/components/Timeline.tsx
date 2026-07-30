@@ -43,8 +43,7 @@ export function Timeline({
   // timeline rather than one behind every card (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
   const {
-    key,
-    search,
+    fetchKey,
     visible,
     journals,
     maxCitations,
@@ -57,7 +56,7 @@ export function Timeline({
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     visible,
-    `${key}|${search}|${reloadToken}`
+    `${fetchKey}|${reloadToken}`
   );
   // One request for the chunk on screen, rather than one per card (see
   // useAbstracts). Keyed off `shown`, so scrolling a page into view fetches
@@ -77,6 +76,8 @@ export function Timeline({
     <div className="timeline-wrap">
       <PaperFilters
         filters={filters}
+        source={source}
+        reloadToken={reloadToken}
         fullText={"collection" in source}
         journals={journals}
         maxCitations={maxCitations}

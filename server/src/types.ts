@@ -15,11 +15,17 @@ export type {
   ImportJob,
   Journal,
   JournalRemovalResult,
+  MeshFacet,
+  MeshFiling,
+  MeshHeading,
+  MeshHeadingsResponse,
   Paper,
   PapersResponse,
   PollResult,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestion,
+  TopicSuggestResponse,
 } from "../../shared/types.js";
 
 import { SETTING_DEFAULTS } from "./config.js";

@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { PaperFilterState } from "../lib/papers";
+import type { PaperSource } from "../types";
 import { JournalFilter } from "./JournalFilter";
+import { MeshFilter, useMeshFacets } from "./MeshFilter";
 import { FilterSkeleton } from "./Skeleton";
 
 // One end of the year range. Holds its own text so a 4-digit year can be typed
@@ -50,8 +52,15 @@ function YearBox({
 //   action       — an action *on* the filtered result (the bulk save), pushed
 //                  to the far end so it reads as "…and do this with it" rather
 //                  than as one more control that narrows
+//
+// The subject filter is the exception: it fetches its own facet list per source
+// rather than being handed one, because unlike journals the list is too large to
+// derive from the papers payload (see MeshFilter). It therefore needs the source
+// and its reload token.
 export function PaperFilters({
   filters,
+  source,
+  reloadToken,
   searchable = true,
   fullText = false,
   journals,
@@ -62,6 +71,8 @@ export function PaperFilters({
   action,
 }: {
   filters: PaperFilterState;
+  source: PaperSource;
+  reloadToken: number;
   searchable?: boolean;
   // Collections also search the body text of the PDFs they hold; topics and
   // bookmark folders have no files behind their papers. Only the placeholder
@@ -76,6 +87,7 @@ export function PaperFilters({
   action?: ReactNode;
 }) {
   const { minCitations, setMinCitations, minText, setMinText } = filters;
+  const facets = useMeshFacets(source, reloadToken);
 
   // Slider and number box share this range; the box is clamped so a typed value
   // always maps to a valid slider position.
@@ -120,7 +132,13 @@ export function PaperFilters({
   // null: a caller writing `action={cond && <Button/>}` passes `false` when the
   // button is suppressed, and a row rendered for that is an empty one — its
   // gap, with nothing in it.
-  const hasRow = showJournals || showCitations || showYears || Boolean(children) || Boolean(action);
+  const hasRow =
+    showJournals ||
+    facets.available ||
+    showCitations ||
+    showYears ||
+    Boolean(children) ||
+    Boolean(action);
 
   return (
     <div className="toolbar">
@@ -150,6 +168,16 @@ export function PaperFilters({
             ) : (
               <FilterSkeleton />
             ))}
+
+          {facets.available && (
+            <MeshFilter
+              facets={facets}
+              selected={filters.subjects}
+              onChange={filters.setSubjects}
+              majorOnly={filters.majorOnly}
+              onMajorOnlyChange={filters.setMajorOnly}
+            />
+          )}
 
           {showCitations && (
             <div className="citation-filter">

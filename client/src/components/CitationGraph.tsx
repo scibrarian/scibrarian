@@ -135,16 +135,15 @@ export function CitationGraph({
   const [size, setSize] = useState({ width: 800, height: 600 });
 
   // Stable fetch key: the same source object is re-created each render. The
-  // search is part of it — it selects a different set of papers server-side.
+  // server-side filters are part of it — they select a different set of papers
+  // (see PaperFilterState.fetchKey, which the papers list keys on too).
   const key = sourceKey(source);
-  const { search, deselected, yearFrom, yearTo } = filters;
+  const { search, fetchKey, serverQuery, deselected, yearFrom, yearTo } = filters;
   const {
     data: fetched,
     loading,
     error,
-  } = useCachedFetch(graphCache, `${key}:${search}`, reloadToken, () =>
-    api.getGraph(source, search || undefined)
-  );
+  } = useCachedFetch(graphCache, fetchKey, reloadToken, () => api.getGraph(source, serverQuery));
 
   // Keep the last result for THIS source on screen while a search refetch is in
   // flight, so typing narrows the graph in place instead of blanking the canvas
@@ -162,7 +161,7 @@ export function CitationGraph({
     setSelected(null);
     setHovered(null);
     setFocus(null);
-  }, [key, search, reloadToken]);
+  }, [fetchKey, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
@@ -471,6 +470,8 @@ export function CitationGraph({
           returns journal names, so all three views filter identically. */}
       <PaperFilters
         filters={filters}
+        source={source}
+        reloadToken={reloadToken}
         fullText={"collection" in source}
         journals={data?.journals ?? []}
         maxCitations={maxCitations}

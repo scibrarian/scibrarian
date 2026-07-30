@@ -382,6 +382,85 @@ body {
   white-space: nowrap;
 }
 
+/* subject (MeSH) filter — the picker above plus what a server-driven,
+   selection-based list needs that the journal one doesn't */
+
+/* A selection is invisible from the closed trigger once the label reads
+   "3 subjects", so the trigger itself carries the on-state. */
+.filter-trigger.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The subject menu scrolls its list rather than itself, so the search box, the
+   major-topic toggle and the filing note stay put. On the shared .filter-menu
+   rule the whole menu scrolls, which is fine for a bare list of journals but
+   would bury the note explaining the unfiled papers under a few hundred
+   headings — exactly where nobody would look for it. */
+.subject-menu {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.subject-menu .filter-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.filter-search {
+  width: 100%;
+  padding: 7px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* Pushes "Main subject only" to the far end of the actions row, away from the
+   Clear button — one narrows the result, the other empties the selection. */
+.filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* The heading takes the slack so the count stays pinned to the right edge and
+   the numbers line up down the list. */
+.filter-option .filter-option-name {
+  flex: 1;
+}
+
+.filter-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.filter-count em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.filter-empty,
+.filter-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.filter-note {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
 /* ---------- timeline ---------- */
 
 .scroll-sentinel {
@@ -909,6 +988,50 @@ input:focus {
   font-size: 12px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* topics the Library's own MeSH filing suggests watching */
+
+.topic-suggest {
+  margin: 12px 0 4px;
+}
+
+.topic-suggest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Chips, not list rows: these are a menu of one-click adds, and stacking a
+   dozen of them vertically would push the topics they'd join off the panel. */
+.suggest-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.suggest-chip:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.suggest-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.suggest-chip:hover .suggest-count {
+  color: inherit;
 }
 
 code {

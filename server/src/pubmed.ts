@@ -274,6 +274,11 @@ export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
       pub_date_display: m.pub_date_display,
       doi: m.doi,
       url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+      // Filing comes free with the abstract — same response, same parse. Only
+      // set when efetch actually returned this record: a paper we have summary
+      // metadata for but no XML is "not looked at yet", not "no headings", and
+      // omitting it here is what leaves it on the backfill's work list.
+      mesh: x ? { status: x.status, headings: x.mesh } : undefined,
     });
   }
   return articles;
