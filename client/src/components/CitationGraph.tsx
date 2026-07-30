@@ -584,11 +584,34 @@ export function CitationGraph({
           {showLoading ? (
             <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
           ) : !data || data.nodes.length === 0 ? (
-            <div className="empty">No papers yet.</div>
+            // A search that matches nothing empties `nodes` exactly like an
+            // empty collection does, and "No papers yet" then tells someone
+            // with a full library that it is empty.
+            <div className="empty">
+              {search ? `No papers match "${search}".` : "No papers yet."}
+            </div>
           ) : (
             <>
               {shown.nodes === 0 && (
-                <div className="empty">No papers match the current filters.</div>
+                <div className="empty">
+                  {hideUnconnected && data.nodes.length > 0 ? (
+                    // The papers *did* match — "hide unconnected" then removed
+                    // them for having no citation links, which is a display
+                    // choice, not a filter. Saying "no papers match" here sends
+                    // the reader off to debug their search: a text query usually
+                    // narrows to a handful of papers that don't cite each other,
+                    // so the canvas empties and the search looks broken.
+                    <>
+                      {data.nodes.length === 1
+                        ? "1 paper matches, but it has no citation links to show."
+                        : `${data.nodes.length} papers match, but none of them cite each other.`}{" "}
+                      Turn off <strong>Hide unconnected papers</strong> to see{" "}
+                      {data.nodes.length === 1 ? "it" : "them"}.
+                    </>
+                  ) : (
+                    "No papers match the current filters."
+                  )}
+                </div>
               )}
               <ForceGraph2D
                 ref={fgRef}
