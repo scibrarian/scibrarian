@@ -605,7 +605,7 @@ export function CitationGraph({
                       {data.nodes.length === 1
                         ? "1 paper matches, but it has no citation links to show."
                         : `${data.nodes.length} papers match, but none of them cite each other.`}{" "}
-                      Turn off <strong>Hide unconnected papers</strong> to see{" "}
+                      Turn off Hide unconnected papers to see{" "}
                       {data.nodes.length === 1 ? "it" : "them"}.
                     </>
                   ) : (
