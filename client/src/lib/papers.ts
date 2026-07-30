@@ -104,8 +104,13 @@ export function usePaperFilters(source: PaperSource) {
     setMajorOnly,
     serverQuery,
     // The cache key for a server-filtered fetch. Everything else narrows an
-    // already-fetched list, so it must not appear here.
-    fetchKey: `${key}:${search}:${(serverQuery.mesh ?? []).join(",")}${majorOnly ? "!" : ""}`,
+    // already-fetched list, so it must not appear here — and neither does a
+    // filter the request drops: majorOnly with nothing selected isn't sent
+    // (see filterQuery in api.ts), so keying on it would split the cache in two
+    // over one identical URL and refetch on a checkbox that changed nothing.
+    fetchKey: `${key}:${search}:${(serverQuery.mesh ?? []).join(",")}${
+      serverQuery.mesh && majorOnly ? "!" : ""
+    }`,
     // Whether anything is narrowing the list, so a view can tell "filtered to
     // nothing" apart from "this source is empty".
     active:

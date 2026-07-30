@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown } from "lucide-react";
 import { api } from "../api";
-import { useCachedFetch, useDebounced, type FetchCache } from "../lib/hooks";
+import { useCachedFetch, type FetchCache } from "../lib/hooks";
 import { sourceKey } from "../lib/papers";
 import type { MeshDescriptorRef, MeshFiling, MeshHeadingsResponse, PaperSource } from "../types";
 
@@ -37,20 +37,47 @@ function filingNote(filing: MeshFiling): string | null {
 // the whole source regardless of the search, so typing a query that matches no
 // heading can't make the control vanish out from under the cursor.
 export function useMeshFacets(source: PaperSource, reloadToken: number) {
+  const key = sourceKey(source);
   const [query, setQuery] = useState("");
-  const search = useDebounced(query.trim(), 250);
-  const { data } = useCachedFetch(
-    facetCache,
-    `${sourceKey(source)}:${search}`,
-    reloadToken,
-    () => api.getMeshHeadings(source, search || undefined)
+  const [search, setSearch] = useState("");
+
+  // A new source starts unsearched. This box is the one filter that doesn't
+  // live in usePaperFilters, so its `[key]` reset can't reach it, and a term
+  // typed against one source's vocabulary silently pre-filters the next one's.
+  // `search` is cleared here rather than left to the debounce below for the
+  // same reason usePaperFilters clears its own: one debounce later is a fetch
+  // too late.
+  useEffect(() => {
+    setQuery("");
+    setSearch("");
+  }, [key]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(query.trim()), 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const { data } = useCachedFetch(facetCache, `${key}:${search}`, reloadToken, () =>
+    api.getMeshHeadings(source, search || undefined)
   );
+
+  // Keep the last response for THIS source on screen while a refetch is in
+  // flight. useCachedFetch reports null for any key it hasn't cached yet, so
+  // the search key changing emptied `data` — and `available` with it, which
+  // unmounted the control, the open menu and the box being typed into, on the
+  // first keystroke past the debounce. The same bridge usePapers builds for the
+  // paper list, for the same reason. `filing` is computed over the whole source
+  // and so survives a search unchanged, which is what makes it safe to hold.
+  const last = useRef<{ key: string; data: MeshHeadingsResponse } | null>(null);
+  if (data) last.current = { key, data };
+  const shown = data ?? (last.current?.key === key ? last.current.data : null);
+
   return {
-    data,
+    data: shown,
     query,
     setQuery,
     searching: search !== "",
-    available: data != null && (data.filing.filed > 0 || data.filing.unchecked > 0),
+    available: shown != null && (shown.filing.filed > 0 || shown.filing.unchecked > 0),
   };
 }
 
@@ -121,9 +148,15 @@ export function MeshFilter({
             sideOffset={6}
             loop
           >
-            {/* Radix moves focus to the first item on open and treats printable
-                keys as typeahead, both of which would fight a text field; this
-                keeps the box usable and the arrow keys working on the list. */}
+            {/* Radix reads printable keys as menu typeahead, which would fight a
+                text field, so keystrokes stop at the box. Focus reaches it on
+                open because React's autoFocus lands during the commit and
+                Radix's FocusScope skips its own open-focus whenever focus is
+                already inside the menu; Escape still closes because
+                DismissableLayer listens on the document in the capture phase,
+                ahead of this handler. Tab moves from the box to the list —
+                Radix's arrow navigation only fires when a menu item is itself
+                the event target, so it never reaches out to a search box. */}
             <input
               className="filter-search"
               type="search"
