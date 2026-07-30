@@ -118,6 +118,10 @@ export function PapersTable({
   // Whether saving is offered at all is App's call (viewers and the Library
   // don't get it); the column follows from that rather than re-deciding it.
   const showBookmarkCol = bookmarking != null;
+  // Kept beside the flags that decide the optional columns, so a new column
+  // can't be added without this following it — the excerpt row below spans the
+  // table by count, and a stale number would silently narrow it.
+  const columnCount = 6 + (showBookmarkCol ? 1 : 0) + (showShareCol ? 1 : 0);
 
   return (
     <div className="papers-table-view">
@@ -191,9 +195,14 @@ export function PapersTable({
                   {showShareCol && <th className="share-col" aria-label="Share" />}
                 </tr>
               </thead>
-              <tbody>
-                {shown.map((p) => (
-                  <tr key={p.pmid}>
+              {/* One tbody per paper rather than one for the table. An excerpt
+                  needs the full table width to be legible, so it goes in a
+                  second row, and grouping the pair is what lets hover and the
+                  row divider treat them as the single record they are.
+                  Several tbodies in one table is valid HTML. */}
+              {shown.map((p) => (
+                <tbody className="paper-rows" key={p.pmid}>
+                  <tr>
                     <td className="paper-title-cell">
                       <button
                         className="paper-open"
@@ -206,11 +215,6 @@ export function PapersTable({
                         <span className="file-missing" title="The stored PDF is missing">
                           file missing
                         </span>
-                      )}
-                      {p.snippet && (
-                        // Present only when the PDF's body is what matched, so
-                        // it doubles as the answer to "why is this row here?"
-                        <Snippet text={p.snippet} className="paper-snippet" />
                       )}
                     </td>
                     <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>
@@ -250,8 +254,19 @@ export function PapersTable({
                       </td>
                     )}
                   </tr>
-                ))}
-              </tbody>
+                  {p.snippet && (
+                    // Spans every column. In the title cell this clamped to two
+                    // lines of a 36%-wide column, which routinely cut the
+                    // excerpt off *before* its highlighted match — showing the
+                    // context and hiding the answer the excerpt exists for.
+                    <tr className="snippet-row">
+                      <td colSpan={columnCount}>
+                        <Snippet text={p.snippet} className="paper-snippet" />
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              ))}
             </table>
           </div>
           {hasMore && <div ref={sentinelRef} className="scroll-sentinel" aria-hidden="true" />}

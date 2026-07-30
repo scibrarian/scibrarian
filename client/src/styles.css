@@ -2272,6 +2272,42 @@ html {
   background: var(--accent-soft);
 }
 
+/* A paper is one tbody of one or two rows (the second carries its search
+   excerpt), so the divider belongs after the group and the hover covers all of
+   it — otherwise a row and its own excerpt highlight separately and read as two
+   results. Scoped to .paper-rows so the loading skeleton, which is a single
+   tbody of many rows, doesn't light up entirely on hover. */
+.papers-table tbody.paper-rows td {
+  border-bottom: none;
+}
+
+.papers-table tbody.paper-rows tr:last-child td {
+  border-bottom: 1px solid var(--border);
+}
+
+.papers-table tbody.paper-rows:last-child tr:last-child td {
+  border-bottom: none;
+}
+
+.papers-table tbody.paper-rows:hover td {
+  background: var(--accent-soft);
+}
+
+/* The excerpt row sits under its title row, so it repeats neither the cell's
+   left padding rhythm nor the vertical gap the title already opened. */
+.papers-table .snippet-row td {
+  padding: 0 12px 10px;
+}
+
+/* At full table width the excerpt fits on a line or two without clamping, which
+   was the whole reason for moving it out of the 36%-wide title cell. */
+.papers-table .snippet-row .paper-snippet {
+  margin: 0;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  display: block;
+}
+
 .paper-open {
   background: none;
   border: none;
