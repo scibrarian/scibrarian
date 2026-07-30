@@ -3,14 +3,21 @@ import {
   getCatalogLoadedAt,
   getSetting,
   journalCatalogCount,
+  journalsMissingIndexing,
   setCatalogMetric,
+  setJournalIndexing,
   type CatalogRow,
   type CatalogSeed,
 } from "./db.js";
 import { DOWNLOAD_TIMEOUT_MS, fetchWithTimeout } from "./http.js";
+import { medlineIndexedByNlmId } from "./pubmed.js";
 import { errMessage } from "./util.js";
 
 // NLM's authoritative journals list (full title, MEDLINE abbreviation, ISSNs).
+// Despite the name this is every journal PubMed knows (~38k, preprint servers
+// and PMC-only titles included), not the ~5.2k currently indexed for MEDLINE —
+// so presence here says a journal exists, never that its papers carry MeSH
+// headings. `isMedlineIndexed` (pubmed.ts) answers that, and has to ask NLM.
 const J_MEDLINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt";
 // OpenAlex journal-level metrics (open, CC0). We use 2-yr mean citedness.
 const OPENALEX = "https://api.openalex.org/sources";
@@ -87,6 +94,36 @@ export function refreshCatalogIfStale(): Promise<void> {
     Number.isFinite(loadedMs) && Date.now() - loadedMs < CATALOG_TTL_DAYS * 86_400_000;
   if (fresh && journalCatalogCount() > 0) return Promise.resolve();
   return startLoad();
+}
+
+// ---------- MEDLINE indexing backfill ----------
+
+// Establish the MEDLINE indexing status of watched journals that don't have one.
+// POST /journals settles this at add time, so the only rows here are ones whose
+// check couldn't reach NCBI — which must not leave a journal permanently
+// unmarked, since an unmarked unindexed journal reads as "this one is fine",
+// the exact failure the whole signal exists to prevent.
+//
+// Called at startup and on the daily tick, never awaited by a request. Two
+// requests for the whole list (medlineIndexedByNlmId), a no-op once every row is
+// settled, and silent on failure — the next tick retries, and until then the
+// unsettled rows stay null, which the client renders as no badge rather than a
+// wrong one.
+export async function backfillJournalIndexing(): Promise<void> {
+  const pending = journalsMissingIndexing();
+  if (pending.length === 0) return;
+  try {
+    const statuses = await medlineIndexedByNlmId(pending);
+    if (statuses.size === 0) return;
+    setJournalIndexing(statuses);
+    const unindexed = [...statuses.values()].filter((v) => !v).length;
+    console.log(
+      `[journals] MEDLINE indexing resolved for ${statuses.size}/${pending.length} watched journals` +
+        (unindexed > 0 ? ` (${unindexed} not indexed — they can't match MeSH topics)` : "")
+    );
+  } catch (err) {
+    console.warn("[journals] MEDLINE indexing backfill failed:", errMessage(err));
+  }
 }
 
 // ---------- OpenAlex metrics ----------

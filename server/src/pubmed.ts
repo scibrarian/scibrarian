@@ -304,3 +304,106 @@ export async function resolveJournal(
   if (!x?.nlmId) return null;
   return { nlmId: x.nlmId, name: x.medlineTa || rawName };
 }
+
+// ---------- MEDLINE indexing status ----------
+
+// Whether NLM *currently indexes* this journal for MEDLINE, by NLM Unique ID.
+//
+// This is the difference between a journal that can contribute to a topic feed
+// and one that silently never will. Topics are `"Heading"[MeSH]` terms (POST
+// /topics) and only MEDLINE-indexed records carry MeSH headings, so a journal
+// that answers `false` here can be added, polled forever, and never match.
+//
+// The local catalog cannot answer it: J_Medline.txt lists every journal PubMed
+// knows (~38k — preprint servers and PMC-only titles included), not the ~5.2k
+// currently indexed for MEDLINE. Neither can `resolveJournal` falling through to
+// its live-esearch branch, since the miss there only means the name didn't match
+// a catalog title or abbreviation. The NLM Catalog's `currentlyindexed` filter is
+// the authoritative signal, and one esearch answers it.
+//
+// Best-effort by design: `null` means "couldn't tell" — NCBI unreachable, or an
+// id NLM doesn't catalog at all — and callers treat that as "say nothing" rather
+// than fail. Cached for the process lifetime: indexing status changes at most
+// once a year, and a bulk add repeats ids.
+const indexingCache = new Map<string, boolean>();
+
+export async function isMedlineIndexed(nlmId: string): Promise<boolean | null> {
+  const cached = indexingCache.get(nlmId);
+  if (cached !== undefined) return cached;
+  // NLM ids are alphanumeric ("2985213R", "101596737"); strip anything else so a
+  // stored id can't break out of the field qualifier and change the query.
+  const id = nlmId.replace(/[^A-Za-z0-9]/g, "");
+  if (!id) return null;
+  const params = new URLSearchParams({
+    db: "nlmcatalog",
+    retmode: "json",
+    retmax: "0",
+    term: `${id}[nlmid] AND currentlyindexed`,
+  });
+  try {
+    const data = await eutilsJson<{
+      esearchresult?: { count?: string; errorlist?: { phrasesnotfound?: string[] } };
+    }>("esearch.fcgi", params);
+    const result = data.esearchresult;
+    // A count of 0 has two causes, and only one of them is a real answer: the
+    // journal is catalogued but unindexed, or NLM has no such id. esearch
+    // separates them — an id it doesn't know comes back under phrasesnotfound.
+    const unknownId = (result?.errorlist?.phrasesnotfound ?? []).some((p) => p.includes(id));
+    if (unknownId) return null;
+    const count = Number(result?.count);
+    if (!Number.isFinite(count)) return null;
+    const indexed = count > 0;
+    indexingCache.set(nlmId, indexed);
+    return indexed;
+  } catch (err) {
+    // Never the caller's problem: an add that worked must not fail on an
+    // advisory lookup. Logged, and the caller gets "unknown".
+    console.warn(`[pubmed] MEDLINE indexing check failed for ${nlmId}: ${errMessage(err)}`);
+    return null;
+  }
+}
+
+// The same question for many journals at once, for the backfill over a whole
+// watchlist. Two requests per chunk regardless of size, where the single-id
+// form above would be one request each — worth the second code path when the
+// input is 50 journals, not worth it for the one-journal add path, which pays
+// the throttle gap per request and would double its latency for nothing.
+//
+// esearch can only give back NLM Catalog UIDs (which are not NLM ids), so the
+// mapping needs esummary — which returns `nlmuniqueid` and
+// `currentindexingstatus` on the same record. Ids missing from the result are
+// simply absent from the map: unknown, not false.
+const INDEXING_CHUNK = 200;
+
+export async function medlineIndexedByNlmId(nlmIds: string[]): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  const ids = [...new Set(nlmIds.map((n) => n.replace(/[^A-Za-z0-9]/g, "")))].filter(Boolean);
+  for (let i = 0; i < ids.length; i += INDEXING_CHUNK) {
+    const chunk = ids.slice(i, i + INDEXING_CHUNK);
+    const found = await eutilsJson<{ esearchresult?: { idlist?: string[] } }>(
+      "esearch.fcgi",
+      new URLSearchParams({
+        db: "nlmcatalog",
+        retmode: "json",
+        retmax: String(chunk.length),
+        term: chunk.map((id) => `${id}[nlmid]`).join(" OR "),
+      })
+    );
+    const uids = found.esearchresult?.idlist ?? [];
+    if (uids.length === 0) continue;
+    const summary = await eutilsJson<{
+      result?: Record<string, { nlmuniqueid?: string; currentindexingstatus?: string }>;
+    }>(
+      "esummary.fcgi",
+      new URLSearchParams({ db: "nlmcatalog", retmode: "json", id: uids.join(",") })
+    );
+    for (const [key, rec] of Object.entries(summary.result ?? {})) {
+      if (key === "uids" || !rec?.nlmuniqueid) continue;
+      out.set(rec.nlmuniqueid, rec.currentindexingstatus === "Y");
+    }
+  }
+  // Feed the single-id cache too — the add path and the backfill ask the same
+  // question, and an id resolved here shouldn't cost a request there.
+  for (const [id, indexed] of out) indexingCache.set(id, indexed);
+  return out;
+}

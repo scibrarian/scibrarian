@@ -20,6 +20,12 @@ export interface Journal {
   nlm_id: string | null; // null on rows added before NLM resolution existed
   metric: number | null; // OpenAlex 2-yr mean citedness (from journal_catalog), null when unknown
   created_at: string;
+  // Does NLM currently index this journal for MEDLINE? `false` is the one state
+  // worth surfacing: no MeSH headings, so the journal can never match a topic
+  // and will never contribute a paper to Interests. `null` means nobody has
+  // established it yet (added before the check existed, or NCBI was unreachable)
+  // — not the same as false, and not something to warn about.
+  medline_indexed: boolean | null;
 }
 
 export interface Article {

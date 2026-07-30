@@ -5,7 +5,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage, round1 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
-import { JournalManager } from "./JournalManager";
+import { JournalManager, MeshBadge } from "./JournalManager";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { Typeahead } from "./Typeahead";
 import type { AppSettings, Topic, Journal, MeshSearchResult } from "../types";
@@ -192,7 +192,12 @@ export function Settings({
             <>
               {journals.map((j) => (
                 <li key={j.id}>
-                  <span>{j.name}</span>
+                  {/* Name and badge are one column: the badge annotates the
+                      journal, so space-between must not strand it mid-row. */}
+                  <div className="list-label">
+                    <span>{j.name}</span>
+                    {j.medline_indexed === false && <MeshBadge name={j.name} />}
+                  </div>
                   {j.metric != null && (
                     <span
                       className={`ta-metric${j.metric === 0 ? " zero" : ""}`}

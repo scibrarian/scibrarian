@@ -8,6 +8,9 @@
   --accent-soft: #eaf1ff;
   --danger: #dc2626;
   --success: #16a34a;
+  /* Advisory, not an error: a state the user should notice and can live with. */
+  --warn: #92400e;
+  --warn-soft: #fef3c7;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
   /* Let native controls (inputs, scrollbars, slider, checkbox) follow the theme. */
@@ -710,6 +713,24 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Marks a journal MEDLINE doesn't index: its papers carry no MeSH headings, so
+   it can never match a topic. Shown wherever journals are listed (the Settings
+   list and the journal manager), because the distinction is invisible
+   otherwise. Advisory styling, not an error — the journal still works for
+   everything that isn't topic polling. */
+.mesh-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
 /* Zero-impact (likely defunct/obscure) journals: keep them, but de-emphasize. */
 .ta-metric.zero {
   color: var(--muted);
@@ -866,10 +887,22 @@ input:focus {
   scrollbar-gutter: stable;
 }
 
-.list li span {
+.list li span:not(.mesh-warn) {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* A row's label column: the name (with its optional stacked second line) plus
+   any badge annotating it, kept together so `justify-content: space-between`
+   on the li splits the row in two — label vs. trailing metric — rather than
+   spreading three items across the full width. A div, not a span, so the
+   stacking rule above doesn't apply to it. */
+.list-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .term {
@@ -1614,13 +1647,21 @@ code {
   min-width: 0;
 }
 
+/* Shrinks to its text instead of filling the row, so the badge and the "new"
+   pill sit next to the name they annotate. The metric is pushed to the far
+   edge on its own (below) — it labels the row, not the name. */
 .jm-row .filter-option-name {
-  flex: 1;
+  flex: 0 1 auto;
 }
 
 .jm-row .ta-metric,
+.jm-row .mesh-warn,
 .jm-row .jm-new {
   flex-shrink: 0;
+}
+
+.jm-row .ta-metric {
+  margin-left: auto;
 }
 
 .jm-empty {
@@ -2446,6 +2487,8 @@ html {
     --accent-soft: #1e2940;
     --danger: #f06b6b;
     --success: #43c06a;
+    --warn: #fbbf24;
+    --warn-soft: #3a2e12;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
   }
 

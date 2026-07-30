@@ -51,11 +51,18 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- medline_indexed: does NLM currently index this journal for MEDLINE? 1/0, or
+  -- NULL for "not established yet" — the add-time check couldn't reach NCBI.
+  -- Only 0 is worth showing the user: topics are MeSH terms and an unindexed
+  -- journal's papers carry no MeSH headings, so it can never contribute to a
+  -- topic feed. Written at add time (POST /journals); the background backfill
+  -- (journal-catalog.ts) settles the rows that add-time check missed.
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     nlm_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    medline_indexed INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS articles (
@@ -339,23 +346,61 @@ export function setLastPollAttemptAt(iso: string): void {
 
 // Journal rows carry the catalog's metric (when the nlm_id matches a catalog
 // entry whose metric has been fetched) so the client can sort by impact.
-const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, c.metric
+const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, j.medline_indexed, c.metric
    FROM journals j LEFT JOIN journal_catalog c ON c.nlm_id = j.nlm_id`;
 
-export function listJournals(): Journal[] {
-  return db.prepare(`${JOURNAL_SELECT} ORDER BY j.name ASC`).all() as unknown as Journal[];
+// SQLite has no boolean type, so medline_indexed round-trips as 1/0/NULL. The
+// three states are all meaningful here (indexed / not indexed / not established
+// yet), so this maps to boolean|null rather than coercing NULL to false — the
+// client shows a warning on `false` only, and must not warn about a journal
+// nobody has checked.
+type JournalRow = Omit<Journal, "medline_indexed"> & { medline_indexed: number | null };
+
+function toJournal(row: JournalRow): Journal {
+  return { ...row, medline_indexed: row.medline_indexed === null ? null : row.medline_indexed === 1 };
 }
 
-export function createJournal(name: string, nlmId: string | null): Journal {
-  const info = db.prepare("INSERT INTO journals (name, nlm_id) VALUES (?, ?)").run(name, nlmId);
-  return db
-    .prepare(`${JOURNAL_SELECT} WHERE j.id = ?`)
-    .get(Number(info.lastInsertRowid)) as unknown as Journal;
+export function listJournals(): Journal[] {
+  const rows = db.prepare(`${JOURNAL_SELECT} ORDER BY j.name ASC`).all() as unknown as JournalRow[];
+  return rows.map(toJournal);
 }
+
+// `medlineIndexed` is null when the check couldn't run — the add still succeeds,
+// and the background backfill picks the row up later.
+export function createJournal(
+  name: string,
+  nlmId: string | null,
+  medlineIndexed: boolean | null = null
+): Journal {
+  const info = db
+    .prepare("INSERT INTO journals (name, nlm_id, medline_indexed) VALUES (?, ?, ?)")
+    .run(name, nlmId, medlineIndexed === null ? null : Number(medlineIndexed));
+  const row = db
+    .prepare(`${JOURNAL_SELECT} WHERE j.id = ?`)
+    .get(Number(info.lastInsertRowid)) as unknown as JournalRow;
+  return toJournal(row);
+}
+
+// Watched journals whose MEDLINE indexing status was never established — the
+// add-time check couldn't reach NCBI. The backfill's work list.
+export function journalsMissingIndexing(): string[] {
+  const rows = db
+    .prepare("SELECT nlm_id FROM journals WHERE nlm_id IS NOT NULL AND medline_indexed IS NULL")
+    .all() as { nlm_id: string }[];
+  return rows.map((r) => r.nlm_id);
+}
+
+export const setJournalIndexing = transaction((statuses: Map<string, boolean>) => {
+  const stmt = db.prepare("UPDATE journals SET medline_indexed = ? WHERE nlm_id = ?");
+  for (const [nlmId, indexed] of statuses) stmt.run(Number(indexed), nlmId);
+});
 
 // Used to reject adding the same journal twice (identity is the NLM id).
 export function journalByNlmId(nlmId: string): Journal | undefined {
-  return db.prepare(`${JOURNAL_SELECT} WHERE j.nlm_id = ?`).get(nlmId) as Journal | undefined;
+  const row = db.prepare(`${JOURNAL_SELECT} WHERE j.nlm_id = ?`).get(nlmId) as
+    | JournalRow
+    | undefined;
+  return row ? toJournal(row) : undefined;
 }
 
 // Which of a journal's articles a removal would permanently delete: the

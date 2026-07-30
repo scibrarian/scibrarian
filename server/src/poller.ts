@@ -14,7 +14,7 @@ import {
   transaction,
 } from "./db.js";
 import { ensureCitations } from "./icite.js";
-import { refreshCatalogIfStale } from "./journal-catalog.js";
+import { backfillJournalIndexing, refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { buildTerm, fetchArticles, search } from "./pubmed.js";
 import type { PollResult } from "./types.js";
@@ -177,6 +177,7 @@ export function startScheduler(): void {
   cron.schedule(REFERENCE_REFRESH_CRON, () => {
     void refreshCatalogIfStale();
     void recheckMeshVersion();
+    void backfillJournalIndexing();
   });
   scheduleLaunchCatchUp();
 }

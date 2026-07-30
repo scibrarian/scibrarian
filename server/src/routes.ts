@@ -74,7 +74,7 @@ import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
-import { fetchArticles, resolveJournal } from "./pubmed.js";
+import { fetchArticles, isMedlineIndexed, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
   pollAll,
@@ -335,7 +335,13 @@ api.post(
           .status(409)
           .json({ error: `That journal is already in the list (${existing.name}).` });
       }
-      res.status(201).json(createJournal(resolved.name, resolved.nlmId));
+      // Advisory, not a gate. The journal is real and the user asked for it, so
+      // it's added either way — but if NLM doesn't index it for MEDLINE its
+      // papers carry no MeSH headings, and topics are MeSH terms. Left unsaid,
+      // that journal just quietly never yields a paper. An NCBI hiccup answers
+      // null, which stores as "not established yet" and the backfill retries.
+      const indexed = await isMedlineIndexed(resolved.nlmId);
+      res.status(201).json(createJournal(resolved.name, resolved.nlmId, indexed));
     } catch (err) {
       // The one error this route reads: a race against another add of the same
       // journal, which the unique index catches. Anything else is the error
