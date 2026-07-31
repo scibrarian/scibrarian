@@ -75,6 +75,8 @@ import {
   IS_DESKTOP,
   UPLOAD_TMP_DIR,
 } from "./config.js";
+import { splitRefs } from "./citation-ref.js";
+import { checkHoldings, citationWindowYears, MAX_REFS_PER_REQUEST } from "./have.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
@@ -103,6 +105,7 @@ import type {
   GraphEdge,
   GraphNode,
   GraphResponse,
+  HaveResponse,
   MeshHeadingsResponse,
   PapersResponse,
   Settings,
@@ -511,6 +514,63 @@ api.get("/abstracts", (req, res) => {
   const body: AbstractsResponse = { abstracts };
   res.json(body);
 });
+
+// ---------- "do I already have this?" ----------
+
+// The purchase-avoidance check. Accepts whatever the writer had on the
+// clipboard: `?q=` is a block of pasted lines, one reference per line, and
+// `?pmid=` / `?doi=` are the explicit single-identifier form the roadmap names.
+// All three funnel into the same parser, so a citation string, a DOI and a PMID
+// are answered by one code path.
+//
+// Newline is the only separator. `;` was tried as a URL-friendlier alternative
+// and is wrong: every Vancouver reference contains one (`2014;383:1699-710`),
+// so it splits real references in half and reports both halves as unreadable.
+//
+// A GET, and public like /papers: this is a read, and the whole value of the
+// feature is that it takes one action. A POST would put it behind the admin
+// gate, which would make the mandated pre-purchase check unavailable to exactly
+// the read-only viewers who are told to perform it.
+//
+// Long pastes are chunked by the client (MAX_REFS_PER_REQUEST), the same way
+// large uploads are — a URL is a poor container for a hundred references, and
+// `truncated` reports anything this request had to leave out.
+api.get(
+  "/have",
+  asyncHandler(async (req, res) => {
+    const lines = [
+      ...splitRefs(String(req.query.q ?? "")),
+      // PMIDs are digits, so a comma between them is unambiguously a separator.
+      // DOIs are not: the suffix is publisher-chosen and may legitimately
+      // contain a comma, so those are only ever taken one per repeated param.
+      ...toList(req.query.pmid, true),
+      ...toList(req.query.doi, false),
+    ];
+    if (lines.length === 0) {
+      return res.status(400).json({ error: "Paste a PMID, DOI, or citation to check." });
+    }
+    const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
+    const body: HaveResponse = {
+      // The free-copy lookup is the one part that leaves the machine, so it can
+      // be switched off (?free=0) — the client does that while a paste is still
+      // being typed, and turns it on for the answer the user acts on.
+      results: await checkHoldings(batch, { lookUpFree: req.query.free !== "0" }),
+      truncated: lines.length - batch.length,
+      windowYears: citationWindowYears(),
+    };
+    res.json(body);
+  })
+);
+
+// A query param that may be sent once or repeated, and — when its values can't
+// themselves contain one — comma-separated.
+function toList(raw: unknown, splitCommas: boolean): string[] {
+  const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  return values
+    .flatMap((v) => (splitCommas ? String(v).split(",") : [String(v)]))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 // ---------- citation graph ----------
 
@@ -1061,6 +1121,19 @@ const SETTING_RULES = {
   },
   poll_enabled: { kind: "boolean" },
   library_open: { kind: "boolean" },
+  // Years, as a string like every other setting. "0" switches the citable-window
+  // judgement off; anything unparseable would do the same silently, so it's
+  // rejected here instead — the whole point of the field is that a wrong number
+  // hands a writer a reference that fails review.
+  citation_window_years: {
+    kind: "string",
+    validate: (v) => {
+      const n = Number(v);
+      return v === "" || (Number.isInteger(n) && n >= 0 && n <= 100)
+        ? null
+        : "The citable window must be a whole number of years between 0 and 100.";
+    },
+  },
   ncbi_api_key: { kind: "secret", expose: "has_api_key" },
 } satisfies Record<keyof Settings, SettingRule>;
 

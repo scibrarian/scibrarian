@@ -2684,6 +2684,253 @@ html {
 
 /* ---------- dark mode (follows the OS setting) ---------- */
 
+/* ---------- "do I already have this?" ---------- */
+
+/* The header entry point. Labelled rather than a bare glyph: this is a question
+   people arrive at the app already holding, and an unlabelled icon sitting in a
+   row of other unlabelled icons is not something anyone finds. The label drops
+   on narrow screens, where the header also has to fit the view switcher; the
+   title attribute carries it there. */
+.have-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.have-btn:hover,
+.have-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .have-btn-label {
+    display: none;
+  }
+}
+
+.have-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Monospaced so a pasted DOI or reference wraps predictably and a long list
+   lines up column-wise, which is how it was copied. */
+.have-input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+/* The answer list scrolls inside the modal rather than growing it: a reference
+   list of thirty would otherwise push the paste box off the top of the screen,
+   which is where you go to correct a line that didn't parse. */
+.have-results {
+  margin-top: 16px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.have-summary {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.have-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One answer. The left edge carries the verdict as colour, so a long list can
+   be skimmed for the two rows that aren't "in your library". */
+.have-row {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.have-row.held {
+  border-left-color: var(--success);
+}
+
+.have-row.unreadable {
+  border-left-color: var(--warn);
+}
+
+.have-verdict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.have-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.have-pill.held {
+  background: #e7f6ec;
+  color: #15803d;
+}
+
+.have-pill.unreadable {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.have-pill.ambiguous {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Whether it may be cited, which is a different fact from whether it's held —
+   see CiteStatus. Drawn as a quieter outline badge so it reads as an annotation
+   on the verdict rather than as a second, competing verdict. */
+.cite-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.cite-badge.citable {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.cite-badge.stale {
+  border-color: var(--warn);
+  color: var(--warn);
+  cursor: help;
+}
+
+.have-paper {
+  min-width: 0;
+}
+
+.have-title {
+  display: block;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.have-title:hover {
+  text-decoration: underline;
+}
+
+/* Identified, but with nowhere to open — see PaperLine. */
+.have-title.plain {
+  color: var(--text);
+  cursor: default;
+}
+
+.have-title.plain:hover {
+  text-decoration: none;
+}
+
+.have-meta,
+.have-where {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.have-where {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.have-ambiguous,
+.have-nothing {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.have-candidates {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.have-free {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.have-free.none {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* The line as pasted. Kept last and quiet: it's for finding your place in a
+   list you're reading beside the original, not for reading — so it drops the
+   global `code` fill, which at full row width reads as a UI element rather than
+   as a footnote. */
+.have-input-echo {
+  display: block;
+  margin-top: 8px;
+  padding: 0;
+  background: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* A window is one or two digits; the form's full-width default makes it look
+   like a text field that wants a sentence. */
+.stacked-form input[type="number"] {
+  max-width: 120px;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f1420;
@@ -2735,6 +2982,12 @@ html {
   .file-missing {
     background: #3a1f22;
     color: #f3a3a3;
+  }
+
+  /* The one "have" tint written as a literal (the rest ride on variables). */
+  .have-pill.held {
+    background: #16301f;
+    color: #82d79a;
   }
 
   /* Bright shimmer washes out on dark panels; use a faint sheen instead. */

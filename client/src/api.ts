@@ -9,6 +9,8 @@ import type {
   CollectionFilesResponse,
   Topic,
   GraphResponse,
+  HaveAnswer,
+  HaveResponse,
   ImportStartResponse,
   ImportStatus,
   Journal,
@@ -26,6 +28,7 @@ import type {
   TopicSuggestResponse,
   UploadResponse,
 } from "./types";
+import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
 
 // The admin token unlocks mutating endpoints; GETs work without one. Kept in
 // localStorage so an unlocked admin stays unlocked across reloads — the server
@@ -142,6 +145,31 @@ export const api = {
 
   getPapers: (source: PaperSource, filter?: PaperQuery) =>
     req<PapersResponse>(`/api/papers?${sourceQuery(source)}${filterQuery(filter)}`),
+
+  // "Do I already have this?" — one answer per pasted line, in the order given.
+  //
+  // Batched here rather than in the caller: the endpoint is a GET, so a long
+  // paste doesn't fit in one URL, and the alternative (make the component split
+  // its own list and stitch the answers back into order) puts the ordering
+  // guarantee in the UI where it's easy to break. Batches run in sequence, not
+  // in parallel — the enrichment step calls OpenAlex, and firing six of those at
+  // once at a free service to save a second is not a trade worth making.
+  checkHave: async (refs: string[], lookUpFree = true): Promise<HaveResponse> => {
+    const capped = refs.slice(0, MAX_HAVE_REFS);
+    const results: HaveAnswer[] = [];
+    let windowYears = 0;
+    let truncated = refs.length - capped.length;
+    for (let i = 0; i < capped.length; i += MAX_REFS_PER_HAVE_REQUEST) {
+      const batch = capped.slice(i, i + MAX_REFS_PER_HAVE_REQUEST);
+      const res = await req<HaveResponse>(
+        `/api/have?q=${encodeURIComponent(batch.join("\n"))}${lookUpFree ? "" : "&free=0"}`
+      );
+      results.push(...res.results);
+      truncated += res.truncated;
+      windowYears = res.windowYears;
+    }
+    return { results, truncated, windowYears };
+  },
 
   // Abstracts are kept out of the papers list payload; the timeline fetches
   // them lazily, one rendered chunk per request rather than one per card.

@@ -1204,13 +1204,112 @@ export function listPapers(
   }));
 }
 
-function safeParseAuthors(raw: string): string[] {
+// The `authors` column is a JSON array of name strings. Exported because every
+// consumer of a raw article row has to survive the same thing: a column that
+// somehow isn't valid JSON must render as "no authors listed", not throw
+// halfway through building a response.
+export function safeParseAuthors(raw: string): string[] {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
+}
+
+// ---------- "do I already have this?" ----------
+
+// One paper as the holdings check sees it: the article record, plus the stored
+// copy behind it when there is one.
+//
+// `held` is decided by a collection_files row, never by the article's presence
+// in `articles` — a paper a topic feed turned up is one the user has *seen*,
+// and answering "yes you have it" about a record with no file is exactly the
+// mistake that would send a writer to a PDF they never bought.
+export interface HoldingRow {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  authors: string; // JSON array, parsed by the caller
+  pub_date: string;
+  pub_date_display: string;
+  doi: string;
+  url: string;
+  file_id: number | null;
+  file_name: string | null;
+  content_hash: string | null; // routes resolves this to file_exists
+  collection_id: number | null;
+  collection_name: string | null;
+}
+
+// The stored copy for a paper, across every collection: the lowest-id file row
+// that carries a pmid. `pmid` is only ever set by setFileMatched, which stamps
+// match_status = 'matched' in the same statement, so this is the same set the
+// collection views join on — one subquery here rather than two, because this
+// query has no collection to scope to.
+//
+// A paper held in several collections resolves to one of them, arbitrarily but
+// stably (lowest id = first uploaded). The question being answered is "do we
+// have this", not "how many copies", and naming the first is more useful than
+// naming none.
+const HOLDING_SELECT = `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
+          a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
+          cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash,
+          cf.collection_id AS collection_id, col.name AS collection_name
+   FROM articles a
+   ${JOURNAL_LOOKUP}
+   LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+              WHERE pmid IS NOT NULL GROUP BY pmid) hf ON hf.pmid = a.pmid
+   LEFT JOIN collection_files cf ON cf.id = hf.file_id
+   LEFT JOIN collections col ON col.id = cf.collection_id`;
+
+// Look up stored papers by PMID. Unknown ids are simply absent.
+export function holdingsByPmids(pmids: string[]): HoldingRow[] {
+  if (pmids.length === 0) return [];
+  return queryByPmids<HoldingRow>(pmids, (ph) => `${HOLDING_SELECT} WHERE a.pmid IN (${ph})`);
+}
+
+// The same, keyed by DOI. Compared lowercased on both sides because DOIs are
+// case-insensitive by specification and PubMed's stored casing varies by
+// publisher — a literal match would report a held paper as not held.
+export function holdingsByDois(dois: string[]): HoldingRow[] {
+  const out: HoldingRow[] = [];
+  for (let i = 0; i < dois.length; i += 900) {
+    const batch = dois.slice(i, i + 900).map((d) => d.toLowerCase());
+    const ph = batch.map(() => "?").join(",");
+    out.push(
+      ...(db
+        .prepare(`${HOLDING_SELECT} WHERE a.doi <> '' AND lower(a.doi) IN (${ph})`)
+        .all(...batch) as unknown as HoldingRow[])
+    );
+  }
+  return out;
+}
+
+// Held papers matching an author surname and a publication year — the fallback
+// for a citation string, which carries no identifier at all.
+//
+// Restricted to papers the user holds a file for, unlike the two lookups above.
+// A surname and a year select broadly, and running them over the whole article
+// table would rank a topic feed's thousands of merely-seen papers alongside the
+// handful actually in the library — turning a custody question into a search.
+// The answer for a paper with no file is "no" either way, so nothing is lost.
+//
+// `authors` is a JSON array of "Surname II" strings, so a LIKE over the stored
+// text matches any author of the paper, not only the first. That is deliberate:
+// a citation string names whoever led the paper, and reference styles disagree
+// about who that is.
+export function heldByAuthorYear(authorKey: string, year: number, limit = 8): HoldingRow[] {
+  return db
+    .prepare(
+      `${HOLDING_SELECT}
+       WHERE hf.file_id IS NOT NULL
+         AND a.authors LIKE ? ESCAPE '\\'
+         AND a.pub_date LIKE ?
+       ORDER BY a.pub_date DESC, a.pmid DESC
+       LIMIT ?`
+    )
+    .all(`%${escapeLike(authorKey)}%`, `${year}%`, limit) as unknown as HoldingRow[];
 }
 
 // ---------- citations (for the graph view) ----------

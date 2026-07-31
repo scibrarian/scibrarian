@@ -9,9 +9,14 @@ import type {
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
   Topic as TopicRow,
+  CiteStatus,
+  FreeCopy,
   GraphEdge,
   GraphNode,
   GraphResponse,
+  HaveAnswer,
+  HaveMatch,
+  HaveResponse,
   ImportStatus,
   Journal,
   JournalRemovalResult,
@@ -21,7 +26,9 @@ import type {
   MeshHeadingsResponse,
   Paper,
   PapersResponse,
+  ParsedRefView,
   PollResult,
+  RefKind,
   ShareLinkResponse,
   TopicRemovalResult,
   TopicSuggestion,
@@ -31,7 +38,12 @@ import type {
 export type {
   AbstractsResponse,
   BookmarkEntry,
+  CiteStatus,
   CollectionFileStatus,
+  FreeCopy,
+  HaveAnswer,
+  HaveMatch,
+  HaveResponse,
   GraphEdge,
   GraphNode,
   GraphResponse,
@@ -44,7 +56,9 @@ export type {
   MeshHeadingsResponse,
   Paper,
   PapersResponse,
+  ParsedRefView,
   PollResult,
+  RefKind,
   ShareLinkResponse,
   TopicRemovalResult,
   TopicSuggestion,
@@ -119,6 +133,10 @@ export interface AppSettings {
   poll_cron: string;
   poll_enabled: boolean;
   library_open: boolean;
+  // How old a paper may be and still be citable, in years, as typed. A string
+  // rather than a number because it's a text field the user is mid-edit in, and
+  // "" has to survive the round trip to the form. "0" turns the judgement off.
+  citation_window_years: string;
   has_api_key: boolean;
   // URLs where other machines can reach this server; empty when bound to loopback.
   share_urls: string[];

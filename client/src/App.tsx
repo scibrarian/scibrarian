@@ -14,7 +14,17 @@ import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
-import { Dna, Settings as SettingsIcon, Lock, LockOpen, FilePlus, FolderPlus, Plus } from "lucide-react";
+import { HaveCheck } from "./components/HaveCheck";
+import {
+  Dna,
+  Settings as SettingsIcon,
+  Lock,
+  LockOpen,
+  FilePlus,
+  FolderPlus,
+  Plus,
+  SearchCheck,
+} from "lucide-react";
 
 // The prose below points at the Library workspace by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
@@ -47,6 +57,11 @@ export default function App() {
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
+  // "Do I already have this?" lives in the header rather than inside a
+  // workspace: the question arrives from outside the app (an assignment, a
+  // reference list someone sent) and has to be askable without first navigating
+  // to the right collection — or knowing which collection would hold it.
+  const [checkingHave, setCheckingHave] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -523,6 +538,18 @@ export default function App() {
               {showViewControls && (
                 <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
+              {/* Not gated on isAdmin: checking whether the library already
+                  holds a paper is a read, and on a shared instance it's the
+                  viewers — the writers told to check before requesting a
+                  purchase — who need it most. */}
+              <button
+                className={`have-btn ${checkingHave ? "active" : ""}`}
+                onClick={() => setCheckingHave(true)}
+                title="Check whether the library already holds a paper"
+              >
+                <SearchCheck size={16} aria-hidden />
+                <span className="have-btn-label">Do I have this?</span>
+              </button>
               {isAdmin && (
                 <button
                   className={`gear-btn ${showSettings ? "active" : ""}`}
@@ -670,6 +697,12 @@ export default function App() {
           </BookmarkFolderView>
         )}
       </main>
+
+      <HaveCheck
+        open={checkingHave}
+        onClose={() => setCheckingHave(false)}
+        access={access}
+      />
 
       <PromptDialog
         open={namingFolder}

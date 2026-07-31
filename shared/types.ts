@@ -211,6 +211,94 @@ export interface AbstractsResponse {
   abstracts: Record<string, string>;
 }
 
+// ---------- "do I already have this?" ----------
+
+// What one pasted line was understood to be. `citation` is an author + year
+// pulled off a citation string; `unknown` means nothing usable came out of it,
+// and `reason` says what was missing.
+export type RefKind = "pmid" | "doi" | "citation" | "unknown";
+
+export interface ParsedRefView {
+  kind: RefKind;
+  input: string; // the line as pasted, trimmed
+  pmid?: string;
+  doi?: string;
+  author?: string;
+  year?: number;
+  reason?: string;
+}
+
+// Whether a paper is recent enough to cite, as distinct from whether it's held.
+// Deliberately orthogonal to `held`: a paper the writer is about to *buy* can
+// also be outside the window, and that's worth knowing before the purchase.
+//   citable       — inside the configured window
+//   out_of_window — held or findable, but too old to cite; still useful for
+//                   verifying a claim back to its source
+//   unknown       — no publication date, or the window is switched off
+export type CiteStatus = "citable" | "out_of_window" | "unknown";
+
+// A legal free copy of a paper the library doesn't hold — the other half of the
+// approved purchase workflow, where the PM is told to look for a free version
+// before approving a buy.
+export interface FreeCopy {
+  url: string;
+  license: string | null; // e.g. "cc-by", null when the host doesn't say
+  version: string | null; // publishedVersion | acceptedVersion | submittedVersion
+  source: string | null; // repository or journal name, when OpenAlex reports one
+}
+
+// One paper the check identified, held or not. Mirrors Paper's file_* fields so
+// the client can open a stored copy exactly the way every other view does.
+export interface HaveMatch {
+  pmid: string;
+  title: string;
+  authors: string[];
+  journal_name: string;
+  pub_date: string; // sortable YYYY-MM-DD ('' when unknown)
+  pub_date_display: string;
+  doi: string;
+  url: string;
+  held: boolean;
+  file_id: number | null;
+  file_name: string | null;
+  file_exists: boolean;
+  collection_id: number | null;
+  collection_name: string | null;
+  cite: CiteStatus;
+  // Publication year, so the UI can say *how far* outside the window a
+  // verification-only paper is rather than only that it is.
+  year: number | null;
+}
+
+// The answer for one pasted line.
+export interface HaveAnswer {
+  parsed: ParsedRefView;
+  held: boolean;
+  // The paper, when exactly one was identified. Null when nothing matched, or
+  // when an author+year search found several — those go in `candidates`.
+  match: HaveMatch | null;
+  // Held papers an author+year search matched, when it matched more than one.
+  // The writer picks; the app must not guess which paper a citation string
+  // meant.
+  candidates: HaveMatch[];
+  // Only looked up for papers the library doesn't hold, and only when the
+  // request asked for it. Null means "no free copy found, or we couldn't ask".
+  free: FreeCopy | null;
+  // True when the free-copy lookup was attempted, so the UI can tell "no free
+  // version exists" from "we never checked".
+  freeChecked: boolean;
+}
+
+export interface HaveResponse {
+  results: HaveAnswer[];
+  // How many pasted lines were dropped because the request exceeded the
+  // per-request cap; the client re-sends those in another batch.
+  truncated: number;
+  // The citable window in force, echoed so the UI can name it ("older than 5
+  // years"). 0 means the window is off and every `cite` is "unknown".
+  windowYears: number;
+}
+
 // A minted expiring download link for one stored PDF. `path` is relative so
 // the client can prepend whichever origin it reached the server on.
 export interface ShareLinkResponse {
