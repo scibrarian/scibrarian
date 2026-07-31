@@ -144,7 +144,7 @@ function Summary({ response }: { response: HaveResponse }) {
         {held} of {results.length}
       </strong>{" "}
       already in your library.
-      {free > 0 && ` ${free} of the rest ${free === 1 ? "has" : "have"} a free copy.`}
+      {free > 0 && ` ${free} unowned ${free === 1 ? "paper has" : "papers have"} a free copy.`}
       {stale > 0 &&
         ` ${stale} held paper${stale === 1 ? " is" : "s are"} older than ${windowYears} years — verification only.`}
       {unreadable > 0 &&
