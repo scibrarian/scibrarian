@@ -62,7 +62,6 @@ export function PaperFilters({
   source,
   reloadToken,
   searchable = true,
-  fullText = false,
   journals,
   maxCitations,
   yearBounds,
@@ -74,11 +73,6 @@ export function PaperFilters({
   source: PaperSource;
   reloadToken: number;
   searchable?: boolean;
-  // Collections also search the body text of the PDFs they hold; topics and
-  // bookmark folders have no files behind their papers. Only the placeholder
-  // changes -- the server decides what a query actually covers, from the
-  // source -- but promising "& PDF text" where there are no PDFs would be a lie.
-  fullText?: boolean;
   journals?: string[];
   maxCitations?: number;
   yearBounds?: { min: number; max: number } | null;
@@ -88,6 +82,15 @@ export function PaperFilters({
 }) {
   const { minCitations, setMinCitations, minText, setMinText } = filters;
   const facets = useMeshFacets(source, reloadToken);
+
+  // Collections also search the body text of the PDFs they hold; topics and
+  // bookmark folders have no files behind their papers. Only the placeholder
+  // changes -- the server decides what a query actually covers, from the same
+  // source -- but promising "& PDF text" where there are no PDFs would be a lie.
+  // Derived here rather than passed in: every view was handing this down
+  // alongside `source` as the identical expression, so a fourth view (or a
+  // change to which sources carry files) could disagree with the other three.
+  const fullText = "collection" in source;
 
   // Slider and number box share this range; the box is clamped so a typed value
   // always maps to a valid slider position.

@@ -78,7 +78,6 @@ export function Timeline({
         filters={filters}
         source={source}
         reloadToken={reloadToken}
-        fullText={"collection" in source}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}

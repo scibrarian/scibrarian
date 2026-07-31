@@ -178,6 +178,11 @@ export const MESH_STATUS_NEVER = "PubMed-not-MEDLINE";
 // backfill's work list, and be re-fetched forever.
 export const MESH_STATUS_UNAVAILABLE = "Unavailable";
 
+// Deliberately has no production callers, and is not dead: the reading that
+// runs is db.ts's CASE ladder, in SQL, over stored rows. This is the reference
+// that ladder mirrors rung for rung, the thing its comments point at, and the
+// only version a test can execute — which is what pins the vocabulary when NLM
+// adds a status. Delete it and the definition survives only as SQL.
 export function meshOutlook(status: string): MeshOutlook {
   if (!status) return "unknown";
   if (status === MESH_STATUS_NEVER) return "none";

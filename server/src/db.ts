@@ -1071,51 +1071,36 @@ export function meshFilingForSource(source: PaperSourceQuery): MeshFiling {
 // differently: an id typo here silently stops filtering, while a heading NLM
 // revises does the same. Both matching is belt and braces on a list that has to
 // be right for the feature to be worth showing at all.
-const CHECK_TAG_UIS = new Set([
-  "D006801", // Humans
-  "D008297", // Male
-  "D005260", // Female
-  "D000818", // Animals
-  "D000328", // Adult
-  "D008875", // Middle Aged
-  "D000368", // Aged
-  "D000369", // Aged, 80 and over
-  "D000293", // Adolescent
-  "D002648", // Child
-  "D002675", // Child, Preschool
-  "D007223", // Infant
-  "D007231", // Infant, Newborn
-  "D055815", // Young Adult
-  "D011247", // Pregnancy
-  "D051379", // Mice
-  "D051381", // Rats
-  "D004285", // Dogs
-  "D002415", // Cats
-  "D002417", // Cattle
-]);
+//
+// One list of pairs rather than two parallel lists: those had to be edited
+// together, in the same order, with the ui↔name pairing checked by eye, and a
+// ui added without its name left the filter half-applied — which shows up only
+// as a check tag quietly reappearing in the suggestions.
+const CHECK_TAGS = [
+  ["D006801", "Humans"],
+  ["D008297", "Male"],
+  ["D005260", "Female"],
+  ["D000818", "Animals"],
+  ["D000328", "Adult"],
+  ["D008875", "Middle Aged"],
+  ["D000368", "Aged"],
+  ["D000369", "Aged, 80 and over"],
+  ["D000293", "Adolescent"],
+  ["D002648", "Child"],
+  ["D002675", "Child, Preschool"],
+  ["D007223", "Infant"],
+  ["D007231", "Infant, Newborn"],
+  ["D055815", "Young Adult"],
+  ["D011247", "Pregnancy"],
+  ["D051379", "Mice"],
+  ["D051381", "Rats"],
+  ["D004285", "Dogs"],
+  ["D002415", "Cats"],
+  ["D002417", "Cattle"],
+] as const;
 
-const CHECK_TAG_NAMES = new Set([
-  "Humans",
-  "Male",
-  "Female",
-  "Animals",
-  "Adult",
-  "Middle Aged",
-  "Aged",
-  "Aged, 80 and over",
-  "Adolescent",
-  "Child",
-  "Child, Preschool",
-  "Infant",
-  "Infant, Newborn",
-  "Young Adult",
-  "Pregnancy",
-  "Mice",
-  "Rats",
-  "Dogs",
-  "Cats",
-  "Cattle",
-]);
+const CHECK_TAG_UIS = CHECK_TAGS.map(([ui]) => ui);
+const CHECK_TAG_NAMES = CHECK_TAGS.map(([, name]) => name);
 
 // The distinct papers the user actually holds a file for — the Library, as the
 // custody positioning means it. Suggestions are drawn from these and not from
@@ -1131,8 +1116,8 @@ const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE pmid IS N
 // already watched are excluded — suggesting a topic the user has is noise — as
 // are check tags (above).
 export function suggestTopicsFromLibrary(limit = 12): TopicSuggestion[] {
-  const excluded = [...CHECK_TAG_UIS];
-  const excludedNames = [...CHECK_TAG_NAMES];
+  const excluded = CHECK_TAG_UIS;
+  const excludedNames = CHECK_TAG_NAMES;
   return db
     .prepare(
       `SELECT am.ui AS ui, MIN(am.name) AS name,

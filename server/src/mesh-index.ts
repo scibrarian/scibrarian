@@ -30,10 +30,6 @@ const BATCH = 100; // PMIDs per efetch — the poller's batch size
 
 let running = false;
 
-export function isMeshIndexingRunning(): boolean {
-  return running;
-}
-
 export async function backfillArticleMesh(): Promise<void> {
   if (running) return; // one at a time; the next trigger finds whatever is left
   const pending = meshBacklogCount();

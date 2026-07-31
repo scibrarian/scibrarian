@@ -492,7 +492,6 @@ export function CitationGraph({
         filters={filters}
         source={source}
         reloadToken={reloadToken}
-        fullText={"collection" in source}
         journals={data?.journals ?? []}
         maxCitations={maxCitations}
         yearBounds={yearBounds}

@@ -199,12 +199,13 @@ export function MeshFilter({
 
             <div className="filter-list">
               {headings.length === 0 ? (
+                // No loading branch: the toolbar only mounts this once a
+                // response has arrived (see `available`), and a refetch keeps
+                // the previous one on screen, so `data` is never null here.
                 <p className="filter-empty">
-                  {!data
-                    ? "Loading subjects…"
-                    : searching
-                      ? "No subject here matches that."
-                      : "No papers here are filed under a MeSH heading yet."}
+                  {searching
+                    ? "No subject here matches that."
+                    : "No papers here are filed under a MeSH heading yet."}
                 </p>
               ) : (
                 headings.map((h) => (

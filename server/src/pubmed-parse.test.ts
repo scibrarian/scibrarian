@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildTerm,
+  MESH_STATUS_UNAVAILABLE,
   meshOutlook,
   parseJournalIds,
   parsePubDate,
@@ -355,6 +356,24 @@ describe("meshOutlook", () => {
     expect(meshOutlook("PubMed-not-MEDLINE")).toBe("none");
     expect(meshOutlook("In-Process")).toBe("pending");
     expect(meshOutlook("Publisher")).toBe("pending");
+  });
+
+  // "Indexed" is about the record being finished, not about it carrying
+  // headings: a MEDLINE record NLM filed under nothing is settled with none,
+  // which is a different fact from PubMed-not-MEDLINE above and is reported
+  // separately (see MeshFiling). Conflating them told the reader that a paper
+  // NLM had indexed was not indexed for MEDLINE.
+  it("does not confuse 'indexed' with 'has headings'", () => {
+    expect(meshOutlook("Completed")).toBe("indexed");
+    expect(meshOutlook("MEDLINE")).not.toBe("none");
+  });
+
+  // Our own marker for a record efetch didn't return. It sits outside
+  // MESH_SETTLED_STATUSES on purpose, so it reads as "ask again later" rather
+  // than being written off — a missing record is as likely to be a transient
+  // upstream gap as a permanent one.
+  it("treats the unavailable sentinel as still in flight", () => {
+    expect(meshOutlook(MESH_STATUS_UNAVAILABLE)).toBe("pending");
   });
 
   it("reports an unfetched record as unknown, not as having none", () => {
