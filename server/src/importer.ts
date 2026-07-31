@@ -97,11 +97,16 @@ async function runImport(
         // to the blob, not to whether we could pin it to a PubMed record, and
         // re-running the import shouldn't have to parse it again.
         //
-        // Caught separately from the parse above: the index write is advisory —
-        // pdf-index.ts exists to catch up on blobs with no text — while the
-        // error the parse raises is shown to the user next to the file. Sharing
-        // one catch reported a failed database write as an unreadable PDF and
-        // marked a file that had parsed perfectly well as a match error.
+        // Caught separately from the parse above, because the two failures mean
+        // different things to the user: a parse error is about their PDF and is
+        // shown next to the file, while a failed index write is about this
+        // process and leaves the match perfectly valid. Sharing one catch
+        // reported the write as an unreadable PDF and marked a file that had
+        // parsed fine as a match error.
+        //
+        // This is the only thing that indexes a blob — nothing sweeps up rows
+        // with no text afterwards — so a file that lands here is unsearchable
+        // until it is uploaded again. Logged loudly for that reason.
         try {
           savePdfText({
             contentHash: f.content_hash,

@@ -324,7 +324,8 @@ function addColumnIfMissing(table: string, column: string, definition: string): 
 addColumnIfMissing("articles", "mesh_status", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("articles", "mesh_checked_at", "TEXT");
 // journals predates this column; NULL here is exactly "not established yet",
-// which is also what journalsMissingIndexing() uses to find its work list.
+// which is what a row keeps when the add-time check couldn't reach NCBI. The
+// client reads it as three states, not two — see createJournal.
 addColumnIfMissing("journals", "medline_indexed", "INTEGER");
 
 // Indexes over migrated columns go here, not in the schema block above: on a
@@ -495,8 +496,11 @@ export function listJournals(): Journal[] {
   return rows.map(toJournal);
 }
 
-// `medlineIndexed` is null when the check couldn't run — the add still succeeds,
-// and the background backfill picks the row up later.
+// `medlineIndexed` is null when the check couldn't run — the add still succeeds
+// rather than failing on an advisory lookup, and the row stays null. Nothing
+// revisits it: the three places the client reads this test for `false`, so an
+// unresolved journal shows no badge rather than a wrong one, and removing and
+// re-adding it runs the check again.
 export function createJournal(
   name: string,
   nlmId: string | null,
@@ -510,20 +514,6 @@ export function createJournal(
     .get(Number(info.lastInsertRowid)) as unknown as JournalRow;
   return toJournal(row);
 }
-
-// Watched journals whose MEDLINE indexing status was never established — the
-// add-time check couldn't reach NCBI. The backfill's work list.
-export function journalsMissingIndexing(): string[] {
-  const rows = db
-    .prepare("SELECT nlm_id FROM journals WHERE nlm_id IS NOT NULL AND medline_indexed IS NULL")
-    .all() as { nlm_id: string }[];
-  return rows.map((r) => r.nlm_id);
-}
-
-export const setJournalIndexing = transaction((statuses: Map<string, boolean>) => {
-  const stmt = db.prepare("UPDATE journals SET medline_indexed = ? WHERE nlm_id = ?");
-  for (const [nlmId, indexed] of statuses) stmt.run(Number(indexed), nlmId);
-});
 
 // Used to reject adding the same journal twice (identity is the NLM id).
 export function journalByNlmId(nlmId: string): Journal | undefined {
@@ -745,8 +735,8 @@ const SETTLED_PARAMS = [...MESH_SETTLED_STATUSES];
 // ask. Newest first — those are the ones a reader is most likely to be looking
 // at, and the ones most likely to still be mid-indexing.
 //
-// Re-queried each pass rather than snapshotted, like the PDF text backfill, so
-// the job is resumable with no cursor to persist. That only terminates because
+// Re-queried each pass rather than snapshotted, so the job is resumable with no
+// cursor to persist. That only terminates because
 // every write stamps mesh_checked_at and a non-empty status: a row leaves the
 // list either by settling or by falling outside the recheck window.
 export function articlesMissingMesh(limit: number, recheckDays = 30): string[] {
@@ -1594,54 +1584,6 @@ export function savePdfText(t: PdfTextInsert): void {
        truncated = excluded.truncated, chars = excluded.chars,
        extracted_at = datetime('now')`
   ).run(t.contentHash, t.text, t.pages, Number(t.truncated), t.text.length);
-}
-
-export function hasPdfText(contentHash: string): boolean {
-  return (
-    db.prepare("SELECT 1 FROM pdf_text WHERE content_hash = ?").get(contentHash) !== undefined
-  );
-}
-
-// The backfill's work list: distinct blobs behind uploaded files that have no
-// extracted text yet. Re-queried each pass rather than snapshotted, which is
-// what makes the job resumable — a restart mid-backfill just asks again, and
-// files deleted in the meantime drop out on their own.
-//
-// `skip` steps past rows the caller has already looked at and cannot act on —
-// hashes whose bytes are missing from the blob store. Those write no pdf_text
-// row, so they stay on this list and, ordered oldest-first, would otherwise sit
-// at its head and be handed back forever.
-export function fileHashesMissingText(
-  limit: number,
-  skip = 0
-): { hash: string; name: string }[] {
-  return db
-    .prepare(
-      `SELECT cf.content_hash AS hash, MIN(cf.file_name) AS name
-       FROM collection_files cf
-       LEFT JOIN pdf_text pt ON pt.content_hash = cf.content_hash
-       WHERE pt.content_hash IS NULL
-       GROUP BY cf.content_hash
-       ORDER BY MIN(cf.id)
-       LIMIT ? OFFSET ?`
-    )
-    .all(limit, skip) as { hash: string; name: string }[];
-}
-
-export function pdfTextStats(): { indexed: number; pending: number } {
-  const indexed = (
-    db.prepare("SELECT COUNT(*) AS c FROM pdf_text").get() as { c: number }
-  ).c;
-  const pending = (
-    db
-      .prepare(
-        `SELECT COUNT(DISTINCT cf.content_hash) AS c FROM collection_files cf
-         LEFT JOIN pdf_text pt ON pt.content_hash = cf.content_hash
-         WHERE pt.content_hash IS NULL`
-      )
-      .get() as { c: number }
-  ).c;
-  return { indexed, pending };
 }
 
 // Insert/refresh articles without linking them to a topic (collections track

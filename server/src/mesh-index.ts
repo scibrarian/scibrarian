@@ -3,23 +3,28 @@ import { MESH_STATUS_UNAVAILABLE } from "./pubmed-parse.js";
 import { fetchArticleXml } from "./pubmed.js";
 import { errMessage } from "./util.js";
 
-// Backfill of MeSH filing for articles stored before filing existed, plus the
-// re-check of ones PubMed hadn't finished indexing when we last looked.
+// The second half of ingestion, not the one-time catch-up the name suggests.
 //
-// Structurally the PDF-text backfill's twin (pdf-index.ts): the work list is
-// re-queried from the database each pass rather than snapshotted, so a crash, a
-// restart, or an article deleted mid-run just changes the next query's answer.
-// There is no cursor to persist and no state that can disagree with the
-// database. What makes it terminate is that every write stamps a non-empty
-// status and mesh_checked_at, so a row leaves the list either by settling or by
-// falling inside the recheck window — including rows PubMed didn't return at
-// all, which are stamped MESH_STATUS_UNAVAILABLE rather than left to be
-// re-fetched forever.
+// A paper's XML is fetched exactly once, when the poller first sees it (see
+// newPmids in poller.ts — articles already stored are linked to a topic without
+// a refetch). The poller finds papers while they are new, so most arrive
+// In-Process or Publisher, carrying no MeshHeadingList: NLM assigns the
+// headings weeks or months later. This is the only thing that ever asks again,
+// so without it those papers stay unfiled for good and the subject filter fills
+// only from the minority that were already indexed on first sight.
 //
-// The one real difference is where the work happens: extraction is local CPU,
-// this is NCBI traffic. It needs no breather between batches because every
-// request already goes through pubmed.ts's shared throttle, which is also what
-// keeps it from crowding out a poll or an import running at the same time.
+// The work list is re-queried from the database each pass rather than
+// snapshotted, so a crash, a restart, or an article deleted mid-run just
+// changes the next query's answer. There is no cursor to persist and no state
+// that can disagree with the database. What makes it terminate is that every
+// write stamps a non-empty status and mesh_checked_at, so a row leaves the list
+// either by settling or by falling inside the recheck window — including rows
+// PubMed didn't return at all, which are stamped MESH_STATUS_UNAVAILABLE rather
+// than left to be re-fetched forever.
+//
+// It needs no breather between batches because every request already goes
+// through pubmed.ts's shared throttle, which is also what keeps it from
+// crowding out a poll or an import running at the same time.
 
 const BATCH = 100; // PMIDs per efetch — the poller's batch size
 

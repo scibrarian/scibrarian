@@ -14,7 +14,7 @@ import {
   transaction,
 } from "./db.js";
 import { ensureCitations } from "./icite.js";
-import { backfillJournalIndexing, refreshCatalogIfStale } from "./journal-catalog.js";
+import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
 import { buildTerm, fetchArticles, search } from "./pubmed.js";
@@ -178,7 +178,6 @@ export function startScheduler(): void {
   cron.schedule(REFERENCE_REFRESH_CRON, () => {
     void refreshCatalogIfStale();
     void recheckMeshVersion();
-    void backfillJournalIndexing();
     // Papers PubMed hadn't finished MeSH-indexing when we stored them come back
     // around here: on a long-running process that's the only thing that ever
     // files them, since nothing else re-reads a paper already stored.
