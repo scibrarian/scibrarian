@@ -1,10 +1,4 @@
-import {
-  articlesMissingMesh,
-  articlesMissingPubTypes,
-  meshBacklogCount,
-  pubTypeBacklogCount,
-  saveArticleMesh,
-} from "./db.js";
+import { articlesMissingMesh, meshBacklogCount, saveArticleMesh } from "./db.js";
 import { MESH_STATUS_UNAVAILABLE } from "./pubmed-parse.js";
 import { fetchArticleXml } from "./pubmed.js";
 import { errMessage } from "./util.js";
@@ -39,21 +33,8 @@ let running = false;
 export async function backfillArticleMesh(): Promise<void> {
   if (running) return; // one at a time; the next trigger finds whatever is left
   const pending = meshBacklogCount();
-  const missingTypes = pubTypeBacklogCount();
-  if (pending === 0 && missingTypes === 0) return;
+  if (pending === 0) return;
   running = true;
-  try {
-    if (pending > 0) await fileMesh(pending);
-    // Second, and only after the first: the MeSH pass writes publication types
-    // from the very same XML, so anything it just handled has left this list
-    // before it is queried. Re-counted for the same reason.
-    if (pubTypeBacklogCount() > 0) await fillPubTypes();
-  } finally {
-    running = false;
-  }
-}
-
-async function fileMesh(pending: number): Promise<void> {
   console.log(`[mesh-index] filing MeSH headings for ${pending} article(s)…`);
   let filed = 0;
   let unfiled = 0;
@@ -93,50 +74,7 @@ async function fileMesh(pending: number): Promise<void> {
     console.warn(
       `[mesh-index] filing stopped after ${filed + unfiled + missing} article(s): ${errMessage(err)}`
     );
-  }
-}
-
-// Publication types for articles stored before this was recorded at all.
-//
-// Unlike filing, this is a genuine one-time catch-up: types arrive with the
-// record and never change afterwards, so nothing ever re-enters this list once
-// it has been through. What makes it terminate is that a successful fetch
-// always writes a row — the PUB_TYPE_NONE sentinel when PubMed lists nothing —
-// and that the work list only holds articles whose MeSH status is settled, i.e.
-// ones efetch has definitely returned before (see articlesMissingPubTypes).
-async function fillPubTypes(): Promise<void> {
-  const pending = pubTypeBacklogCount();
-  console.log(`[mesh-index] reading publication types for ${pending} older article(s)…`);
-  let done = 0;
-  let missing = 0;
-  try {
-    for (;;) {
-      const pmids = articlesMissingPubTypes(BATCH);
-      if (pmids.length === 0) break;
-      const records = await fetchArticleXml(pmids);
-      const rows = [];
-      for (const pmid of pmids) {
-        const x = records.get(pmid);
-        if (!x) {
-          // Nothing to write: with no record, "PubMed lists no type" would be a
-          // claim we can't make. Left on the list, and if PubMed has genuinely
-          // stopped returning it the MeSH pass will restamp its status to
-          // UNAVAILABLE and take it off this one.
-          missing++;
-          continue;
-        }
-        done++;
-        rows.push({ pmid, status: x.status, headings: x.mesh, pubTypes: x.pubTypes });
-      }
-      if (rows.length === 0) break; // a whole batch PubMed wouldn't return; stop rather than spin
-      saveArticleMesh(rows);
-    }
-    const parts = [`${done} read`];
-    if (missing > 0) parts.push(`${missing} not returned by PubMed`);
-    console.log(`[mesh-index] publication types done: ${parts.join(", ")}`);
-  } catch (err) {
-    console.warn(
-      `[mesh-index] publication types stopped after ${done} article(s): ${errMessage(err)}`
-    );
+  } finally {
+    running = false;
   }
 }

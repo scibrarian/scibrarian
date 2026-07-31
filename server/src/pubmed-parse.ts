@@ -304,10 +304,12 @@ export type EvidenceClass =
 // type worth keeping — which is the common case, not an edge one: ~50% of real
 // records list nothing but `Journal Article`.
 //
-// Without it, "this article has no stored types" would mean both "we looked and
-// NLM says nothing" and "we have never looked", and the backfill's work list —
-// articles with no types — would re-fetch half the library on every run,
-// forever. Exactly the role MESH_STATUS_UNAVAILABLE plays for filing.
+// It is what separates the two ways an article can have no stored types: PubMed
+// listed none, or nobody has looked. Those are the `untyped` and `unknown` arms
+// of EvidenceClass, and without the sentinel the first is unreachable — half of
+// every library would report as unclassified when in fact it is classified, as
+// "NLM assigned no design tag". Same role MESH_STATUS_UNAVAILABLE plays for
+// filing: a written-down absence, so absence itself stops being ambiguous.
 export const PUB_TYPE_NONE = "(none)";
 
 // Read stored rows back: strip the sentinel, and use its presence as the "have

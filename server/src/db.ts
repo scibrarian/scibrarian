@@ -67,10 +67,10 @@ db.exec(`
   -- NULL for "not established yet" — the add-time check couldn't reach NCBI.
   -- Only 0 is worth showing the user: topics are MeSH terms and an unindexed
   -- journal's papers carry no MeSH headings, so it can never contribute to a
-  -- topic feed. Written at add time (POST /journals); the background backfill
-  -- (journal-catalog.ts) settles the rows that add-time check missed. On an
-  -- installed base this CREATE is a no-op, so the column is also added via
-  -- addColumnIfMissing() below.
+  -- topic feed. Written once, at add time (POST /journals) — nothing revisits
+  -- it, so a journal added while NCBI was unreachable stays NULL until it is
+  -- removed and re-added. On an installed base this CREATE is a no-op, so the
+  -- column is also added via addColumnIfMissing() below.
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -703,11 +703,10 @@ function setArticleXmlFacts(a: ArticleInsert): void {
 // same reason filing does: a re-fetch is PubMed's current answer in full, and a
 // type NLM removed has to disappear here too.
 //
-// An empty list writes the PUB_TYPE_NONE sentinel rather than nothing. That is
-// what makes "no types" mean "PubMed says none" instead of "nobody has looked",
-// and it is what lets articlesMissingPubTypes below terminate — around half of
-// all records legitimately have no type, so a work list keyed on "has no rows"
-// would otherwise re-fetch half the library on every run for good.
+// An empty list writes the PUB_TYPE_NONE sentinel rather than nothing, which is
+// what makes "no stored types" mean "PubMed lists none" instead of "nobody has
+// looked". Around half of all records genuinely carry no type, so without it
+// that whole half would read as unclassified — see PUB_TYPE_NONE.
 function setArticlePubTypes(pmid: string, types: string[]): void {
   deletePubTypesStmt.run(pmid);
   for (const t of types.length > 0 ? types : [PUB_TYPE_NONE]) insertPubTypeStmt.run(pmid, t);
@@ -728,42 +727,6 @@ export function pubTypesByPmids(pmids: string[]): Map<string, string[]> {
     else out.set(r.pmid, [r.type]);
   }
   return out;
-}
-
-// Articles whose publication types were never recorded — papers stored before
-// this existed. Deliberately narrower than "has no rows":
-//
-//   - Only *settled* MeSH statuses qualify. An unsettled row is already on the
-//     MeSH backfill's work list, which now writes types from the same fetch, so
-//     including it here would fetch the same record twice in one run.
-//   - Settled also means efetch definitely returned this record once, so a
-//     re-fetch will return it again and write at least the sentinel. That is
-//     what bounds this list. A PMID efetch has stopped returning carries
-//     MESH_STATUS_UNAVAILABLE, which is not settled, so it stays on the MeSH
-//     side where the recheck window already governs how often it is retried.
-export function articlesMissingPubTypes(limit: number): string[] {
-  const rows = db
-    .prepare(
-      `SELECT pmid FROM articles a
-       WHERE a.mesh_status IN (${SETTLED_PLACEHOLDERS})
-         AND NOT EXISTS (SELECT 1 FROM article_pub_types p WHERE p.pmid = a.pmid)
-       ORDER BY a.pub_date DESC, a.pmid DESC
-       LIMIT ?`
-    )
-    .all(...SETTLED_PARAMS, limit) as { pmid: string }[];
-  return rows.map((r) => r.pmid);
-}
-
-export function pubTypeBacklogCount(): number {
-  return (
-    db
-      .prepare(
-        `SELECT COUNT(*) AS c FROM articles a
-         WHERE a.mesh_status IN (${SETTLED_PLACEHOLDERS})
-           AND NOT EXISTS (SELECT 1 FROM article_pub_types p WHERE p.pmid = a.pmid)`
-      )
-      .get(...SETTLED_PARAMS) as { c: number }
-  ).c;
 }
 
 // The one place an ArticleInsert maps onto the articles upsert — shared by the
