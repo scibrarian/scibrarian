@@ -32,6 +32,48 @@ export function buildTerm(topicTerm: string, journalNames: string[]): string {
   return `(${term}) AND (${journalClause})`;
 }
 
+// ---------- E-utilities error reporting ----------
+
+// NCBI reports some failures inside a 200 response as an `ERROR` string, and
+// there are two shapes of that, both of which used to pass for "no results".
+//
+// The nastier one isn't valid JSON at all: the backend interpolates a Python
+// exception into the body *raw*, newlines included, so the JSON string literal
+// contains a control character and JSON.parse dies on it. What the user then
+// saw was "Bad control character in string literal in JSON at position 104" —
+// a column number in place of NCBI telling them exactly what was wrong.
+//
+// Both helpers are here rather than in pubmed.ts so they can be tested against
+// captured bodies, like every other response shape in this file.
+const ERROR_FIELD_RE = /"ERROR"\s*:\s*"([\s\S]*?)"\s*[,}]/;
+
+// The `ERROR` message from a body that failed to parse. Read with a regex
+// precisely because the body is malformed — this runs only after JSON.parse has
+// already given up, so there is no object to look at.
+export function ncbiErrorFromBody(body: string): string | null {
+  const raw = ERROR_FIELD_RE.exec(body)?.[1];
+  return raw ? tidyNcbiError(raw) : null;
+}
+
+// The same field from a body that *did* parse. Without this an esearch that
+// failed for a reason NCBI could state — a malformed term, a backend fault —
+// comes back with no `idlist`, which reads identically to "nothing matched":
+// the poll reports success, stamps its watermark, and the topic silently never
+// yields a paper again.
+export function esearchError(data: unknown): string | null {
+  const err = (data as { esearchresult?: { ERROR?: unknown } } | null)?.esearchresult?.ERROR;
+  return typeof err === "string" && err.trim() ? tidyNcbiError(err) : null;
+}
+
+// NCBI's messages carry the newlines and indentation of a stack trace and run
+// to several hundred characters. This is destined for a one-line poll banner,
+// so collapse the whitespace and keep the front of it, which is the part that
+// says what happened.
+function tidyNcbiError(raw: string): string {
+  const flat = raw.replace(/\s+/g, " ").trim();
+  return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
+}
+
 // ---------- esummary (metadata) ----------
 
 interface ESummaryDoc {

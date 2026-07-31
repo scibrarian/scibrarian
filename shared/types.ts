@@ -311,6 +311,11 @@ export interface PollResult {
   topicName: string;
   found: number; // PMIDs returned by search
   added: number; // papers newly added to this feed (fetched, or linked from another feed)
+  // How many matching papers PubMed would not hand over. E-utilities serves at
+  // most the first 9,999 records for a query, so a broad topic's first poll is
+  // necessarily partial — and silently partial is the one thing it must not be,
+  // since the feed then looks complete and simply isn't.
+  truncated?: number;
   error?: string;
 }
 

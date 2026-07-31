@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   buildTerm,
+  esearchError,
   MESH_STATUS_UNAVAILABLE,
   meshOutlook,
+  ncbiErrorFromBody,
   parseJournalIds,
   parsePubDate,
   parseSummaries,
@@ -18,6 +20,60 @@ describe("buildTerm", () => {
     expect(buildTerm("neoplasms[MeSH Terms]", ["Lancet", 'The "BMJ"'])).toBe(
       '(neoplasms[MeSH Terms]) AND ("Lancet"[Journal] OR "The BMJ"[Journal])'
     );
+  });
+});
+
+// Captured verbatim from esearch.fcgi with retstart=9999. Note the *raw*
+// newline inside the JSON string literal: this body is not valid JSON, which is
+// why JSON.parse reported "Bad control character in string literal ... position
+// 104" instead of anything about PubMed. Kept as a fixture so a future refactor
+// can't quietly go back to guessing at column numbers.
+const RETSTART_ERROR_BODY =
+  '{"header":{"type":"esearch","version":"0.3"},"esearchresult":{"ERROR":"Search Backend failed: Exception:\n' +
+  "'retstart' cannot be larger than 9998. For PubMed, ESearch can only retrieve the first 9,999 records " +
+  'matching the query."}}';
+
+describe("ncbiErrorFromBody", () => {
+  it("recovers the message from a body JSON.parse can't read", () => {
+    expect(() => JSON.parse(RETSTART_ERROR_BODY)).toThrow(); // the fixture really is malformed
+    expect(ncbiErrorFromBody(RETSTART_ERROR_BODY)).toBe(
+      "Search Backend failed: Exception: 'retstart' cannot be larger than 9998. For PubMed, " +
+        "ESearch can only retrieve the first 9,999 records matching the query."
+    );
+  });
+
+  it("collapses the newlines and indentation of an interpolated stack trace", () => {
+    expect(ncbiErrorFromBody('{"ERROR":"one\n   two\n\tthree"}')).toBe("one two three");
+  });
+
+  it("truncates a very long message rather than filling a banner with it", () => {
+    const long = ncbiErrorFromBody(`{"ERROR":"${"x".repeat(500)}"}`);
+    expect(long).toHaveLength(300);
+    expect(long?.endsWith("…")).toBe(true);
+  });
+
+  it("returns null when the body carries no ERROR field", () => {
+    expect(ncbiErrorFromBody('{"esearchresult":{"idlist":["1"]}}')).toBeNull();
+    expect(ncbiErrorFromBody("<html>503</html>")).toBeNull();
+  });
+});
+
+describe("esearchError", () => {
+  it("finds an ERROR in a body that parsed cleanly", () => {
+    // The silent variant: valid JSON, no idlist, and left unchecked it reads
+    // exactly like "nothing matched".
+    expect(esearchError({ esearchresult: { ERROR: "Invalid term" } })).toBe("Invalid term");
+  });
+
+  it("returns null for a normal result set", () => {
+    expect(esearchError({ esearchresult: { idlist: ["1"], count: "1" } })).toBeNull();
+  });
+
+  it("ignores an empty or non-string ERROR", () => {
+    expect(esearchError({ esearchresult: { ERROR: "   " } })).toBeNull();
+    expect(esearchError({ esearchresult: { ERROR: 0 } })).toBeNull();
+    expect(esearchError({})).toBeNull();
+    expect(esearchError(null)).toBeNull();
   });
 });
 

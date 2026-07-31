@@ -355,6 +355,15 @@ export default function App() {
       const removed = Math.max(0, before + added - after);
       let msg = `Added ${added} new paper${added === 1 ? "" : "s"}.`;
       if (removed > 0) msg += ` Removed ${removed} paper${removed === 1 ? "" : "s"}.`;
+      // PubMed hands over at most the first 9,999 records per query, so a broad
+      // topic's feed is genuinely incomplete. Said plainly rather than left to
+      // be inferred from a count nobody has a reference point for — the feed
+      // would otherwise look complete, and only the user can decide whether to
+      // narrow the topic or watch fewer journals.
+      const capped = res.results.filter((r) => r.truncated);
+      for (const r of capped) {
+        msg += ` “${r.topicName}” matches more papers than PubMed will return — kept the ${r.found.toLocaleString()} most recent, skipped ${r.truncated!.toLocaleString()}. Narrow the topic or watch fewer journals for full coverage.`;
+      }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
       setStatus(msg);
       // /refresh polls the active topic, and every topic when there is none.

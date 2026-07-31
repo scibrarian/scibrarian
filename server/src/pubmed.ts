@@ -1,7 +1,13 @@
 import { findCatalogByName, getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
 import { fetchWithTimeout } from "./http.js";
-import { parseArticleSet, parseJournalIds, parseSummaries } from "./pubmed-parse.js";
+import {
+  esearchError,
+  ncbiErrorFromBody,
+  parseArticleSet,
+  parseJournalIds,
+  parseSummaries,
+} from "./pubmed-parse.js";
 import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
 import { errMessage, safeError } from "./util.js";
 
@@ -124,15 +130,55 @@ async function eutilsText(endpoint: string, params: URLSearchParams): Promise<st
 // outside the retry loop deliberately: a body that parses as anything but JSON
 // is NCBI answering with something other than what we asked for, which retrying
 // won't change.
+//
+// Both ways NCBI can report a failure inside a 200 are turned into a thrown,
+// exposable error here rather than being left to the caller:
+//
+//   - A body that doesn't parse. NCBI interpolates backend exceptions into the
+//     JSON *raw*, newlines and all, so JSON.parse fails on a control character
+//     and its message is a column number. The `ERROR` field is recovered from
+//     the text so the caller reports what NCBI actually said.
+//   - A body that parses but carries `esearchresult.ERROR`. Left alone this is
+//     indistinguishable from an empty result set: the caller sees no `idlist`,
+//     concludes nothing matched, and a permanently broken query reads as a
+//     healthy topic that simply never has new papers.
 async function eutilsJson<T>(endpoint: string, params: URLSearchParams): Promise<T> {
-  return JSON.parse(await eutilsText(endpoint, params)) as T;
+  const body = await eutilsText(endpoint, params);
+  let data: T;
+  try {
+    data = JSON.parse(body) as T;
+  } catch {
+    const stated = ncbiErrorFromBody(body);
+    throw safeError(
+      stated
+        ? `PubMed rejected the ${endpoint.replace(".fcgi", "")} request: ${stated}`
+        : `NCBI ${endpoint} returned a response that isn't valid JSON.`
+    );
+  }
+  const stated = esearchError(data);
+  if (stated) {
+    throw safeError(`PubMed rejected the ${endpoint.replace(".fcgi", "")} request: ${stated}`);
+  }
+  return data;
 }
 
 // ---------- esearch ----------
 
-// Fetch matching PMIDs. A single esearch caps at 10k ids, so we page with
-// retstart; MAX_RESULTS is a safety ceiling so an overly broad term can't pull
-// an unbounded set.
+// Fetch matching PMIDs, paging with retstart.
+//
+// The ceiling is NCBI's, not ours: "'retstart' cannot be larger than 9998. For
+// PubMed, ESearch can only retrieve the first 9,999 records matching the
+// query." Getting past it needs the History server or EDirect, which is real
+// work on a part of the product that is deliberately frozen — so the cap stands
+// and callers are told when they hit it.
+//
+// 9,999 rather than a round 10,000 for the same reason, and this is not a
+// cosmetic difference. At retstart=9000 NCBI returns 999 records, not 1000, so
+// with a 10,000 ceiling the loop saw 9,999 < 10,000, asked for retstart=9999,
+// and NCBI answered with a malformed-JSON error that killed the whole poll —
+// meaning **every topic matching more than 9,999 papers failed its first poll
+// outright and stored nothing**. The explicit retstart guard below is belt and
+// braces on the same boundary.
 //
 // `mhdaSince` (YYYY/MM/DD) bounds the query by MeSH Date [mhda] — the date a
 // citation was indexed with MeSH (which equals its Entrez date until it's
@@ -143,14 +189,24 @@ async function eutilsJson<T>(endpoint: string, params: URLSearchParams): Promise
 // add-date (edat) window would silently miss. Omit it to scan the full history
 // (a topic's first poll).
 const PAGE = 1000;
-const MAX_RESULTS = 10000;
+const MAX_RESULTS = 9999;
+const MAX_RETSTART = 9998;
 
-export async function search(term: string, mhdaSince?: string): Promise<string[]> {
+export interface SearchResult {
+  ids: string[];
+  /** How many papers PubMed says match, which may exceed what it will hand over. */
+  total: number;
+}
+
+// The ids plus the true match count, so a caller can tell a complete answer
+// from a capped one. Nothing else can: `ids.length === MAX_RESULTS` is also
+// what a topic with exactly 9,999 papers looks like.
+export async function searchWithTotal(term: string, mhdaSince?: string): Promise<SearchResult> {
   const q = mhdaSince ? `(${term}) AND (${mhdaSince}:3000[mhda])` : term;
   const ids: string[] = [];
   let retstart = 0;
   let total = Infinity;
-  while (ids.length < Math.min(total, MAX_RESULTS)) {
+  while (ids.length < Math.min(total, MAX_RESULTS) && retstart <= MAX_RETSTART) {
     const params = new URLSearchParams({
       db: "pubmed",
       retmode: "json",
@@ -168,7 +224,12 @@ export async function search(term: string, mhdaSince?: string): Promise<string[]
     ids.push(...idlist);
     retstart += idlist.length;
   }
-  return ids.slice(0, MAX_RESULTS);
+  return {
+    ids: ids.slice(0, MAX_RESULTS),
+    // A count PubMed didn't state falls back to what we actually received, so a
+    // caller comparing the two never sees a phantom shortfall.
+    total: Number.isFinite(total) ? total : ids.length,
+  };
 }
 
 // The most recent `retmax` PMIDs for a term, published on/after `mindate`
