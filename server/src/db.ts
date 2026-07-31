@@ -1606,7 +1606,15 @@ export function hasPdfText(contentHash: string): boolean {
 // extracted text yet. Re-queried each pass rather than snapshotted, which is
 // what makes the job resumable — a restart mid-backfill just asks again, and
 // files deleted in the meantime drop out on their own.
-export function fileHashesMissingText(limit: number): { hash: string; name: string }[] {
+//
+// `skip` steps past rows the caller has already looked at and cannot act on —
+// hashes whose bytes are missing from the blob store. Those write no pdf_text
+// row, so they stay on this list and, ordered oldest-first, would otherwise sit
+// at its head and be handed back forever.
+export function fileHashesMissingText(
+  limit: number,
+  skip = 0
+): { hash: string; name: string }[] {
   return db
     .prepare(
       `SELECT cf.content_hash AS hash, MIN(cf.file_name) AS name
@@ -1615,9 +1623,9 @@ export function fileHashesMissingText(limit: number): { hash: string; name: stri
        WHERE pt.content_hash IS NULL
        GROUP BY cf.content_hash
        ORDER BY MIN(cf.id)
-       LIMIT ?`
+       LIMIT ? OFFSET ?`
     )
-    .all(limit) as { hash: string; name: string }[];
+    .all(limit, skip) as { hash: string; name: string }[];
 }
 
 export function pdfTextStats(): { indexed: number; pending: number } {

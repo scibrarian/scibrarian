@@ -40,14 +40,20 @@ export async function backfillPdfText(): Promise<void> {
   let skipped = 0;
   try {
     for (;;) {
-      const batch = fileHashesMissingText(BATCH);
+      // Offset by everything skipped so far. Those rows write no pdf_text and so
+      // stay on the work list; since the list is oldest-first and they are
+      // passed over in that order, they collect at its head, and the offset is
+      // exactly what steps over them. Without it a batch that was entirely
+      // missing blobs returned the same rows on the next pass — which the loop
+      // could only escape by giving up on the whole backfill, stranding every
+      // unindexed PDF behind them, on this run and every run after it.
+      const batch = fileHashesMissingText(BATCH, skipped);
       if (batch.length === 0) break;
-      let progressed = false;
       for (const { hash, name } of batch) {
         if (!blobExists(hash)) {
           // A row whose bytes are gone (manual blob-store surgery, a restore
           // from a partial backup). Nothing to extract and nothing to fix here;
-          // count it and move on, or the loop would re-select it forever.
+          // count it and move on.
           skipped++;
           continue;
         }
@@ -60,7 +66,6 @@ export async function backfillPdfText(): Promise<void> {
             truncated: extracted.truncated,
           });
           indexed++;
-          progressed = true;
         } catch (err) {
           // An unreadable PDF must not stall the queue behind it. Store an empty
           // extraction so the row leaves the work list; it is then simply a
@@ -68,13 +73,12 @@ export async function backfillPdfText(): Promise<void> {
           console.warn(`[pdf-index] ${name}: extraction failed: ${errMessage(err)}`);
           savePdfText({ contentHash: hash, text: "", pages: 0, truncated: false });
           failed++;
-          progressed = true;
         }
         await breathe();
       }
-      // Every hash in the batch was a missing blob, so the next query returns
-      // the same rows. Stop rather than spin.
-      if (!progressed) break;
+      // No guard needed to terminate: every row either leaves the work list (a
+      // pdf_text row, whether extracted or empty) or advances `skipped`, so each
+      // pass strictly shortens what the next query can return.
     }
     const parts = [`${indexed} indexed`];
     if (failed > 0) parts.push(`${failed} unreadable`);

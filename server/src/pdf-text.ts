@@ -32,7 +32,7 @@ export interface PdfExtract {
   matchText: string;
   // Up to INDEX_PAGES pages, for the full-text index. Includes matchText.
   fullText: string;
-  pages: number; // pages actually read
+  pages: number; // pages whose text reached fullText (the match slice can run past it)
   truncated: boolean; // document was longer than INDEX_PAGES (or hit the char cap)
 }
 
@@ -51,6 +51,49 @@ function pageText(content: { items: unknown[] }): string {
     .replace(CONTROL_CHARS, "");
 }
 
+// The two caps, applied to one lazy walk over a document's pages.
+//
+// They are gathered separately because they mean different things. Slicing the
+// match text out of the indexed pages let the char cap — a cost bound — shorten
+// a correctness constraint: one pathological first page tripped the cap, the
+// loop broke, and the matcher never saw pages 2-3, where a first-page footer's
+// PMID/DOI often sits. The file then imported as unmatched with nothing to say
+// why.
+//
+// `readPage` is a parameter rather than a closure over the document so this can
+// be exercised directly: reaching the interaction between the caps through
+// extractPdf needs a PDF with two million characters on page one.
+export async function collectPages(
+  totalPages: number,
+  readPage: (pageNumber: number) => Promise<string>
+): Promise<PdfExtract> {
+  const indexPages: string[] = [];
+  const matchPages: string[] = [];
+  const last = Math.min(totalPages, INDEX_PAGES);
+  let chars = 0;
+  let hitCharCap = false;
+  for (let i = 1; i <= last; i++) {
+    const text = await readPage(i);
+    if (i <= MATCH_PAGES) matchPages.push(text);
+    if (!hitCharCap) {
+      indexPages.push(text);
+      chars += text.length;
+      hitCharCap = chars >= MAX_INDEX_CHARS;
+    }
+    // Once the index is full and the matcher has its slice there is nothing left
+    // to gather. Reading on to finish the slice costs at most two extra pages,
+    // against a document that has already proved expensive — cheap next to
+    // filing it under the wrong article, or under none.
+    if (hitCharCap && i >= MATCH_PAGES) break;
+  }
+  return {
+    matchText: matchPages.join("\n"),
+    fullText: indexPages.join("\n").slice(0, MAX_INDEX_CHARS),
+    pages: indexPages.length,
+    truncated: hitCharCap || totalPages > INDEX_PAGES,
+  };
+}
+
 // Read both texts from a single document open. Splitting these into two calls
 // would parse the same file twice, and the import path needs both.
 export async function extractPdf(filePath: string): Promise<PdfExtract> {
@@ -62,34 +105,13 @@ export async function extractPdf(filePath: string): Promise<PdfExtract> {
     verbosity: 0,
   }).promise;
   try {
-    const pages: string[] = [];
-    const last = Math.min(doc.numPages, INDEX_PAGES);
-    let chars = 0;
-    let hitCharCap = false;
-    for (let i = 1; i <= last; i++) {
+    return await collectPages(doc.numPages, async (i) => {
       const page = await doc.getPage(i);
       const text = pageText(await page.getTextContent());
       page.cleanup();
-      pages.push(text);
-      chars += text.length;
-      if (chars >= MAX_INDEX_CHARS) {
-        hitCharCap = true;
-        break;
-      }
-    }
-    return {
-      matchText: pages.slice(0, MATCH_PAGES).join("\n"),
-      fullText: pages.join("\n").slice(0, MAX_INDEX_CHARS),
-      pages: pages.length,
-      truncated: hitCharCap || doc.numPages > INDEX_PAGES,
-    };
+      return text;
+    });
   } finally {
     await doc.destroy();
   }
-}
-
-// The match-only path, for callers that don't index (kept so the 3-page
-// constraint has one named home rather than being a magic argument).
-export async function extractPdfText(filePath: string): Promise<string> {
-  return (await extractPdf(filePath)).matchText;
 }
