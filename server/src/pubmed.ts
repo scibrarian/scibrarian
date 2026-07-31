@@ -340,6 +340,9 @@ export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
       // metadata for but no XML is "not looked at yet", not "no headings", and
       // omitting it here is what leaves it on the backfill's work list.
       mesh: x ? { status: x.status, headings: x.mesh } : undefined,
+      // Same record, same rule. `[]` here is a fact (PubMed listed no type
+      // beyond the ones we drop as noise); undefined means nobody looked.
+      pubTypes: x ? x.pubTypes : undefined,
     });
   }
   return articles;

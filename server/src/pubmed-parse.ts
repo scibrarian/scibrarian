@@ -153,6 +153,9 @@ export interface ArticleXml {
   medlineTa: string; // NLM journal abbreviation
   mesh: MeshHeading[]; // [] when the record carries no MeshHeadingList
   status: string; // MedlineCitation/@Status verbatim; "" when absent
+  // PublicationTypeList, verbatim and de-duplicated, minus the noise types (see
+  // parsePublicationTypes). [] only when the record carries nothing usable.
+  pubTypes: string[];
 }
 
 // Parse an efetch.fcgi XML body (rettype=abstract). The XML carries the
@@ -175,9 +178,157 @@ export function parseArticleSet(xmlText: string): Map<string, ArticleXml> {
       medlineTa: nodeValue(info?.MedlineTA),
       mesh: parseMeshHeadings(citation),
       status: String(citation?.["@_Status"] ?? "").trim(),
+      pubTypes: parsePublicationTypes(citation),
     });
   }
   return out;
+}
+
+// ---------- publication type (evidence class) ----------
+
+// PublicationTypeList says what *kind* of article a record is, and it rides on
+// the same efetch XML as the abstract and the MeSH headings — so this costs no
+// request of its own, exactly like filing.
+//
+// What it is for, precisely: a medical-communications client rejects **any claim
+// that cannot be traced back to original research data**, and in particular any
+// claim carrying a number. It does *not* reject review articles — writers start
+// from those, and they are citable for statements that don't rest on data. So
+// this is a label on a paper, never a filter that hides one.
+//
+// NLM mixes three unrelated things into this one list: study design (`Randomized
+// Controlled Trial`), genre (`Editorial`, `Review`), and funding
+// (`Research Support, N.I.H., Extramural`). Only the first two say anything about
+// evidence, so the funding tags — and `Journal Article`, which every record
+// carries — are dropped rather than stored and filtered at every read.
+const IGNORED_PUB_TYPES = new Set(["Journal Article", "English Abstract"]);
+
+function parsePublicationTypes(citation: any): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const t of asArray(citation?.Article?.PublicationTypeList?.PublicationType)) {
+    const name = nodeValue(t);
+    // Funding attributions, of which a paper can carry several. They describe
+    // who paid, not what was done.
+    if (!name || name.startsWith("Research Support") || IGNORED_PUB_TYPES.has(name)) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+// Reports of original data. A paper carrying any of these is a primary source.
+//
+// `Clinical Trial Protocol` is deliberately absent: a protocol describes a study
+// that has not reported results, so it cannot support a numeric claim. It falls
+// through to "untyped" rather than being called primary.
+const PRIMARY_PUB_TYPES = new Set([
+  "Randomized Controlled Trial",
+  "Controlled Clinical Trial",
+  "Clinical Trial",
+  "Clinical Trial, Phase I",
+  "Clinical Trial, Phase II",
+  "Clinical Trial, Phase III",
+  "Clinical Trial, Phase IV",
+  "Adaptive Clinical Trial",
+  "Pragmatic Clinical Trial",
+  "Equivalence Trial",
+  "Observational Study",
+  "Observational Study, Veterinary",
+  "Comparative Study",
+  "Multicenter Study",
+  "Case Reports",
+  "Clinical Study",
+  "Evaluation Study",
+  "Validation Study",
+  "Twin Study",
+  "Meta-Analysis, Individual Participant Data",
+]);
+
+// Everything that reports on, comments upon, or summarises other people's work.
+// Not all of it is "secondary literature" in the strict sense — an editorial is
+// not a review — but the question this answers is "can a numeric claim rest on
+// this?", and for all of these the answer is no.
+const SECONDARY_PUB_TYPES = new Set([
+  "Review",
+  "Systematic Review",
+  "Meta-Analysis",
+  "Network Meta-Analysis",
+  "Scoping Review",
+  "Consensus Development Conference",
+  "Consensus Development Conference, NIH",
+  "Consensus Statement",
+  "Guideline",
+  "Practice Guideline",
+  "Editorial",
+  "Comment",
+  "Letter",
+  "News",
+  "Newspaper Article",
+  "Introductory Journal Article",
+  "Published Erratum",
+  "Retraction of Publication",
+  "Expression of Concern",
+  "Lecture",
+  "Address",
+  "Congress",
+  "Overall",
+]);
+
+// What a record's publication types say about whether it can support a claim
+// that rests on data.
+//
+// Four outcomes, not two, and the reason is measured rather than cautious: over
+// 300 recent papers from a real diabetes watchlist, ~16% carried a secondary
+// type, ~34% carried a positive design tag, and **~50% carried nothing but
+// `Journal Article`**. That half is overwhelmingly genuine primary research NLM
+// simply didn't tag, but "overwhelmingly" is not "always" — narrative reviews
+// hide there too, because NLM applies `Review` inconsistently to them. Rendering
+// it as a confident "Primary" would be wrong for a meaningful slice of a
+// library, so it gets its own bucket and says what it is.
+//
+// Same discipline as meshOutlook: an unfamiliar type is not evidence of
+// anything, so a record carrying only types NLM invented after this list was
+// written reads as `untyped` rather than being silently sorted.
+export type EvidenceClass =
+  | "primary" // reports original data
+  | "secondary" // reviews, meta-analyses, editorials, guidelines — no original data
+  | "untyped" // NLM assigned no design or genre; usually primary, not certainly
+  | "unknown"; // we have not fetched this paper's record yet
+
+// `seen` is whether the record's XML has ever been parsed. Without it "no types"
+// is ambiguous between "PubMed says nothing" and "we never asked" — the same
+// distinction mesh_status exists to make for headings.
+// Our own marker, not PubMed's, stored when a record was fetched and carried no
+// type worth keeping — which is the common case, not an edge one: ~50% of real
+// records list nothing but `Journal Article`.
+//
+// Without it, "this article has no stored types" would mean both "we looked and
+// NLM says nothing" and "we have never looked", and the backfill's work list —
+// articles with no types — would re-fetch half the library on every run,
+// forever. Exactly the role MESH_STATUS_UNAVAILABLE plays for filing.
+export const PUB_TYPE_NONE = "(none)";
+
+// Read stored rows back: strip the sentinel, and use its presence as the "have
+// we ever looked" signal that evidenceClass needs. One place, so a caller can't
+// forget the sentinel and report every untyped paper as unfetched.
+export function evidenceFromRows(rows: string[]): {
+  types: string[];
+  evidence: EvidenceClass;
+} {
+  const types = rows.filter((t) => t !== PUB_TYPE_NONE);
+  return { types, evidence: evidenceClass(types, rows.length > 0) };
+}
+
+export function evidenceClass(pubTypes: string[], seen: boolean): EvidenceClass {
+  // Secondary wins over primary when both are present, and that ordering is the
+  // whole point rather than a tie-break: a systematic review of RCTs is tagged
+  // `Meta-Analysis` *and* `Randomized Controlled Trial`, and calling it primary
+  // is exactly the mistake that puts an untraceable number in a deliverable.
+  if (pubTypes.some((t) => SECONDARY_PUB_TYPES.has(t))) return "secondary";
+  if (pubTypes.some((t) => PRIMARY_PUB_TYPES.has(t))) return "primary";
+  return seen ? "untyped" : "unknown";
 }
 
 // ---------- MeSH filing status ----------

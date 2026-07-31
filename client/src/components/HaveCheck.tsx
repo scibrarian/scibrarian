@@ -172,6 +172,7 @@ function AnswerRow({
             a paper about to be bought can also be out of the window, and that
             is worth knowing before the purchase rather than after. */}
         {match && <CiteBadge match={match} />}
+        {match && <EvidenceBadge match={match} />}
       </div>
 
       {several && (
@@ -264,6 +265,39 @@ function CiteBadge({ match }: { match: HaveMatch }) {
         title="Outside the citable window — still useful for verifying a claim back to its source"
       >
         Verification only{match.year ? ` · ${match.year}` : ""}
+      </span>
+    );
+  }
+  return null;
+}
+
+// Whether the paper reports original data, from PubMed's publication types.
+//
+// A label, never a filter: the rule clients actually apply is that a *claim*
+// must trace back to original data, and reviews are both where writers start
+// and perfectly citable for statements that don't rest on numbers. So the
+// useful thing to say is "if you're taking a number out of this one, go find
+// its source" — not "don't use this."
+//
+// `untyped` draws nothing. NLM leaves about half of all records with no design
+// tag, and that bucket is usually — not certainly — primary research; a badge
+// on every second row that means "we don't know" is noise, and a badge saying
+// "Primary" would be wrong often enough to matter.
+function EvidenceBadge({ match }: { match: HaveMatch }) {
+  if (match.evidence === "secondary") {
+    return (
+      <span
+        className="eve-badge secondary"
+        title={`${match.pub_types.join(", ")} — cite it for statements that don't rest on data, but trace any number back to the primary source`}
+      >
+        {match.pub_types[0] ?? "Not primary"}
+      </span>
+    );
+  }
+  if (match.evidence === "primary") {
+    return (
+      <span className="eve-badge primary" title={match.pub_types.join(", ")}>
+        Primary
       </span>
     );
   }

@@ -5,10 +5,12 @@ import {
   heldByAuthorYear,
   holdingsByDois,
   holdingsByPmids,
+  pubTypesByPmids,
   safeParseAuthors,
   type HoldingRow,
 } from "./db.js";
 import { lookupWorks, type OaWork } from "./openalex.js";
+import { evidenceFromRows } from "./pubmed-parse.js";
 import type { CiteStatus, HaveAnswer, HaveMatch } from "./types.js";
 
 // "Do I already have this?" — the custody question, answered for a list of
@@ -67,10 +69,15 @@ export function citeStatus(year: number | null, windowYears: number): CiteStatus
 
 // A stored row as the API reports it. `present` is one readdir's worth of blob
 // hashes, so a list of answers costs one directory read rather than a stat per
-// paper (the same trick /papers and /graph use).
-function toMatch(row: HoldingRow, present: Set<string>, windowYears: number): HaveMatch {
+// paper (the same trick /papers and /graph use); `pubTypes` is likewise one
+// batched query for every paper in the response.
+function toMatch(row: HoldingRow, ctx: RenderContext): HaveMatch {
+  const { present, windowYears } = ctx;
   const year = yearOf(row.pub_date);
+  const { types, evidence } = evidenceFromRows(ctx.pubTypes.get(row.pmid) ?? []);
   return {
+    evidence,
+    pub_types: types,
     pmid: row.pmid,
     title: row.title,
     authors: safeParseAuthors(row.authors),
@@ -93,7 +100,7 @@ function toMatch(row: HoldingRow, present: Set<string>, windowYears: number): Ha
 // A paper OpenAlex knows about but the library doesn't hold. Its shape matches
 // a held row so the client renders one kind of result card; every
 // custody-related field is null or false, which is the whole point of the row.
-function fromOpenAlex(work: OaWork, windowYears: number): HaveMatch {
+function fromOpenAlex(work: OaWork, { windowYears }: RenderContext): HaveMatch {
   return {
     pmid: work.pmid ?? "",
     title: work.title,
@@ -111,7 +118,20 @@ function fromOpenAlex(work: OaWork, windowYears: number): HaveMatch {
     collection_name: null,
     cite: citeStatus(work.year, windowYears),
     year: work.year,
+    // OpenAlex has no equivalent of PublicationTypeList, and this paper isn't
+    // held, so nothing local answers it either.
+    evidence: "unknown",
+    pub_types: [],
   };
+}
+
+// What every answer row is rendered against: one readdir of blob hashes, one
+// batched publication-type query, and the citable window. Bundled so that
+// adding a lookup doesn't mean a sixth positional argument on three functions.
+interface RenderContext {
+  present: Set<string>;
+  windowYears: number;
+  pubTypes: Map<string, string[]>;
 }
 
 /**
@@ -150,6 +170,19 @@ export async function checkHoldings(
 
   const local = refs.map((ref) => resolveLocally(ref, byPmid, byDoi, candidatesByInput));
 
+  // Every paper any answer might name — the single identified match, plus the
+  // candidates of an ambiguous author+year search, which aren't known until the
+  // local pass has run.
+  const namedPmids = (results: LocalResult[]) =>
+    results.flatMap((r) => [...(r.row ? [r.row.pmid] : []), ...r.rows.map((x) => x.pmid)]);
+
+  // Publication types for all of them in one query, rather than one per row.
+  const renderContext = (pmids: string[]): RenderContext => ({
+    present,
+    windowYears,
+    pubTypes: pubTypesByPmids(pmids),
+  });
+
   // --- enrichment pass: only the lines that came back not held ---
   //
   // Two things are being asked at once, which is why this is worth a request:
@@ -161,7 +194,7 @@ export async function checkHoldings(
     local.filter((r) => !r.held && (r.ref.kind === "doi" || r.ref.kind === "pmid"))
   );
   if (!lookUpFree || needsLookup.size === 0) {
-    return local.map((r) => toAnswer(r, present, windowYears, false, null));
+    return local.map((r) => toAnswer(r, renderContext(namedPmids(local)), false, null));
   }
 
   const pending = [...needsLookup];
@@ -178,27 +211,26 @@ export async function checkHoldings(
   const secondLook = new Map<string, HoldingRow>();
   for (const row of holdingsByPmids(resolvedPmids)) secondLook.set(row.pmid, row);
 
+  // Built here rather than above so it also covers the papers the second look
+  // just turned up — those are held, so they're exactly the rows whose
+  // publication types a reader will want.
+  const ctx = renderContext([...namedPmids(local), ...secondLook.keys()]);
+
   return local.map((r) => {
-    if (!needsLookup.has(r)) return toAnswer(r, present, windowYears, false, null);
+    if (!needsLookup.has(r)) return toAnswer(r, ctx, false, null);
     const work = (r.ref.doi ? oaByDoi.get(r.ref.doi) : null) ?? (r.ref.pmid ? oaByPmid.get(r.ref.pmid) : null) ?? null;
     const rediscovered = work?.pmid ? secondLook.get(work.pmid) : undefined;
     if (rediscovered && rediscovered.file_id != null) {
       // Held after all — under a PMID the pasted DOI didn't reach directly. No
       // free-copy answer is offered here: it's moot, and offering one would
       // invite buying a paper already on disk.
-      return toAnswer({ ...r, row: rediscovered, held: true }, present, windowYears, false, null);
+      return toAnswer({ ...r, row: rediscovered, held: true }, ctx, false, null);
     }
     // Still not held. Prefer whatever the library already knows about the paper
     // over OpenAlex's thinner record — a cached article row carries authors,
     // journal and the exact publication date.
     const enriched = r.row ?? rediscovered ?? null;
-    return toAnswer(
-      { ...r, row: enriched, oa: work },
-      present,
-      windowYears,
-      true,
-      work?.free ?? null
-    );
+    return toAnswer({ ...r, row: enriched, oa: work }, ctx, true, work?.free ?? null);
   });
 }
 
@@ -241,22 +273,17 @@ function resolveLocally(
 
 function toAnswer(
   r: LocalResult,
-  present: Set<string>,
-  windowYears: number,
+  ctx: RenderContext,
   freeChecked: boolean,
   free: HaveAnswer["free"]
 ): HaveAnswer {
   const { authorKey, ...parsed } = r.ref; // authorKey is an internal match key
-  const match = r.row
-    ? toMatch(r.row, present, windowYears)
-    : r.oa
-      ? fromOpenAlex(r.oa, windowYears)
-      : null;
+  const match = r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa, ctx) : null;
   return {
     parsed,
     held: r.held,
     match: r.rows.length > 1 ? null : match,
-    candidates: r.rows.length > 1 ? r.rows.map((row) => toMatch(row, present, windowYears)) : [],
+    candidates: r.rows.length > 1 ? r.rows.map((row) => toMatch(row, ctx)) : [],
     free,
     freeChecked,
   };

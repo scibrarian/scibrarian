@@ -228,6 +228,16 @@ export interface ParsedRefView {
   reason?: string;
 }
 
+// Whether a paper reports original data, from PubMed's PublicationTypeList.
+// Four states rather than two on purpose — around half of all records carry no
+// design tag at all, and that bucket is *usually* primary research, not
+// certainly. See evidenceClass in pubmed-parse.ts.
+//
+// A label, never a filter default: clients reject claims that can't be traced
+// to original data, but reviews are where writers start and are perfectly
+// citable for statements that don't rest on numbers.
+export type EvidenceClass = "primary" | "secondary" | "untyped" | "unknown";
+
 // Whether a paper is recent enough to cite, as distinct from whether it's held.
 // Deliberately orthogonal to `held`: a paper the writer is about to *buy* can
 // also be outside the window, and that's worth knowing before the purchase.
@@ -268,6 +278,11 @@ export interface HaveMatch {
   // Publication year, so the UI can say *how far* outside the window a
   // verification-only paper is rather than only that it is.
   year: number | null;
+  evidence: EvidenceClass;
+  // The types behind that verdict, e.g. ["Meta-Analysis", "Systematic Review"].
+  // Shown rather than just the class, because "Editorial" and "Meta-Analysis"
+  // are both `secondary` and a writer needs to know which one they're holding.
+  pub_types: string[];
 }
 
 // The answer for one pasted line.

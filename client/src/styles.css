@@ -2836,6 +2836,30 @@ html {
   cursor: help;
 }
 
+/* Whether the paper reports original data. Same quiet outline as the citable
+   badge — these are two annotations on one verdict, and giving either of them a
+   fill would make it compete with the held/not-held pill that is the answer. */
+.eve-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: help;
+}
+
+.eve-badge.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Deliberately not the warning colour: a review is not a problem, it's a paper
+   whose numbers have a source somewhere else. */
+.eve-badge.secondary {
+  border-color: var(--muted);
+}
+
 .have-paper {
   min-width: 0;
 }

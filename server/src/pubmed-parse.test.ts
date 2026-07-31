@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildTerm,
   esearchError,
+  evidenceClass,
   MESH_STATUS_UNAVAILABLE,
   meshOutlook,
   ncbiErrorFromBody,
@@ -74,6 +75,99 @@ describe("esearchError", () => {
     expect(esearchError({ esearchresult: { ERROR: 0 } })).toBeNull();
     expect(esearchError({})).toBeNull();
     expect(esearchError(null)).toBeNull();
+  });
+});
+
+describe("parsePublicationTypes", () => {
+  const parse = (inner: string) =>
+    parseArticleSet(
+      "<PubmedArticleSet><PubmedArticle><MedlineCitation Status=\"MEDLINE\"><PMID>1</PMID>" +
+        `<Article><PublicationTypeList>${inner}</PublicationTypeList></Article>` +
+        "</MedlineCitation></PubmedArticle></PubmedArticleSet>"
+    ).get("1")!.pubTypes;
+
+  const t = (ui: string, name: string) => `<PublicationType UI="${ui}">${name}</PublicationType>`;
+
+  it("reads the list", () => {
+    expect(parse(t("D016428", "Journal Article") + t("D016449", "Randomized Controlled Trial"))).toEqual([
+      "Randomized Controlled Trial",
+    ]);
+  });
+
+  it("drops 'Journal Article', which every record carries", () => {
+    expect(parse(t("D016428", "Journal Article"))).toEqual([]);
+  });
+
+  it("drops funding attributions, which say who paid rather than what was done", () => {
+    // Without this a paper tagged only with funding looks typed but carries no
+    // evidence signal at all.
+    expect(
+      parse(
+        t("D016428", "Journal Article") +
+          t("D013485", "Research Support, N.I.H., Extramural") +
+          t("D013486", "Research Support, Non-U.S. Gov't")
+      )
+    ).toEqual([]);
+  });
+
+  it("de-duplicates a repeated type", () => {
+    expect(parse(t("D016454", "Review") + t("D016454", "Review"))).toEqual(["Review"]);
+  });
+
+  it("is empty when the record has no PublicationTypeList", () => {
+    expect(
+      parseArticleSet(
+        "<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>1</PMID>" +
+          "<Article><ArticleTitle>T</ArticleTitle></Article></MedlineCitation></PubmedArticle></PubmedArticleSet>"
+      ).get("1")!.pubTypes
+    ).toEqual([]);
+  });
+});
+
+describe("evidenceClass", () => {
+  it("calls a design tag primary", () => {
+    expect(evidenceClass(["Randomized Controlled Trial"], true)).toBe("primary");
+    expect(evidenceClass(["Observational Study"], true)).toBe("primary");
+    expect(evidenceClass(["Case Reports"], true)).toBe("primary");
+  });
+
+  it("calls a review or a meta-analysis secondary", () => {
+    expect(evidenceClass(["Review"], true)).toBe("secondary");
+    expect(evidenceClass(["Meta-Analysis", "Systematic Review"], true)).toBe("secondary");
+  });
+
+  it("counts editorials, comments and guidelines as secondary", () => {
+    // Not "secondary literature" in the strict sense, but the question is
+    // whether a numeric claim can rest on it, and it can't.
+    for (const t of ["Editorial", "Comment", "Letter", "Practice Guideline"]) {
+      expect(evidenceClass([t], true)).toBe("secondary");
+    }
+  });
+
+  it("calls a meta-analysis of RCTs secondary, not primary", () => {
+    // The case that matters most: NLM tags these with BOTH, and reading the
+    // design tag first would present a pooled estimate as original data — the
+    // exact mistake that puts an untraceable number in a deliverable.
+    expect(
+      evidenceClass(["Meta-Analysis", "Systematic Review", "Randomized Controlled Trial"], true)
+    ).toBe("secondary");
+  });
+
+  it("does not call a trial protocol primary", () => {
+    // A protocol reports no results, so it cannot support a numeric claim.
+    expect(evidenceClass(["Clinical Trial Protocol"], true)).toBe("untyped");
+  });
+
+  it("separates 'NLM tagged nothing' from 'we never looked'", () => {
+    // ~50% of real records carry no design tag at all, and that bucket is
+    // mostly — not certainly — primary. Claiming otherwise would be wrong for a
+    // meaningful slice of any library.
+    expect(evidenceClass([], true)).toBe("untyped");
+    expect(evidenceClass([], false)).toBe("unknown");
+  });
+
+  it("treats a type it doesn't recognise as no signal", () => {
+    expect(evidenceClass(["Some Type NLM Added In 2030"], true)).toBe("untyped");
   });
 });
 
@@ -327,6 +421,7 @@ describe("parseArticleSet", () => {
       medlineTa: "",
       mesh: [],
       status: "",
+      pubTypes: [],
     });
   });
 

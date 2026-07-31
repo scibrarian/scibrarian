@@ -8,6 +8,7 @@ import {
   MESH_SETTLED_STATUSES,
   MESH_STATUS_NEVER,
   MESH_STATUS_UNAVAILABLE,
+  PUB_TYPE_NONE,
 } from "./pubmed-parse.js";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
 import type {
@@ -120,6 +121,28 @@ db.exec(`
     name TEXT NOT NULL,             -- heading as PubMed filed it
     major INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (pmid, ui),
+    FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
+  );
+
+  -- PubMed's PublicationTypeList for an article: one row per type, from the
+  -- same efetch XML the abstract and the MeSH headings come from, so it costs
+  -- no request of its own.
+  --
+  -- The raw types are stored rather than a derived "primary/secondary" verdict,
+  -- because the classification is a judgement (evidenceClass in
+  -- pubmed-parse.ts) and judgements change — NLM adds types, and what counts as
+  -- able to support a claim is a product decision. Storing the fact and
+  -- classifying at read time means revising that never needs a refetch.
+  --
+  -- Noise types are dropped at parse time, not here: 'Journal Article' (which
+  -- every record carries) and the 'Research Support, …' funding tags. So an
+  -- article with rows has something worth saying, and an article with none has
+  -- been looked at and had nothing — which is a different thing from never
+  -- having been looked at, and is why evidenceClass takes a "seen" flag.
+  CREATE TABLE IF NOT EXISTS article_pub_types (
+    pmid TEXT NOT NULL,
+    type TEXT NOT NULL,             -- verbatim, e.g. 'Randomized Controlled Trial'
+    PRIMARY KEY (pmid, type),
     FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
   );
 
@@ -649,7 +672,99 @@ export type ArticleInsert = Omit<Article, "authors" | "first_seen_at" | "mesh_st
   // recording — PubMed has none for this paper — and is what the status tells
   // us how to read.
   mesh?: { status: string; headings: MeshHeading[] };
+  // PublicationTypeList from that same XML. Deliberately carried inside `mesh`
+  // rather than beside it — see setArticleXmlFacts. `[]` is meaningful (PubMed
+  // listed nothing beyond the noise types); absent means nobody looked.
+  pubTypes?: string[];
 };
+
+const deletePubTypesStmt = db.prepare("DELETE FROM article_pub_types WHERE pmid = ?");
+const insertPubTypeStmt = db.prepare(
+  "INSERT OR IGNORE INTO article_pub_types (pmid, type) VALUES (?, ?)"
+);
+
+// Everything one efetch record says about an article, written together.
+//
+// Together is the point. MeSH headings, the indexing status and the publication
+// types all come out of a single XML document, and the status is what tells a
+// reader how to interpret the other two ("no headings" and "no types" mean
+// different things depending on whether NLM has finished with the record). A
+// path that wrote one without the others would leave a row describing a fetch
+// that never happened that way — which is exactly the trap the mesh comment
+// below already warns about, now with a second column able to fall into it.
+//
+// Not a transaction wrapper: every caller already runs inside one.
+function setArticleXmlFacts(a: ArticleInsert): void {
+  if (a.mesh) setArticleMesh(a.pmid, a.mesh.status, a.mesh.headings);
+  if (a.pubTypes) setArticlePubTypes(a.pmid, a.pubTypes);
+}
+
+// Replace an article's publication types. Replace rather than merge, for the
+// same reason filing does: a re-fetch is PubMed's current answer in full, and a
+// type NLM removed has to disappear here too.
+//
+// An empty list writes the PUB_TYPE_NONE sentinel rather than nothing. That is
+// what makes "no types" mean "PubMed says none" instead of "nobody has looked",
+// and it is what lets articlesMissingPubTypes below terminate — around half of
+// all records legitimately have no type, so a work list keyed on "has no rows"
+// would otherwise re-fetch half the library on every run for good.
+function setArticlePubTypes(pmid: string, types: string[]): void {
+  deletePubTypesStmt.run(pmid);
+  for (const t of types.length > 0 ? types : [PUB_TYPE_NONE]) insertPubTypeStmt.run(pmid, t);
+}
+
+// The stored types for a batch of articles, sentinel included — reading them is
+// evidenceFromRows' job, not this one's. Articles nobody has looked at are
+// absent from the map, which is the distinction the sentinel exists to preserve.
+export function pubTypesByPmids(pmids: string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const rows = queryByPmids<{ pmid: string; type: string }>(
+    pmids,
+    (ph) => `SELECT pmid, type FROM article_pub_types WHERE pmid IN (${ph})`
+  );
+  for (const r of rows) {
+    const list = out.get(r.pmid);
+    if (list) list.push(r.type);
+    else out.set(r.pmid, [r.type]);
+  }
+  return out;
+}
+
+// Articles whose publication types were never recorded — papers stored before
+// this existed. Deliberately narrower than "has no rows":
+//
+//   - Only *settled* MeSH statuses qualify. An unsettled row is already on the
+//     MeSH backfill's work list, which now writes types from the same fetch, so
+//     including it here would fetch the same record twice in one run.
+//   - Settled also means efetch definitely returned this record once, so a
+//     re-fetch will return it again and write at least the sentinel. That is
+//     what bounds this list. A PMID efetch has stopped returning carries
+//     MESH_STATUS_UNAVAILABLE, which is not settled, so it stays on the MeSH
+//     side where the recheck window already governs how often it is retried.
+export function articlesMissingPubTypes(limit: number): string[] {
+  const rows = db
+    .prepare(
+      `SELECT pmid FROM articles a
+       WHERE a.mesh_status IN (${SETTLED_PLACEHOLDERS})
+         AND NOT EXISTS (SELECT 1 FROM article_pub_types p WHERE p.pmid = a.pmid)
+       ORDER BY a.pub_date DESC, a.pmid DESC
+       LIMIT ?`
+    )
+    .all(...SETTLED_PARAMS, limit) as { pmid: string }[];
+  return rows.map((r) => r.pmid);
+}
+
+export function pubTypeBacklogCount(): number {
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM articles a
+         WHERE a.mesh_status IN (${SETTLED_PLACEHOLDERS})
+           AND NOT EXISTS (SELECT 1 FROM article_pub_types p WHERE p.pmid = a.pmid)`
+      )
+      .get(...SETTLED_PARAMS) as { c: number }
+  ).c;
+}
 
 // The one place an ArticleInsert maps onto the articles upsert — shared by the
 // topic path (saveArticles) and the collection path (upsertArticles), so a
@@ -675,7 +790,7 @@ function upsertArticle(a: ArticleInsert): void {
 export const saveArticles = transaction((articles: ArticleInsert[], topicId: number) => {
   for (const a of articles) {
     upsertArticle(a);
-    if (a.mesh) setArticleMesh(a.pmid, a.mesh.status, a.mesh.headings);
+    setArticleXmlFacts(a);
     linkArticleStmt.run(a.pmid, topicId);
   }
 });
@@ -716,11 +831,17 @@ export interface ArticleMeshInsert {
   pmid: string;
   status: string;
   headings: MeshHeading[];
+  // Same XML, same write — see setArticleXmlFacts. Absent for a PMID efetch
+  // didn't return, where there is nothing to record either way.
+  pubTypes?: string[];
 }
 
 // The backfill's write: a whole efetch batch in one transaction.
 export const saveArticleMesh = transaction((rows: ArticleMeshInsert[]) => {
-  for (const r of rows) setArticleMesh(r.pmid, r.status, r.headings);
+  for (const r of rows) {
+    setArticleMesh(r.pmid, r.status, r.headings);
+    if (r.pubTypes) setArticlePubTypes(r.pmid, r.pubTypes);
+  }
 });
 
 // Placeholder list + params for "this status settles the question for good".
@@ -1675,7 +1796,7 @@ export function savePdfText(t: PdfTextInsert): void {
 export const upsertArticles = transaction((articles: ArticleInsert[]) => {
   for (const a of articles) {
     upsertArticle(a);
-    if (a.mesh) setArticleMesh(a.pmid, a.mesh.status, a.mesh.headings);
+    setArticleXmlFacts(a);
   }
 });
 
