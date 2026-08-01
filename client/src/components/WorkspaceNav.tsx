@@ -143,11 +143,17 @@ export function WorkspaceNav({
           }
         : {
             items: collections.map((c) => ({ id: c.id, name: c.name, count: c.matchedCount })),
-            // Withheld until there is more than one collection to be "all" of:
-            // offered against a single collection it selects the same papers
-            // under a second name, which reads as a bug rather than a scope.
+            // Shown whenever the Library holds anything, including the
+            // single-collection case where it selects the same papers the one
+            // collection does. Withholding it until a second collection existed
+            // was tried and is worse: a scope that appears at an invisible
+            // threshold is one nobody learns exists, and nothing announces its
+            // arrival when that second collection is finally added. An "All"
+            // that currently equals the only item reads as consistent, not
+            // broken. Still gated on there being *something*, because "All
+            // collections" above an empty list means nothing.
             lead:
-              collections.length > 1
+              collections.length > 0
                 ? {
                     name: "All collections",
                     active: activeCollectionId === "all",
