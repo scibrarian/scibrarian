@@ -15,7 +15,7 @@
 // here. Resolving it to a place inside the PDF is Phase 4; parsing it now would
 // invent a format before there are real examples to design against.
 
-import { findDois } from "./pdf-match.js";
+import { barePmid, findDoi, labelledPmid } from "./identifiers.js";
 
 export type RefKind = "pmid" | "doi" | "citation" | "unknown";
 
@@ -40,18 +40,17 @@ export interface ParsedRef {
   reason?: string;
 }
 
-// An explicit label or a PubMed URL. Both say "this number is a PMID", which a
-// bare number on a line crowded with other numbers cannot.
-const PMID_LABEL_RE = /\bPMID\s*[:.]?\s*(\d{1,8})\b/i;
-const PUBMED_URL_RE = /pubmed\.ncbi\.nlm\.nih\.gov\/(\d{1,8})/i;
-// A line that is nothing but a number: pasting a column of PMIDs out of a
-// spreadsheet is a real way to ask this question, and a lone number can't be
-// anything else here. It does mean a stray "2019" on its own line is read as a
-// PMID rather than a year — accepted deliberately, because a year with no
-// author or title is unanswerable either way, while short PMIDs are real (older
-// papers have four- and five-digit ids) and refusing them would break the paste
-// this rule exists for.
-const BARE_PMID_RE = /^(\d{1,8})$/;
+// PMID and DOI extraction live in identifiers.ts, shared with the search box so
+// the two can't drift on what counts as an identifier.
+//
+// `barePmid` means a line that is nothing but a number: pasting a column of
+// PMIDs out of a spreadsheet is a real way to ask this question, and a lone
+// number can't be anything else here. It does mean a stray "2019" on its own
+// line is read as a PMID rather than a year — accepted deliberately, because a
+// year with no author or title is unanswerable either way, while short PMIDs
+// are real (older papers have four- and five-digit ids) and refusing them would
+// break the paste this rule exists for. Search makes the opposite call for the
+// same input, and says why.
 
 // A four-digit year standing on its own. The negative lookbehind is what keeps
 // `p1699` — the page number in a locator string — from being read as a year;
@@ -94,11 +93,11 @@ export function parseRef(raw: string): ParsedRef {
   // DOI syntax is fiddly (Elsevier's parenthesised PII DOIs above all), and two
   // regexes drifting apart would mean a paper matched on import and then
   // reported as not held when its own DOI was pasted back in.
-  const [doi] = findDois(input, 1);
+  const doi = findDoi(input);
   if (doi) return { kind: "doi", input, doi };
 
-  const labelled = PMID_LABEL_RE.exec(input) ?? PUBMED_URL_RE.exec(input) ?? BARE_PMID_RE.exec(input);
-  if (labelled) return { kind: "pmid", input, pmid: labelled[1] };
+  const pmid = labelledPmid(input) ?? barePmid(input);
+  if (pmid) return { kind: "pmid", input, pmid };
 
   return parseCitation(input);
 }

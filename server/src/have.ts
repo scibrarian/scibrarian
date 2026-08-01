@@ -194,7 +194,10 @@ export async function checkHoldings(
     local.filter((r) => !r.held && (r.ref.kind === "doi" || r.ref.kind === "pmid"))
   );
   if (!lookUpFree || needsLookup.size === 0) {
-    return local.map((r) => toAnswer(r, renderContext(namedPmids(local)), false, null));
+    // Hoisted: inside the map this rebuilt the whole context — a flatMap over
+    // every result plus a batched publication-type query — once per answer row.
+    const ctx = renderContext(namedPmids(local));
+    return local.map((r) => toAnswer(r, ctx, false, null));
   }
 
   const pending = [...needsLookup];
