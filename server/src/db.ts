@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import { toFtsQuery } from "./fts-query.js";
+import { searchIdentifiers } from "./identifiers.js";
 import {
   MESH_SETTLED_STATUSES,
   MESH_STATUS_NEVER,
@@ -317,6 +318,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_mesh_descriptors_name ON mesh_descriptors(name COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_term ON mesh_entry_terms(term COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_ui ON mesh_entry_terms(ui);
+  -- On the expression, not the column: every DOI lookup compares lower(a.doi),
+  -- because DOIs are case-insensitive by specification and PubMed's stored
+  -- casing varies by publisher. An index on doi alone would not be used. This
+  -- earns its place on holdingsByDois, which /have runs over a whole pasted
+  -- reference list at once; the search box OR-s the same comparison in beside
+  -- three LIKEs and scans regardless.
+  CREATE INDEX IF NOT EXISTS idx_articles_doi_lower ON articles(lower(doi));
 `);
 
 // ---------- migrations ----------
@@ -889,11 +897,38 @@ function searchPredicate(
 ): string {
   if (!q) return "";
   // Bind order follows the *textual* order of the ? placeholders below, so the
-  // three LIKEs are pushed before the body clause that trails them. Getting this
-  // backwards binds the collection id to an author LIKE and silently returns
-  // nothing at all, which no type checks and no schema catches.
+  // three LIKEs are pushed before the identifier and body clauses that trail
+  // them. Getting this backwards binds the collection id to an author LIKE and
+  // silently returns nothing at all, which no type checks and no schema catches.
   const like = `%${escapeLike(q)}%`;
   params.push(like, like, like);
+
+  // Exact identifier matches, OR-ed *into* the text search rather than replacing
+  // it. Neither column is otherwise searched, so today a pasted DOI or PMID
+  // matches nothing in title, abstract or authors and the box answers a
+  // perfectly good identifier with an empty result — indistinguishable from
+  // "you don't own this", which is the false negative that ends in re-buying a
+  // paper the library already holds.
+  //
+  // A union can only add rows, so nothing that matches today stops matching.
+  // That is what makes this safe to do to a box that re-queries on every
+  // keystroke: sniffing the input and *routing* to an identifier lookup instead
+  // would flip modes mid-type as `10.10` becomes `10.1056/…`, while a
+  // half-typed identifier here simply matches nothing and the text clauses
+  // carry on.
+  const { pmid, doi } = searchIdentifiers(q);
+  let ids = "";
+  if (doi) {
+    params.push(doi);
+    ids += `
+        OR (a.doi <> '' AND lower(a.doi) = ?)`;
+  }
+  if (pmid) {
+    params.push(pmid);
+    ids += `
+        OR a.pmid = ?`;
+  }
+
   let body = "";
   const match = source && "collectionId" in source ? toFtsQuery(q) : null;
   if (match && source && "collectionId" in source) {
@@ -907,7 +942,7 @@ function searchPredicate(
   }
   return `(a.title LIKE ? ESCAPE '\\'
         OR a.abstract LIKE ? ESCAPE '\\'
-        OR a.authors LIKE ? ESCAPE '\\'${body})`;
+        OR a.authors LIKE ? ESCAPE '\\'${ids}${body})`;
 }
 
 // The subject condition, the second half of what narrows a paper source.
