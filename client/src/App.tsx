@@ -564,14 +564,23 @@ export default function App() {
               {/* Not gated on isAdmin: checking whether the library already
                   holds a paper is a read, and on a shared instance it's the
                   viewers — the writers told to check before requesting a
-                  purchase — who need it most. */}
+                  purchase — who need it most.
+
+                  Named after its *input*, not its scope. "Do I have this?" read
+                  as a lookup, which is what the search box does, so the two
+                  looked like the same thing offered twice; since search can now
+                  answer an identifier and span every collection, that reading
+                  was actively wrong. What this does and search can't is take a
+                  list and answer it line by line. Deliberately not "search
+                  everything" — after the all-collections source that describes
+                  the search box too. */}
               <button
                 className={`have-btn ${checkingHave ? "active" : ""}`}
                 onClick={() => setCheckingHave(true)}
-                title="Check whether the library already holds a paper"
+                title="Check a reference list against the library — paste PMIDs, DOIs, PubMed links or citations, one per line"
               >
                 <SearchCheck size={16} aria-hidden />
-                <span className="have-btn-label">Do I have this?</span>
+                <span className="have-btn-label">Check references</span>
               </button>
               {isAdmin && (
                 <button
