@@ -2049,6 +2049,15 @@ html {
   background: var(--accent-soft);
 }
 
+/* Divides the scope entry ("All collections") from the collections themselves.
+   Inset to the padding of the options either side so it reads as a break in the
+   list rather than an edge of the menu. */
+.ws-sep {
+  height: 1px;
+  margin: 6px 10px;
+  background: var(--border);
+}
+
 .ws-option-name {
   overflow: hidden;
   text-overflow: ellipsis;

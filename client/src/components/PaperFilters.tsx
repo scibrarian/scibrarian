@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { PaperFilterState } from "../lib/papers";
+import { sourceHasFiles, type PaperFilterState } from "../lib/papers";
 import type { PaperSource } from "../types";
 import { JournalFilter } from "./JournalFilter";
 import { MeshFilter, useMeshFacets } from "./MeshFilter";
@@ -90,7 +90,7 @@ export function PaperFilters({
   // Derived here rather than passed in: every view was handing this down
   // alongside `source` as the identical expression, so a fourth view (or a
   // change to which sources carry files) could disagree with the other three.
-  const fullText = "collection" in source;
+  const fullText = sourceHasFiles(source);
 
   // Slider and number box share this range; the box is clamped so a typed value
   // always maps to a valid slider position.

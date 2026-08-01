@@ -82,6 +82,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 function sourceQuery(source: PaperSource): string {
   if ("topic" in source) return `topic=${source.topic}`;
   if ("folder" in source) return `folder=${source.folder}`;
+  if ("allCollections" in source) return "collection=all";
   return `collection=${source.collection}`;
 }
 

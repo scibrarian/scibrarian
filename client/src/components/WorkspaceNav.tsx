@@ -1,7 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Search, Library, Bookmark, ChevronDown, Plus, Folder } from "lucide-react";
 import { api } from "../api";
-import type { BookmarkFolder, Collection, Topic } from "../types";
+import type { BookmarkFolder, Collection, CollectionSelection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { SkeletonBar } from "./Skeleton";
 
@@ -13,6 +13,31 @@ interface PickerItem {
   id: number;
   name: string;
   count: number;
+}
+
+// An entry pinned above the list and divided from it, because it selects a
+// *scope* rather than one of the things being scoped. Only the Library has one
+// ("All collections"), and it deliberately carries no count: a paper filed in
+// two collections is one row in the list but two in the summed totals, so a
+// badge here would contradict what the view below it shows.
+interface PickerLead {
+  name: string;
+  active: boolean;
+  onSelect: () => void;
+}
+
+// Described up front so all three arms share one shape — without the explicit
+// type the arms infer as a union and `lead` is only reachable on one of them.
+interface Picker {
+  items: PickerItem[];
+  lead?: PickerLead;
+  activeId: number | null;
+  onSelect: (id: number) => void;
+  folderIcon: boolean;
+  empty: string;
+  placeholder: string;
+  addLabel: string;
+  onAdd: () => void;
 }
 
 // How each workspace is named and drawn, and the only place that decides it:
@@ -70,13 +95,13 @@ export function WorkspaceNav({
   collections: Collection[];
   activeTopicId: number | null;
   activeFolderId: number | null;
-  activeCollectionId: number | null;
+  activeCollectionId: CollectionSelection | null;
   settingsActive: boolean;
   loaded: boolean;
   tokenRequired: boolean;
   onSelectTopic: (id: number) => void;
   onSelectFolder: (id: number) => void;
-  onSelectCollection: (id: number) => void;
+  onSelectCollection: (id: CollectionSelection) => void;
   onCreateFolder: () => void;
   onCreateCollection: () => void;
   onAddTopic: () => void;
@@ -93,7 +118,7 @@ export function WorkspaceNav({
   // re-renders on every change to the active ids, the status banner and the
   // refreshing flag, and describing all three arms up front re-mapped every
   // topic, folder and collection each time to throw two of the lists away.
-  const picker =
+  const picker: Picker =
     mode === "interests"
       ? {
           items: topics.map((d) => ({ id: d.id, name: d.name, count: d.articleCount ?? 0 })),
@@ -118,7 +143,21 @@ export function WorkspaceNav({
           }
         : {
             items: collections.map((c) => ({ id: c.id, name: c.name, count: c.matchedCount })),
-            activeId: activeCollectionId,
+            // Withheld until there is more than one collection to be "all" of:
+            // offered against a single collection it selects the same papers
+            // under a second name, which reads as a bug rather than a scope.
+            lead:
+              collections.length > 1
+                ? {
+                    name: "All collections",
+                    active: activeCollectionId === "all",
+                    onSelect: () => onSelectCollection("all"),
+                  }
+                : undefined,
+            // The numeric half only. Which collection is highlighted and
+            // whether "all" is selected are different questions, and folding
+            // them into one field is how a sentinel id gets invented.
+            activeId: typeof activeCollectionId === "number" ? activeCollectionId : null,
             onSelect: onSelectCollection,
             folderIcon: true,
             empty: "No collections yet.",
@@ -128,7 +167,10 @@ export function WorkspaceNav({
           };
 
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
-  const label = active?.name ?? picker.placeholder;
+  // The lead, only when it's the current selection — so the trigger can name it
+  // instead of falling through to the placeholder for a perfectly valid choice.
+  const lead = picker.lead?.active ? picker.lead : null;
+  const label = lead ? lead.name : (active?.name ?? picker.placeholder);
   const activeMode = MODES[mode];
   const ModeIcon = activeMode.icon;
 
@@ -177,12 +219,28 @@ export function WorkspaceNav({
               <ModeIcon size={16} className="ws-mode-icon" aria-hidden />
               <span className="sr-only">{activeMode.label}</span>
               <span className="ws-current">{label}</span>
-              {active && <span className="count">{active.count}</span>}
+              {!lead && active && <span className="count">{active.count}</span>}
               <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
             </DropdownMenu.Trigger>
 
             <DropdownMenu.Portal>
               <DropdownMenu.Content className="ws-menu" align="start" sideOffset={6} loop>
+                {/* Above the divider because it isn't one of the collections —
+                    it's the scope they all sit inside. The mode icon rather
+                    than the folder the others carry, for the same reason. */}
+                {picker.lead && (
+                  <>
+                    <DropdownMenu.Item
+                      className={`ws-option ${picker.lead.active && !settingsActive ? "active" : ""}`}
+                      onSelect={picker.lead.onSelect}
+                    >
+                      <span className="ws-option-name">
+                        <Library size={14} className="inline-icon" aria-hidden /> {picker.lead.name}
+                      </span>
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Separator className="ws-sep" />
+                  </>
+                )}
                 {picker.items.map((item) => (
                   <DropdownMenu.Item
                     key={item.id}

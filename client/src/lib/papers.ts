@@ -3,11 +3,22 @@ import { api } from "../api";
 import type { MeshDescriptorRef, PaperQuery, PaperSource, PapersResponse } from "../types";
 import { useCachedFetch, type FetchCache } from "./hooks";
 
-// Stable cache/state key for a paper source ("t3" / "f2" / "c1").
+// Stable cache/state key for a paper source ("t3" / "f2" / "c1" / "c*").
+// "c*" is every collection at once; no collection id can collide with it.
 export function sourceKey(source: PaperSource): string {
   if ("topic" in source) return `t${source.topic}`;
   if ("folder" in source) return `f${source.folder}`;
+  if ("allCollections" in source) return "c*";
   return `c${source.collection}`;
+}
+
+// Does this source have PDFs behind its papers? True for a collection and for
+// every-collection; false for topics and bookmark folders, which are lists of
+// papers seen rather than held. Mirrors sourceHasFiles in the server's db.ts —
+// the two must agree, because this decides what the UI *promises* a search
+// covers and that one decides what it actually covers.
+export function sourceHasFiles(source: PaperSource): boolean {
+  return "collection" in source || "allCollections" in source;
 }
 
 // Cache the last successful fetch per (source, search). Remounting a view —

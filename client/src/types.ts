@@ -178,4 +178,14 @@ export interface ImportStartResponse {
 // Which paper set a view reads from: an Interests topic, a Bookmarks folder, or
 // a Library collection. Every analysis module (table, timeline, graph) takes
 // one.
-export type PaperSource = { topic: number } | { folder: number } | { collection: number };
+export type PaperSource =
+  | { topic: number }
+  | { folder: number }
+  | { collection: number }
+  | { allCollections: true };
+
+// What the Library workspace is pointed at: one collection, or every collection
+// at once. "all" is deliberately not a reserved id — a sentinel number would be
+// one bad comparison away from selecting a real collection, and this can't be
+// mistaken for one.
+export type CollectionSelection = number | "all";

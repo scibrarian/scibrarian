@@ -1,7 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
-import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from "./types";
+import type {
+  AuthStatus,
+  BookmarkFolder,
+  Collection,
+  CollectionSelection,
+  Topic,
+  PaperSource,
+} from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
 import { sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
@@ -40,7 +47,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
-  const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
+  const [activeCollectionId, setActiveCollectionId] = useState<CollectionSelection | null>(null);
   // Each workspace remembers its own view; the defaults match what each is
   // usually for (reading new papers vs. working through papers you've kept).
   const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
@@ -201,7 +208,7 @@ export default function App() {
     setActiveFolderId(id);
   }
 
-  function selectCollection(id: number) {
+  function selectCollection(id: CollectionSelection) {
     setShowSettings(false);
     setMode("papers");
     setActiveCollectionId(id);
@@ -309,7 +316,12 @@ export default function App() {
 
   async function handleCollectionChanged() {
     await loadCollections();
-    if (activeCollectionId != null) reloadSource({ collection: activeCollectionId });
+    // Both, not just whichever is on screen: the all-collections view aggregates
+    // every collection, so a change to any one of them makes it stale too, and
+    // bumping only the active source would leave a switch to All Collections
+    // painting from a cache that predates the change.
+    reloadSource({ allCollections: true });
+    if (typeof activeCollectionId === "number") reloadSource({ collection: activeCollectionId });
   }
 
   // Try a pasted admin token: store it, then let the server judge it.
@@ -380,7 +392,9 @@ export default function App() {
   const source: PaperSource | null = inInterests
     ? activeTopic && { topic: activeTopic.id }
     : inLibrary
-      ? activeCollection && { collection: activeCollection.id }
+      ? activeCollectionId === "all"
+        ? { allCollections: true }
+        : activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
   const showViewControls = !showSettings && source != null;
   const sourceId = source ? sourceKey(source) : null;
@@ -669,7 +683,9 @@ export default function App() {
         ) : inLibrary ? (
           <CollectionView
             key={activeCollectionId}
-            collectionId={activeCollectionId!}
+            // "all" carries no collection, which is what empties the management
+            // chrome inside the view — see CollectionView's collectionId.
+            collectionId={typeof activeCollectionId === "number" ? activeCollectionId : null}
             isAdmin={isAdmin}
             reloadToken={reloadToken}
             // The graph fills the main area itself, so the collection's long
