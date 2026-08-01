@@ -54,6 +54,7 @@ import {
   searchMesh,
   setFileMatched,
   setSetting,
+  sourceHasFiles,
   suggestTopicsFromLibrary,
   upsertArticles,
   type PaperFilter,
@@ -427,14 +428,21 @@ api.delete("/journals/:id", (req, res) => {
 function parseSource(req: Request): PaperSourceQuery | null {
   const topicId = Number(req.query.topic);
   const folderId = Number(req.query.folder);
-  const collectionId = Number(req.query.collection);
   if (topicId) return { topicId };
   if (folderId) return { folderId };
+  // `?collection=all` is every collection at once — "do I hold this anywhere?",
+  // which is the question a writer checking against a purchase is asking, and
+  // the one a single-collection search answers wrongly by omission. Spelled as a
+  // value of the existing param rather than a new one so the three-way choice
+  // stays a three-way choice.
+  if (req.query.collection === "all") return { allCollections: true };
+  const collectionId = Number(req.query.collection);
   if (collectionId) return { collectionId };
   return null;
 }
 
-const SOURCE_REQUIRED = "'topic', 'folder' or 'collection' query param is required.";
+const SOURCE_REQUIRED =
+  "'topic', 'folder' or 'collection' query param is required ('collection=all' for every collection).";
 
 // A ceiling on how many descriptors one request may filter by. The UIs are
 // bound parameters, so this isn't about injection — it's that each one is
@@ -484,8 +492,9 @@ api.get(
     }
 
     // One directory read instead of a stat per row. Only collection rows carry
-    // a content_hash; topic rows are always null, so skip the readdir for them.
-    const present = "collectionId" in source ? existingBlobHashes() : null;
+    // a content_hash; topic and folder rows are always null, so skip the readdir
+    // for them.
+    const present = sourceHasFiles(source) ? existingBlobHashes() : null;
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
         ...p,
@@ -594,8 +603,8 @@ api.get(
 
     const cites = getCitations(pmids);
     // One directory read for the whole graph, as in /papers. Only collection
-    // papers carry a content_hash, so topic graphs skip the readdir.
-    const present = "collectionId" in source ? existingBlobHashes() : null;
+    // papers carry a content_hash, so topic and folder graphs skip the readdir.
+    const present = sourceHasFiles(source) ? existingBlobHashes() : null;
     const nodes: GraphNode[] = papers.map((p) => ({
       pmid: p.pmid,
       title: p.title,

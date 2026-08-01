@@ -929,15 +929,20 @@ function searchPredicate(
         OR a.pmid = ?`;
   }
 
+  // Body text, for the sources that have documents behind them. Narrowed to one
+  // collection when that is the source and left unscoped when the source is
+  // every collection — the same clause, one fewer bound parameter.
   let body = "";
-  const match = source && "collectionId" in source ? toFtsQuery(q) : null;
-  if (match && source && "collectionId" in source) {
-    params.push(match, source.collectionId);
+  const match = sourceHasFiles(source) ? toFtsQuery(q) : null;
+  if (match) {
+    const collectionId = source && "collectionId" in source ? source.collectionId : null;
+    params.push(match);
+    if (collectionId != null) params.push(collectionId);
     body = `
         OR a.pmid IN (SELECT cf2.pmid FROM pdf_text_fts
                       JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
                       JOIN collection_files cf2 ON cf2.content_hash = pt.content_hash
-                      WHERE pdf_text_fts MATCH ? AND cf2.collection_id = ?
+                      WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf2.collection_id = ?" : ""}
                         AND cf2.pmid IS NOT NULL)`;
   }
   return `(a.title LIKE ? ESCAPE '\\'
@@ -1001,10 +1006,13 @@ function filterClause(
 // One pmid can have several matching files; the first excerpt wins, which is
 // arbitrary but stable enough (rows come back in rowid order) and no worse than
 // picking by a relevance the user never sees.
-function snippetsForSearch(collectionId: number, q: string): Map<string, string> {
+function snippetsForSearch(source: PaperSourceQuery, q: string): Map<string, string> {
   const out = new Map<string, string>();
   const match = toFtsQuery(q);
   if (!match) return out;
+  // Scoped the same way the body clause in searchPredicate is, so a paper can't
+  // come back from the search without its excerpt or vice versa.
+  const collectionId = "collectionId" in source ? source.collectionId : null;
   const rows = db
     .prepare(
       `SELECT cf.pmid AS pmid,
@@ -1012,9 +1020,15 @@ function snippetsForSearch(collectionId: number, q: string): Map<string, string>
        FROM pdf_text_fts
        JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
        JOIN collection_files cf ON cf.content_hash = pt.content_hash
-       WHERE pdf_text_fts MATCH ? AND cf.collection_id = ? AND cf.pmid IS NOT NULL`
+       WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf.collection_id = ?" : ""}
+         AND cf.pmid IS NOT NULL`
     )
-    .all(SNIPPET_OPEN, SNIPPET_CLOSE, match, collectionId) as { pmid: string; snip: string }[];
+    .all(
+      SNIPPET_OPEN,
+      SNIPPET_CLOSE,
+      match,
+      ...(collectionId != null ? [collectionId] : [])
+    ) as { pmid: string; snip: string }[];
   for (const r of rows) if (!out.has(r.pmid)) out.set(r.pmid, r.snip);
   return out;
 }
@@ -1029,12 +1043,23 @@ export function topicArticleCounts(): Record<number, number> {
 }
 
 // Which paper set /api/papers reads: a topic's articles, a bookmark folder's
-// saved papers, or a collection's matched uploads. Mirrors the client's
-// PaperSource.
+// saved papers, one collection's matched uploads, or every collection at once.
+// Mirrors the client's PaperSource.
 export type PaperSourceQuery =
   | { topicId: number }
   | { folderId: number }
-  | { collectionId: number };
+  | { collectionId: number }
+  | { allCollections: true };
+
+// Does this source have uploaded files behind its papers? True for both
+// collection kinds and false for topics and bookmark folders, which are lists
+// of papers *seen* rather than held. Three separate places used to spell this
+// as `"collectionId" in source`, which silently answered "no" the moment a
+// second file-bearing source existed — the papers view would have dropped its
+// file columns, its body-text search and its excerpts all at once.
+export function sourceHasFiles(source?: PaperSourceQuery): boolean {
+  return !!source && ("collectionId" in source || "allCollections" in source);
+}
 
 // The join that narrows `articles a` down to one source's papers, plus the
 // params it binds. Every per-source query — the papers list, the journal chips,
@@ -1059,6 +1084,22 @@ function sourceMembership(source: PaperSourceQuery): {
       params: [source.folderId],
     };
   }
+  // Every collection at once — "do I hold this anywhere?", which is the question
+  // a writer checking against a purchase is actually asking. A paper held in
+  // three collections is one row, linked to the lowest-id matched file, which is
+  // the same MIN(id) convention HOLDING_SELECT uses to answer /have; the two
+  // must not disagree about which copy they mean.
+  if ("allCollections" in source) {
+    return {
+      join: `JOIN (SELECT DISTINCT pmid FROM collection_files
+                WHERE pmid IS NOT NULL) cp ON cp.pmid = a.pmid
+         LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                    WHERE match_status = 'matched'
+                    GROUP BY pmid) mf ON mf.pmid = a.pmid
+         LEFT JOIN collection_files cf ON cf.id = mf.file_id`,
+      params: [],
+    };
+  }
   // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
   // and links the lowest-id 'matched' file for it, if any.
   return {
@@ -1076,7 +1117,7 @@ function sourceMembership(source: PaperSourceQuery): {
 // behind its papers; topics and bookmark folders select constant nulls so every
 // source hands back the same row shape.
 function sourceFileCols(source: PaperSourceQuery): string {
-  return "collectionId" in source
+  return sourceHasFiles(source)
     ? "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash"
     : "NULL AS file_id, NULL AS file_name, NULL AS content_hash";
 }
@@ -1312,10 +1353,7 @@ export function listPapers(
   // Excerpts exist only for a collection search, and only for papers the query
   // matched *inside the document*. A paper matched on title alone gets none, so
   // the excerpt's presence tells the reader the words are actually in the file.
-  const snippets =
-    filter.q && "collectionId" in source
-      ? snippetsForSearch(source.collectionId, filter.q)
-      : null;
+  const snippets = filter.q && sourceHasFiles(source) ? snippetsForSearch(source, filter.q) : null;
   return rows.map((r) => ({
     ...r,
     authors: safeParseAuthors(r.authors),
