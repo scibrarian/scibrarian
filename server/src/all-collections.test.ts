@@ -9,7 +9,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // bug it guards is one of omission: a search scoped to a single collection
 // answers "not here" for a paper the library holds in a *different* collection,
 // which reads as "buy it". Only running the query across two collections shows
-// the difference.
+// the difference. The opposite error is worse, so the fixture pins it too: an
+// articles row the library has merely *seen* must never surface here, because
+// this is the view a writer reads as "we have it, don't buy it".
 //
 // It also pins the row shape. Three separate places asked `"collectionId" in
 // source` to mean "does this source have files behind it", and a second
@@ -25,11 +27,17 @@ let db: Db;
 let tmpDir: string;
 let novartis: number;
 let pfizer: number;
+let feed: number;
 
 const ONLY_A = { pmid: "11111111", hash: "a".repeat(64), title: "Cardiac outcomes in cohort A" };
 const ONLY_B = { pmid: "22222222", hash: "b".repeat(64), title: "Renal outcomes in cohort B" };
 // The same file filed under both engagements — reuse happens in practice.
 const IN_BOTH = { pmid: "33333333", hash: "c".repeat(64), title: "Shared methodology review" };
+// Seen, never held: a topic feed turned this one up and nobody uploaded a file
+// for it. Every other fixture article is held somewhere, so without this one
+// the membership join could be deleted outright and every assertion below
+// would still pass.
+const SEEN_ONLY = { pmid: "44444444", title: "Hepatic outcomes in cohort D" };
 
 function article(p: { pmid: string; title: string }) {
   return {
@@ -81,19 +89,30 @@ beforeAll(async () => {
     pages: 1,
     truncated: false,
   });
+
+  // An articles row with no collection_files row behind it.
+  feed = db.createTopic("Hepatology", "hepatic").id;
+  db.saveArticles([article(SEEN_ONLY)], feed);
 });
 
 afterAll(() => {
   // Closed before the directory goes: Windows refuses to unlink a file that is
   // still open, and the database is in WAL mode, so there are three of them.
-  db.db.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  //
+  // Optional-chained because a throw in beforeAll — a schema or migration
+  // error, which is the class of bug a DB test exists to catch — leaves `db`
+  // undefined. An unguarded deref would report the teardown's TypeError instead
+  // of the real failure, and strand the temp directory on the way out.
+  db?.db.close();
+  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 const inAll = (q?: string) =>
   db.listPapers({ allCollections: true }, q ? { q } : {}).map((p) => p.pmid);
 const inOne = (collectionId: number, q?: string) =>
   db.listPapers({ collectionId }, q ? { q } : {}).map((p) => p.pmid);
+const inFeed = (q?: string) =>
+  db.listPapers({ topicId: feed }, q ? { q } : {}).map((p) => p.pmid);
 
 describe("what each source contains", () => {
   it("returns every collection's papers, and a shared one only once", () => {
@@ -103,6 +122,21 @@ describe("what each source contains", () => {
   it("leaves single-collection scoping exactly as it was", () => {
     expect(inOne(novartis).sort()).toEqual([ONLY_A.pmid, IN_BOTH.pmid].sort());
     expect(inOne(pfizer).sort()).toEqual([ONLY_B.pmid, IN_BOTH.pmid].sort());
+  });
+
+  it("never claims a paper the library has only seen", () => {
+    // `held` means a collection_files row, never an articles row. All
+    // collections is the view a writer reads as "we already have it, don't buy
+    // it", so a paper a topic feed turned up must not appear in it — that is
+    // the one answer this source can't afford to give wrong.
+    //
+    // The topic assertion is what makes the other three mean anything: the row
+    // is present and findable, so its absence below is the membership join
+    // doing its job rather than a fixture that never inserted it.
+    expect(inFeed()).toEqual([SEEN_ONLY.pmid]);
+    expect(inAll()).not.toContain(SEEN_ONLY.pmid);
+    expect(inAll(SEEN_ONLY.title)).toEqual([]);
+    expect(inAll("10.1000/44444444")).toEqual([]);
   });
 });
 
