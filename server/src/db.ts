@@ -1096,7 +1096,21 @@ export function sourceHasFiles(source?: PaperSourceQuery): boolean {
 // in three near-identical queries. Routes dispatch through the exported
 // wrappers (journalsForSource / listPapers / graphPapersForSource) rather than
 // picking per-source functions themselves.
-function sourceMembership(source: PaperSourceQuery): {
+//
+// `withFiles` appends the link to each paper's stored copy, and belongs to the
+// two callers that select sourceFileCols — the papers list and the graph. The
+// journal chips, the MeSH facets and the filing counts select nothing from
+// `cf`, and used to compute the link anyway: a GROUP BY over collection_files
+// per query, unbounded by any collection once the all-collections source could
+// ask for it. Measured on a 20k-paper library, that was ~18ms wasted per query
+// and ~55ms per switch into All collections, which loads three of them.
+//
+// A caller that selects sourceFileCols without passing true fails loudly, on
+// `no such column: cf.id` the first time SQLite prepares the statement.
+function sourceMembership(
+  source: PaperSourceQuery,
+  withFiles = false
+): {
   join: string;
   params: (string | number)[];
 } {
@@ -1126,14 +1140,21 @@ function sourceMembership(source: PaperSourceQuery): {
   // copy they mean, which is why both decide "held" with heldFile.
   const collectionId = "allCollections" in source ? null : source.collectionId;
   const scope = collectionId === null ? "" : "collection_id = ? AND ";
+  const fileLink = withFiles
+    ? `LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                  WHERE ${scope}${heldFile()}
+                  GROUP BY pmid) mf ON mf.pmid = a.pmid
+       LEFT JOIN collection_files cf ON cf.id = mf.file_id`
+    : "";
+  // One bound id per subquery carrying the scope clause: cp always, mf only
+  // when the file link is there. Binding a fixed two would put the collection
+  // id into whatever placeholder the caller appended next.
+  const bind = collectionId === null ? [] : [collectionId];
   return {
     join: `JOIN (SELECT DISTINCT pmid FROM collection_files
               WHERE ${scope}${heldFile()}) cp ON cp.pmid = a.pmid
-       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                  WHERE ${scope}${heldFile()}
-                  GROUP BY pmid) mf ON mf.pmid = a.pmid
-       LEFT JOIN collection_files cf ON cf.id = mf.file_id`,
-    params: collectionId === null ? [] : [collectionId, collectionId],
+       ${fileLink}`,
+    params: withFiles ? [...bind, ...bind] : bind,
   };
 }
 
@@ -1351,7 +1372,7 @@ export function listPapers(
   source: PaperSourceQuery,
   filter: PaperFilter = {}
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
-  const { join, params } = sourceMembership(source);
+  const { join, params } = sourceMembership(source, true);
   const search = filterClause(source, filter, params);
   const rows = db
     .prepare(
@@ -1518,7 +1539,7 @@ export function graphPapersForSource(
   source: PaperSourceQuery,
   filter: PaperFilter = {}
 ): GraphPaper[] {
-  const { join, params } = sourceMembership(source);
+  const { join, params } = sourceMembership(source, true);
   const where = filterClause(source, filter, params);
   return db
     .prepare(
