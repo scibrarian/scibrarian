@@ -366,6 +366,34 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_articles_mesh_status ON articles(mesh_status);
 `);
 
+// ---------- what "held" means ----------
+
+// A collection_files row is a held copy exactly when it carries a pmid.
+//
+// The same set can be spelled `match_status = 'matched'`, and both spellings
+// were in use: setFileMatched is the only writer that ever sets a pmid and it
+// stamps that status in the same UPDATE, while setFileUnmatched and
+// setFileError null the pmid in the same breath as moving the status off it.
+// Nothing in the schema enforces that, though — the two are equal only by the
+// good behaviour of three functions. Queries that picked different spellings
+// would diverge the first time anything wrote a pmid outside them (a migration,
+// a backfill, an importer pre-filling the column): the paper would count as
+// held but link no file, so /have names a stored copy that the papers view
+// reports as missing. One spelling everywhere can't drift, so custody is
+// decided here and only here.
+//
+// collectionStats counts `match_status = 'matched'` and is right to: how many
+// uploads got matched is a question about files, not about which papers are
+// held.
+//
+// `alias` prefixes the column for queries that join collection_files under a
+// name (`cf.`, `cf2.`); the subqueries selecting from it bare pass nothing.
+const heldFile = (alias = "") => `${alias}pmid IS NOT NULL`;
+
+// The distinct papers the user actually holds a file for — the Library, as the
+// custody positioning means it.
+const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFile()})`;
+
 // ---------- settings ----------
 
 const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
@@ -456,7 +484,7 @@ export function createTopic(name: string, term: string): Topic {
 // Narrowing is safe by default: stale links merely keep papers alive.
 const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
    AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
-   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)
+   AND pmid NOT IN ${HELD_PAPERS}
    AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 // How many stored articles a topic removal would permanently delete (for the
@@ -562,7 +590,7 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
 // pinning rule ever changes, both move together, so the dialog can't promise
 // one thing and the delete do another.
 const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
-   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)
+   AND pmid NOT IN ${HELD_PAPERS}
    AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 function journalNlmId(id: number): string | null {
@@ -943,7 +971,7 @@ function searchPredicate(
                       JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
                       JOIN collection_files cf2 ON cf2.content_hash = pt.content_hash
                       WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf2.collection_id = ?" : ""}
-                        AND cf2.pmid IS NOT NULL)`;
+                        AND ${heldFile("cf2.")})`;
   }
   return `(a.title LIKE ? ESCAPE '\\'
         OR a.abstract LIKE ? ESCAPE '\\'
@@ -1021,7 +1049,7 @@ function snippetsForSearch(source: PaperSourceQuery, q: string): Map<string, str
        JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
        JOIN collection_files cf ON cf.content_hash = pt.content_hash
        WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf.collection_id = ?" : ""}
-         AND cf.pmid IS NOT NULL`
+         AND ${heldFile("cf.")}`
     )
     .all(
       SNIPPET_OPEN,
@@ -1084,32 +1112,28 @@ function sourceMembership(source: PaperSourceQuery): {
       params: [source.folderId],
     };
   }
-  // Every collection at once — "do I hold this anywhere?", which is the question
-  // a writer checking against a purchase is actually asking. A paper held in
-  // three collections is one row, linked to the lowest-id matched file, which is
-  // the same MIN(id) convention HOLDING_SELECT uses to answer /have; the two
-  // must not disagree about which copy they mean.
-  if ("allCollections" in source) {
-    return {
-      join: `JOIN (SELECT DISTINCT pmid FROM collection_files
-                WHERE pmid IS NOT NULL) cp ON cp.pmid = a.pmid
-         LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                    WHERE match_status = 'matched'
-                    GROUP BY pmid) mf ON mf.pmid = a.pmid
-         LEFT JOIN collection_files cf ON cf.id = mf.file_id`,
-      params: [],
-    };
-  }
-  // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
-  // and links the lowest-id 'matched' file for it, if any.
+  // One collection, or every collection at once: the same three joins either
+  // way — a row per distinct held pmid, linked to the lowest-id file carrying
+  // it — differing only in whether a collection bounds them. One text rather
+  // than two near-identical ones, because the pair had already drifted into
+  // spelling "held" two different ways, and unscoped it is HELD_PAPERS by
+  // construction rather than a fourth copy of it.
+  //
+  // Unscoped answers "do I hold this anywhere?", which is the question a writer
+  // checking against a purchase is actually asking. A paper held in three
+  // collections is one row, linked by the same MIN(id) convention
+  // HOLDING_SELECT uses to answer /have; the two must not disagree about which
+  // copy they mean, which is why both decide "held" with heldFile.
+  const collectionId = "allCollections" in source ? null : source.collectionId;
+  const scope = collectionId === null ? "" : "collection_id = ? AND ";
   return {
     join: `JOIN (SELECT DISTINCT pmid FROM collection_files
-              WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
+              WHERE ${scope}${heldFile()}) cp ON cp.pmid = a.pmid
        LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                  WHERE collection_id = ? AND match_status = 'matched'
+                  WHERE ${scope}${heldFile()}
                   GROUP BY pmid) mf ON mf.pmid = a.pmid
        LEFT JOIN collection_files cf ON cf.id = mf.file_id`,
-    params: [source.collectionId, source.collectionId],
+    params: collectionId === null ? [] : [collectionId, collectionId],
   };
 }
 
@@ -1262,13 +1286,11 @@ const CHECK_TAGS = [
 const CHECK_TAG_UIS = CHECK_TAGS.map(([ui]) => ui);
 const CHECK_TAG_NAMES = CHECK_TAGS.map(([, name]) => name);
 
-// The distinct papers the user actually holds a file for — the Library, as the
-// custody positioning means it. Suggestions are drawn from these and not from
-// the topic feeds on purpose: a topic feed's papers were selected *by* a topic,
-// so ranking their headings mostly recommends the topics that are already there.
-const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE pmid IS NOT NULL)`;
-
 // Subjects the held papers cluster around that aren't topics yet.
+//
+// Drawn from HELD_PAPERS and not from the topic feeds on purpose: a topic
+// feed's papers were selected *by* a topic, so ranking their headings mostly
+// recommends the topics that are already there.
 //
 // Ordered by how many held papers the descriptor is a *main point* of before
 // total appearances: a heading starred on ten papers is a subject this library
@@ -1400,10 +1422,10 @@ export interface HoldingRow {
 }
 
 // The stored copy for a paper, across every collection: the lowest-id file row
-// that carries a pmid. `pmid` is only ever set by setFileMatched, which stamps
-// match_status = 'matched' in the same statement, so this is the same set the
-// collection views join on — one subquery here rather than two, because this
-// query has no collection to scope to.
+// that heldFile counts as held — the same set, and the same MIN(id) pick, the
+// collection views join on, so /have and the papers list can't name different
+// copies of one paper. One subquery here rather than two, because this query
+// has no collection to scope to.
 //
 // A paper held in several collections resolves to one of them, arbitrarily but
 // stably (lowest id = first uploaded). The question being answered is "do we
@@ -1416,7 +1438,7 @@ const HOLDING_SELECT = `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_na
    FROM articles a
    ${JOURNAL_LOOKUP}
    LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-              WHERE pmid IS NOT NULL GROUP BY pmid) hf ON hf.pmid = a.pmid
+              WHERE ${heldFile()} GROUP BY pmid) hf ON hf.pmid = a.pmid
    LEFT JOIN collection_files cf ON cf.id = hf.file_id
    LEFT JOIN collections col ON col.id = cf.collection_id`;
 
