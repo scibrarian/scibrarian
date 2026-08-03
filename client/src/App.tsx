@@ -389,11 +389,25 @@ export default function App() {
   }
 
   // The active paper source, if this mode has something selected.
+  //
+  // "All collections" is guarded on the list the same way the branches either
+  // side of it are guarded on their entity: it is a scope *over* the
+  // collections, so with none there is nothing for it to select. Unguarded it
+  // was the one selection that could survive its subject disappearing —
+  // loadCollections deliberately doesn't re-validate the way loadTopics does,
+  // since deletion is handled where it happens, so a collection removed in
+  // another tab or by another user on a shared instance left `source` non-null
+  // with an empty library. That skips the no-source screen entirely and renders
+  // a collection view with no collection: an empty state telling you to click
+  // Add files, beneath a picker that has already withheld the entry you would
+  // have had to click to get there.
   const source: PaperSource | null = inInterests
     ? activeTopic && { topic: activeTopic.id }
     : inLibrary
       ? activeCollectionId === "all"
-        ? { allCollections: true }
+        ? collections.length > 0
+          ? { allCollections: true }
+          : null
         : activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
   const showViewControls = !showSettings && source != null;
