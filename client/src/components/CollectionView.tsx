@@ -94,6 +94,22 @@ export function CollectionView({
   );
   const files = filesData?.files ?? [];
 
+  // The latest onChanged, reachable from the interval without being one of its
+  // dependencies. App declares it as a plain function in its body, so it is a
+  // new value on every App render; depending on it directly rebuilt
+  // startPolling, and the resume effect below with it, on every App-level state
+  // change. That effect's cleanup clears a live interval and its body fires
+  // another status request — measured at one stray GET /import/status per view
+  // toggle or dialog open, with no import running at all.
+  //
+  // Written in an effect rather than during render: assigning to a ref while
+  // rendering is a side effect, and this only has to be current by the time the
+  // interval next ticks.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  });
+
   // Poll import status while a job runs; refresh files + everything else
   // (via onChanged) when it finishes.
   const stopPolling = useCallback(() => {
@@ -124,7 +140,7 @@ export function CollectionView({
         setImportStatus(s);
         if (s.state === "done" || s.state === "error" || s.state === "idle") {
           stopPolling();
-          onChanged();
+          onChangedRef.current();
         }
       } catch {
         // A transient failure must not freeze the progress bar: keep polling
@@ -139,7 +155,9 @@ export function CollectionView({
         inFlight = false;
       }
     }, 1000);
-  }, [collectionId, onChanged, stopPolling]);
+    // Deliberately not onChanged: see onChangedRef above. The poll's identity
+    // tracks what it polls — the collection — and nothing else.
+  }, [collectionId, stopPolling]);
 
   // Resume the progress UI if an import is already running for this collection.
   useEffect(() => {
