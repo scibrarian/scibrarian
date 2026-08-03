@@ -1,7 +1,5 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 // Searching by identifier, against a real SQLite file.
 //
@@ -12,14 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // checks and no schema catches" — the comment on the function says so. Only
 // running the query catches it, and the identifier clauses land in the middle
 // of that ordering, between the LIKEs and the full-text subquery.
-//
-// db.ts opens its database at import time, so the temp path is set before the
-// dynamic import below and the module graph is loaded exactly once.
-
-type Db = typeof import("./db.js");
 
 let db: Db;
-let tmpDir: string;
 let collectionId: number;
 
 const TARGET = {
@@ -52,9 +44,7 @@ function article(p: typeof TARGET, authors: string[], year: string) {
 }
 
 beforeAll(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "scibrarian-search-ids-"));
-  process.env.DB_PATH = path.join(tmpDir, "test.db");
-  db = await import("./db.js");
+  db = await openTempDb("search-ids");
 
   collectionId = db.createCollection("Reference package").id;
   db.addCollectionFiles(collectionId, [
@@ -76,12 +66,7 @@ beforeAll(async () => {
   });
 });
 
-afterAll(() => {
-  // Closed before the directory goes: Windows refuses to unlink a file that is
-  // still open, and the database is in WAL mode, so there are three of them.
-  db.db.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
+afterAll(closeTempDb);
 
 const find = (q: string) =>
   db.listPapers({ collectionId }, { q }).map((p) => p.pmid);

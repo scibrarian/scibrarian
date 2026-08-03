@@ -1,7 +1,5 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 // The all-collections paper source, against a real SQLite file.
 //
@@ -17,15 +15,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // source` to mean "does this source have files behind it", and a second
 // file-bearing source silently answers no — which would drop file_id, the
 // body-text clause and the excerpts all at once, without failing a type check.
-//
-// db.ts opens its database at import time, so the temp path is set before the
-// dynamic import below and the module graph is loaded exactly once.
 
-type Db = typeof import("./db.js");
 type Src = Parameters<Db["listPapers"]>[0];
 
 let db: Db;
-let tmpDir: string;
 let novartis: number;
 let pfizer: number;
 let feed: number;
@@ -92,9 +85,7 @@ function article(p: {
 }
 
 beforeAll(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "scibrarian-all-collections-"));
-  process.env.DB_PATH = path.join(tmpDir, "test.db");
-  db = await import("./db.js");
+  db = await openTempDb("all-collections");
 
   novartis = db.createCollection("Novartis").id;
   pfizer = db.createCollection("Pfizer").id;
@@ -143,17 +134,7 @@ beforeAll(async () => {
   db.saveArticles([article(ONLY_B)], renalFeed);
 });
 
-afterAll(() => {
-  // Closed before the directory goes: Windows refuses to unlink a file that is
-  // still open, and the database is in WAL mode, so there are three of them.
-  //
-  // Optional-chained because a throw in beforeAll — a schema or migration
-  // error, which is the class of bug a DB test exists to catch — leaves `db`
-  // undefined. An unguarded deref would report the teardown's TypeError instead
-  // of the real failure, and strand the temp directory on the way out.
-  db?.db.close();
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-});
+afterAll(closeTempDb);
 
 const inAll = (q?: string) =>
   db.listPapers({ allCollections: true }, q ? { q } : {}).map((p) => p.pmid);
