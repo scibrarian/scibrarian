@@ -175,14 +175,12 @@ export interface ImportStartResponse {
   total: number; // pending files the job will scan
 }
 
-// Which paper set a view reads from: an Interests topic, a Bookmarks folder, or
-// a Library collection. Every analysis module (table, timeline, graph) takes
-// one.
-export type PaperSource =
-  | { topic: number }
-  | { folder: number }
-  | { collection: number }
-  | { allCollections: true };
+// Which paper set a view reads from: an Interests topic, a Bookmarks folder, a
+// Library collection, or every collection at once. Every analysis module
+// (table, timeline, graph) takes one. Defined in shared/source.ts alongside its
+// predicates and its wire format, because the server dispatches on the same
+// four kinds and the two used to mirror each other by hand.
+export type { PaperSource } from "../../shared/source";
 
 // What the Library workspace is pointed at: one collection, or every collection
 // at once. "all" is deliberately not a reserved id — a sentinel number would be

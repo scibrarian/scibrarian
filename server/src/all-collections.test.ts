@@ -139,11 +139,11 @@ afterAll(closeTempDb);
 const inAll = (q?: string) =>
   db.listPapers({ allCollections: true }, q ? { q } : {}).map((p) => p.pmid);
 const inOne = (collectionId: number, q?: string) =>
-  db.listPapers({ collectionId }, q ? { q } : {}).map((p) => p.pmid);
+  db.listPapers({ collection: collectionId }, q ? { q } : {}).map((p) => p.pmid);
 const inFeed = (q?: string) =>
-  db.listPapers({ topicId: feed }, q ? { q } : {}).map((p) => p.pmid);
+  db.listPapers({ topic: feed }, q ? { q } : {}).map((p) => p.pmid);
 const inFeedRenal = (q?: string) =>
-  db.listPapers({ topicId: renalFeed }, q ? { q } : {}).map((p) => p.pmid);
+  db.listPapers({ topic: renalFeed }, q ? { q } : {}).map((p) => p.pmid);
 
 describe("what each source contains", () => {
   it("returns every collection's papers, and a shared one only once", () => {
@@ -213,10 +213,10 @@ describe("the row shape", () => {
   it("leaves the column empty for a source that can't be told anything by it", () => {
     // Inside one collection every row is in that collection; a topic holds
     // nothing at all. Both would be noise, and the topic one would be a lie.
-    for (const p of db.listPapers({ collectionId: novartis }, {})) {
+    for (const p of db.listPapers({ collection: novartis }, {})) {
       expect(p.collections).toEqual([]);
     }
-    for (const p of db.listPapers({ topicId: renalFeed }, {})) {
+    for (const p of db.listPapers({ topic: renalFeed }, {})) {
       expect(p.collections).toEqual([]);
     }
   });
@@ -247,13 +247,13 @@ describe("the queries that share the membership join", () => {
       ONLY_B.journal,
       ONLY_A.journal,
     ]);
-    expect(db.journalsForSource({ collectionId: novartis })).toEqual([ONLY_A.journal]);
-    expect(db.journalsForSource({ collectionId: pfizer })).toEqual([
+    expect(db.journalsForSource({ collection: novartis })).toEqual([ONLY_A.journal]);
+    expect(db.journalsForSource({ collection: pfizer })).toEqual([
       ONLY_B.journal,
       IN_BOTH.journal,
     ]);
     // The unheld paper's journal is a chip on its topic and nowhere else.
-    expect(db.journalsForSource({ topicId: feed })).toEqual([SEEN_ONLY.journal]);
+    expect(db.journalsForSource({ topic: feed })).toEqual([SEEN_ONLY.journal]);
   });
 
   it("counts subjects over the same membership", () => {
@@ -262,8 +262,8 @@ describe("the queries that share the membership join", () => {
       [CARDIO.ui, 2],
       [NEPHRO.ui, 1],
     ]);
-    expect(facets({ collectionId: novartis })).toEqual([[CARDIO.ui, 2]]);
-    expect(facets({ topicId: feed })).toEqual([[HEPATO.ui, 1]]);
+    expect(facets({ collection: novartis })).toEqual([[CARDIO.ui, 2]]);
+    expect(facets({ topic: feed })).toEqual([[HEPATO.ui, 1]]);
   });
 
   it("buckets filing over the same membership", () => {
@@ -275,8 +275,8 @@ describe("the queries that share the membership join", () => {
     };
     expect(db.meshFilingForSource({ allCollections: true }).filed).toBe(3);
     expect(total({ allCollections: true })).toBe(3);
-    expect(total({ collectionId: novartis })).toBe(2);
-    expect(total({ topicId: feed })).toBe(1);
+    expect(total({ collection: novartis })).toBe(2);
+    expect(total({ topic: feed })).toBe(1);
   });
 
   it("gives the graph the same papers and the same file as the table", () => {
@@ -290,7 +290,7 @@ describe("the queries that share the membership join", () => {
     for (const g of graph) {
       expect(g.file_id).toBe(table.find((p) => p.pmid === g.pmid)?.file_id);
     }
-    expect(db.graphPapersForSource({ topicId: feed }).map((g) => g.file_id)).toEqual([null]);
+    expect(db.graphPapersForSource({ topic: feed }).map((g) => g.file_id)).toEqual([null]);
   });
 });
 
@@ -312,7 +312,7 @@ describe("a source with no files behind it", () => {
     // the title and an unguarded excerpt lookup would find the document and
     // attach it. That is the leak: an excerpt is the claim "these words are in
     // the file", and a topic has no file to make it about.
-    const [row] = db.listPapers({ topicId: renalFeed }, { q: "renal" });
+    const [row] = db.listPapers({ topic: renalFeed }, { q: "renal" });
     expect(row.pmid).toBe(ONLY_B.pmid);
     expect(row.snippet).toBeNull();
     expect(row.file_id).toBeNull();
@@ -320,7 +320,7 @@ describe("a source with no files behind it", () => {
     // The same word against the collection that does hold it returns the
     // excerpt, so the assertion above is about the source and not about "renal"
     // simply matching nothing.
-    expect(db.listPapers({ collectionId: pfizer }, { q: "renal" })[0].snippet).toMatch(/renal/i);
+    expect(db.listPapers({ collection: pfizer }, { q: "renal" })[0].snippet).toMatch(/renal/i);
   });
 });
 

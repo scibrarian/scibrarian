@@ -12,6 +12,7 @@ import {
   PUB_TYPE_NONE,
 } from "./pubmed-parse.js";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
+import { sourceHasFiles, type PaperSource } from "../../shared/source.js";
 import type {
   Article,
   BookmarkEntry,
@@ -921,7 +922,7 @@ const JOURNAL_LOOKUP = `LEFT JOIN journals j ON j.nlm_id = a.nlm_id
 function searchPredicate(
   q: string | undefined,
   params: (string | number)[],
-  source?: PaperSourceQuery
+  source?: PaperSource
 ): string {
   if (!q) return "";
   // Bind order follows the *textual* order of the ? placeholders below, so the
@@ -963,7 +964,7 @@ function searchPredicate(
   let body = "";
   const match = sourceHasFiles(source) ? toFtsQuery(q) : null;
   if (match) {
-    const collectionId = source && "collectionId" in source ? source.collectionId : null;
+    const collectionId = source && "collection" in source ? source.collection : null;
     params.push(match);
     if (collectionId != null) params.push(collectionId);
     body = `
@@ -1015,7 +1016,7 @@ export interface PaperFilter {
 }
 
 function filterClause(
-  source: PaperSourceQuery,
+  source: PaperSource,
   filter: PaperFilter,
   params: (string | number)[]
 ): string {
@@ -1034,12 +1035,12 @@ function filterClause(
 // One pmid can have several matching files; the first excerpt wins, which is
 // arbitrary but stable enough (rows come back in rowid order) and no worse than
 // picking by a relevance the user never sees.
-function snippetsForSearch(source: PaperSourceQuery, q: string): Map<string, string> {
+function snippetsForSearch(source: PaperSource, q: string): Map<string, string> {
   const out = new Map<string, string>();
   // A source with no files behind it has no excerpts, and must not borrow any.
   // The signature used to be (collectionId: number, q), which made that
-  // unrepresentable; taking a PaperSourceQuery means a topic or folder can now
-  // be passed, and it would fall through to the null collectionId below — the
+  // unrepresentable; taking a PaperSource means a topic or folder can now be
+  // passed, and it would fall through to the null collection id below — the
   // same null that means "every collection". A fileless source would then draw
   // excerpts from PDFs library-wide, for papers it only ever saw. listPapers
   // screens for this too; the type no longer does, so the function has to.
@@ -1048,8 +1049,8 @@ function snippetsForSearch(source: PaperSourceQuery, q: string): Map<string, str
   if (!match) return out;
   // Scoped the same way the body clause in searchPredicate is, so a paper can't
   // come back from the search without its excerpt or vice versa. Past the guard
-  // above, a null collectionId can only mean every collection.
-  const collectionId = "collectionId" in source ? source.collectionId : null;
+  // above, a null id can only mean every collection.
+  const collectionId = "collection" in source ? source.collection : null;
   const rows = db
     .prepare(
       `SELECT cf.pmid AS pmid,
@@ -1081,22 +1082,14 @@ export function topicArticleCounts(): Record<number, number> {
 
 // Which paper set /api/papers reads: a topic's articles, a bookmark folder's
 // saved papers, one collection's matched uploads, or every collection at once.
-// Mirrors the client's PaperSource.
-export type PaperSourceQuery =
-  | { topicId: number }
-  | { folderId: number }
-  | { collectionId: number }
-  | { allCollections: true };
-
-// Does this source have uploaded files behind its papers? True for both
-// collection kinds and false for topics and bookmark folders, which are lists
-// of papers *seen* rather than held. Three separate places used to spell this
-// as `"collectionId" in source`, which silently answered "no" the moment a
-// second file-bearing source existed — the papers view would have dropped its
-// file columns, its body-text search and its excerpts all at once.
-export function sourceHasFiles(source?: PaperSourceQuery): boolean {
-  return !!source && ("collectionId" in source || "allCollections" in source);
-}
+//
+// The type and the predicate both come from shared/source.ts. They used to be
+// declared here in the server's own spelling (`collectionId`) and again on the
+// client in its (`collection`), which is how "does this source have files"
+// ended up written twice and wrong once. Re-exported because routes.ts and the
+// tests reach for them through db.ts.
+export type { PaperSource };
+export { sourceHasFiles };
 
 // The join that narrows `articles a` down to one source's papers, plus the
 // params it binds. Every per-source query — the papers list, the journal chips,
@@ -1117,22 +1110,22 @@ export function sourceHasFiles(source?: PaperSourceQuery): boolean {
 // A caller that selects sourceFileCols without passing true fails loudly, on
 // `no such column: cf.id` the first time SQLite prepares the statement.
 function sourceMembership(
-  source: PaperSourceQuery,
+  source: PaperSource,
   withFiles = false
 ): {
   join: string;
   params: (string | number)[];
 } {
-  if ("topicId" in source) {
+  if ("topic" in source) {
     return {
       join: "JOIN article_topics ad ON ad.pmid = a.pmid AND ad.topic_id = ?",
-      params: [source.topicId],
+      params: [source.topic],
     };
   }
-  if ("folderId" in source) {
+  if ("folder" in source) {
     return {
       join: "JOIN bookmarks bm ON bm.pmid = a.pmid AND bm.folder_id = ?",
-      params: [source.folderId],
+      params: [source.folder],
     };
   }
   // One collection, or every collection at once: the same three joins either
@@ -1147,7 +1140,7 @@ function sourceMembership(
   // collections is one row, linked by the same MIN(id) convention
   // HOLDING_SELECT uses to answer /have; the two must not disagree about which
   // copy they mean, which is why both decide "held" with heldFile.
-  const collectionId = "allCollections" in source ? null : source.collectionId;
+  const collectionId = "allCollections" in source ? null : source.collection;
   const scope = collectionId === null ? "" : "collection_id = ? AND ";
   const fileLink = withFiles
     ? `LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
@@ -1202,14 +1195,14 @@ function splitCollections(joined: string | null | undefined): string[] {
 // The linked-PDF columns for a source. Only a collection has uploaded files
 // behind its papers; topics and bookmark folders select constant nulls so every
 // source hands back the same row shape.
-function sourceFileCols(source: PaperSourceQuery): string {
+function sourceFileCols(source: PaperSource): string {
   return sourceHasFiles(source)
     ? "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash"
     : "NULL AS file_id, NULL AS file_name, NULL AS content_hash";
 }
 
 // Distinct journal display names present in a source (the filter chips).
-export function journalsForSource(source: PaperSourceQuery): string[] {
+export function journalsForSource(source: PaperSource): string[] {
   const { join, params } = sourceMembership(source);
   const rows = db
     .prepare(
@@ -1234,7 +1227,7 @@ export function journalsForSource(source: PaperSourceQuery): string[] {
 // distinct descriptors between them. `q` filters by heading text, so searching
 // reaches past the cut rather than only re-ordering what already came back.
 export function meshFacetsForSource(
-  source: PaperSourceQuery,
+  source: PaperSource,
   q?: string,
   limit = 200
 ): MeshFacet[] {
@@ -1275,7 +1268,7 @@ export function meshFacetsForSource(
 // status with no headings into one bucket — reported a fully MEDLINE-indexed
 // paper that NLM happened to file under nothing as "not indexed for MEDLINE",
 // which is the opposite of what its status says.
-export function meshFilingForSource(source: PaperSourceQuery): MeshFiling {
+export function meshFilingForSource(source: PaperSource): MeshFiling {
   const { join, params } = sourceMembership(source);
   const rows = db
     .prepare(
@@ -1410,7 +1403,7 @@ function escapeLike(s: string): string {
 // the old per-client fileByPmid). content_hash is returned so the route can
 // check the blob still exists; it is stripped before the response.
 export function listPapers(
-  source: PaperSourceQuery,
+  source: PaperSource,
   filter: PaperFilter = {}
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
   const { join, params } = sourceMembership(source, true);
@@ -1584,7 +1577,7 @@ export interface GraphPaper {
 // The papers that make up a source's graph — same membership and same linked
 // file as listPapers, so a node opens the PDF its table row does.
 export function graphPapersForSource(
-  source: PaperSourceQuery,
+  source: PaperSource,
   filter: PaperFilter = {}
 ): GraphPaper[] {
   const { join, params } = sourceMembership(source, true);

@@ -58,8 +58,9 @@ import {
   suggestTopicsFromLibrary,
   upsertArticles,
   type PaperFilter,
-  type PaperSourceQuery,
+  type PaperSource,
 } from "./db.js";
+import { decodeSource } from "../../shared/source.js";
 import {
   blobExists,
   blobPath,
@@ -421,24 +422,16 @@ api.delete("/journals/:id", (req, res) => {
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
 // The paper source both /papers and /graph accept: ?topic=, ?folder= or
-// ?collection= (the first one given wins when several are sent, as before).
-// null = none given (400). Everything downstream dispatches on the source
-// inside db.ts (listPapers, journalsForSource, graphPapersForSource) — a new
-// source kind is added there, not by branching in each route.
-function parseSource(req: Request): PaperSourceQuery | null {
-  const topicId = Number(req.query.topic);
-  const folderId = Number(req.query.folder);
-  if (topicId) return { topicId };
-  if (folderId) return { folderId };
-  // `?collection=all` is every collection at once — "do I hold this anywhere?",
-  // which is the question a writer checking against a purchase is asking, and
-  // the one a single-collection search answers wrongly by omission. Spelled as a
-  // value of the existing param rather than a new one so the three-way choice
-  // stays a three-way choice.
-  if (req.query.collection === "all") return { allCollections: true };
-  const collectionId = Number(req.query.collection);
-  if (collectionId) return { collectionId };
-  return null;
+// ?collection= (the first one given wins when several are sent). null = none
+// given (400). Everything downstream dispatches on the source inside db.ts
+// (listPapers, journalsForSource, graphPapersForSource) — a new source kind is
+// added there, not by branching in each route.
+//
+// The reading is decodeSource in shared/source.ts, next to the encodeSource the
+// client writes it with, so the two halves of the format can't drift apart. All
+// this adds is Express: pulling the query bag off the request.
+function parseSource(req: Request): PaperSource | null {
+  return decodeSource(req.query as Record<string, unknown>);
 }
 
 const SOURCE_REQUIRED =

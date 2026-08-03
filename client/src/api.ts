@@ -29,6 +29,7 @@ import type {
   UploadResponse,
 } from "./types";
 import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
+import { encodeSource } from "../../shared/source";
 
 // The admin token unlocks mutating endpoints; GETs work without one. Kept in
 // localStorage so an unlocked admin stays unlocked across reloads — the server
@@ -78,13 +79,10 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// The query param naming both source-driven endpoints share.
-function sourceQuery(source: PaperSource): string {
-  if ("topic" in source) return `topic=${source.topic}`;
-  if ("folder" in source) return `folder=${source.folder}`;
-  if ("allCollections" in source) return "collection=all";
-  return `collection=${source.collection}`;
-}
+// The query param naming both source-driven endpoints share. Defined in
+// shared/source.ts beside the server's decodeSource, so the two halves of the
+// format are written once and read together.
+const sourceQuery = encodeSource;
 
 // The server-side filters, appended to a source query. One builder for /papers
 // and /graph so a filter can't reach one endpoint and be dropped by the other.

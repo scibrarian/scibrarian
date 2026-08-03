@@ -69,7 +69,7 @@ beforeAll(async () => {
 afterAll(closeTempDb);
 
 const find = (q: string) =>
-  db.listPapers({ collectionId }, { q }).map((p) => p.pmid);
+  db.listPapers({ collection: collectionId }, { q }).map((p) => p.pmid);
 
 describe("searching by identifier", () => {
   it("finds a paper by its DOI", () => {
