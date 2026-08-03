@@ -360,7 +360,7 @@ export function Settings({
         <h2>Citable window</h2>
         <p className="hint">
           Medical communications work commonly refuses references older than a set number of
-          years. “Do I already have this?” uses this to tell <em>held and citable</em> apart from{" "}
+          years. “Check references” uses this to tell <em>held and citable</em> apart from{" "}
           <em>held but too old to cite</em> — an older paper is still worth having, for verifying
           a claim back to its source, but it isn’t a reference. Set <code>0</code> to switch the
           judgement off.

@@ -8,8 +8,8 @@ import type { HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../type
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
-// "Do I already have this?" — the check a writer is required to run before
-// asking a project manager to approve buying an article.
+// "Check references" — the check a writer is required to run before asking a
+// project manager to approve buying an article.
 //
 // The point of the design is that it accepts *whatever is on the clipboard*. A
 // writer working from a client-formatted reference doesn't have a PMID to hand;
@@ -72,7 +72,7 @@ export function HaveCheck({
   }
 
   return (
-    <ModalShell open={open} onClose={onClose} title="Do I already have this?" wide>
+    <ModalShell open={open} onClose={onClose} title="Check references" wide>
       <form className="have-form" onSubmit={check}>
         <label htmlFor="have-input" className="hint">
           Paste PMIDs, DOIs, PubMed links, or citations — one per line. Up to{" "}
