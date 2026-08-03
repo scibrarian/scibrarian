@@ -1036,10 +1036,19 @@ function filterClause(
 // picking by a relevance the user never sees.
 function snippetsForSearch(source: PaperSourceQuery, q: string): Map<string, string> {
   const out = new Map<string, string>();
+  // A source with no files behind it has no excerpts, and must not borrow any.
+  // The signature used to be (collectionId: number, q), which made that
+  // unrepresentable; taking a PaperSourceQuery means a topic or folder can now
+  // be passed, and it would fall through to the null collectionId below — the
+  // same null that means "every collection". A fileless source would then draw
+  // excerpts from PDFs library-wide, for papers it only ever saw. listPapers
+  // screens for this too; the type no longer does, so the function has to.
+  if (!sourceHasFiles(source)) return out;
   const match = toFtsQuery(q);
   if (!match) return out;
   // Scoped the same way the body clause in searchPredicate is, so a paper can't
-  // come back from the search without its excerpt or vice versa.
+  // come back from the search without its excerpt or vice versa. Past the guard
+  // above, a null collectionId can only mean every collection.
   const collectionId = "collectionId" in source ? source.collectionId : null;
   const rows = db
     .prepare(

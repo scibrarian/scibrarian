@@ -29,6 +29,7 @@ let tmpDir: string;
 let novartis: number;
 let pfizer: number;
 let feed: number;
+let renalFeed: number;
 
 // Journals and headings differ per paper so the facet and chip queries can be
 // told apart by source rather than all returning the same one thing.
@@ -119,9 +120,13 @@ beforeAll(async () => {
   }
   // Body text for the Pfizer-only paper, so the unscoped full-text clause has
   // something to find that the Novartis-scoped one must not.
+  // "glomerular" is body-only, so it proves the body clause reaches the file at
+  // all. "renal" is deliberately in both this text and ONLY_B's title: a topic
+  // search for it matches the paper by title, which is the only way an excerpt
+  // drawn from a source that has no files can actually surface.
   db.savePdfText({
     contentHash: ONLY_B.hash,
-    text: "Estimated glomerular filtration rate declined over twelve months.",
+    text: "Estimated glomerular filtration rate declined over twelve months in this renal cohort.",
     pages: 1,
     truncated: false,
   });
@@ -129,6 +134,13 @@ beforeAll(async () => {
   // An articles row with no collection_files row behind it.
   feed = db.createTopic("Hepatology", "hepatic").id;
   db.saveArticles([article(SEEN_ONLY)], feed);
+
+  // A paper the library genuinely holds, reached through a topic instead. This
+  // is where a fileless source leaking file data would actually show: the PDF
+  // text is indexed and the excerpt exists, and the only thing saying it does
+  // not belong here is the kind of source being asked.
+  renalFeed = db.createTopic("Renal", "renal").id;
+  db.saveArticles([article(ONLY_B)], renalFeed);
 });
 
 afterAll(() => {
@@ -149,6 +161,8 @@ const inOne = (collectionId: number, q?: string) =>
   db.listPapers({ collectionId }, q ? { q } : {}).map((p) => p.pmid);
 const inFeed = (q?: string) =>
   db.listPapers({ topicId: feed }, q ? { q } : {}).map((p) => p.pmid);
+const inFeedRenal = (q?: string) =>
+  db.listPapers({ topicId: renalFeed }, q ? { q } : {}).map((p) => p.pmid);
 
 describe("what each source contains", () => {
   it("returns every collection's papers, and a shared one only once", () => {
@@ -274,6 +288,36 @@ describe("the queries that share the membership join", () => {
       expect(g.file_id).toBe(table.find((p) => p.pmid === g.pmid)?.file_id);
     }
     expect(db.graphPapersForSource({ topicId: feed }).map((g) => g.file_id)).toEqual([null]);
+  });
+});
+
+// The asymmetry between a source that holds files and one that only lists
+// papers, which db.ts calls the point rather than an oversight. Worth pinning
+// from the outside because the guards that enforce it — searchPredicate's body
+// clause, snippetsForSearch's early return, sourceFileCols — are three separate
+// checks of the same condition, and nothing makes them fail together.
+describe("a source with no files behind it", () => {
+  it("has no body-text search, even for a paper held elsewhere", () => {
+    // "glomerular" appears only inside ONLY_B's stored PDF, and ONLY_B is held
+    // in Pfizer. Reached through a topic, the text is out of scope.
+    expect(inFeedRenal("glomerular")).toEqual([]);
+    expect(inOne(pfizer, "glomerular")).toEqual([ONLY_B.pmid]);
+  });
+
+  it("finds the same paper by title, with no excerpt and no file", () => {
+    // "renal" is in the title *and* in the stored PDF, so the row comes back on
+    // the title and an unguarded excerpt lookup would find the document and
+    // attach it. That is the leak: an excerpt is the claim "these words are in
+    // the file", and a topic has no file to make it about.
+    const [row] = db.listPapers({ topicId: renalFeed }, { q: "renal" });
+    expect(row.pmid).toBe(ONLY_B.pmid);
+    expect(row.snippet).toBeNull();
+    expect(row.file_id).toBeNull();
+    expect(row.content_hash).toBeNull();
+    // The same word against the collection that does hold it returns the
+    // excerpt, so the assertion above is about the source and not about "renal"
+    // simply matching nothing.
+    expect(db.listPapers({ collectionId: pfizer }, { q: "renal" })[0].snippet).toMatch(/renal/i);
   });
 });
 
