@@ -225,7 +225,15 @@ export function WorkspaceNav({
               <ModeIcon size={16} className="ws-mode-icon" aria-hidden />
               <span className="sr-only">{activeMode.label}</span>
               <span className="ws-current">{label}</span>
-              {!lead && active && <span className="count">{active.count}</span>}
+              {/* Guarded on `active` alone. Selecting the lead sets activeId to
+                  null (see the picker above), and no item carries a null id, so
+                  a lead and an active item are mutually exclusive by
+                  construction — testing for both reads as if they could coexist
+                  and asks a later reader to preserve a relationship there isn't
+                  one of. That the lead draws no count is the same decision as
+                  the picker entry not carrying one: summing matchedCount
+                  double-counts a paper filed in two collections. */}
+              {active && <span className="count">{active.count}</span>}
               <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
             </DropdownMenu.Trigger>
 
