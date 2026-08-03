@@ -1,7 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
-import type { AuthStatus, BookmarkFolder, Collection, Topic, PaperSource } from "./types";
+import type {
+  AuthStatus,
+  BookmarkFolder,
+  Collection,
+  CollectionSelection,
+  Topic,
+  PaperSource,
+} from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
 import { sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
@@ -14,7 +21,17 @@ import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
-import { Dna, Settings as SettingsIcon, Lock, LockOpen, FilePlus, FolderPlus, Plus } from "lucide-react";
+import { HaveCheck } from "./components/HaveCheck";
+import {
+  Dna,
+  Settings as SettingsIcon,
+  Lock,
+  LockOpen,
+  FilePlus,
+  FolderPlus,
+  Plus,
+  SearchCheck,
+} from "lucide-react";
 
 // The prose below points at the Library workspace by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
@@ -30,7 +47,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
-  const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
+  const [activeCollectionId, setActiveCollectionId] = useState<CollectionSelection | null>(null);
   // Each workspace remembers its own view; the defaults match what each is
   // usually for (reading new papers vs. working through papers you've kept).
   const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
@@ -47,6 +64,11 @@ export default function App() {
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
+  // "Do I already have this?" lives in the header rather than inside a
+  // workspace: the question arrives from outside the app (an assignment, a
+  // reference list someone sent) and has to be askable without first navigating
+  // to the right collection — or knowing which collection would hold it.
+  const [checkingHave, setCheckingHave] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -186,7 +208,7 @@ export default function App() {
     setActiveFolderId(id);
   }
 
-  function selectCollection(id: number) {
+  function selectCollection(id: CollectionSelection) {
     setShowSettings(false);
     setMode("papers");
     setActiveCollectionId(id);
@@ -294,7 +316,12 @@ export default function App() {
 
   async function handleCollectionChanged() {
     await loadCollections();
-    if (activeCollectionId != null) reloadSource({ collection: activeCollectionId });
+    // Both, not just whichever is on screen: the all-collections view aggregates
+    // every collection, so a change to any one of them makes it stale too, and
+    // bumping only the active source would leave a switch to All Collections
+    // painting from a cache that predates the change.
+    reloadSource({ allCollections: true });
+    if (typeof activeCollectionId === "number") reloadSource({ collection: activeCollectionId });
   }
 
   // Try a pasted admin token: store it, then let the server judge it.
@@ -340,6 +367,15 @@ export default function App() {
       const removed = Math.max(0, before + added - after);
       let msg = `Added ${added} new paper${added === 1 ? "" : "s"}.`;
       if (removed > 0) msg += ` Removed ${removed} paper${removed === 1 ? "" : "s"}.`;
+      // PubMed hands over at most the first 9,999 records per query, so a broad
+      // topic's feed is genuinely incomplete. Said plainly rather than left to
+      // be inferred from a count nobody has a reference point for — the feed
+      // would otherwise look complete, and only the user can decide whether to
+      // narrow the topic or watch fewer journals.
+      const capped = res.results.filter((r) => r.truncated);
+      for (const r of capped) {
+        msg += ` “${r.topicName}” matches more papers than PubMed will return — kept the ${r.found.toLocaleString()} most recent, skipped ${r.truncated!.toLocaleString()}. Narrow the topic or watch fewer journals for full coverage.`;
+      }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
       setStatus(msg);
       // /refresh polls the active topic, and every topic when there is none.
@@ -353,10 +389,26 @@ export default function App() {
   }
 
   // The active paper source, if this mode has something selected.
+  //
+  // "All collections" is guarded on the list the same way the branches either
+  // side of it are guarded on their entity: it is a scope *over* the
+  // collections, so with none there is nothing for it to select. Unguarded it
+  // was the one selection that could survive its subject disappearing —
+  // loadCollections deliberately doesn't re-validate the way loadTopics does,
+  // since deletion is handled where it happens, so a collection removed in
+  // another tab or by another user on a shared instance left `source` non-null
+  // with an empty library. That skips the no-source screen entirely and renders
+  // a collection view with no collection: an empty state telling you to click
+  // Add files, beneath a picker that has already withheld the entry you would
+  // have had to click to get there.
   const source: PaperSource | null = inInterests
     ? activeTopic && { topic: activeTopic.id }
     : inLibrary
-      ? activeCollection && { collection: activeCollection.id }
+      ? activeCollectionId === "all"
+        ? collections.length > 0
+          ? { allCollections: true }
+          : null
+        : activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
   const showViewControls = !showSettings && source != null;
   const sourceId = source ? sourceKey(source) : null;
@@ -523,6 +575,27 @@ export default function App() {
               {showViewControls && (
                 <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
+              {/* Not gated on isAdmin: checking whether the library already
+                  holds a paper is a read, and on a shared instance it's the
+                  viewers — the writers told to check before requesting a
+                  purchase — who need it most.
+
+                  Named after its *input*, not its scope. "Do I have this?" read
+                  as a lookup, which is what the search box does, so the two
+                  looked like the same thing offered twice; since search can now
+                  answer an identifier and span every collection, that reading
+                  was actively wrong. What this does and search can't is take a
+                  list and answer it line by line. Deliberately not "search
+                  everything" — after the all-collections source that describes
+                  the search box too. */}
+              <button
+                className={`have-btn ${checkingHave ? "active" : ""}`}
+                onClick={() => setCheckingHave(true)}
+                title="Check a reference list against the library — paste PMIDs, DOIs, PubMed links or citations, one per line"
+              >
+                <SearchCheck size={16} aria-hidden />
+                <span className="have-btn-label">Check references</span>
+              </button>
               {isAdmin && (
                 <button
                   className={`gear-btn ${showSettings ? "active" : ""}`}
@@ -633,7 +706,9 @@ export default function App() {
         ) : inLibrary ? (
           <CollectionView
             key={activeCollectionId}
-            collectionId={activeCollectionId!}
+            // "all" carries no collection, which is what empties the management
+            // chrome inside the view — see CollectionView's collectionId.
+            collectionId={typeof activeCollectionId === "number" ? activeCollectionId : null}
             isAdmin={isAdmin}
             reloadToken={reloadToken}
             // The graph fills the main area itself, so the collection's long
@@ -670,6 +745,12 @@ export default function App() {
           </BookmarkFolderView>
         )}
       </main>
+
+      <HaveCheck
+        open={checkingHave}
+        onClose={() => setCheckingHave(false)}
+        access={access}
+      />
 
       <PromptDialog
         open={namingFolder}

@@ -113,7 +113,7 @@ export function CitationGraph({
   // The citation threshold is shared with the other views (instant: slider +
   // box); hide-unconnected is about edges, so it stays graph-local.
   const { minCitations } = filters;
-  const [hideUnconnected, setHideUnconnected] = useState(true);
+  const [hideUnconnected, setHideUnconnected] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>("citation");
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -135,16 +135,16 @@ export function CitationGraph({
   const [size, setSize] = useState({ width: 800, height: 600 });
 
   // Stable fetch key: the same source object is re-created each render. The
-  // search is part of it — it selects a different set of papers server-side.
+  // server-side filters are part of it — they select a different set of papers
+  // (see PaperFilterState.fetchKey, which the papers list keys on too).
   const key = sourceKey(source);
-  const { search, deselected, yearFrom, yearTo } = filters;
+  const { search, subjects, majorOnly, fetchKey, serverQuery, deselected, yearFrom, yearTo } =
+    filters;
   const {
     data: fetched,
     loading,
     error,
-  } = useCachedFetch(graphCache, `${key}:${search}`, reloadToken, () =>
-    api.getGraph(source, search || undefined)
-  );
+  } = useCachedFetch(graphCache, fetchKey, reloadToken, () => api.getGraph(source, serverQuery));
 
   // Keep the last result for THIS source on screen while a search refetch is in
   // flight, so typing narrows the graph in place instead of blanking the canvas
@@ -162,7 +162,7 @@ export function CitationGraph({
     setSelected(null);
     setHovered(null);
     setFocus(null);
-  }, [key, search, reloadToken]);
+  }, [fetchKey, reloadToken]);
 
   // Keep the canvas sized to its container.
   useEffect(() => {
@@ -219,6 +219,20 @@ export function CitationGraph({
   // Built once per fetch.
   const adjacency = useMemo(() => buildAdjacency(edges), [edges]);
 
+  // The narrowing the clustering applies on top of what the server returned:
+  // citation threshold, journal deselection, year range. Named rather than
+  // inlined because the empty state has to count what these leave standing
+  // without hide-unconnected in the way, and a second copy of the rule that
+  // drifted from this one would produce exactly the sort of wrong number the
+  // message is there to replace.
+  const passesNarrowing = useCallback(
+    (n: FGNode): boolean =>
+      (n.citationCount as number) >= activeMin &&
+      !deselected.has(String(n.journal_name ?? "")) &&
+      inYearRange((n.year as number | null) ?? null, yearFrom, yearTo),
+    [activeMin, deselected, yearFrom, yearTo]
+  );
+
   // Community detection on the *active* subgraph (papers passing the threshold
   // and the journal filter). Recomputes when the data, the debounced threshold,
   // the journal selection, or the grouping mode changes. Filtering here rather
@@ -227,19 +241,14 @@ export function CitationGraph({
   // "content" groups by title similarity (ignores the edges).
   const clustering = useMemo<ClusteringResult>(() => {
     if (!data) return { byPmid: new Map(), clusters: [] };
-    const active = graphData.nodes.filter(
-      (n) =>
-        (n.citationCount as number) >= activeMin &&
-        !deselected.has(String(n.journal_name ?? "")) &&
-        inYearRange((n.year as number | null) ?? null, yearFrom, yearTo)
-    );
+    const active = graphData.nodes.filter(passesNarrowing);
     const inputs = active.map((n) => ({
       pmid: n.pmid,
       title: String(n.title ?? ""),
       citationCount: n.citationCount as number,
     }));
     return groupBy === "content" ? clusterByTitle(inputs) : clusterGraph(inputs, edges);
-  }, [data, edges, graphData, activeMin, deselected, yearFrom, yearTo, groupBy]);
+  }, [data, edges, graphData, passesNarrowing, groupBy]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -317,6 +326,16 @@ export function CitationGraph({
     }
     return { nodes: visiblePmids.length, links };
   }, [visiblePmids, edges, isVisible, focusPaths]);
+
+  // How many papers turning "Hide unconnected" off would actually put back:
+  // everything the server returned that the rest of the narrowing keeps. Read
+  // only when the toggle has emptied the canvas, where the alternative — the
+  // raw response count — promises papers the threshold, the journals or the
+  // years are also excluding, and turning the toggle off then changes nothing.
+  const wouldShow = useMemo(
+    () => [...allNodes.values()].filter(passesNarrowing).length,
+    [allNodes, passesNarrowing]
+  );
 
   // Spread the cluster out so it reads as a network, not a hairball. Re-applied
   // when the simulation set changes (data or hide-unconnected), not on filtering.
@@ -471,6 +490,8 @@ export function CitationGraph({
           returns journal names, so all three views filter identically. */}
       <PaperFilters
         filters={filters}
+        source={source}
+        reloadToken={reloadToken}
         journals={data?.journals ?? []}
         maxCitations={maxCitations}
         yearBounds={yearBounds}
@@ -583,11 +604,60 @@ export function CitationGraph({
           {showLoading ? (
             <div className="empty">Loading citation data… (first load fetches from NIH iCite)</div>
           ) : !data || data.nodes.length === 0 ? (
-            <div className="empty">No papers yet.</div>
+            // A filter that matches nothing empties `nodes` exactly like an
+            // empty collection does, and "No papers yet" then tells someone
+            // with a full library that it is empty. Only the filters the server
+            // resolved can be the reason — the text query and the subject
+            // selection — so those are the two this names, and it names
+            // whichever is set rather than assuming the search: the subject
+            // filter arrived after this branch was written and inherited the
+            // wrong half of it.
+            <div className="empty">
+              {search
+                ? `No papers match "${search}"${
+                    subjects.length > 0 ? " in the selected subjects" : ""
+                  }.`
+                : subjects.length > 0
+                  ? `No papers here are filed under ${
+                      subjects.length === 1 ? "that subject" : "any of those subjects"
+                    }${majorOnly ? " as a main subject" : ""}.`
+                  : "No papers yet."}
+            </div>
           ) : (
             <>
               {shown.nodes === 0 && (
-                <div className="empty">No papers match the current filters.</div>
+                <div className="empty">
+                  {graphData.nodes.length === 0 && wouldShow > 0 ? (
+                    // The papers *did* match — "hide unconnected" then removed
+                    // them for having no citation links, which is a display
+                    // choice, not a filter. Saying "no papers match" here sends
+                    // the reader off to debug their search: a text query usually
+                    // narrows to a handful of papers that don't cite each other,
+                    // so the canvas empties and the search looks broken.
+                    //
+                    // Gated on the set the toggle produces (nothing else can
+                    // empty graphData) and on there being papers left for it to
+                    // hold back, so it can't take the blame for a canvas the
+                    // threshold or the year range emptied — and `wouldShow` is
+                    // what turning it off actually reveals, which the response
+                    // count is not.
+                    <>
+                      {wouldShow === 1
+                        ? "1 paper matches, but it has no citation links to show."
+                        : `${wouldShow} papers match, but none of them cite each other.`}{" "}
+                      Turn off Hide unconnected papers to see{" "}
+                      {wouldShow === 1 ? "it" : "them"}.
+                    </>
+                  ) : hiddenClusters.size > 0 && clustering.byPmid.size > 0 ? (
+                    // One click of "Hide all" in the cluster panel lands here.
+                    // These papers passed every filter — they were switched off
+                    // by hand, and the panel beside the canvas is where they
+                    // come back.
+                    "Every cluster is hidden. Use Show all in the Clusters panel to bring the papers back."
+                  ) : (
+                    "No papers match the current filters."
+                  )}
+                </div>
               )}
               <ForceGraph2D
                 ref={fgRef}

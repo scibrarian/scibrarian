@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import {
   existingPmids,
   pendingCollectionFiles,
+  savePdfText,
   setFileError,
   setFileMatched,
   setFileUnmatched,
   upsertArticles,
 } from "./db.js";
 import { blobPath } from "./blobstore.js";
-import { extractPdfText } from "./pdf-text.js";
+import { extractPdf, type PdfExtract } from "./pdf-text.js";
 import { findDois, findPmid } from "./pdf-match.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
@@ -74,9 +75,11 @@ async function runImport(
       const candidates: Candidate[] = [];
       for (const f of batch) {
         job.currentFile = f.file_name;
-        let text: string;
+        let extracted: PdfExtract;
         try {
-          text = await extractPdfText(blobPath(f.content_hash));
+          // One parse yields both texts: the 3-page slice the matcher is allowed
+          // to see, and the capped full text for the search index.
+          extracted = await extractPdf(blobPath(f.content_hash));
         } catch (err) {
           // match_error is rendered verbatim next to the file in the UI, and the
           // raw pdfjs/fs message names the blob path — which embeds the
@@ -89,6 +92,33 @@ async function runImport(
           job.processed++;
           continue;
         }
+
+        // Indexed even when the file goes on to be unmatched. The text belongs
+        // to the blob, not to whether we could pin it to a PubMed record, and
+        // re-running the import shouldn't have to parse it again.
+        //
+        // Caught separately from the parse above, because the two failures mean
+        // different things to the user: a parse error is about their PDF and is
+        // shown next to the file, while a failed index write is about this
+        // process and leaves the match perfectly valid. Sharing one catch
+        // reported the write as an unreadable PDF and marked a file that had
+        // parsed fine as a match error.
+        //
+        // This is the only thing that indexes a blob — nothing sweeps up rows
+        // with no text afterwards — so a file that lands here is unsearchable
+        // until it is uploaded again. Logged loudly for that reason.
+        try {
+          savePdfText({
+            contentHash: f.content_hash,
+            text: extracted.fullText,
+            pages: extracted.pages,
+            truncated: extracted.truncated,
+          });
+        } catch (err) {
+          console.warn(`[import] ${f.file_name}: full-text indexing failed: ${errMessage(err)}`);
+        }
+
+        const text = extracted.matchText;
         const pmid = findPmid(text);
         const dois = findDois(text);
         if (!pmid && dois.length === 0) {

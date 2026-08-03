@@ -114,17 +114,27 @@ export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
 export function PapersColgroup({
   share = false,
   bookmark = false,
+  collections = false,
 }: {
   share?: boolean;
   bookmark?: boolean;
+  collections?: boolean;
 }) {
+  // Both sets total 100%. The collections column is paid for out of Title,
+  // Authors and Journal, which wrap, rather than spread evenly — the table is
+  // table-layout: fixed inside an overflow-x: auto wrapper, so a column whose
+  // content cannot fit its box produces a horizontal scrollbar rather than a
+  // squeeze. Links is the one that can't: it is white-space: nowrap and needs
+  // ~136px for "PubMed ↗ DOI ↗", so it keeps its 15% in both sets. Measured at
+  // 1440px wide; taking it to 13% overflowed by 17px.
   return (
     <colgroup>
-      <col style={{ width: "36%" }} />
-      <col style={{ width: "15%" }} />
-      <col style={{ width: "15%" }} />
+      <col style={{ width: collections ? "25%" : "36%" }} />
+      <col style={{ width: collections ? "13%" : "15%" }} />
+      <col style={{ width: collections ? "12%" : "15%" }} />
       <col style={{ width: "8%" }} />
       <col style={{ width: "11%" }} />
+      {collections && <col style={{ width: "16%" }} />}
       <col style={{ width: "15%" }} />
       {bookmark && <col style={{ width: 40 }} />}
       {share && <col style={{ width: 40 }} />}
@@ -137,15 +147,17 @@ export function PapersTableSkeleton({
   rows = 5,
   share = false,
   bookmark = false,
+  collections = false,
 }: {
   rows?: number;
   share?: boolean;
   bookmark?: boolean;
+  collections?: boolean;
 }) {
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
       <table className="papers-table">
-        <PapersColgroup share={share} bookmark={bookmark} />
+        <PapersColgroup share={share} bookmark={bookmark} collections={collections} />
         <thead>
           <tr>
             <th>Title</th>
@@ -153,6 +165,7 @@ export function PapersTableSkeleton({
             <th>Journal</th>
             <th className="num">Year</th>
             <th className="num">Citations</th>
+            {collections && <th>Collections</th>}
             <th>Links</th>
             {bookmark && <th className="bookmark-col" />}
             {share && <th className="share-col" />}
@@ -176,6 +189,11 @@ export function PapersTableSkeleton({
               <td className="num">
                 <SkeletonBar w={28} h={12} />
               </td>
+              {collections && (
+                <td>
+                  <SkeletonBar w={64} h={12} />
+                </td>
+              )}
               <td>
                 <SkeletonBar w={70} h={12} />
               </td>

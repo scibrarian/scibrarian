@@ -9,20 +9,27 @@ import type {
   CollectionFilesResponse,
   Topic,
   GraphResponse,
+  HaveAnswer,
+  HaveResponse,
   ImportStartResponse,
   ImportStatus,
   Journal,
   JournalRemovalResult,
   JournalSearchResponse,
   JournalSuggestResponse,
+  MeshHeadingsResponse,
   MeshSearchResponse,
+  PaperQuery,
   PaperSource,
   PapersResponse,
   RefreshResponse,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestResponse,
   UploadResponse,
 } from "./types";
+import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
+import { encodeSource } from "../../shared/source";
 
 // The admin token unlocks mutating endpoints; GETs work without one. Kept in
 // localStorage so an unlocked admin stays unlocked across reloads — the server
@@ -72,11 +79,24 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// The query param naming both source-driven endpoints share.
-function sourceQuery(source: PaperSource): string {
-  if ("topic" in source) return `topic=${source.topic}`;
-  if ("folder" in source) return `folder=${source.folder}`;
-  return `collection=${source.collection}`;
+// The query param naming both source-driven endpoints share. Defined in
+// shared/source.ts beside the server's decodeSource, so the two halves of the
+// format are written once and read together.
+const sourceQuery = encodeSource;
+
+// The server-side filters, appended to a source query. One builder for /papers
+// and /graph so a filter can't reach one endpoint and be dropped by the other.
+// mesh_major is only sent alongside a selection, since on its own it narrows
+// nothing and would just split the cache.
+function filterQuery(filter?: PaperQuery): string {
+  if (!filter) return "";
+  let qs = "";
+  if (filter.q) qs += `&q=${encodeURIComponent(filter.q)}`;
+  if (filter.mesh && filter.mesh.length > 0) {
+    qs += `&mesh=${filter.mesh.map(encodeURIComponent).join(",")}`;
+    if (filter.meshMajor) qs += "&mesh_major=1";
+  }
+  return qs;
 }
 
 export const api = {
@@ -92,6 +112,14 @@ export const api = {
     req<TopicRemovalResult>(`/api/topics/${id}`, { method: "DELETE" }),
   searchMesh: (q: string) =>
     req<MeshSearchResponse>(`/api/mesh/search?q=${encodeURIComponent(q)}`),
+  // The subjects one source is filed under (the toolbar facet), not the whole
+  // MeSH vocabulary — `q` searches within them.
+  getMeshHeadings: (source: PaperSource, q?: string) =>
+    req<MeshHeadingsResponse>(
+      `/api/mesh/headings?${sourceQuery(source)}${q ? `&q=${encodeURIComponent(q)}` : ""}`
+    ),
+  // Topics the user's own held papers suggest, for the Settings picker.
+  suggestTopics: () => req<TopicSuggestResponse>("/api/topics/suggest"),
 
   getJournals: () => req<Journal[]>("/api/journals"),
   searchJournals: (q: string, limit?: number) =>
@@ -114,9 +142,32 @@ export const api = {
   deleteJournal: (id: number) =>
     req<JournalRemovalResult>(`/api/journals/${id}`, { method: "DELETE" }),
 
-  getPapers: (source: PaperSource, q?: string) => {
-    const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
-    return req<PapersResponse>(`/api/papers?${qs}`);
+  getPapers: (source: PaperSource, filter?: PaperQuery) =>
+    req<PapersResponse>(`/api/papers?${sourceQuery(source)}${filterQuery(filter)}`),
+
+  // "Do I already have this?" — one answer per pasted line, in the order given.
+  //
+  // Batched here rather than in the caller: the endpoint is a GET, so a long
+  // paste doesn't fit in one URL, and the alternative (make the component split
+  // its own list and stitch the answers back into order) puts the ordering
+  // guarantee in the UI where it's easy to break. Batches run in sequence, not
+  // in parallel — the enrichment step calls OpenAlex, and firing six of those at
+  // once at a free service to save a second is not a trade worth making.
+  checkHave: async (refs: string[], lookUpFree = true): Promise<HaveResponse> => {
+    const capped = refs.slice(0, MAX_HAVE_REFS);
+    const results: HaveAnswer[] = [];
+    let windowYears = 0;
+    let truncated = refs.length - capped.length;
+    for (let i = 0; i < capped.length; i += MAX_REFS_PER_HAVE_REQUEST) {
+      const batch = capped.slice(i, i + MAX_REFS_PER_HAVE_REQUEST);
+      const res = await req<HaveResponse>(
+        `/api/have?q=${encodeURIComponent(batch.join("\n"))}${lookUpFree ? "" : "&free=0"}`
+      );
+      results.push(...res.results);
+      truncated += res.truncated;
+      windowYears = res.windowYears;
+    }
+    return { results, truncated, windowYears };
   },
 
   // Abstracts are kept out of the papers list payload; the timeline fetches
@@ -124,11 +175,9 @@ export const api = {
   getAbstracts: (pmids: string[]) =>
     req<AbstractsResponse>(`/api/abstracts?pmids=${pmids.join(",")}`),
 
-  // Takes the same `q` as getPapers, resolved server-side by the same SQL.
-  getGraph: (source: PaperSource, q?: string) => {
-    const qs = sourceQuery(source) + (q ? `&q=${encodeURIComponent(q)}` : "");
-    return req<GraphResponse>(`/api/graph?${qs}`);
-  },
+  // Takes the same filters as getPapers, resolved server-side by the same SQL.
+  getGraph: (source: PaperSource, filter?: PaperQuery) =>
+    req<GraphResponse>(`/api/graph?${sourceQuery(source)}${filterQuery(filter)}`),
 
   getBookmarkFolders: () => req<BookmarkFolder[]>("/api/bookmark-folders"),
   createBookmarkFolder: (name: string) =>

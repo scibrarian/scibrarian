@@ -11,6 +11,10 @@ import { DOWNLOAD_TIMEOUT_MS, fetchWithTimeout } from "./http.js";
 import { errMessage } from "./util.js";
 
 // NLM's authoritative journals list (full title, MEDLINE abbreviation, ISSNs).
+// Despite the name this is every journal PubMed knows (~38k, preprint servers
+// and PMC-only titles included), not the ~5.2k currently indexed for MEDLINE —
+// so presence here says a journal exists, never that its papers carry MeSH
+// headings. `isMedlineIndexed` (pubmed.ts) answers that, and has to ask NLM.
 const J_MEDLINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt";
 // OpenAlex journal-level metrics (open, CC0). We use 2-yr mean citedness.
 const OPENALEX = "https://api.openalex.org/sources";

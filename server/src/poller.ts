@@ -16,7 +16,8 @@ import {
 import { ensureCitations } from "./icite.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
-import { buildTerm, fetchArticles, search } from "./pubmed.js";
+import { backfillArticleMesh } from "./mesh-index.js";
+import { buildTerm, fetchArticles, searchWithTotal } from "./pubmed.js";
 import type { PollResult } from "./types.js";
 import { chunk, errMessage, safeMessage } from "./util.js";
 
@@ -77,8 +78,22 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // force such a re-seed — topic deletion relies on the links being complete
     // (see DELETABLE_TOPIC_ARTICLES in db.ts).
     const mhdaSince = topic.last_polled_at ? mhdaWindowStart(topic.last_polled_at) : undefined;
-    const pmids = await search(term, mhdaSince);
+    const { ids: pmids, total } = await searchWithTotal(term, mhdaSince);
     result.found = pmids.length;
+
+    // PubMed serves at most the first 9,999 records for a query (see
+    // MAX_RESULTS), so a topic broad enough to exceed that gets a partial feed
+    // on its first poll — most recent first, since the search is sorted by
+    // publication date. Reported rather than swallowed: the feed would
+    // otherwise look complete, and the fix is the user's to make (narrow the
+    // topic, or watch fewer journals), not ours to guess at.
+    if (total > pmids.length) {
+      result.truncated = total - pmids.length;
+      console.warn(
+        `[poll] ${topic.name}: matched ${total} papers, but PubMed serves at most ${pmids.length} per query — ` +
+          `took the most recent, skipped ${result.truncated}.`
+      );
+    }
 
     const known = existingPmids(pmids);
     const newPmids = pmids.filter((p) => !known.has(p));
@@ -177,6 +192,10 @@ export function startScheduler(): void {
   cron.schedule(REFERENCE_REFRESH_CRON, () => {
     void refreshCatalogIfStale();
     void recheckMeshVersion();
+    // Papers PubMed hadn't finished MeSH-indexing when we stored them come back
+    // around here: on a long-running process that's the only thing that ever
+    // files them, since nothing else re-reads a paper already stored.
+    void backfillArticleMesh();
   });
   scheduleLaunchCatchUp();
 }

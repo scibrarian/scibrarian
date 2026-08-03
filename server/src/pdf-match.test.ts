@@ -27,6 +27,21 @@ describe("findDois", () => {
     ]);
   });
 
+  it("keeps parentheses that belong to the DOI", () => {
+    // Elsevier's PII-based DOIs — most of the Lancet — carry them. Truncating
+    // at the "(" yields a different, resolvable DOI rather than nothing.
+    expect(findDois("10.1016/S0140-6736(14)60001-1")).toEqual([
+      "10.1016/s0140-6736(14)60001-1",
+    ]);
+  });
+
+  it("drops a closing parenthesis the DOI didn't open", () => {
+    expect(findDois("(see doi:10.1000/xyz)")).toEqual(["10.1000/xyz"]);
+    expect(findDois("(10.1016/S0140-6736(14)60001-1).")).toEqual([
+      "10.1016/s0140-6736(14)60001-1",
+    ]);
+  });
+
   it("stops the suffix at brackets and quotes", () => {
     expect(findDois("[10.1000/xyz] and \"10.1000/abc\"")).toEqual([
       "10.1000/xyz",

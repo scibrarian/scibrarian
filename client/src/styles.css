@@ -8,6 +8,9 @@
   --accent-soft: #eaf1ff;
   --danger: #dc2626;
   --success: #16a34a;
+  /* Advisory, not an error: a state the user should notice and can live with. */
+  --warn: #92400e;
+  --warn-soft: #fef3c7;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
   /* Let native controls (inputs, scrollbars, slider, checkbox) follow the theme. */
@@ -379,6 +382,89 @@ body {
   white-space: nowrap;
 }
 
+/* subject (MeSH) filter — the picker above plus what a server-driven,
+   selection-based list needs that the journal one doesn't */
+
+/* A selection is invisible from the closed trigger once the label reads
+   "3 subjects", so the trigger itself carries the on-state. */
+.filter-trigger.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The subject menu scrolls its list rather than itself, so the search box, the
+   major-topic toggle and the filing note stay put. On the shared .filter-menu
+   rule the whole menu scrolls, which is fine for a bare list of journals but
+   would bury the note explaining the unfiled papers under a few hundred
+   headings — exactly where nobody would look for it. */
+.subject-menu {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.subject-menu .filter-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.filter-search {
+  width: 100%;
+  padding: 7px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* Pushes "Main subject only" to the far end of the actions row, away from the
+   Clear button — one narrows the result, the other empties the selection. */
+.filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* The heading takes the slack so the count stays pinned to the right edge and
+   the numbers line up down the list. */
+.filter-option .filter-option-name {
+  flex: 1;
+}
+
+.filter-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.filter-count em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.filter-check-label {
+  color: var(--accent);
+}
+
+.filter-empty,
+.filter-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.filter-note {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
 /* ---------- timeline ---------- */
 
 .scroll-sentinel {
@@ -710,6 +796,24 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Marks a journal MEDLINE doesn't index: its papers carry no MeSH headings, so
+   it can never match a topic. Shown wherever journals are listed (the Settings
+   list and the journal manager), because the distinction is invisible
+   otherwise. Advisory styling, not an error — the journal still works for
+   everything that isn't topic polling. */
+.mesh-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
 /* Zero-impact (likely defunct/obscure) journals: keep them, but de-emphasize. */
 .ta-metric.zero {
   color: var(--muted);
@@ -866,16 +970,72 @@ input:focus {
   scrollbar-gutter: stable;
 }
 
-.list li span {
+.list li span:not(.mesh-warn) {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* A row's label column: the name (with its optional stacked second line) plus
+   any badge annotating it, kept together so `justify-content: space-between`
+   on the li splits the row in two — label vs. trailing metric — rather than
+   spreading three items across the full width. A div, not a span, so the
+   stacking rule above doesn't apply to it. */
+.list-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .term {
   font-size: 12px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* topics the Library's own MeSH filing suggests watching */
+
+.topic-suggest {
+  margin: 12px 0 4px;
+}
+
+.topic-suggest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Chips, not list rows: these are a menu of one-click adds, and stacking a
+   dozen of them vertically would push the topics they'd join off the panel. */
+.suggest-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.suggest-chip:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.suggest-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.suggest-chip:hover .suggest-count {
+  color: inherit;
 }
 
 code {
@@ -1614,13 +1774,21 @@ code {
   min-width: 0;
 }
 
+/* Shrinks to its text instead of filling the row, so the badge and the "new"
+   pill sit next to the name they annotate. The metric is pushed to the far
+   edge on its own (below) — it labels the row, not the name. */
 .jm-row .filter-option-name {
-  flex: 1;
+  flex: 0 1 auto;
 }
 
 .jm-row .ta-metric,
+.jm-row .mesh-warn,
 .jm-row .jm-new {
   flex-shrink: 0;
+}
+
+.jm-row .ta-metric {
+  margin-left: auto;
 }
 
 .jm-empty {
@@ -1879,6 +2047,15 @@ html {
   color: var(--accent);
   font-weight: 700;
   background: var(--accent-soft);
+}
+
+/* Divides the scope entry ("All collections") from the collections themselves.
+   Inset to the padding of the options either side so it reads as a break in the
+   list rather than an edge of the menu. */
+.ws-sep {
+  height: 1px;
+  margin: 6px 10px;
+  background: var(--border);
 }
 
 .ws-option-name {
@@ -2231,6 +2408,42 @@ html {
   background: var(--accent-soft);
 }
 
+/* A paper is one tbody of one or two rows (the second carries its search
+   excerpt), so the divider belongs after the group and the hover covers all of
+   it — otherwise a row and its own excerpt highlight separately and read as two
+   results. Scoped to .paper-rows so the loading skeleton, which is a single
+   tbody of many rows, doesn't light up entirely on hover. */
+.papers-table tbody.paper-rows td {
+  border-bottom: none;
+}
+
+.papers-table tbody.paper-rows tr:last-child td {
+  border-bottom: 1px solid var(--border);
+}
+
+.papers-table tbody.paper-rows:last-child tr:last-child td {
+  border-bottom: none;
+}
+
+.papers-table tbody.paper-rows:hover td {
+  background: var(--accent-soft);
+}
+
+/* The excerpt row sits under its title row, so it repeats neither the cell's
+   left padding rhythm nor the vertical gap the title already opened. */
+.papers-table .snippet-row td {
+  padding: 0 12px 10px;
+}
+
+/* At full table width the excerpt fits on a line or two without clamping, which
+   was the whole reason for moving it out of the 36%-wide title cell. */
+.papers-table .snippet-row .paper-snippet {
+  margin: 0;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  display: block;
+}
+
 .paper-open {
   background: none;
   border: none;
@@ -2254,6 +2467,15 @@ html {
 
 .links-cell {
   white-space: nowrap;
+}
+
+/* Which collections hold a paper, in the All collections view only. Muted like
+   the authors: it is custody metadata, not part of the citation. Allowed to
+   wrap rather than truncate — a paper reused across three engagements is the
+   case the column exists for, and hiding the third defeats it. */
+.collections-cell {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 /* Admin-only share-link column: headerless, just the icon button. */
@@ -2294,6 +2516,51 @@ html {
 
 .links-cell a:hover {
   text-decoration: underline;
+}
+
+/* An excerpt from a stored PDF's body, shown when that is what the current
+   search matched. Quiet by design: it is evidence for the row above it, not a
+   second title. The rule on the left is what marks it as quoted material; no
+   decorative quote glyphs, so selecting the excerpt copies only its text. */
+.paper-snippet {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  /* Excerpts are one sentence of context, not an abstract; two lines keeps a
+     table row from doubling in height. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The matched terms inside an excerpt. <mark>'s UA default is a yellow block
+   that fights the badge palette, so it is restyled to a weight-and-tint
+   emphasis that still reads as "this is the bit you searched for". */
+/* In a card the excerpt stands in for the abstract, so it takes that block's
+   type size rather than the table row's smaller one, and up to three lines
+   instead of two.
+   Deliberately no min-height, unlike .card-abstract: that reservation exists
+   because abstracts arrive after the card is painted, and an excerpt ships with
+   the papers payload. Reserving for it would only draw the quote rule down
+   through empty space under a one-line excerpt. */
+.card-snippet {
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 10px;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.paper-snippet mark {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0 2px;
 }
 
 .file-missing {
@@ -2435,6 +2702,277 @@ html {
 
 /* ---------- dark mode (follows the OS setting) ---------- */
 
+/* ---------- "do I already have this?" ---------- */
+
+/* The header entry point. Labelled rather than a bare glyph: this is a question
+   people arrive at the app already holding, and an unlabelled icon sitting in a
+   row of other unlabelled icons is not something anyone finds. The label drops
+   on narrow screens, where the header also has to fit the view switcher; the
+   title attribute carries it there. */
+.have-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.have-btn:hover,
+.have-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 700px) {
+  .have-btn-label {
+    display: none;
+  }
+}
+
+.have-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Monospaced so a pasted DOI or reference wraps predictably and a long list
+   lines up column-wise, which is how it was copied. */
+.have-input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+/* The answer list scrolls inside the modal rather than growing it: a reference
+   list of thirty would otherwise push the paste box off the top of the screen,
+   which is where you go to correct a line that didn't parse. */
+.have-results {
+  margin-top: 16px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.have-summary {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.have-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One answer. The left edge carries the verdict as colour, so a long list can
+   be skimmed for the two rows that aren't "in your library". */
+.have-row {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.have-row.held {
+  border-left-color: var(--success);
+}
+
+.have-row.unreadable {
+  border-left-color: var(--warn);
+}
+
+.have-verdict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.have-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.have-pill.held {
+  background: #e7f6ec;
+  color: #15803d;
+}
+
+.have-pill.unreadable {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.have-pill.ambiguous {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Whether it may be cited, which is a different fact from whether it's held —
+   see CiteStatus. Drawn as a quieter outline badge so it reads as an annotation
+   on the verdict rather than as a second, competing verdict. */
+.cite-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.cite-badge.citable {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.cite-badge.stale {
+  border-color: var(--warn);
+  color: var(--warn);
+  cursor: help;
+}
+
+/* Whether the paper reports original data. Same quiet outline as the citable
+   badge — these are two annotations on one verdict, and giving either of them a
+   fill would make it compete with the held/not-held pill that is the answer. */
+.eve-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: help;
+}
+
+.eve-badge.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Deliberately not the warning colour: a review is not a problem, it's a paper
+   whose numbers have a source somewhere else. */
+.eve-badge.secondary {
+  border-color: var(--muted);
+}
+
+.have-paper {
+  min-width: 0;
+}
+
+.have-title {
+  display: block;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.have-title:hover {
+  text-decoration: underline;
+}
+
+/* Identified, but with nowhere to open — see PaperLine. */
+.have-title.plain {
+  color: var(--text);
+  cursor: default;
+}
+
+.have-title.plain:hover {
+  text-decoration: none;
+}
+
+.have-meta,
+.have-where {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.have-where {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.have-ambiguous,
+.have-nothing {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.have-candidates {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.have-free {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.have-free.none {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* The line as pasted. Kept last and quiet: it's for finding your place in a
+   list you're reading beside the original, not for reading — so it drops the
+   global `code` fill, which at full row width reads as a UI element rather than
+   as a footnote. */
+.have-input-echo {
+  display: block;
+  margin-top: 8px;
+  padding: 0;
+  background: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* A window is one or two digits; the form's full-width default makes it look
+   like a text field that wants a sentence. */
+.stacked-form input[type="number"] {
+  max-width: 120px;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f1420;
@@ -2446,6 +2984,8 @@ html {
     --accent-soft: #1e2940;
     --danger: #f06b6b;
     --success: #43c06a;
+    --warn: #fbbf24;
+    --warn-soft: #3a2e12;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
   }
 
@@ -2484,6 +3024,12 @@ html {
   .file-missing {
     background: #3a1f22;
     color: #f3a3a3;
+  }
+
+  /* The one "have" tint written as a literal (the rest ride on variables). */
+  .have-pill.held {
+    background: #16301f;
+    color: #82d79a;
   }
 
   /* Bright shimmer washes out on dark panels; use a faint sheen instead. */

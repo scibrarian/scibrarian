@@ -42,6 +42,9 @@ import {
   listTopics,
   listJournals,
   findMeshByName,
+  libraryFilingCounts,
+  meshFacetsForSource,
+  meshFilingForSource,
   missingOrStaleCitations,
   removeBookmark,
   removeJournalWithArticles,
@@ -51,9 +54,13 @@ import {
   searchMesh,
   setFileMatched,
   setSetting,
+  sourceHasFiles,
+  suggestTopicsFromLibrary,
   upsertArticles,
-  type PaperSourceQuery,
+  type PaperFilter,
+  type PaperSource,
 } from "./db.js";
+import { decodeSource } from "../../shared/source.js";
 import {
   blobExists,
   blobPath,
@@ -70,11 +77,13 @@ import {
   IS_DESKTOP,
   UPLOAD_TMP_DIR,
 } from "./config.js";
+import { splitRefs } from "./citation-ref.js";
+import { checkHoldings, citationWindowYears, MAX_REFS_PER_REQUEST } from "./have.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
-import { fetchArticles, resolveJournal } from "./pubmed.js";
+import { fetchArticles, isMedlineIndexed, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
   pollAll,
@@ -98,8 +107,11 @@ import type {
   GraphEdge,
   GraphNode,
   GraphResponse,
+  HaveResponse,
+  MeshHeadingsResponse,
   PapersResponse,
   Settings,
+  TopicSuggestResponse,
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
@@ -222,6 +234,23 @@ api.post(
   })
 );
 
+// Topics worth watching, derived from the subjects the user's own held papers
+// cluster around (suggestTopicsFromLibrary). The counterpart of
+// /journals/suggest: both turn what's already here into the next thing to add,
+// rather than asking someone to guess a term cold.
+//
+// Registered ahead of /topics/:id/... so a literal path segment can't be read
+// as an id — they don't collide today (there is no GET /topics/:id), but the
+// ordering is what keeps that true if one is ever added.
+api.get("/topics/suggest", (req, res) => {
+  const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 12));
+  const body: TopicSuggestResponse = {
+    results: suggestTopicsFromLibrary(limit),
+    ...libraryFilingCounts(),
+  };
+  res.json(body);
+});
+
 // How many stored papers removing this topic would delete (for the confirm):
 // papers exclusive to the topic and not saved in a library collection.
 api.get("/topics/:id/article-count", (req, res) => {
@@ -242,6 +271,33 @@ api.get(
     res.json({ results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name })) });
   })
 );
+
+// The subjects one paper source is actually filed under, most-used first — the
+// facet list behind the toolbar's subject filter. Distinct from /mesh/search
+// above, which searches the whole MeSH vocabulary to pick a topic to watch;
+// this only ever returns headings some paper here carries.
+//
+// Deliberately server-side rather than derived on the client from the papers
+// payload: a MEDLINE paper carries ten to fifteen headings, so shipping them per
+// row would add more to a two-thousand-paper response than the rows themselves.
+const MESH_FACET_LIMIT = 200;
+
+api.get("/mesh/headings", (req, res) => {
+  const source = parseSource(req);
+  if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
+  const q = String(req.query.q ?? "").trim();
+  // One past the limit, purely to learn whether there are more without a second
+  // COUNT over the same grouping.
+  const rows = meshFacetsForSource(source, q || undefined, MESH_FACET_LIMIT + 1);
+  const body: MeshHeadingsResponse = {
+    headings: rows.slice(0, MESH_FACET_LIMIT),
+    // Over the whole source, not the search — it answers "why are only some of
+    // my papers in this list", which a filtered count can't.
+    filing: meshFilingForSource(source),
+    truncated: rows.length > MESH_FACET_LIMIT,
+  };
+  res.json(body);
+});
 
 // ---------- journals ----------
 
@@ -335,7 +391,13 @@ api.post(
           .status(409)
           .json({ error: `That journal is already in the list (${existing.name}).` });
       }
-      res.status(201).json(createJournal(resolved.name, resolved.nlmId));
+      // Advisory, not a gate. The journal is real and the user asked for it, so
+      // it's added either way — but if NLM doesn't index it for MEDLINE its
+      // papers carry no MeSH headings, and topics are MeSH terms. Left unsaid,
+      // that journal just quietly never yields a paper. An NCBI hiccup answers
+      // null, which stores as "not established yet" and the backfill retries.
+      const indexed = await isMedlineIndexed(resolved.nlmId);
+      res.status(201).json(createJournal(resolved.name, resolved.nlmId, indexed));
     } catch (err) {
       // The one error this route reads: a race against another add of the same
       // journal, which the unique index catches. Anything else is the error
@@ -360,29 +422,52 @@ api.delete("/journals/:id", (req, res) => {
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
 // The paper source both /papers and /graph accept: ?topic=, ?folder= or
-// ?collection= (the first one given wins when several are sent, as before).
-// null = none given (400). Everything downstream dispatches on the source
-// inside db.ts (listPapers, journalsForSource, graphPapersForSource) — a new
-// source kind is added there, not by branching in each route.
-function parseSource(req: Request): PaperSourceQuery | null {
-  const topicId = Number(req.query.topic);
-  const folderId = Number(req.query.folder);
-  const collectionId = Number(req.query.collection);
-  if (topicId) return { topicId };
-  if (folderId) return { folderId };
-  if (collectionId) return { collectionId };
-  return null;
+// ?collection= (the first one given wins when several are sent). null = none
+// given (400). Everything downstream dispatches on the source inside db.ts
+// (listPapers, journalsForSource, graphPapersForSource) — a new source kind is
+// added there, not by branching in each route.
+//
+// The reading is decodeSource in shared/source.ts, next to the encodeSource the
+// client writes it with, so the two halves of the format can't drift apart. All
+// this adds is Express: pulling the query bag off the request.
+function parseSource(req: Request): PaperSource | null {
+  return decodeSource(req.query as Record<string, unknown>);
 }
 
-const SOURCE_REQUIRED = "'topic', 'folder' or 'collection' query param is required.";
+const SOURCE_REQUIRED =
+  "'topic', 'folder' or 'collection' query param is required ('collection=all' for every collection).";
+
+// A ceiling on how many descriptors one request may filter by. The UIs are
+// bound parameters, so this isn't about injection — it's that each one is
+// another placeholder in an IN list, and a hand-written URL shouldn't be able to
+// hand SQLite a few thousand of them.
+const MAX_MESH_FILTER = 50;
+
+// The filters both /papers and /graph accept, so a query means the same thing in
+// either view: free text (?q=), MeSH descriptors (?mesh=D003924,D009369 — a
+// paper filed under any of them), and ?mesh_major=1 to keep only papers a
+// descriptor is a main point of. Ids are shape-checked purely to bound the list;
+// an unrecognized one simply matches nothing.
+function parseFilter(req: Request): PaperFilter {
+  const mesh = String(req.query.mesh ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => /^[A-Za-z0-9]{1,16}$/.test(s))
+    .slice(0, MAX_MESH_FILTER);
+  return {
+    q: req.query.q ? String(req.query.q) : undefined,
+    mesh: mesh.length > 0 ? mesh : undefined,
+    meshMajor: req.query.mesh_major === "1",
+  };
+}
 
 api.get(
   "/papers",
   asyncHandler(async (req, res) => {
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
-    const q = req.query.q ? String(req.query.q) : undefined;
-    let rows = listPapers(source, q);
+    const filter = parseFilter(req);
+    let rows = listPapers(source, filter);
 
     // Backfill missing/stale citation counts, like /graph does. Poll and import
     // pre-warm them, so this is usually a no-op; re-query only when it wasn't.
@@ -396,12 +481,13 @@ api.get(
       // local rows now, warm the cache for next load — to drop both the latency
       // and the re-query. Freshness-vs-latency tradeoff; synchronous for now.
       await warmCitations(stale, "papers");
-      rows = listPapers(source, q);
+      rows = listPapers(source, filter);
     }
 
     // One directory read instead of a stat per row. Only collection rows carry
-    // a content_hash; topic rows are always null, so skip the readdir for them.
-    const present = "collectionId" in source ? existingBlobHashes() : null;
+    // a content_hash; topic and folder rows are always null, so skip the readdir
+    // for them.
+    const present = sourceHasFiles(source) ? existingBlobHashes() : null;
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
         ...p,
@@ -431,6 +517,63 @@ api.get("/abstracts", (req, res) => {
   res.json(body);
 });
 
+// ---------- "do I already have this?" ----------
+
+// The purchase-avoidance check. Accepts whatever the writer had on the
+// clipboard: `?q=` is a block of pasted lines, one reference per line, and
+// `?pmid=` / `?doi=` are the explicit single-identifier form the roadmap names.
+// All three funnel into the same parser, so a citation string, a DOI and a PMID
+// are answered by one code path.
+//
+// Newline is the only separator. `;` was tried as a URL-friendlier alternative
+// and is wrong: every Vancouver reference contains one (`2014;383:1699-710`),
+// so it splits real references in half and reports both halves as unreadable.
+//
+// A GET, and public like /papers: this is a read, and the whole value of the
+// feature is that it takes one action. A POST would put it behind the admin
+// gate, which would make the mandated pre-purchase check unavailable to exactly
+// the read-only viewers who are told to perform it.
+//
+// Long pastes are chunked by the client (MAX_REFS_PER_REQUEST), the same way
+// large uploads are — a URL is a poor container for a hundred references, and
+// `truncated` reports anything this request had to leave out.
+api.get(
+  "/have",
+  asyncHandler(async (req, res) => {
+    const lines = [
+      ...splitRefs(String(req.query.q ?? "")),
+      // PMIDs are digits, so a comma between them is unambiguously a separator.
+      // DOIs are not: the suffix is publisher-chosen and may legitimately
+      // contain a comma, so those are only ever taken one per repeated param.
+      ...toList(req.query.pmid, true),
+      ...toList(req.query.doi, false),
+    ];
+    if (lines.length === 0) {
+      return res.status(400).json({ error: "Paste a PMID, DOI, or citation to check." });
+    }
+    const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
+    const body: HaveResponse = {
+      // The free-copy lookup is the one part that leaves the machine, so it can
+      // be switched off (?free=0) — the client does that while a paste is still
+      // being typed, and turns it on for the answer the user acts on.
+      results: await checkHoldings(batch, { lookUpFree: req.query.free !== "0" }),
+      truncated: lines.length - batch.length,
+      windowYears: citationWindowYears(),
+    };
+    res.json(body);
+  })
+);
+
+// A query param that may be sent once or repeated, and — when its values can't
+// themselves contain one — comma-separated.
+function toList(raw: unknown, splitCommas: boolean): string[] {
+  const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  return values
+    .flatMap((v) => (splitCommas ? String(v).split(",") : [String(v)]))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 // ---------- citation graph ----------
 
 api.get(
@@ -438,10 +581,9 @@ api.get(
   asyncHandler(async (req, res) => {
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
-    // Same free-text query the papers list takes, resolved by the same SQL, so
-    // a search selects the same papers whichever view is showing.
-    const q = req.query.q ? String(req.query.q) : undefined;
-    const papers = graphPapersForSource(source, q);
+    // Same filters the papers list takes, resolved by the same SQL, so they
+    // select the same papers whichever view is showing.
+    const papers = graphPapersForSource(source, parseFilter(req));
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
@@ -454,8 +596,8 @@ api.get(
 
     const cites = getCitations(pmids);
     // One directory read for the whole graph, as in /papers. Only collection
-    // papers carry a content_hash, so topic graphs skip the readdir.
-    const present = "collectionId" in source ? existingBlobHashes() : null;
+    // papers carry a content_hash, so topic and folder graphs skip the readdir.
+    const present = sourceHasFiles(source) ? existingBlobHashes() : null;
     const nodes: GraphNode[] = papers.map((p) => ({
       pmid: p.pmid,
       title: p.title,
@@ -981,6 +1123,19 @@ const SETTING_RULES = {
   },
   poll_enabled: { kind: "boolean" },
   library_open: { kind: "boolean" },
+  // Years, as a string like every other setting. "0" switches the citable-window
+  // judgement off; anything unparseable would do the same silently, so it's
+  // rejected here instead — the whole point of the field is that a wrong number
+  // hands a writer a reference that fails review.
+  citation_window_years: {
+    kind: "string",
+    validate: (v) => {
+      const n = Number(v);
+      return v === "" || (Number.isInteger(n) && n >= 0 && n <= 100)
+        ? null
+        : "The citable window must be a whole number of years between 0 and 100.";
+    },
+  },
   ncbi_api_key: { kind: "secret", expose: "has_api_key" },
 } satisfies Record<keyof Settings, SettingRule>;
 

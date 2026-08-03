@@ -83,6 +83,17 @@ export const SETTING_DEFAULTS = {
   // Deliberately a UI setting (not env): the instance owner, not whoever
   // deploys the server, must be the one making that call.
   library_open: "0",
+  // How recent a paper has to be to be citable, in years. Medical
+  // communications work commonly refuses references older than five, which
+  // makes "can I cite it?" a different question from "do I hold it?" — an old
+  // holding is still worth having, for verifying a claim back to its source,
+  // but it is not a reference.
+  //
+  // A setting rather than a constant because the rule is client-specific and
+  // its exact scope is unconfirmed (see the roadmap's open questions). "0"
+  // switches the judgement off entirely, which is the honest state for anyone
+  // this rule doesn't apply to.
+  citation_window_years: "5",
 };
 
 // Path to the built client (used in production / `npm start`). Overridable

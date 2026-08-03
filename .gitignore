@@ -18,3 +18,5 @@ electron/bundle/
 *.p12
 *.p8
 
+ROADMAP.md
+examples/

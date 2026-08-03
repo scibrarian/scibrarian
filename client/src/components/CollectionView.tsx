@@ -57,7 +57,14 @@ export function CollectionView({
   onDeleted,
   children,
 }: {
-  collectionId: number;
+  // Null when the Library is showing every collection at once. There is no
+  // collection to add files to, rename, delete, or list unmatched files for, so
+  // all of that chrome is absent — the same shape a viewer already sees. The
+  // component is still rendered rather than skipped, because `source-head`
+  // below is a deliberate spacer: without it the papers module starts at a
+  // different height here than in every other workspace and the list jumps as
+  // you switch.
+  collectionId: number | null;
   isAdmin: boolean;
   reloadToken: number;
   // The unmatched-files section is the one piece of chrome that doesn't suit
@@ -81,11 +88,27 @@ export function CollectionView({
   // call onChanged() and the token bump refetches it here.
   const { data: filesData, error: filesError } = useCachedFetch(
     filesCache,
-    `files:${collectionId}`,
+    `files:${collectionId ?? "all"}`,
     reloadToken,
-    () => api.getCollectionFiles(collectionId)
+    () => (collectionId == null ? Promise.resolve({ files: [] }) : api.getCollectionFiles(collectionId))
   );
   const files = filesData?.files ?? [];
+
+  // The latest onChanged, reachable from the interval without being one of its
+  // dependencies. App declares it as a plain function in its body, so it is a
+  // new value on every App render; depending on it directly rebuilt
+  // startPolling, and the resume effect below with it, on every App-level state
+  // change. That effect's cleanup clears a live interval and its body fires
+  // another status request — measured at one stray GET /import/status per view
+  // toggle or dialog open, with no import running at all.
+  //
+  // Written in an effect rather than during render: assigning to a ref while
+  // rendering is a side effect, and this only has to be current by the time the
+  // interval next ticks.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  });
 
   // Poll import status while a job runs; refresh files + everything else
   // (via onChanged) when it finishes.
@@ -98,6 +121,11 @@ export function CollectionView({
 
   const startPolling = useCallback(() => {
     stopPolling();
+    // Captured once rather than read through the prop inside the interval: an
+    // import job belongs to a collection, so there is nothing to poll when the
+    // Library is showing all of them.
+    const id = collectionId;
+    if (id == null) return;
     // Scoped to this polling session (reset each startPolling). inFlight stops
     // slow responses from stacking requests — without it, several polls can be
     // outstanding at once and each fires onChanged() when the job completes.
@@ -107,12 +135,12 @@ export function CollectionView({
       if (inFlight) return;
       inFlight = true;
       try {
-        const s = await api.getImportStatus(collectionId);
+        const s = await api.getImportStatus(id);
         failures = 0;
         setImportStatus(s);
         if (s.state === "done" || s.state === "error" || s.state === "idle") {
           stopPolling();
-          onChanged();
+          onChangedRef.current();
         }
       } catch {
         // A transient failure must not freeze the progress bar: keep polling
@@ -127,10 +155,13 @@ export function CollectionView({
         inFlight = false;
       }
     }, 1000);
-  }, [collectionId, onChanged, stopPolling]);
+    // Deliberately not onChanged: see onChangedRef above. The poll's identity
+    // tracks what it polls — the collection — and nothing else.
+  }, [collectionId, stopPolling]);
 
   // Resume the progress UI if an import is already running for this collection.
   useEffect(() => {
+    if (collectionId == null) return stopPolling;
     api
       .getImportStatus(collectionId)
       .then((s) => {
@@ -144,7 +175,13 @@ export function CollectionView({
   }, [collectionId, startPolling, stopPolling]);
 
   // Upload the picked PDFs in batches, then kick off the scan/match job.
+  //
+  // The three mutating handlers below all take a collection. None is reachable
+  // without one — their buttons are part of the chrome that a null id removes —
+  // so these guards exist to make that unreachability a fact the compiler
+  // checks, rather than a claim about the markup that a later edit could break.
   async function handleImport(list: FileList | null) {
+    if (collectionId == null) return;
     const pdfs = Array.from(list ?? []).filter((f) => /\.pdf$/i.test(f.name));
     setError(null);
     setNotice(null);
@@ -217,6 +254,7 @@ export function CollectionView({
 
   async function rename(next: string) {
     setRenaming(false);
+    if (collectionId == null) return;
     try {
       await api.renameCollection(collectionId, next);
       onChanged();
@@ -227,6 +265,7 @@ export function CollectionView({
 
   async function remove() {
     setConfirmingDelete(false);
+    if (collectionId == null) return;
     try {
       await api.deleteCollection(collectionId);
       onDeleted();
@@ -250,9 +289,11 @@ export function CollectionView({
       {/* The row is always here, because the papers below it start at one
           height in every workspace; the management chrome inside it is
           admin-only, so viewers just see the papers module (and, below, live
-          progress of any admin-triggered import). */}
+          progress of any admin-triggered import). Showing every collection at
+          once empties it the same way: adding files, renaming and deleting all
+          name a single collection, and there isn't one. */}
       <div className="source-head">
-        {isAdmin && (
+        {isAdmin && collectionId != null && (
           <div className="source-actions">
             <button onClick={() => filesInputRef.current?.click()}>
               <FilePlus size={14} className="inline-icon" aria-hidden /> Add files

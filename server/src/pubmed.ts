@@ -1,7 +1,13 @@
 import { findCatalogByName, getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
 import { fetchWithTimeout } from "./http.js";
-import { parseArticleSet, parseJournalIds, parseSummaries } from "./pubmed-parse.js";
+import {
+  esearchError,
+  ncbiErrorFromBody,
+  parseArticleSet,
+  parseJournalIds,
+  parseSummaries,
+} from "./pubmed-parse.js";
 import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
 import { errMessage, safeError } from "./util.js";
 
@@ -124,15 +130,55 @@ async function eutilsText(endpoint: string, params: URLSearchParams): Promise<st
 // outside the retry loop deliberately: a body that parses as anything but JSON
 // is NCBI answering with something other than what we asked for, which retrying
 // won't change.
+//
+// Both ways NCBI can report a failure inside a 200 are turned into a thrown,
+// exposable error here rather than being left to the caller:
+//
+//   - A body that doesn't parse. NCBI interpolates backend exceptions into the
+//     JSON *raw*, newlines and all, so JSON.parse fails on a control character
+//     and its message is a column number. The `ERROR` field is recovered from
+//     the text so the caller reports what NCBI actually said.
+//   - A body that parses but carries `esearchresult.ERROR`. Left alone this is
+//     indistinguishable from an empty result set: the caller sees no `idlist`,
+//     concludes nothing matched, and a permanently broken query reads as a
+//     healthy topic that simply never has new papers.
 async function eutilsJson<T>(endpoint: string, params: URLSearchParams): Promise<T> {
-  return JSON.parse(await eutilsText(endpoint, params)) as T;
+  const body = await eutilsText(endpoint, params);
+  let data: T;
+  try {
+    data = JSON.parse(body) as T;
+  } catch {
+    const stated = ncbiErrorFromBody(body);
+    throw safeError(
+      stated
+        ? `PubMed rejected the ${endpoint.replace(".fcgi", "")} request: ${stated}`
+        : `NCBI ${endpoint} returned a response that isn't valid JSON.`
+    );
+  }
+  const stated = esearchError(data);
+  if (stated) {
+    throw safeError(`PubMed rejected the ${endpoint.replace(".fcgi", "")} request: ${stated}`);
+  }
+  return data;
 }
 
 // ---------- esearch ----------
 
-// Fetch matching PMIDs. A single esearch caps at 10k ids, so we page with
-// retstart; MAX_RESULTS is a safety ceiling so an overly broad term can't pull
-// an unbounded set.
+// Fetch matching PMIDs, paging with retstart.
+//
+// The ceiling is NCBI's, not ours: "'retstart' cannot be larger than 9998. For
+// PubMed, ESearch can only retrieve the first 9,999 records matching the
+// query." Getting past it needs the History server or EDirect, which is real
+// work on a part of the product that is deliberately frozen — so the cap stands
+// and callers are told when they hit it.
+//
+// 9,999 rather than a round 10,000 for the same reason, and this is not a
+// cosmetic difference. At retstart=9000 NCBI returns 999 records, not 1000, so
+// with a 10,000 ceiling the loop saw 9,999 < 10,000, asked for retstart=9999,
+// and NCBI answered with a malformed-JSON error that killed the whole poll —
+// meaning **every topic matching more than 9,999 papers failed its first poll
+// outright and stored nothing**. The explicit retstart guard below is belt and
+// braces on the same boundary.
 //
 // `mhdaSince` (YYYY/MM/DD) bounds the query by MeSH Date [mhda] — the date a
 // citation was indexed with MeSH (which equals its Entrez date until it's
@@ -143,14 +189,24 @@ async function eutilsJson<T>(endpoint: string, params: URLSearchParams): Promise
 // add-date (edat) window would silently miss. Omit it to scan the full history
 // (a topic's first poll).
 const PAGE = 1000;
-const MAX_RESULTS = 10000;
+const MAX_RESULTS = 9999;
+const MAX_RETSTART = 9998;
 
-export async function search(term: string, mhdaSince?: string): Promise<string[]> {
+export interface SearchResult {
+  ids: string[];
+  /** How many papers PubMed says match, which may exceed what it will hand over. */
+  total: number;
+}
+
+// The ids plus the true match count, so a caller can tell a complete answer
+// from a capped one. Nothing else can: `ids.length === MAX_RESULTS` is also
+// what a topic with exactly 9,999 papers looks like.
+export async function searchWithTotal(term: string, mhdaSince?: string): Promise<SearchResult> {
   const q = mhdaSince ? `(${term}) AND (${mhdaSince}:3000[mhda])` : term;
   const ids: string[] = [];
   let retstart = 0;
   let total = Infinity;
-  while (ids.length < Math.min(total, MAX_RESULTS)) {
+  while (ids.length < Math.min(total, MAX_RESULTS) && retstart <= MAX_RETSTART) {
     const params = new URLSearchParams({
       db: "pubmed",
       retmode: "json",
@@ -168,7 +224,12 @@ export async function search(term: string, mhdaSince?: string): Promise<string[]
     ids.push(...idlist);
     retstart += idlist.length;
   }
-  return ids.slice(0, MAX_RESULTS);
+  return {
+    ids: ids.slice(0, MAX_RESULTS),
+    // A count PubMed didn't state falls back to what we actually received, so a
+    // caller comparing the two never sees a phantom shortfall.
+    total: Number.isFinite(total) ? total : ids.length,
+  };
 }
 
 // The most recent `retmax` PMIDs for a term, published on/after `mindate`
@@ -274,6 +335,14 @@ export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
       pub_date_display: m.pub_date_display,
       doi: m.doi,
       url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+      // Filing comes free with the abstract — same response, same parse. Only
+      // set when efetch actually returned this record: a paper we have summary
+      // metadata for but no XML is "not looked at yet", not "no headings", and
+      // omitting it here is what leaves it on the backfill's work list.
+      mesh: x ? { status: x.status, headings: x.mesh } : undefined,
+      // Same record, same rule. `[]` here is a fact (PubMed listed no type
+      // beyond the ones we drop as noise); undefined means nobody looked.
+      pubTypes: x ? x.pubTypes : undefined,
     });
   }
   return articles;
@@ -304,3 +373,62 @@ export async function resolveJournal(
   if (!x?.nlmId) return null;
   return { nlmId: x.nlmId, name: x.medlineTa || rawName };
 }
+
+// ---------- MEDLINE indexing status ----------
+
+// Whether NLM *currently indexes* this journal for MEDLINE, by NLM Unique ID.
+//
+// This is the difference between a journal that can contribute to a topic feed
+// and one that silently never will. Topics are `"Heading"[MeSH]` terms (POST
+// /topics) and only MEDLINE-indexed records carry MeSH headings, so a journal
+// that answers `false` here can be added, polled forever, and never match.
+//
+// The local catalog cannot answer it: J_Medline.txt lists every journal PubMed
+// knows (~38k — preprint servers and PMC-only titles included), not the ~5.2k
+// currently indexed for MEDLINE. Neither can `resolveJournal` falling through to
+// its live-esearch branch, since the miss there only means the name didn't match
+// a catalog title or abbreviation. The NLM Catalog's `currentlyindexed` filter is
+// the authoritative signal, and one esearch answers it.
+//
+// Best-effort by design: `null` means "couldn't tell" — NCBI unreachable, or an
+// id NLM doesn't catalog at all — and callers treat that as "say nothing" rather
+// than fail. Cached for the process lifetime: indexing status changes at most
+// once a year, and a bulk add repeats ids.
+const indexingCache = new Map<string, boolean>();
+
+export async function isMedlineIndexed(nlmId: string): Promise<boolean | null> {
+  const cached = indexingCache.get(nlmId);
+  if (cached !== undefined) return cached;
+  // NLM ids are alphanumeric ("2985213R", "101596737"); strip anything else so a
+  // stored id can't break out of the field qualifier and change the query.
+  const id = nlmId.replace(/[^A-Za-z0-9]/g, "");
+  if (!id) return null;
+  const params = new URLSearchParams({
+    db: "nlmcatalog",
+    retmode: "json",
+    retmax: "0",
+    term: `${id}[nlmid] AND currentlyindexed`,
+  });
+  try {
+    const data = await eutilsJson<{
+      esearchresult?: { count?: string; errorlist?: { phrasesnotfound?: string[] } };
+    }>("esearch.fcgi", params);
+    const result = data.esearchresult;
+    // A count of 0 has two causes, and only one of them is a real answer: the
+    // journal is catalogued but unindexed, or NLM has no such id. esearch
+    // separates them — an id it doesn't know comes back under phrasesnotfound.
+    const unknownId = (result?.errorlist?.phrasesnotfound ?? []).some((p) => p.includes(id));
+    if (unknownId) return null;
+    const count = Number(result?.count);
+    if (!Number.isFinite(count)) return null;
+    const indexed = count > 0;
+    indexingCache.set(nlmId, indexed);
+    return indexed;
+  } catch (err) {
+    // Never the caller's problem: an add that worked must not fail on an
+    // advisory lookup. Logged, and the caller gets "unknown".
+    console.warn(`[pubmed] MEDLINE indexing check failed for ${nlmId}: ${errMessage(err)}`);
+    return null;
+  }
+}
+

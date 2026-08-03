@@ -43,8 +43,7 @@ export function Timeline({
   // timeline rather than one behind every card (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
   const {
-    key,
-    search,
+    fetchKey,
     visible,
     journals,
     maxCitations,
@@ -57,12 +56,17 @@ export function Timeline({
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     visible,
-    `${key}|${search}|${reloadToken}`
+    `${fetchKey}|${reloadToken}`
   );
   // One request for the chunk on screen, rather than one per card (see
   // useAbstracts). Keyed off `shown`, so scrolling a page into view fetches
   // only the newly rendered papers.
-  const abstracts = useAbstracts(shown.map((p) => p.pmid));
+  //
+  // Cards showing a PDF excerpt are left out: their abstract is not rendered, so
+  // fetching it would be a round trip for text nobody sees. Clearing the search
+  // drops the excerpts, which puts those pmids back in this list and fetches
+  // them then — by which point the store may already have them cached.
+  const abstracts = useAbstracts(shown.filter((p) => !p.snippet).map((p) => p.pmid));
   const groups = groupByMonth(shown);
   // One opener for the whole timeline, so a failed open surfaces in a single
   // banner rather than per-card.
@@ -72,6 +76,8 @@ export function Timeline({
     <div className="timeline-wrap">
       <PaperFilters
         filters={filters}
+        source={source}
+        reloadToken={reloadToken}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}

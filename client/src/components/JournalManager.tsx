@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { ArrowRight, ArrowLeft } from "lucide-react";
+import { ArrowRight, ArrowLeft, TriangleAlert } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, round1, titleCaseJournal } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
@@ -42,6 +42,38 @@ function metricSort<T>(rows: T[], metric: (r: T) => number | null, name: (r: T) 
     if (mb == null) return -1;
     return mb - ma || name(a).localeCompare(name(b));
   });
+}
+
+// The persistent counterpart to the add-time warning below: without it, a
+// journal that can never match a topic is visually identical to one that can,
+// everywhere journals are listed. Exported because the Settings journal list
+// needs exactly the same mark — two renderings of this would drift.
+export function MeshBadge({ name }: { name: string }) {
+  return (
+    <span
+      className="mesh-warn"
+      title={`MEDLINE doesn't index ${name}, so its papers carry no MeSH headings and it can't match any topic.`}
+    >
+      <TriangleAlert size={11} aria-hidden />
+      no MeSH
+    </span>
+  );
+}
+
+// Post-add warning for journals PubMed carries but MEDLINE doesn't index. Topics
+// are MeSH headings and only MEDLINE-indexed records get MeSH headings, so these
+// journals match no topic and contribute nothing to Interests, however long they
+// are polled. They're still worth keeping for a library built by PDF import,
+// which doesn't go through the watchlist at all — hence a warning, not a refusal.
+function meshWarning(names: string[]): string {
+  const one = names.length === 1;
+  return (
+    `Added, but MEDLINE doesn't index ${names.join(", ")}. ` +
+    `${one ? "Its papers carry" : "Their papers carry"} no MeSH headings, so ` +
+    `${one ? "it" : "they"} can't match any topic and won't add anything to ` +
+    `Interests. Papers from ${one ? "it" : "them"} can still enter your library ` +
+    `by importing the PDF.`
+  );
 }
 
 function toggled<T>(set: Set<T>, key: T): Set<T> {
@@ -288,13 +320,19 @@ export function JournalManager({
     let removedFromInterests = 0;
     let removalsCommitted = false;
     let committedAnything = false;
+    // Journals the server added but flagged as not indexed for MEDLINE. They
+    // carry no MeSH headings, so they can never match a topic — the one thing
+    // about an add that's worth saying out loud, because otherwise it presents
+    // as a journal that simply never publishes anything.
+    const unindexed: string[] = [];
     try {
       // Adds first: a failed add aborts before anything destructive runs.
       // Known edge: staging a removal plus an add that resolves to the same
       // UNIQUE name 409s here (the removal hasn't run yet) — remove, apply,
       // then add.
       for (const r of [...stagedAdds.values()]) {
-        await api.createJournal(r.abbr || r.title, r.nlm_id);
+        const created = await api.createJournal(r.abbr || r.title, r.nlm_id);
+        if (created.medline_indexed === false) unindexed.push(created.name);
         committedAnything = true;
         setStagedAdds((prev) => {
           const next = new Map(prev);
@@ -314,6 +352,19 @@ export function JournalManager({
         });
       }
       onCommitted(removedFromInterests, removalsCommitted);
+      // Everything applied. Normally that closes the dialog — but a warning the
+      // user never sees is the failure this is meant to fix, so when there is
+      // one the dialog stays open showing it, with the journals now in the right
+      // pane as stored rows.
+      if (unindexed.length > 0) {
+        try {
+          setCurrent(await api.getJournals());
+        } catch {
+          /* the adds succeeded; a failed refresh only leaves the pane stale */
+        }
+        setNotice(meshWarning(unindexed));
+        return;
+      }
       onClose();
     } catch (err) {
       // Partial failure: committed items were already pruned from staging, so
@@ -321,6 +372,11 @@ export function JournalManager({
       // rows, and still notify the caller — committed deletions must
       // invalidate its caches even though the dialog stays open.
       setError(errorMessage(err));
+      // A later add failing must not swallow the warning for earlier ones that
+      // succeeded: those are committed and already pruned from staging, so a
+      // retry will never mention them again. Both banners render, so the error
+      // and the warning show together.
+      if (unindexed.length > 0) setNotice(meshWarning(unindexed));
       try {
         setCurrent(await api.getJournals());
       } catch {
@@ -334,21 +390,34 @@ export function JournalManager({
 
   // ----- render -----
 
-  function renderRow(
-    key: string,
-    name: string,
-    metric: number | null,
-    selected: boolean,
-    onToggle: () => void,
+  // Named rather than positional: the row already carried seven parameters, and
+  // the two call sites differ only in the optional tail.
+  function renderRow({
+    key,
+    name,
+    metric,
+    selected,
+    onToggle,
     isNew = false,
-    tooltip?: string
-  ) {
+    warn = false,
+    tooltip,
+  }: {
+    key: string;
+    name: string;
+    metric: number | null;
+    selected: boolean;
+    onToggle: () => void;
+    isNew?: boolean;
+    warn?: boolean;
+    tooltip?: string;
+  }) {
     return (
       <li key={key} className="jm-row" title={tooltip ?? name}>
         <label className="filter-option">
           <input type="checkbox" checked={selected} onChange={onToggle} />
           <span className="filter-option-name">{name}</span>
           {isNew && <span className="jm-new">new</span>}
+          {warn && <MeshBadge name={name} />}
           {metric != null && (
             <span
               className={`ta-metric${metric === 0 ? " zero" : ""}`}
@@ -420,13 +489,13 @@ export function JournalManager({
             />
             <ul className="jm-list">
               {leftRows.map((r) =>
-                renderRow(
-                  r.nlm_id,
-                  titleCaseJournal(r.title),
-                  r.metric,
-                  leftSelected.has(r.nlm_id),
-                  () => setLeftSelected(toggled(leftSelected, r.nlm_id))
-                )
+                renderRow({
+                  key: r.nlm_id,
+                  name: titleCaseJournal(r.title),
+                  metric: r.metric,
+                  selected: leftSelected.has(r.nlm_id),
+                  onToggle: () => setLeftSelected(toggled(leftSelected, r.nlm_id)),
+                })
               )}
               {leftEmpty && <li className="muted jm-empty">{leftEmpty}</li>}
             </ul>
@@ -467,17 +536,21 @@ export function JournalManager({
                   <ListRowSkeleton key={i} className="filter-option" w={["40%", "55%", "35%"][i]} pill />
                 ))}
               {rightRows.map((row) =>
-                renderRow(
-                  rightKey(row),
-                  rightName(row),
-                  rightMetric(row),
-                  rightSelected.has(rightKey(row)),
-                  () => setRightSelected(toggled(rightSelected, rightKey(row))),
-                  row.kind === "staged",
-                  row.kind === "staged" && row.result.topics?.length
-                    ? `${rightName(row)} — suggested for: ${row.result.topics.join(", ")}`
-                    : undefined
-                )
+                renderRow({
+                  key: rightKey(row),
+                  name: rightName(row),
+                  metric: rightMetric(row),
+                  selected: rightSelected.has(rightKey(row)),
+                  onToggle: () => setRightSelected(toggled(rightSelected, rightKey(row))),
+                  isNew: row.kind === "staged",
+                  // Staged rows are deliberately unmarked: nothing has asked NLM
+                  // about them yet, and "unknown" must not render as "fine".
+                  warn: row.kind === "current" && row.journal.medline_indexed === false,
+                  tooltip:
+                    row.kind === "staged" && row.result.topics?.length
+                      ? `${rightName(row)} — suggested for: ${row.result.topics.join(", ")}`
+                      : undefined,
+                })
               )}
               {current !== null && rightRows.length === 0 && (
                 <li className="muted jm-empty">

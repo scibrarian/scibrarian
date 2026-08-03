@@ -10,6 +10,7 @@ import { api } from "./routes.js";
 import { startScheduler } from "./poller.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
+import { backfillArticleMesh } from "./mesh-index.js";
 import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
 import { MAX_BULK_BOOKMARK_BYTES } from "../../shared/limits.js";
 
@@ -156,6 +157,7 @@ export async function start(): Promise<{ port: number; url: string }> {
   startScheduler();
   void refreshCatalogIfStale(); // warm (or refresh a stale) journal catalog in the background
   void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
+  void backfillArticleMesh(); // file stored papers under their MeSH headings
   return { port, url };
 }
 

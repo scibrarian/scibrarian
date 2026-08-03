@@ -3,6 +3,16 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
+import { toFtsQuery } from "./fts-query.js";
+import { searchIdentifiers } from "./identifiers.js";
+import {
+  MESH_SETTLED_STATUSES,
+  MESH_STATUS_NEVER,
+  MESH_STATUS_UNAVAILABLE,
+  PUB_TYPE_NONE,
+} from "./pubmed-parse.js";
+import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
+import { sourceHasFiles, type PaperSource } from "../../shared/source.js";
 import type {
   Article,
   BookmarkEntry,
@@ -13,8 +23,12 @@ import type {
   TopicRemovalResult,
   Journal,
   JournalRemovalResult,
+  MeshFacet,
+  MeshFiling,
+  MeshHeading,
   Paper,
   Settings,
+  TopicSuggestion,
 } from "./types.js";
 
 // Ensure the data directory exists before opening the database.
@@ -51,13 +65,29 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- medline_indexed: does NLM currently index this journal for MEDLINE? 1/0, or
+  -- NULL for "not established yet" — the add-time check couldn't reach NCBI.
+  -- Only 0 is worth showing the user: topics are MeSH terms and an unindexed
+  -- journal's papers carry no MeSH headings, so it can never contribute to a
+  -- topic feed. Written once, at add time (POST /journals) — nothing revisits
+  -- it, so a journal added while NCBI was unreachable stays NULL until it is
+  -- removed and re-added. On an installed base this CREATE is a no-op, so the
+  -- column is also added via addColumnIfMissing() below.
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     nlm_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    medline_indexed INTEGER
   );
 
+  -- mesh_status: MedlineCitation/@Status from the last efetch that looked, ''
+  -- before any did. It is the only thing that tells "this paper will never carry
+  -- MeSH headings" (PubMed-not-MEDLINE) apart from "they haven't arrived yet"
+  -- (In-Process/Publisher) and from "we never asked" — see meshOutlook in
+  -- pubmed-parse.ts, which is the single reading of this vocabulary.
+  -- mesh_checked_at is when that look happened, so a paper still awaiting
+  -- indexing can be asked about again without re-fetching settled ones forever.
   CREATE TABLE IF NOT EXISTS articles (
     pmid TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -69,7 +99,53 @@ db.exec(`
     pub_date_display TEXT NOT NULL DEFAULT '',
     doi TEXT NOT NULL DEFAULT '',
     url TEXT NOT NULL DEFAULT '',
-    first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    mesh_status TEXT NOT NULL DEFAULT '',
+    mesh_checked_at TEXT
+  );
+
+  -- The MeSH descriptors PubMed filed an article under: one row per
+  -- (article, descriptor), written from the same efetch XML the abstract comes
+  -- from, so filing costs no request of its own.
+  --
+  -- The heading text is stored rather than joined to mesh_descriptors, which is
+  -- the *current* MeSH year's vocabulary and gets deleted and repopulated
+  -- wholesale on a version bump (replaceMeshData). A heading NLM later retires
+  -- would then render as a blank row, and this is a record of how a paper was
+  -- filed — which doesn't change when the vocabulary does.
+  --
+  -- Qualifiers are not stored (see parseMeshHeadings): they describe an aspect
+  -- of a subject and multiply the rows per paper for something filing never
+  -- asks. The major flag is PubMed's star, which does survive them.
+  CREATE TABLE IF NOT EXISTS article_mesh (
+    pmid TEXT NOT NULL,
+    ui TEXT NOT NULL,               -- descriptor id, e.g. D003924
+    name TEXT NOT NULL,             -- heading as PubMed filed it
+    major INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (pmid, ui),
+    FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
+  );
+
+  -- PubMed's PublicationTypeList for an article: one row per type, from the
+  -- same efetch XML the abstract and the MeSH headings come from, so it costs
+  -- no request of its own.
+  --
+  -- The raw types are stored rather than a derived "primary/secondary" verdict,
+  -- because the classification is a judgement (evidenceClass in
+  -- pubmed-parse.ts) and judgements change — NLM adds types, and what counts as
+  -- able to support a claim is a product decision. Storing the fact and
+  -- classifying at read time means revising that never needs a refetch.
+  --
+  -- Noise types are dropped at parse time, not here: 'Journal Article' (which
+  -- every record carries) and the 'Research Support, …' funding tags. So an
+  -- article with rows has something worth saying, and an article with none has
+  -- been looked at and had nothing — which is a different thing from never
+  -- having been looked at, and is why evidenceClass takes a "seen" flag.
+  CREATE TABLE IF NOT EXISTS article_pub_types (
+    pmid TEXT NOT NULL,
+    type TEXT NOT NULL,             -- verbatim, e.g. 'Randomized Controlled Trial'
+    PRIMARY KEY (pmid, type),
+    FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS article_topics (
@@ -179,6 +255,51 @@ db.exec(`
   -- indistinguishable in the picker, so names are unique case-insensitively
   -- within each. An index rather than an inline UNIQUE because only an index
   -- can carry the NOCASE collation.
+  -- Extracted PDF body text, for full-text search. Keyed by content_hash, not
+  -- by file id: the blob store is content-addressed, so the same PDF uploaded
+  -- to three collections is one blob, one extraction and one index entry.
+  -- Rows outlive the collection_files that caused them (a re-upload of the same
+  -- bytes reuses the extraction) and are cleaned up with their blob.
+  --
+  -- truncated records that the document ran past the extractor's page/char
+  -- cap, so a future "why didn't this match?" has an answer.
+  CREATE TABLE IF NOT EXISTS pdf_text (
+    content_hash TEXT PRIMARY KEY,       -- sha256 hex, joins to collection_files
+    text TEXT NOT NULL,
+    pages INTEGER NOT NULL,              -- pages actually read
+    truncated INTEGER NOT NULL DEFAULT 0,
+    chars INTEGER NOT NULL,
+    extracted_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- External-content FTS5 index over pdf_text.text: the index stores only its
+  -- own structures and reads column values back from pdf_text, so the body text
+  -- isn't duplicated. That makes pdf_text the single writable copy and the
+  -- triggers below the only thing keeping the two in step -- an INSERT/UPDATE/
+  -- DELETE on pdf_text that bypassed them would leave the index lying.
+  --
+  -- porter stemming so "resistance" answers a search for "resist"; unicode61 so
+  -- accented author names and Greek letters tokenize as words.
+  CREATE VIRTUAL TABLE IF NOT EXISTS pdf_text_fts USING fts5(
+    text,
+    content='pdf_text',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+  );
+
+  CREATE TRIGGER IF NOT EXISTS pdf_text_ai AFTER INSERT ON pdf_text BEGIN
+    INSERT INTO pdf_text_fts(rowid, text) VALUES (new.rowid, new.text);
+  END;
+  -- External-content deletes/updates must hand FTS5 the *old* value so it can
+  -- unindex the right terms; there is no way for it to look them up itself.
+  CREATE TRIGGER IF NOT EXISTS pdf_text_ad AFTER DELETE ON pdf_text BEGIN
+    INSERT INTO pdf_text_fts(pdf_text_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS pdf_text_au AFTER UPDATE ON pdf_text BEGIN
+    INSERT INTO pdf_text_fts(pdf_text_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO pdf_text_fts(rowid, text) VALUES (new.rowid, new.text);
+  END;
+
   CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name ON collections(name COLLATE NOCASE);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmark_folders_name ON bookmark_folders(name COLLATE NOCASE);
 
@@ -188,6 +309,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_collection_files_hash ON collection_files(content_hash);
   CREATE INDEX IF NOT EXISTS idx_article_topics_topic ON article_topics(topic_id);
   CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date);
+  -- Filtering a source by descriptor reads article_mesh the other way round
+  -- from its primary key: all pmids for a ui.
+  CREATE INDEX IF NOT EXISTS idx_article_mesh_ui ON article_mesh(ui);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id);
@@ -195,7 +319,81 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_mesh_descriptors_name ON mesh_descriptors(name COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_term ON mesh_entry_terms(term COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_ui ON mesh_entry_terms(ui);
+  -- On the expression, not the column: every DOI lookup compares lower(a.doi),
+  -- because DOIs are case-insensitive by specification and PubMed's stored
+  -- casing varies by publisher. An index on doi alone would not be used. This
+  -- earns its place on holdingsByDois, which /have runs over a whole pasted
+  -- reference list at once; the search box OR-s the same comparison in beside
+  -- three LIKEs and scans regardless.
+  CREATE INDEX IF NOT EXISTS idx_articles_doi_lower ON articles(lower(doi));
 `);
+
+// ---------- migrations ----------
+
+// Add a column to an existing table, if it isn't there already.
+//
+// Everything above is CREATE ... IF NOT EXISTS, which was the whole story while
+// the app had no installed base. It stops being enough the moment a column is
+// added to a table that already exists somewhere: CREATE TABLE IF NOT EXISTS is
+// a no-op against it, so the column simply never appears and every query naming
+// it fails at runtime on exactly the databases that hold real data.
+//
+// This is the smallest mechanism that fixes that, and deliberately covers only
+// the one schema change SQLite makes safe and idempotent. A column added here
+// MUST also be added to the CREATE TABLE above, so a fresh database and an
+// upgraded one end up with the same schema; anything beyond adding a column
+// (renames, type changes, backfilled values) needs a real migration runner, and
+// this should not be stretched to fake one.
+function addColumnIfMissing(table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[db] added column ${table}.${column}`);
+}
+
+// Phase 2 (automatic MeSH filing). Existing rows default to "never looked",
+// which is what puts them on the backfill's work list.
+addColumnIfMissing("articles", "mesh_status", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("articles", "mesh_checked_at", "TEXT");
+// journals predates this column; NULL here is exactly "not established yet",
+// which is what a row keeps when the add-time check couldn't reach NCBI. The
+// client reads it as three states, not two — see createJournal.
+addColumnIfMissing("journals", "medline_indexed", "INTEGER");
+
+// Indexes over migrated columns go here, not in the schema block above: on a
+// database that predates the column, that block runs first and would fail on a
+// column ALTER TABLE hasn't added yet.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_articles_mesh_status ON articles(mesh_status);
+`);
+
+// ---------- what "held" means ----------
+
+// A collection_files row is a held copy exactly when it carries a pmid.
+//
+// The same set can be spelled `match_status = 'matched'`, and both spellings
+// were in use: setFileMatched is the only writer that ever sets a pmid and it
+// stamps that status in the same UPDATE, while setFileUnmatched and
+// setFileError null the pmid in the same breath as moving the status off it.
+// Nothing in the schema enforces that, though — the two are equal only by the
+// good behaviour of three functions. Queries that picked different spellings
+// would diverge the first time anything wrote a pmid outside them (a migration,
+// a backfill, an importer pre-filling the column): the paper would count as
+// held but link no file, so /have names a stored copy that the papers view
+// reports as missing. One spelling everywhere can't drift, so custody is
+// decided here and only here.
+//
+// collectionStats counts `match_status = 'matched'` and is right to: how many
+// uploads got matched is a question about files, not about which papers are
+// held.
+//
+// `alias` prefixes the column for queries that join collection_files under a
+// name (`cf.`, `cf2.`); the subqueries selecting from it bare pass nothing.
+const heldFile = (alias = "") => `${alias}pmid IS NOT NULL`;
+
+// The distinct papers the user actually holds a file for — the Library, as the
+// custody positioning means it.
+const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFile()})`;
 
 // ---------- settings ----------
 
@@ -287,7 +485,7 @@ export function createTopic(name: string, term: string): Topic {
 // Narrowing is safe by default: stale links merely keep papers alive.
 const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
    AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
-   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)
+   AND pmid NOT IN ${HELD_PAPERS}
    AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 // How many stored articles a topic removal would permanently delete (for the
@@ -339,23 +537,50 @@ export function setLastPollAttemptAt(iso: string): void {
 
 // Journal rows carry the catalog's metric (when the nlm_id matches a catalog
 // entry whose metric has been fetched) so the client can sort by impact.
-const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, c.metric
+const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, j.medline_indexed, c.metric
    FROM journals j LEFT JOIN journal_catalog c ON c.nlm_id = j.nlm_id`;
 
-export function listJournals(): Journal[] {
-  return db.prepare(`${JOURNAL_SELECT} ORDER BY j.name ASC`).all() as unknown as Journal[];
+// SQLite has no boolean type, so medline_indexed round-trips as 1/0/NULL. The
+// three states are all meaningful here (indexed / not indexed / not established
+// yet), so this maps to boolean|null rather than coercing NULL to false — the
+// client shows a warning on `false` only, and must not warn about a journal
+// nobody has checked.
+type JournalRow = Omit<Journal, "medline_indexed"> & { medline_indexed: number | null };
+
+function toJournal(row: JournalRow): Journal {
+  return { ...row, medline_indexed: row.medline_indexed === null ? null : row.medline_indexed === 1 };
 }
 
-export function createJournal(name: string, nlmId: string | null): Journal {
-  const info = db.prepare("INSERT INTO journals (name, nlm_id) VALUES (?, ?)").run(name, nlmId);
-  return db
+export function listJournals(): Journal[] {
+  const rows = db.prepare(`${JOURNAL_SELECT} ORDER BY j.name ASC`).all() as unknown as JournalRow[];
+  return rows.map(toJournal);
+}
+
+// `medlineIndexed` is null when the check couldn't run — the add still succeeds
+// rather than failing on an advisory lookup, and the row stays null. Nothing
+// revisits it: the three places the client reads this test for `false`, so an
+// unresolved journal shows no badge rather than a wrong one, and removing and
+// re-adding it runs the check again.
+export function createJournal(
+  name: string,
+  nlmId: string | null,
+  medlineIndexed: boolean | null = null
+): Journal {
+  const info = db
+    .prepare("INSERT INTO journals (name, nlm_id, medline_indexed) VALUES (?, ?, ?)")
+    .run(name, nlmId, medlineIndexed === null ? null : Number(medlineIndexed));
+  const row = db
     .prepare(`${JOURNAL_SELECT} WHERE j.id = ?`)
-    .get(Number(info.lastInsertRowid)) as unknown as Journal;
+    .get(Number(info.lastInsertRowid)) as unknown as JournalRow;
+  return toJournal(row);
 }
 
 // Used to reject adding the same journal twice (identity is the NLM id).
 export function journalByNlmId(nlmId: string): Journal | undefined {
-  return db.prepare(`${JOURNAL_SELECT} WHERE j.nlm_id = ?`).get(nlmId) as Journal | undefined;
+  const row = db.prepare(`${JOURNAL_SELECT} WHERE j.nlm_id = ?`).get(nlmId) as
+    | JournalRow
+    | undefined;
+  return row ? toJournal(row) : undefined;
 }
 
 // Which of a journal's articles a removal would permanently delete: the
@@ -366,7 +591,7 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
 // pinning rule ever changes, both move together, so the dialog can't promise
 // one thing and the delete do another.
 const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
-   AND pmid NOT IN (SELECT pmid FROM collection_files WHERE pmid IS NOT NULL)
+   AND pmid NOT IN ${HELD_PAPERS}
    AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 function journalNlmId(id: number): string | null {
@@ -475,7 +700,71 @@ const linkArticleStmt = db.prepare(
   "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
 );
 
-export type ArticleInsert = Omit<Article, "authors" | "first_seen_at"> & { authors: string[] };
+export type ArticleInsert = Omit<Article, "authors" | "first_seen_at" | "mesh_status"> & {
+  authors: string[];
+  // The paper's MeSH filing, when the fetch that produced this record carried
+  // it. Status and headings travel together so they can never be written out of
+  // step. `undefined` means this path didn't look, which leaves whatever is
+  // already stored alone; a present value with `headings: []` is a fact worth
+  // recording — PubMed has none for this paper — and is what the status tells
+  // us how to read.
+  mesh?: { status: string; headings: MeshHeading[] };
+  // PublicationTypeList from that same XML. Deliberately carried inside `mesh`
+  // rather than beside it — see setArticleXmlFacts. `[]` is meaningful (PubMed
+  // listed nothing beyond the noise types); absent means nobody looked.
+  pubTypes?: string[];
+};
+
+const deletePubTypesStmt = db.prepare("DELETE FROM article_pub_types WHERE pmid = ?");
+const insertPubTypeStmt = db.prepare(
+  "INSERT OR IGNORE INTO article_pub_types (pmid, type) VALUES (?, ?)"
+);
+
+// Everything one efetch record says about an article, written together.
+//
+// Together is the point. MeSH headings, the indexing status and the publication
+// types all come out of a single XML document, and the status is what tells a
+// reader how to interpret the other two ("no headings" and "no types" mean
+// different things depending on whether NLM has finished with the record). A
+// path that wrote one without the others would leave a row describing a fetch
+// that never happened that way — which is exactly the trap the mesh comment
+// below already warns about, now with a second column able to fall into it.
+//
+// Not a transaction wrapper: every caller already runs inside one.
+function setArticleXmlFacts(a: ArticleInsert): void {
+  if (a.mesh) setArticleMesh(a.pmid, a.mesh.status, a.mesh.headings);
+  if (a.pubTypes) setArticlePubTypes(a.pmid, a.pubTypes);
+}
+
+// Replace an article's publication types. Replace rather than merge, for the
+// same reason filing does: a re-fetch is PubMed's current answer in full, and a
+// type NLM removed has to disappear here too.
+//
+// An empty list writes the PUB_TYPE_NONE sentinel rather than nothing, which is
+// what makes "no stored types" mean "PubMed lists none" instead of "nobody has
+// looked". Around half of all records genuinely carry no type, so without it
+// that whole half would read as unclassified — see PUB_TYPE_NONE.
+function setArticlePubTypes(pmid: string, types: string[]): void {
+  deletePubTypesStmt.run(pmid);
+  for (const t of types.length > 0 ? types : [PUB_TYPE_NONE]) insertPubTypeStmt.run(pmid, t);
+}
+
+// The stored types for a batch of articles, sentinel included — reading them is
+// evidenceFromRows' job, not this one's. Articles nobody has looked at are
+// absent from the map, which is the distinction the sentinel exists to preserve.
+export function pubTypesByPmids(pmids: string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const rows = queryByPmids<{ pmid: string; type: string }>(
+    pmids,
+    (ph) => `SELECT pmid, type FROM article_pub_types WHERE pmid IN (${ph})`
+  );
+  for (const r of rows) {
+    const list = out.get(r.pmid);
+    if (list) list.push(r.type);
+    else out.set(r.pmid, [r.type]);
+  }
+  return out;
+}
 
 // The one place an ArticleInsert maps onto the articles upsert — shared by the
 // topic path (saveArticles) and the collection path (upsertArticles), so a
@@ -501,9 +790,104 @@ function upsertArticle(a: ArticleInsert): void {
 export const saveArticles = transaction((articles: ArticleInsert[], topicId: number) => {
   for (const a of articles) {
     upsertArticle(a);
+    setArticleXmlFacts(a);
     linkArticleStmt.run(a.pmid, topicId);
   }
 });
+
+// ---------- MeSH filing ----------
+
+const deleteArticleMeshStmt = db.prepare("DELETE FROM article_mesh WHERE pmid = ?");
+const insertArticleMeshStmt = db.prepare(
+  "INSERT INTO article_mesh (pmid, ui, name, major) VALUES (?, ?, ?, ?)"
+);
+const stampMeshStmt = db.prepare(
+  "UPDATE articles SET mesh_status = ?, mesh_checked_at = datetime('now') WHERE pmid = ?"
+);
+
+// Record one article's filing: replace its headings and stamp what PubMed said
+// about them. Replace rather than merge, because a re-check is PubMed's current
+// answer in full — a heading NLM removed has to disappear here too, or the
+// facet keeps offering a subject the paper is no longer filed under.
+//
+// A blank status is stored as MESH_STATUS_UNAVAILABLE rather than as "", which
+// means "never looked": PubMed always stamps MedlineCitation/@Status, so an
+// empty one is a record shaped differently from what we parse. Left as "", the
+// row would stay on the backfill's work list and be re-fetched on every run,
+// forever. The sentinel is not a settled status, so it is simply asked about
+// again after the recheck window.
+//
+// Not a transaction wrapper: every caller already runs inside one, and the
+// wrapper's BEGIN can't nest.
+function setArticleMesh(pmid: string, status: string, headings: MeshHeading[]): void {
+  deleteArticleMeshStmt.run(pmid);
+  for (const h of headings) {
+    insertArticleMeshStmt.run(pmid, h.ui, h.name, Number(h.major));
+  }
+  stampMeshStmt.run(status || MESH_STATUS_UNAVAILABLE, pmid);
+}
+
+export interface ArticleMeshInsert {
+  pmid: string;
+  status: string;
+  headings: MeshHeading[];
+  // Same XML, same write — see setArticleXmlFacts. Absent for a PMID efetch
+  // didn't return, where there is nothing to record either way.
+  pubTypes?: string[];
+}
+
+// The backfill's write: a whole efetch batch in one transaction.
+export const saveArticleMesh = transaction((rows: ArticleMeshInsert[]) => {
+  for (const r of rows) {
+    setArticleMesh(r.pmid, r.status, r.headings);
+    if (r.pubTypes) setArticlePubTypes(r.pmid, r.pubTypes);
+  }
+});
+
+// Placeholder list + params for "this status settles the question for good".
+// Everything outside it is treated as still in flight, matching meshOutlook —
+// the two readings of PubMed's status vocabulary have to agree, so the SQL side
+// derives its list from the same constant rather than repeating the strings.
+const SETTLED_PLACEHOLDERS = MESH_SETTLED_STATUSES.map(() => "?").join(",");
+const SETTLED_PARAMS = [...MESH_SETTLED_STATUSES];
+
+// The backfill's work list: articles nobody has fetched headings for, plus ones
+// PubMed hadn't finished indexing when we last looked and that are due another
+// ask. Newest first — those are the ones a reader is most likely to be looking
+// at, and the ones most likely to still be mid-indexing.
+//
+// Re-queried each pass rather than snapshotted, so the job is resumable with no
+// cursor to persist. That only terminates because
+// every write stamps mesh_checked_at and a non-empty status: a row leaves the
+// list either by settling or by falling outside the recheck window.
+export function articlesMissingMesh(limit: number, recheckDays = 30): string[] {
+  const rows = db
+    .prepare(
+      `SELECT pmid FROM articles
+       WHERE mesh_status = ''
+          OR (mesh_status NOT IN (${SETTLED_PLACEHOLDERS})
+              AND (mesh_checked_at IS NULL OR mesh_checked_at < datetime('now', ?)))
+       ORDER BY pub_date DESC, pmid DESC
+       LIMIT ?`
+    )
+    .all(...SETTLED_PARAMS, `-${recheckDays} days`, limit) as { pmid: string }[];
+  return rows.map((r) => r.pmid);
+}
+
+// How many articles that work list holds in total, for the "is there anything
+// to do?" check and the job's opening log line.
+export function meshBacklogCount(recheckDays = 30): number {
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM articles
+         WHERE mesh_status = ''
+            OR (mesh_status NOT IN (${SETTLED_PLACEHOLDERS})
+                AND (mesh_checked_at IS NULL OR mesh_checked_at < datetime('now', ?)))`
+      )
+      .get(...SETTLED_PARAMS, `-${recheckDays} days`) as { c: number }
+  ).c;
+}
 
 // The journal name shown to the user: the watched journal's abbreviation (or the
 // catalog abbreviation), resolved by NLM id, falling back to the stored title.
@@ -521,13 +905,170 @@ const JOURNAL_LOOKUP = `LEFT JOIN journals j ON j.nlm_id = a.nlm_id
 // text matches any author of the paper. Year is deliberately NOT searched here:
 // it's a range, filtered client-side, and folding it in would make "2019" match
 // every title containing that number.
-function searchPredicate(q: string | undefined, params: (string | number)[]): string {
+//
+// For a collection the same query also searches the body text of the PDFs that
+// collection holds. That asymmetry is the point rather than an oversight: a
+// collection is what the user *holds*, so there is a document to search, while
+// a topic or bookmark folder is a list of papers seen — mostly with no file
+// behind them — where body matching would return a subset that depended on
+// which papers happened to have been imported somewhere else.
+//
+// The body clause is an uncorrelated subquery, so SQLite evaluates the FTS
+// match once rather than per candidate row. Deliberately no snippet() here:
+// FTS5's auxiliary functions are only legal where the index is scanned
+// directly, and this shape has to survive being embedded in two different outer
+// queries. Snippets come from snippetsForSearch below, over the rows that
+// actually came back.
+function searchPredicate(
+  q: string | undefined,
+  params: (string | number)[],
+  source?: PaperSource
+): string {
   if (!q) return "";
+  // Bind order follows the *textual* order of the ? placeholders below, so the
+  // three LIKEs are pushed before the identifier and body clauses that trail
+  // them. Getting this backwards binds the collection id to an author LIKE and
+  // silently returns nothing at all, which no type checks and no schema catches.
   const like = `%${escapeLike(q)}%`;
   params.push(like, like, like);
+
+  // Exact identifier matches, OR-ed *into* the text search rather than replacing
+  // it. Neither column is otherwise searched, so today a pasted DOI or PMID
+  // matches nothing in title, abstract or authors and the box answers a
+  // perfectly good identifier with an empty result — indistinguishable from
+  // "you don't own this", which is the false negative that ends in re-buying a
+  // paper the library already holds.
+  //
+  // A union can only add rows, so nothing that matches today stops matching.
+  // That is what makes this safe to do to a box that re-queries on every
+  // keystroke: sniffing the input and *routing* to an identifier lookup instead
+  // would flip modes mid-type as `10.10` becomes `10.1056/…`, while a
+  // half-typed identifier here simply matches nothing and the text clauses
+  // carry on.
+  const { pmid, doi } = searchIdentifiers(q);
+  let ids = "";
+  if (doi) {
+    params.push(doi);
+    ids += `
+        OR (a.doi <> '' AND lower(a.doi) = ?)`;
+  }
+  if (pmid) {
+    params.push(pmid);
+    ids += `
+        OR a.pmid = ?`;
+  }
+
+  // Body text, for the sources that have documents behind them. Narrowed to one
+  // collection when that is the source and left unscoped when the source is
+  // every collection — the same clause, one fewer bound parameter.
+  let body = "";
+  const match = sourceHasFiles(source) ? toFtsQuery(q) : null;
+  if (match) {
+    const collectionId = source && "collection" in source ? source.collection : null;
+    params.push(match);
+    if (collectionId != null) params.push(collectionId);
+    body = `
+        OR a.pmid IN (SELECT cf2.pmid FROM pdf_text_fts
+                      JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
+                      JOIN collection_files cf2 ON cf2.content_hash = pt.content_hash
+                      WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf2.collection_id = ?" : ""}
+                        AND ${heldFile("cf2.")})`;
+  }
   return `(a.title LIKE ? ESCAPE '\\'
         OR a.abstract LIKE ? ESCAPE '\\'
-        OR a.authors LIKE ? ESCAPE '\\')`;
+        OR a.authors LIKE ? ESCAPE '\\'${ids}${body})`;
+}
+
+// The subject condition, the second half of what narrows a paper source.
+// Selecting several descriptors keeps a paper filed under ANY of them, which is
+// how a facet normally reads ("show me either subject") and the only version
+// that stays useful — ANDing two headings usually lands on nothing, since a
+// paper is filed under the handful of subjects it is actually about.
+//
+// `major` narrows to PubMed's starred headings: papers the descriptor is a
+// *main point* of, rather than ones that merely mention it. That is the
+// difference between a filing system and a keyword search, so it's a filter and
+// not a ranking.
+//
+// Same contract as searchPredicate: appends its own bind params in the textual
+// order of its placeholders, and returns "" when there's nothing to add.
+function meshPredicate(
+  uis: string[] | undefined,
+  major: boolean | undefined,
+  params: (string | number)[]
+): string {
+  if (!uis || uis.length === 0) return "";
+  params.push(...uis);
+  const placeholders = uis.map(() => "?").join(",");
+  return `a.pmid IN (SELECT am.pmid FROM article_mesh am
+                     WHERE am.ui IN (${placeholders})${major ? " AND am.major = 1" : ""})`;
+}
+
+// Everything narrowing a source's papers, in one place so /papers and /graph
+// can't disagree about what a given set of filters selects — the same reason
+// searchPredicate is shared. Params are pushed in the textual order the clauses
+// appear, which is the order they're ANDed below; getting that wrong binds a
+// descriptor id to an author LIKE and silently returns nothing.
+export interface PaperFilter {
+  q?: string;
+  mesh?: string[]; // MeSH descriptor UIs
+  meshMajor?: boolean;
+}
+
+function filterClause(
+  source: PaperSource,
+  filter: PaperFilter,
+  params: (string | number)[]
+): string {
+  const clauses = [
+    searchPredicate(filter.q, params, source),
+    meshPredicate(filter.mesh, filter.meshMajor, params),
+  ].filter(Boolean);
+  return clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+}
+
+// Highlighted excerpts for the papers a body-text search matched, keyed by pmid.
+// Runs as its own statement because snippet() cannot be used in a query that
+// also groups or is flattened into a join (see searchPredicate) — and because
+// only the papers view wants excerpts, so the graph shouldn't pay for them.
+//
+// One pmid can have several matching files; the first excerpt wins, which is
+// arbitrary but stable enough (rows come back in rowid order) and no worse than
+// picking by a relevance the user never sees.
+function snippetsForSearch(source: PaperSource, q: string): Map<string, string> {
+  const out = new Map<string, string>();
+  // A source with no files behind it has no excerpts, and must not borrow any.
+  // The signature used to be (collectionId: number, q), which made that
+  // unrepresentable; taking a PaperSource means a topic or folder can now be
+  // passed, and it would fall through to the null collection id below — the
+  // same null that means "every collection". A fileless source would then draw
+  // excerpts from PDFs library-wide, for papers it only ever saw. listPapers
+  // screens for this too; the type no longer does, so the function has to.
+  if (!sourceHasFiles(source)) return out;
+  const match = toFtsQuery(q);
+  if (!match) return out;
+  // Scoped the same way the body clause in searchPredicate is, so a paper can't
+  // come back from the search without its excerpt or vice versa. Past the guard
+  // above, a null id can only mean every collection.
+  const collectionId = "collection" in source ? source.collection : null;
+  const rows = db
+    .prepare(
+      `SELECT cf.pmid AS pmid,
+              snippet(pdf_text_fts, 0, ?, ?, '…', 14) AS snip
+       FROM pdf_text_fts
+       JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
+       JOIN collection_files cf ON cf.content_hash = pt.content_hash
+       WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf.collection_id = ?" : ""}
+         AND ${heldFile("cf.")}`
+    )
+    .all(
+      SNIPPET_OPEN,
+      SNIPPET_CLOSE,
+      match,
+      ...(collectionId != null ? [collectionId] : [])
+    ) as { pmid: string; snip: string }[];
+  for (const r of rows) if (!out.has(r.pmid)) out.set(r.pmid, r.snip);
+  return out;
 }
 
 export function topicArticleCounts(): Record<number, number> {
@@ -540,12 +1081,15 @@ export function topicArticleCounts(): Record<number, number> {
 }
 
 // Which paper set /api/papers reads: a topic's articles, a bookmark folder's
-// saved papers, or a collection's matched uploads. Mirrors the client's
-// PaperSource.
-export type PaperSourceQuery =
-  | { topicId: number }
-  | { folderId: number }
-  | { collectionId: number };
+// saved papers, one collection's matched uploads, or every collection at once.
+//
+// The type and the predicate both come from shared/source.ts. They used to be
+// declared here in the server's own spelling (`collectionId`) and again on the
+// client in its (`collection`), which is how "does this source have files"
+// ended up written twice and wrong once. Re-exported because routes.ts and the
+// tests reach for them through db.ts.
+export type { PaperSource };
+export { sourceHasFiles };
 
 // The join that narrows `articles a` down to one source's papers, plus the
 // params it binds. Every per-source query — the papers list, the journal chips,
@@ -554,46 +1098,111 @@ export type PaperSourceQuery =
 // in three near-identical queries. Routes dispatch through the exported
 // wrappers (journalsForSource / listPapers / graphPapersForSource) rather than
 // picking per-source functions themselves.
-function sourceMembership(source: PaperSourceQuery): {
+//
+// `withFiles` appends the link to each paper's stored copy, and belongs to the
+// two callers that select sourceFileCols — the papers list and the graph. The
+// journal chips, the MeSH facets and the filing counts select nothing from
+// `cf`, and used to compute the link anyway: a GROUP BY over collection_files
+// per query, unbounded by any collection once the all-collections source could
+// ask for it. Measured on a 20k-paper library, that was ~18ms wasted per query
+// and ~55ms per switch into All collections, which loads three of them.
+//
+// A caller that selects sourceFileCols without passing true fails loudly, on
+// `no such column: cf.id` the first time SQLite prepares the statement.
+function sourceMembership(
+  source: PaperSource,
+  withFiles = false
+): {
   join: string;
   params: (string | number)[];
 } {
-  if ("topicId" in source) {
+  if ("topic" in source) {
     return {
       join: "JOIN article_topics ad ON ad.pmid = a.pmid AND ad.topic_id = ?",
-      params: [source.topicId],
+      params: [source.topic],
     };
   }
-  if ("folderId" in source) {
+  if ("folder" in source) {
     return {
       join: "JOIN bookmarks bm ON bm.pmid = a.pmid AND bm.folder_id = ?",
-      params: [source.folderId],
+      params: [source.folder],
     };
   }
-  // A collection row exists for every distinct matched pmid (pmid IS NOT NULL),
-  // and links the lowest-id 'matched' file for it, if any.
+  // One collection, or every collection at once: the same three joins either
+  // way — a row per distinct held pmid, linked to the lowest-id file carrying
+  // it — differing only in whether a collection bounds them. One text rather
+  // than two near-identical ones, because the pair had already drifted into
+  // spelling "held" two different ways, and unscoped it is HELD_PAPERS by
+  // construction rather than a fourth copy of it.
+  //
+  // Unscoped answers "do I hold this anywhere?", which is the question a writer
+  // checking against a purchase is actually asking. A paper held in three
+  // collections is one row, linked by the same MIN(id) convention
+  // HOLDING_SELECT uses to answer /have; the two must not disagree about which
+  // copy they mean, which is why both decide "held" with heldFile.
+  const collectionId = "allCollections" in source ? null : source.collection;
+  const scope = collectionId === null ? "" : "collection_id = ? AND ";
+  const fileLink = withFiles
+    ? `LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+                  WHERE ${scope}${heldFile()}
+                  GROUP BY pmid) mf ON mf.pmid = a.pmid
+       LEFT JOIN collection_files cf ON cf.id = mf.file_id`
+    : "";
+  // One bound id per subquery carrying the scope clause: cp always, mf only
+  // when the file link is there. Binding a fixed two would put the collection
+  // id into whatever placeholder the caller appended next.
+  const bind = collectionId === null ? [] : [collectionId];
   return {
     join: `JOIN (SELECT DISTINCT pmid FROM collection_files
-              WHERE collection_id = ? AND pmid IS NOT NULL) cp ON cp.pmid = a.pmid
-       LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                  WHERE collection_id = ? AND match_status = 'matched'
-                  GROUP BY pmid) mf ON mf.pmid = a.pmid
-       LEFT JOIN collection_files cf ON cf.id = mf.file_id`,
-    params: [source.collectionId, source.collectionId],
+              WHERE ${scope}${heldFile()}) cp ON cp.pmid = a.pmid
+       ${fileLink}`,
+    params: withFiles ? [...bind, ...bind] : bind,
   };
+}
+
+// Every collection holding a paper, for the all-collections view — "which
+// engagement's package is this in", which is what decides whether a copy can be
+// reused. Only that source asks: inside one collection every row is in that
+// collection, and a topic or folder holds nothing.
+//
+// Deliberately not read off the linked file. That resolves to MIN(id), so a
+// paper filed under three clients would name one and drop the other two, which
+// is the same double-count that keeps a paper total off the All collections
+// picker entry.
+//
+// GROUP_CONCAT can take DISTINCT or a separator but not both — SQLite rejects a
+// two-argument DISTINCT aggregate — so the inner select dedupes and the outer
+// one joins. char(31) rather than a comma because a collection name is text the
+// user typed, and a comma in one is far likelier than a control character.
+const COLLECTION_SEP = "\x1f";
+const HOLDING_COLLECTIONS = `LEFT JOIN (
+         SELECT pmid, GROUP_CONCAT(name, char(31)) AS collections FROM (
+           SELECT DISTINCT cf3.pmid AS pmid, col3.name AS name
+           FROM collection_files cf3
+           JOIN collections col3 ON col3.id = cf3.collection_id
+           WHERE ${heldFile("cf3.")}
+         ) GROUP BY pmid
+       ) hc ON hc.pmid = a.pmid`;
+
+// Sorted here rather than in SQL: an ORDER BY inside the subquery feeding
+// GROUP_CONCAT is not a guarantee about aggregate order, and the column has to
+// read the same way every time or the table appears to reshuffle itself.
+function splitCollections(joined: string | null | undefined): string[] {
+  if (!joined) return [];
+  return joined.split(COLLECTION_SEP).sort((a, b) => a.localeCompare(b));
 }
 
 // The linked-PDF columns for a source. Only a collection has uploaded files
 // behind its papers; topics and bookmark folders select constant nulls so every
 // source hands back the same row shape.
-function sourceFileCols(source: PaperSourceQuery): string {
-  return "collectionId" in source
+function sourceFileCols(source: PaperSource): string {
+  return sourceHasFiles(source)
     ? "cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash"
     : "NULL AS file_id, NULL AS file_name, NULL AS content_hash";
 }
 
 // Distinct journal display names present in a source (the filter chips).
-export function journalsForSource(source: PaperSourceQuery): string[] {
+export function journalsForSource(source: PaperSource): string[] {
   const { join, params } = sourceMembership(source);
   const rows = db
     .prepare(
@@ -605,6 +1214,179 @@ export function journalsForSource(source: PaperSourceQuery): string[] {
     )
     .all(...params) as { jn: string }[];
   return rows.map((r) => r.jn);
+}
+
+// The subjects present in a source, most-used first — the facet list the
+// toolbar browses. Ranked by how much of the source each descriptor accounts
+// for rather than alphabetically, because the useful question of a library is
+// "what is this mostly about", and an A-Z list of several thousand headings
+// answers nothing.
+//
+// `limit` is what keeps the response a dropdown's worth of data instead of the
+// whole vocabulary: a few thousand MEDLINE papers carry tens of thousands of
+// distinct descriptors between them. `q` filters by heading text, so searching
+// reaches past the cut rather than only re-ordering what already came back.
+export function meshFacetsForSource(
+  source: PaperSource,
+  q?: string,
+  limit = 200
+): MeshFacet[] {
+  const { join, params } = sourceMembership(source);
+  let filter = "";
+  if (q) {
+    params.push(`%${escapeLike(q)}%`);
+    filter = "WHERE am.name LIKE ? ESCAPE '\\'";
+  }
+  params.push(limit);
+  return db
+    .prepare(
+      `SELECT am.ui AS ui, MIN(am.name) AS name,
+              COUNT(*) AS count, SUM(am.major) AS majorCount
+       FROM articles a
+       ${join}
+       JOIN article_mesh am ON am.pmid = a.pmid
+       ${filter}
+       GROUP BY am.ui
+       ORDER BY count DESC, majorCount DESC, name ASC
+       LIMIT ?`
+    )
+    .all(...params) as unknown as MeshFacet[];
+}
+
+// How completely a source's papers are filed. Every paper lands in exactly one
+// bucket, which is the point: a facet list that covers 40 of 300 papers means
+// something entirely different depending on whether the other 260 are
+// non-MEDLINE (nothing to file, nothing to fix) or simply not looked at yet.
+//
+// The status ladder mirrors meshOutlook rung for rung — 'none'/'indexed'/
+// 'pending'/'unchecked' are its four outcomes — except that headings win over
+// any status: a paper we hold headings for is filed, whatever PubMed last said
+// about its indexing state.
+//
+// PubMed-not-MEDLINE is tested before the settled list it belongs to, exactly as
+// meshOutlook tests it before its own. Collapsing the two rungs — every settled
+// status with no headings into one bucket — reported a fully MEDLINE-indexed
+// paper that NLM happened to file under nothing as "not indexed for MEDLINE",
+// which is the opposite of what its status says.
+export function meshFilingForSource(source: PaperSource): MeshFiling {
+  const { join, params } = sourceMembership(source);
+  const rows = db
+    .prepare(
+      `SELECT bucket, COUNT(*) AS c FROM (
+         SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM article_mesh am WHERE am.pmid = a.pmid) THEN 'filed'
+           WHEN a.mesh_status = '' THEN 'unchecked'
+           WHEN a.mesh_status = ? THEN 'none'
+           WHEN a.mesh_status IN (${SETTLED_PLACEHOLDERS}) THEN 'indexed'
+           ELSE 'pending'
+         END AS bucket
+         FROM articles a
+         ${join}
+       )
+       GROUP BY bucket`
+    )
+    // Bind order follows the *textual* order of the placeholders: the never-
+    // indexed status, then the settled list, then the join that carries the
+    // source's own params. Reversing these binds a collection id as a status
+    // and the join matches nothing, which reads as a source with no papers at
+    // all rather than as an error.
+    .all(MESH_STATUS_NEVER, ...SETTLED_PARAMS, ...params) as {
+    bucket: keyof MeshFiling;
+    c: number;
+  }[];
+  const out: MeshFiling = { filed: 0, indexed: 0, none: 0, pending: 0, unchecked: 0 };
+  for (const r of rows) out[r.bucket] = r.c;
+  return out;
+}
+
+// ---------- topic suggestions (from what the Library actually holds) ----------
+
+// MeSH check tags: headings NLM adds to describe a study's population rather
+// than its subject. They sit on a huge share of all MEDLINE papers, so by count
+// they would take every slot in a suggestion list and say nothing — "Humans" is
+// not a topic anyone wants a feed of.
+//
+// Matched on either the descriptor id or the heading, because the two fail
+// differently: an id typo here silently stops filtering, while a heading NLM
+// revises does the same. Both matching is belt and braces on a list that has to
+// be right for the feature to be worth showing at all.
+//
+// One list of pairs rather than two parallel lists: those had to be edited
+// together, in the same order, with the ui↔name pairing checked by eye, and a
+// ui added without its name left the filter half-applied — which shows up only
+// as a check tag quietly reappearing in the suggestions.
+const CHECK_TAGS = [
+  ["D006801", "Humans"],
+  ["D008297", "Male"],
+  ["D005260", "Female"],
+  ["D000818", "Animals"],
+  ["D000328", "Adult"],
+  ["D008875", "Middle Aged"],
+  ["D000368", "Aged"],
+  ["D000369", "Aged, 80 and over"],
+  ["D000293", "Adolescent"],
+  ["D002648", "Child"],
+  ["D002675", "Child, Preschool"],
+  ["D007223", "Infant"],
+  ["D007231", "Infant, Newborn"],
+  ["D055815", "Young Adult"],
+  ["D011247", "Pregnancy"],
+  ["D051379", "Mice"],
+  ["D051381", "Rats"],
+  ["D004285", "Dogs"],
+  ["D002415", "Cats"],
+  ["D002417", "Cattle"],
+] as const;
+
+const CHECK_TAG_UIS = CHECK_TAGS.map(([ui]) => ui);
+const CHECK_TAG_NAMES = CHECK_TAGS.map(([, name]) => name);
+
+// Subjects the held papers cluster around that aren't topics yet.
+//
+// Drawn from HELD_PAPERS and not from the topic feeds on purpose: a topic
+// feed's papers were selected *by* a topic, so ranking their headings mostly
+// recommends the topics that are already there.
+//
+// Ordered by how many held papers the descriptor is a *main point* of before
+// total appearances: a heading starred on ten papers is a subject this library
+// is about, while one mentioned in passing by fifty is background. Headings
+// already watched are excluded — suggesting a topic the user has is noise — as
+// are check tags (above).
+export function suggestTopicsFromLibrary(limit = 12): TopicSuggestion[] {
+  const excluded = CHECK_TAG_UIS;
+  const excludedNames = CHECK_TAG_NAMES;
+  return db
+    .prepare(
+      `SELECT am.ui AS ui, MIN(am.name) AS name,
+              COUNT(*) AS papers, SUM(am.major) AS majorPapers
+       FROM ${HELD_PAPERS} held
+       JOIN article_mesh am ON am.pmid = held.pmid
+       WHERE am.ui NOT IN (${excluded.map(() => "?").join(",")})
+         AND am.name NOT IN (${excludedNames.map(() => "?").join(",")})
+         AND NOT EXISTS (SELECT 1 FROM topics t WHERE t.name = am.name COLLATE NOCASE)
+       GROUP BY am.ui
+       ORDER BY majorPapers DESC, papers DESC, name ASC
+       LIMIT ?`
+    )
+    .all(...excluded, ...excludedNames, limit) as unknown as TopicSuggestion[];
+}
+
+// What the ranking above had to work with: how many held papers carry any
+// headings, and how many are still waiting on the backfill. Without the second
+// number an empty suggestion list can't say whether the library has no clear
+// subjects or simply hasn't been filed yet.
+export function libraryFilingCounts(): { heldPapers: number; unchecked: number } {
+  const row = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN EXISTS (SELECT 1 FROM article_mesh am WHERE am.pmid = held.pmid)
+                  THEN 1 ELSE 0 END) AS heldPapers,
+         SUM(CASE WHEN a.mesh_status = '' THEN 1 ELSE 0 END) AS unchecked
+       FROM ${HELD_PAPERS} held
+       JOIN articles a ON a.pmid = held.pmid`
+    )
+    .get() as { heldPapers: number | null; unchecked: number | null };
+  return { heldPapers: row.heldPapers ?? 0, unchecked: row.unchecked ?? 0 };
 }
 
 // Escape LIKE wildcards so a literal % or _ in a user query (e.g. "100%",
@@ -621,38 +1403,154 @@ function escapeLike(s: string): string {
 // the old per-client fileByPmid). content_hash is returned so the route can
 // check the blob still exists; it is stripped before the response.
 export function listPapers(
-  source: PaperSourceQuery,
-  q?: string
+  source: PaperSource,
+  filter: PaperFilter = {}
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
-  const { join, params } = sourceMembership(source);
-  const predicate = searchPredicate(q, params);
-  const search = predicate ? `WHERE ${predicate}` : "";
+  const { join, params } = sourceMembership(source, true);
+  const search = filterClause(source, filter, params);
+  // Only the all-collections view can be told something it doesn't already
+  // know, so only it pays for the aggregate.
+  const holding = "allCollections" in source;
   const rows = db
     .prepare(
       `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
               a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
               COALESCE(pc.citation_count, 0) AS citation_count,
               ${sourceFileCols(source)}
+              ${holding ? ", hc.collections AS collections" : ""}
        FROM articles a
        ${join}
        ${JOURNAL_LOOKUP}
        LEFT JOIN paper_citations pc ON pc.pmid = a.pmid
+       ${holding ? HOLDING_COLLECTIONS : ""}
        ${search}
        ORDER BY a.pub_date DESC, a.pmid DESC`
     )
     .all(...params) as Array<
-    Omit<Paper, "file_exists" | "authors"> & { authors: string; content_hash: string | null }
+    Omit<Paper, "file_exists" | "authors" | "snippet" | "collections"> & {
+      authors: string;
+      content_hash: string | null;
+      collections?: string | null;
+    }
   >;
-  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
+  // Excerpts exist only for a collection search, and only for papers the query
+  // matched *inside the document*. A paper matched on title alone gets none, so
+  // the excerpt's presence tells the reader the words are actually in the file.
+  const snippets = filter.q && sourceHasFiles(source) ? snippetsForSearch(source, filter.q) : null;
+  return rows.map((r) => ({
+    ...r,
+    authors: safeParseAuthors(r.authors),
+    snippet: snippets?.get(r.pmid) ?? null,
+    collections: splitCollections(r.collections),
+  }));
 }
 
-function safeParseAuthors(raw: string): string[] {
+// The `authors` column is a JSON array of name strings. Exported because every
+// consumer of a raw article row has to survive the same thing: a column that
+// somehow isn't valid JSON must render as "no authors listed", not throw
+// halfway through building a response.
+export function safeParseAuthors(raw: string): string[] {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
+}
+
+// ---------- "do I already have this?" ----------
+
+// One paper as the holdings check sees it: the article record, plus the stored
+// copy behind it when there is one.
+//
+// `held` is decided by a collection_files row, never by the article's presence
+// in `articles` — a paper a topic feed turned up is one the user has *seen*,
+// and answering "yes you have it" about a record with no file is exactly the
+// mistake that would send a writer to a PDF they never bought.
+export interface HoldingRow {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  authors: string; // JSON array, parsed by the caller
+  pub_date: string;
+  pub_date_display: string;
+  doi: string;
+  url: string;
+  file_id: number | null;
+  file_name: string | null;
+  content_hash: string | null; // routes resolves this to file_exists
+  collection_id: number | null;
+  collection_name: string | null;
+}
+
+// The stored copy for a paper, across every collection: the lowest-id file row
+// that heldFile counts as held — the same set, and the same MIN(id) pick, the
+// collection views join on, so /have and the papers list can't name different
+// copies of one paper. One subquery here rather than two, because this query
+// has no collection to scope to.
+//
+// A paper held in several collections resolves to one of them, arbitrarily but
+// stably (lowest id = first uploaded). The question being answered is "do we
+// have this", not "how many copies", and naming the first is more useful than
+// naming none.
+const HOLDING_SELECT = `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
+          a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
+          cf.id AS file_id, cf.file_name AS file_name, cf.content_hash AS content_hash,
+          cf.collection_id AS collection_id, col.name AS collection_name
+   FROM articles a
+   ${JOURNAL_LOOKUP}
+   LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
+              WHERE ${heldFile()} GROUP BY pmid) hf ON hf.pmid = a.pmid
+   LEFT JOIN collection_files cf ON cf.id = hf.file_id
+   LEFT JOIN collections col ON col.id = cf.collection_id`;
+
+// Look up stored papers by PMID. Unknown ids are simply absent.
+export function holdingsByPmids(pmids: string[]): HoldingRow[] {
+  if (pmids.length === 0) return [];
+  return queryByPmids<HoldingRow>(pmids, (ph) => `${HOLDING_SELECT} WHERE a.pmid IN (${ph})`);
+}
+
+// The same, keyed by DOI. Compared lowercased on both sides because DOIs are
+// case-insensitive by specification and PubMed's stored casing varies by
+// publisher — a literal match would report a held paper as not held.
+export function holdingsByDois(dois: string[]): HoldingRow[] {
+  const out: HoldingRow[] = [];
+  for (let i = 0; i < dois.length; i += 900) {
+    const batch = dois.slice(i, i + 900).map((d) => d.toLowerCase());
+    const ph = batch.map(() => "?").join(",");
+    out.push(
+      ...(db
+        .prepare(`${HOLDING_SELECT} WHERE a.doi <> '' AND lower(a.doi) IN (${ph})`)
+        .all(...batch) as unknown as HoldingRow[])
+    );
+  }
+  return out;
+}
+
+// Held papers matching an author surname and a publication year — the fallback
+// for a citation string, which carries no identifier at all.
+//
+// Restricted to papers the user holds a file for, unlike the two lookups above.
+// A surname and a year select broadly, and running them over the whole article
+// table would rank a topic feed's thousands of merely-seen papers alongside the
+// handful actually in the library — turning a custody question into a search.
+// The answer for a paper with no file is "no" either way, so nothing is lost.
+//
+// `authors` is a JSON array of "Surname II" strings, so a LIKE over the stored
+// text matches any author of the paper, not only the first. That is deliberate:
+// a citation string names whoever led the paper, and reference styles disagree
+// about who that is.
+export function heldByAuthorYear(authorKey: string, year: number, limit = 8): HoldingRow[] {
+  return db
+    .prepare(
+      `${HOLDING_SELECT}
+       WHERE hf.file_id IS NOT NULL
+         AND a.authors LIKE ? ESCAPE '\\'
+         AND a.pub_date LIKE ?
+       ORDER BY a.pub_date DESC, a.pmid DESC
+       LIMIT ?`
+    )
+    .all(`%${escapeLike(authorKey)}%`, `${year}%`, limit) as unknown as HoldingRow[];
 }
 
 // ---------- citations (for the graph view) ----------
@@ -678,9 +1576,12 @@ export interface GraphPaper {
 
 // The papers that make up a source's graph — same membership and same linked
 // file as listPapers, so a node opens the PDF its table row does.
-export function graphPapersForSource(source: PaperSourceQuery, q?: string): GraphPaper[] {
-  const { join, params } = sourceMembership(source);
-  const predicate = searchPredicate(q, params);
+export function graphPapersForSource(
+  source: PaperSource,
+  filter: PaperFilter = {}
+): GraphPaper[] {
+  const { join, params } = sourceMembership(source, true);
+  const where = filterClause(source, filter, params);
   return db
     .prepare(
       `SELECT a.pmid, a.title, a.url, a.pub_date, ${JOURNAL_DISPLAY} AS journal_name,
@@ -688,7 +1589,7 @@ export function graphPapersForSource(source: PaperSourceQuery, q?: string): Grap
        FROM articles a
        ${join}
        ${JOURNAL_LOOKUP}
-       ${predicate ? `WHERE ${predicate}` : ""}`
+       ${where}`
     )
     .all(...params) as unknown as GraphPaper[];
 }
@@ -913,8 +1814,17 @@ function countFilesByHash(hash: string): number {
 // The row-deleting functions here call it themselves, so no route has to
 // remember the capture-hashes-then-GC dance. Exported for the one non-row
 // case: uploads whose blobs were stored but whose rows were never recorded.
+//
+// The extracted text goes with the blob. It is keyed by content_hash and can
+// outlive any single file row (that is the point — a re-upload reuses it), so
+// the moment the last row referencing the hash is gone, keeping the text would
+// leave an unreachable document permanently answering searches.
 export function gcBlobsIfOrphaned(hashes: string[]): void {
-  deleteBlobs([...new Set(hashes)].filter((h) => countFilesByHash(h) === 0));
+  const orphaned = [...new Set(hashes)].filter((h) => countFilesByHash(h) === 0);
+  if (orphaned.length === 0) return;
+  const deleteText = db.prepare("DELETE FROM pdf_text WHERE content_hash = ?");
+  for (const h of orphaned) deleteText.run(h); // triggers unindex it from FTS
+  deleteBlobs(orphaned);
 }
 
 // The blobs a collection's rows reference, captured before deletion for GC.
@@ -978,10 +1888,36 @@ export function deleteCollectionFile(fileId: number): void {
   if (row) gcBlobsIfOrphaned([row.content_hash]);
 }
 
+// ---------- extracted PDF text (full-text search) ----------
+
+export interface PdfTextInsert {
+  contentHash: string;
+  text: string;
+  pages: number;
+  truncated: boolean;
+}
+
+// Store (or replace) one PDF's extracted text. Replace rather than ignore, so
+// re-running extraction after an extractor improvement actually updates the
+// index; the AFTER UPDATE trigger re-indexes it.
+export function savePdfText(t: PdfTextInsert): void {
+  db.prepare(
+    `INSERT INTO pdf_text (content_hash, text, pages, truncated, chars)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(content_hash) DO UPDATE SET
+       text = excluded.text, pages = excluded.pages,
+       truncated = excluded.truncated, chars = excluded.chars,
+       extracted_at = datetime('now')`
+  ).run(t.contentHash, t.text, t.pages, Number(t.truncated), t.text.length);
+}
+
 // Insert/refresh articles without linking them to a topic (collections track
 // membership in collection_files instead of article_topics).
 export const upsertArticles = transaction((articles: ArticleInsert[]) => {
-  for (const a of articles) upsertArticle(a);
+  for (const a of articles) {
+    upsertArticle(a);
+    setArticleXmlFacts(a);
+  }
 });
 
 // ---------- journal catalog (NLM J_Medline) ----------

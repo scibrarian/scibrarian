@@ -13,6 +13,7 @@ import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 import { ShareLinkButton } from "./ShareLinkButton";
+import { Snippet } from "./Snippet";
 import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
@@ -38,8 +39,7 @@ export function PapersTable({
   bookmarking: Bookmarking | null;
 }) {
   const {
-    key,
-    search,
+    fetchKey,
     visible,
     journals,
     maxCitations,
@@ -91,7 +91,7 @@ export function PapersTable({
   // A new source or query starts from the top; re-sorting keeps scroll depth.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     sortedPapers,
-    `${key}|${search}|${reloadToken}`
+    `${fetchKey}|${reloadToken}`
   );
 
   function toggleSort(next: SortKey) {
@@ -117,11 +117,22 @@ export function PapersTable({
   // Whether saving is offered at all is App's call (viewers and the Library
   // don't get it); the column follows from that rather than re-deciding it.
   const showBookmarkCol = bookmarking != null;
+  // Only across every collection: inside one, every row is in it, and a topic
+  // or folder holds nothing. This is the column that turns "we have it" into
+  // "we have it in the Pfizer package", which is what decides reuse.
+  const showCollectionsCol = "allCollections" in source;
+  // Kept beside the flags that decide the optional columns, so a new column
+  // can't be added without this following it — the excerpt row below spans the
+  // table by count, and a stale number would silently narrow it.
+  const columnCount =
+    6 + (showCollectionsCol ? 1 : 0) + (showBookmarkCol ? 1 : 0) + (showShareCol ? 1 : 0);
 
   return (
     <div className="papers-table-view">
       <PaperFilters
         filters={filters}
+        source={source}
+        reloadToken={reloadToken}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}
@@ -153,7 +164,11 @@ export function PapersTable({
       {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
 
       {loading && visible.length === 0 ? (
-        <PapersTableSkeleton share={showShareCol} bookmark={showBookmarkCol} />
+        <PapersTableSkeleton
+          share={showShareCol}
+          bookmark={showBookmarkCol}
+          collections={showCollectionsCol}
+        />
       ) : visible.length === 0 ? (
         <div className="empty">
           {allDeselected
@@ -166,7 +181,11 @@ export function PapersTable({
         <>
           <div className="papers-table-wrap">
             <table className="papers-table">
-              <PapersColgroup share={showShareCol} bookmark={showBookmarkCol} />
+              <PapersColgroup
+                share={showShareCol}
+                bookmark={showBookmarkCol}
+                collections={showCollectionsCol}
+              />
               <thead>
                 <tr>
                   <th className="sortable" onClick={() => toggleSort("title")}>
@@ -184,14 +203,20 @@ export function PapersTable({
                   <th className="sortable num" onClick={() => toggleSort("citations")}>
                     Citations{arrow("citations")}
                   </th>
+                  {showCollectionsCol && <th>Collections</th>}
                   <th>Links</th>
                   {showBookmarkCol && <th className="bookmark-col" aria-label="Bookmark" />}
                   {showShareCol && <th className="share-col" aria-label="Share" />}
                 </tr>
               </thead>
-              <tbody>
-                {shown.map((p) => (
-                  <tr key={p.pmid}>
+              {/* One tbody per paper rather than one for the table. An excerpt
+                  needs the full table width to be legible, so it goes in a
+                  second row, and grouping the pair is what lets hover and the
+                  row divider treat them as the single record they are.
+                  Several tbodies in one table is valid HTML. */}
+              {shown.map((p) => (
+                <tbody className="paper-rows" key={p.pmid}>
+                  <tr>
                     <td className="paper-title-cell">
                       <button
                         className="paper-open"
@@ -210,6 +235,14 @@ export function PapersTable({
                     <td>{p.journal_name}</td>
                     <td className="num">{year(p.pub_date)}</td>
                     <td className="num">{p.citation_count}</td>
+                    {showCollectionsCol && (
+                      <td className="collections-cell">
+                        {/* Every collection holding it, not only the one whose
+                            file the title opens — a paper reused across three
+                            engagements has to read as three. */}
+                        {p.collections.join(", ")}
+                      </td>
+                    )}
                     <td className="links-cell">
                       <a href={p.url} target="_blank" rel="noreferrer">
                         PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
@@ -243,8 +276,19 @@ export function PapersTable({
                       </td>
                     )}
                   </tr>
-                ))}
-              </tbody>
+                  {p.snippet && (
+                    // Spans every column. In the title cell this clamped to two
+                    // lines of a 36%-wide column, which routinely cut the
+                    // excerpt off *before* its highlighted match — showing the
+                    // context and hiding the answer the excerpt exists for.
+                    <tr className="snippet-row">
+                      <td colSpan={columnCount}>
+                        <Snippet text={p.snippet} className="paper-snippet" />
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              ))}
             </table>
           </div>
           {hasMore && <div ref={sentinelRef} className="scroll-sentinel" aria-hidden="true" />}

@@ -1,14 +1,23 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Search, Share2, Check } from "lucide-react";
+import { Search, Share2, Check, Plus } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage, round1 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
-import { JournalManager } from "./JournalManager";
+import { JournalManager, MeshBadge } from "./JournalManager";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { Typeahead } from "./Typeahead";
-import type { AppSettings, Topic, Journal, MeshSearchResult } from "../types";
+import type {
+  AppSettings,
+  Topic,
+  Journal,
+  MeshSearchResult,
+  TopicSuggestResponse,
+} from "../types";
+
+// What the library's own filing suggests watching, when it has anything to say.
+const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
 
 export function Settings({
   onDataChanged,
@@ -21,6 +30,7 @@ export function Settings({
 }) {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [suggested, setSuggested] = useState<TopicSuggestResponse>(NO_SUGGESTIONS);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
@@ -43,12 +53,20 @@ export function Settings({
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
 
   function reload() {
-    Promise.all([api.getJournals(), api.getTopics(), api.getSettings()])
-      .then(([j, d, s]) => {
+    Promise.all([
+      api.getJournals(),
+      api.getTopics(),
+      api.getSettings(),
+      // Advisory, and the panel is useful without it — a failure here must not
+      // take the journals and topics down with it.
+      api.suggestTopics().catch(() => NO_SUGGESTIONS),
+    ])
+      .then(([j, d, s, sug]) => {
         setJournals(j);
         setTopics(d);
         setSettings(s);
         setBaseline(s);
+        setSuggested(sug);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoaded(true));
@@ -136,6 +154,37 @@ export function Settings({
     }
   }
 
+  // The citable window has its own save button rather than riding along with
+  // the polling form: it belongs to a different question (what you may cite,
+  // not how often PubMed is checked), and the two panels are far apart on the
+  // page. Same patch-one-key discipline as the Open Library switch above.
+  const [windowSaved, setWindowSaved] = useState(false);
+  async function saveWindow(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!settings) return;
+    try {
+      // A cleared field means "no window", which the server stores as 0 — sent
+      // explicitly rather than as "", so the value that comes back is the one
+      // the input will show.
+      const updated = await api.updateSettings({
+        citation_window_years: settings.citation_window_years.trim() || "0",
+      });
+      const value = updated.citation_window_years;
+      setSettings((s) => (s ? { ...s, citation_window_years: value } : updated));
+      setBaseline((b) => (b ? { ...b, citation_window_years: value } : updated));
+      setWindowSaved(true);
+      setTimeout(() => setWindowSaved(false), 2000);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  const windowDirty =
+    settings != null &&
+    baseline != null &&
+    settings.citation_window_years !== baseline.citation_window_years;
+
   async function saveSettings(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -149,7 +198,10 @@ export function Settings({
       };
       if (apiKey.trim()) payload.ncbi_api_key = apiKey.trim();
       const updated = await api.updateSettings(payload);
-      setSettings(updated);
+      // Everything except the citable window, which has its own save button:
+      // the response carries the persisted value, and taking it wholesale would
+      // silently revert an edit in progress in that panel.
+      setSettings({ ...updated, citation_window_years: settings.citation_window_years });
       setBaseline(updated);
       setApiKey("");
       setSavedMsg("Settings saved.");
@@ -192,7 +244,12 @@ export function Settings({
             <>
               {journals.map((j) => (
                 <li key={j.id}>
-                  <span>{j.name}</span>
+                  {/* Name and badge are one column: the badge annotates the
+                      journal, so space-between must not strand it mid-row. */}
+                  <div className="list-label">
+                    <span>{j.name}</span>
+                    {j.medline_indexed === false && <MeshBadge name={j.name} />}
+                  </div>
                   {j.metric != null && (
                     <span
                       className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
@@ -237,6 +294,46 @@ export function Settings({
           />
           <button type="submit">Add</button>
         </form>
+
+        {/* Topics the Library's own filing points at, so the first topic doesn't
+            have to be guessed cold. Drawn from papers the user holds files for
+            rather than from the topic feeds, which would mostly recommend the
+            topics that put those papers there. Ranked by how many held papers
+            each heading is a *main* subject of; the count shown is how many
+            carry it at all. */}
+        {loaded && suggested.results.length > 0 && (
+          <div className="topic-suggest">
+            <span className="hint">
+              From your Library ({suggested.heldPapers} filed paper
+              {suggested.heldPapers === 1 ? "" : "s"}):
+            </span>
+            <div className="topic-suggest-chips">
+              {suggested.results.map((s) => (
+                <button
+                  key={s.ui}
+                  type="button"
+                  className="suggest-chip"
+                  onClick={() => addTopic(s.name)}
+                  title={`${s.majorPapers} of ${s.papers} are mainly about this`}
+                >
+                  <Plus size={13} className="inline-icon" aria-hidden />
+                  {s.name}
+                  <span className="suggest-count">{s.papers}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* The one case worth explaining rather than leaving blank: there are
+            held papers, but their headings haven't been fetched yet. */}
+        {loaded && suggested.results.length === 0 && suggested.unchecked > 0 && (
+          <p className="hint">
+            Still reading MeSH headings for {suggested.unchecked} paper
+            {suggested.unchecked === 1 ? "" : "s"} in your Library — suggestions will appear
+            here once that finishes.
+          </p>
+        )}
+
         <ul className="list">
           {!loaded ? (
             [0, 1].map((i) => <ListRowSkeleton key={i} w={["55%", "40%"][i]} />)
@@ -257,6 +354,45 @@ export function Settings({
             </>
           )}
         </ul>
+      </section>
+
+      <section className="panel">
+        <h2>Citable window</h2>
+        <p className="hint">
+          Medical communications work commonly refuses references older than a set number of
+          years. “Check references” uses this to tell <em>held and citable</em> apart from{" "}
+          <em>held but too old to cite</em> — an older paper is still worth having, for verifying
+          a claim back to its source, but it isn’t a reference. Set <code>0</code> to switch the
+          judgement off.
+        </p>
+        {!loaded && <StackedFormSkeleton />}
+        {loaded && settings && (
+          <form className="stacked-form" onSubmit={saveWindow}>
+            <label>
+              Years{" "}
+              {windowSaved && (
+                <span className="pill">
+                  Saved <Check size={12} className="inline-icon" aria-hidden />
+                </span>
+              )}
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={settings.citation_window_years}
+                onChange={(e) =>
+                  setSettings({ ...settings, citation_window_years: e.target.value })
+                }
+              />
+              <span className="hint">
+                Default <code>5</code>: papers published within the last 5 years count as citable.
+              </span>
+            </label>
+            <button type="submit" disabled={!windowDirty}>
+              Save
+            </button>
+          </form>
+        )}
       </section>
 
       <section className="panel">

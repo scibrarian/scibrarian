@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { PaperSource, PapersResponse } from "../types";
+import type { MeshDescriptorRef, PaperQuery, PaperSource, PapersResponse } from "../types";
+import { sourceHasFiles, sourceKey } from "../../../shared/source";
 import { useCachedFetch, type FetchCache } from "./hooks";
 
-// Stable cache/state key for a paper source ("t3" / "f2" / "c1").
-export function sourceKey(source: PaperSource): string {
-  if ("topic" in source) return `t${source.topic}`;
-  if ("folder" in source) return `f${source.folder}`;
-  return `c${source.collection}`;
-}
+// Both live in shared/source.ts now, beside the type they switch on and the
+// server that switches on it too. Re-exported because this is where the client
+// has always imported them from, and imported above because this file uses
+// sourceKey itself.
+export { sourceHasFiles, sourceKey };
 
 // Cache the last successful fetch per (source, search). Remounting a view —
 // flipping between Papers/Timeline, or clicking back into a workspace — then
@@ -34,6 +34,14 @@ export function usePaperFilters(source: PaperSource) {
   // so it lives in the control (see PaperFilters), not here.
   const [minCitations, setMinCitations] = useState(0);
   const [minText, setMinText] = useState("0");
+  // MeSH descriptors the papers must be filed under (empty = no subject filter).
+  // The headings are kept alongside the ids because this filter runs
+  // server-side: the response carries no subjects, so nothing else on screen
+  // could name what is selected.
+  const [subjects, setSubjects] = useState<MeshDescriptorRef[]>([]);
+  // Narrow to papers a selected subject is a *main point* of, rather than ones
+  // that merely mention it (PubMed's star — see MeshHeading.major).
+  const [majorOnly, setMajorOnly] = useState(false);
   // Publication year bounds, null = unbounded. Kept nullable rather than
   // seeded with the source's range so "no year filter" is unambiguous — a
   // seeded pair can't be told apart from a deliberate full-range selection.
@@ -51,6 +59,8 @@ export function usePaperFilters(source: PaperSource) {
     setMinText("0");
     setYearFrom(null);
     setYearTo(null);
+    setSubjects([]);
+    setMajorOnly(false);
   }, [key]);
 
   // Debounce the free-text search box. Kept inline rather than useDebounced:
@@ -59,6 +69,19 @@ export function usePaperFilters(source: PaperSource) {
     const t = setTimeout(() => setSearch(query.trim()), 300);
     return () => clearTimeout(t);
   }, [query]);
+
+  // Everything resolved server-side, in one object the papers and graph fetches
+  // both pass straight through. Subject ids are sorted so picking the same two
+  // in either order is one cache entry rather than two, and memoized so the
+  // object identity only changes when the filter actually does.
+  const serverQuery: PaperQuery = useMemo(
+    () => ({
+      q: search || undefined,
+      mesh: subjects.length > 0 ? subjects.map((s) => s.ui).sort() : undefined,
+      meshMajor: majorOnly,
+    }),
+    [search, subjects, majorOnly]
+  );
 
   return {
     key,
@@ -75,6 +98,19 @@ export function usePaperFilters(source: PaperSource) {
     setYearFrom,
     yearTo,
     setYearTo,
+    subjects,
+    setSubjects,
+    majorOnly,
+    setMajorOnly,
+    serverQuery,
+    // The cache key for a server-filtered fetch. Everything else narrows an
+    // already-fetched list, so it must not appear here — and neither does a
+    // filter the request drops: majorOnly with nothing selected isn't sent
+    // (see filterQuery in api.ts), so keying on it would split the cache in two
+    // over one identical URL and refetch on a checkbox that changed nothing.
+    fetchKey: `${key}:${search}:${(serverQuery.mesh ?? []).join(",")}${
+      serverQuery.mesh && majorOnly ? "!" : ""
+    }`,
     // Whether anything is narrowing the list, so a view can tell "filtered to
     // nothing" apart from "this source is empty".
     active:
@@ -82,7 +118,8 @@ export function usePaperFilters(source: PaperSource) {
       deselected.size > 0 ||
       minCitations > 0 ||
       yearFrom != null ||
-      yearTo != null,
+      yearTo != null ||
+      subjects.length > 0,
   };
 }
 
@@ -127,15 +164,13 @@ export function usePapers(
   reloadToken: number,
   filters: PaperFilterState
 ) {
-  const { key, search, deselected, minCitations, yearFrom, yearTo } = filters;
+  const { key, search, fetchKey, serverQuery, deselected, minCitations, yearFrom, yearTo } =
+    filters;
 
-  // On a fresh mount `search` is "", which is the key a previous visit to this
-  // source would have cached under.
-  const { data, loading, error } = useCachedFetch(
-    papersCache,
-    `${key}:${search}`,
-    reloadToken,
-    () => api.getPapers(source, search || undefined)
+  // On a fresh mount nothing is filtered, which is the key a previous visit to
+  // this source would have cached under.
+  const { data, loading, error } = useCachedFetch(papersCache, fetchKey, reloadToken, () =>
+    api.getPapers(source, serverQuery)
   );
 
   // Keep the last successful result for THIS source on screen while a search
@@ -181,6 +216,9 @@ export function usePapers(
   return {
     key,
     search,
+    // Identifies the fetched list, so a view can restart its lazy rendering at
+    // the top whenever the server returned a different set of papers.
+    fetchKey,
     visible,
     journals,
     maxCitations,

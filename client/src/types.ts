@@ -9,35 +9,73 @@ import type {
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
   Topic as TopicRow,
+  CiteStatus,
+  EvidenceClass,
+  FreeCopy,
   GraphEdge,
   GraphNode,
   GraphResponse,
+  HaveAnswer,
+  HaveMatch,
+  HaveResponse,
   ImportStatus,
   Journal,
   JournalRemovalResult,
+  MeshDescriptorRef,
+  MeshFacet,
+  MeshFiling,
+  MeshHeadingsResponse,
   Paper,
   PapersResponse,
+  ParsedRefView,
   PollResult,
+  RefKind,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestion,
+  TopicSuggestResponse,
 } from "../../shared/types";
 
 export type {
   AbstractsResponse,
   BookmarkEntry,
+  CiteStatus,
   CollectionFileStatus,
+  EvidenceClass,
+  FreeCopy,
+  HaveAnswer,
+  HaveMatch,
+  HaveResponse,
   GraphEdge,
   GraphNode,
   GraphResponse,
   ImportStatus,
   Journal,
   JournalRemovalResult,
+  MeshDescriptorRef,
+  MeshFacet,
+  MeshFiling,
+  MeshHeadingsResponse,
   Paper,
   PapersResponse,
+  ParsedRefView,
   PollResult,
+  RefKind,
   ShareLinkResponse,
   TopicRemovalResult,
+  TopicSuggestion,
+  TopicSuggestResponse,
 };
+
+// What narrows a paper source server-side, shared by /api/papers and /api/graph
+// so both views select the same papers. Journals, the citation threshold and
+// the year range are deliberately not here: those are applied client-side over
+// an already-fetched list, so toggling them never costs a request.
+export interface PaperQuery {
+  q?: string;
+  mesh?: string[]; // MeSH descriptor UIs; a paper filed under any of them matches
+  meshMajor?: boolean; // keep only papers a selected descriptor is a main point of
+}
 
 export interface Topic extends TopicRow {
   articleCount?: number;
@@ -97,6 +135,10 @@ export interface AppSettings {
   poll_cron: string;
   poll_enabled: boolean;
   library_open: boolean;
+  // How old a paper may be and still be citable, in years, as typed. A string
+  // rather than a number because it's a text field the user is mid-edit in, and
+  // "" has to survive the round trip to the form. "0" turns the judgement off.
+  citation_window_years: string;
   has_api_key: boolean;
   // URLs where other machines can reach this server; empty when bound to loopback.
   share_urls: string[];
@@ -133,7 +175,15 @@ export interface ImportStartResponse {
   total: number; // pending files the job will scan
 }
 
-// Which paper set a view reads from: an Interests topic, a Bookmarks folder, or
-// a Library collection. Every analysis module (table, timeline, graph) takes
-// one.
-export type PaperSource = { topic: number } | { folder: number } | { collection: number };
+// Which paper set a view reads from: an Interests topic, a Bookmarks folder, a
+// Library collection, or every collection at once. Every analysis module
+// (table, timeline, graph) takes one. Defined in shared/source.ts alongside its
+// predicates and its wire format, because the server dispatches on the same
+// four kinds and the two used to mirror each other by hand.
+export type { PaperSource } from "../../shared/source";
+
+// What the Library workspace is pointed at: one collection, or every collection
+// at once. "all" is deliberately not a reserved id — a sentinel number would be
+// one bad comparison away from selecting a real collection, and this can't be
+// mistaken for one.
+export type CollectionSelection = number | "all";

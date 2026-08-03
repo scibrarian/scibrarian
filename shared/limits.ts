@@ -26,6 +26,19 @@ export const MAX_UPLOAD_FILES = 50;
 // whole point is sets too large to eyeball.
 export const MAX_BULK_BOOKMARK_PMIDS = 50_000;
 
+// References one "do I already have this?" request may carry.
+//
+// The check is a GET (see the /have route), so the batch is bounded by what
+// belongs in a URL rather than by anything in the database. The client splits a
+// larger paste across several requests; the server reports whatever one request
+// had to drop, so a hand-written URL gets a count rather than silence.
+export const MAX_REFS_PER_HAVE_REQUEST = 50;
+
+// Most references one paste is checked in total, across those batches. A
+// manuscript's reference list is tens, not thousands; this stops a stray paste
+// of a whole document from becoming a hundred round-trips.
+export const MAX_HAVE_REFS = 300;
+
 // The body size that many PMIDs needs. An 8-digit id serializes to
 // `"12345678",` — 11 bytes — so this is doubled headroom for longer ids and
 // the JSON around them. Derived rather than written out separately: a cap
