@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // dynamic import below and the module graph is loaded exactly once.
 
 type Db = typeof import("./db.js");
+type Src = Parameters<Db["listPapers"]>[0];
 
 let db: Db;
 let tmpDir: string;
@@ -29,22 +30,57 @@ let novartis: number;
 let pfizer: number;
 let feed: number;
 
-const ONLY_A = { pmid: "11111111", hash: "a".repeat(64), title: "Cardiac outcomes in cohort A" };
-const ONLY_B = { pmid: "22222222", hash: "b".repeat(64), title: "Renal outcomes in cohort B" };
+// Journals and headings differ per paper so the facet and chip queries can be
+// told apart by source rather than all returning the same one thing.
+const CARDIO = { ui: "D001", name: "Cardiology" };
+const NEPHRO = { ui: "D002", name: "Nephrology" };
+const HEPATO = { ui: "D003", name: "Hepatology" };
+
+const ONLY_A = {
+  pmid: "11111111",
+  hash: "a".repeat(64),
+  title: "Cardiac outcomes in cohort A",
+  journal: "Lancet",
+  mesh: [{ ...CARDIO, major: true }],
+};
+const ONLY_B = {
+  pmid: "22222222",
+  hash: "b".repeat(64),
+  title: "Renal outcomes in cohort B",
+  journal: "Kidney International",
+  mesh: [{ ...NEPHRO, major: false }],
+};
 // The same file filed under both engagements — reuse happens in practice.
-const IN_BOTH = { pmid: "33333333", hash: "c".repeat(64), title: "Shared methodology review" };
+const IN_BOTH = {
+  pmid: "33333333",
+  hash: "c".repeat(64),
+  title: "Shared methodology review",
+  journal: "Lancet",
+  mesh: [{ ...CARDIO, major: false }],
+};
 // Seen, never held: a topic feed turned this one up and nobody uploaded a file
 // for it. Every other fixture article is held somewhere, so without this one
 // the membership join could be deleted outright and every assertion below
 // would still pass.
-const SEEN_ONLY = { pmid: "44444444", title: "Hepatic outcomes in cohort D" };
+const SEEN_ONLY = {
+  pmid: "44444444",
+  title: "Hepatic outcomes in cohort D",
+  journal: "Hepatology",
+  mesh: [{ ...HEPATO, major: true }],
+};
 
-function article(p: { pmid: string; title: string }) {
+function article(p: {
+  pmid: string;
+  title: string;
+  journal: string;
+  mesh: { ui: string; name: string; major: boolean }[];
+}) {
   return {
     pmid: p.pmid,
     title: p.title,
     abstract: "",
-    journal_name: "Lancet",
+    journal_name: p.journal,
+    mesh: { status: "MEDLINE", headings: p.mesh },
     nlm_id: null,
     authors: ["Smith J"],
     pub_date: "2021-01-01",
@@ -179,6 +215,65 @@ describe("the row shape", () => {
       .map((f) => f.id)
       .sort((x, y) => x - y)[0];
     expect(row.file_id).toBe(lowest);
+  });
+});
+
+// The other four queries built on sourceMembership, none of which had any
+// coverage. They matter here because the membership join binds a different
+// number of parameters depending on whether the caller asked for the linked
+// file — three of these don't, and select nothing from `cf`. A miscount binds a
+// collection id into the wrong placeholder, so these run every source kind
+// through both shapes of the join.
+describe("the queries that share the membership join", () => {
+  it("lists the journals a source's papers are in", () => {
+    expect(db.journalsForSource({ allCollections: true })).toEqual([
+      ONLY_B.journal,
+      ONLY_A.journal,
+    ]);
+    expect(db.journalsForSource({ collectionId: novartis })).toEqual([ONLY_A.journal]);
+    expect(db.journalsForSource({ collectionId: pfizer })).toEqual([
+      ONLY_B.journal,
+      IN_BOTH.journal,
+    ]);
+    // The unheld paper's journal is a chip on its topic and nowhere else.
+    expect(db.journalsForSource({ topicId: feed })).toEqual([SEEN_ONLY.journal]);
+  });
+
+  it("counts subjects over the same membership", () => {
+    const facets = (s: Src) => db.meshFacetsForSource(s).map((f) => [f.ui, f.count]);
+    expect(facets({ allCollections: true })).toEqual([
+      [CARDIO.ui, 2],
+      [NEPHRO.ui, 1],
+    ]);
+    expect(facets({ collectionId: novartis })).toEqual([[CARDIO.ui, 2]]);
+    expect(facets({ topicId: feed })).toEqual([[HEPATO.ui, 1]]);
+  });
+
+  it("buckets filing over the same membership", () => {
+    // Every paper in the source falls in exactly one bucket, so the sum is the
+    // source's paper count — which is the membership assertion.
+    const total = (s: Src) => {
+      const f = db.meshFilingForSource(s);
+      return f.filed + f.indexed + f.none + f.pending + f.unchecked;
+    };
+    expect(db.meshFilingForSource({ allCollections: true }).filed).toBe(3);
+    expect(total({ allCollections: true })).toBe(3);
+    expect(total({ collectionId: novartis })).toBe(2);
+    expect(total({ topicId: feed })).toBe(1);
+  });
+
+  it("gives the graph the same papers and the same file as the table", () => {
+    const graph = db.graphPapersForSource({ allCollections: true });
+    expect(graph.map((g) => g.pmid).sort()).toEqual(
+      [ONLY_A.pmid, ONLY_B.pmid, IN_BOTH.pmid].sort()
+    );
+    // A node has to open the PDF its table row opens, so the two must agree
+    // about which copy a paper held twice resolves to.
+    const table = db.listPapers({ allCollections: true }, {});
+    for (const g of graph) {
+      expect(g.file_id).toBe(table.find((p) => p.pmid === g.pmid)?.file_id);
+    }
+    expect(db.graphPapersForSource({ topicId: feed }).map((g) => g.file_id)).toEqual([null]);
   });
 });
 
