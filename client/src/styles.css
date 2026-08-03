@@ -2469,6 +2469,15 @@ html {
   white-space: nowrap;
 }
 
+/* Which collections hold a paper, in the All collections view only. Muted like
+   the authors: it is custody metadata, not part of the citation. Allowed to
+   wrap rather than truncate — a paper reused across three engagements is the
+   case the column exists for, and hiding the third defeats it. */
+.collections-cell {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* Admin-only share-link column: headerless, just the icon button. */
 .papers-table th.share-col,
 .papers-table td.share-cell {

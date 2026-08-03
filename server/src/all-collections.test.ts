@@ -218,6 +218,28 @@ describe("the row shape", () => {
     }
   });
 
+  it("names every collection holding a paper, not just the linked one", () => {
+    const by = (pmid: string) =>
+      db.listPapers({ allCollections: true }, {}).find((p) => p.pmid === pmid)!;
+    // The whole point of the aggregate: this paper's file resolves to whichever
+    // collection uploaded first, and saying only that one would hide the reuse
+    // that decides whether a copy can be used again.
+    expect(by(IN_BOTH.pmid).collections).toEqual(["Novartis", "Pfizer"]);
+    expect(by(ONLY_A.pmid).collections).toEqual(["Novartis"]);
+    expect(by(ONLY_B.pmid).collections).toEqual(["Pfizer"]);
+  });
+
+  it("leaves the column empty for a source that can't be told anything by it", () => {
+    // Inside one collection every row is in that collection; a topic holds
+    // nothing at all. Both would be noise, and the topic one would be a lie.
+    for (const p of db.listPapers({ collectionId: novartis }, {})) {
+      expect(p.collections).toEqual([]);
+    }
+    for (const p of db.listPapers({ topicId: renalFeed }, {})) {
+      expect(p.collections).toEqual([]);
+    }
+  });
+
   it("picks one file for a paper held twice, deterministically", () => {
     const [row] = db.listPapers({ allCollections: true }, { q: IN_BOTH.title });
     expect(row.pmid).toBe(IN_BOTH.pmid);

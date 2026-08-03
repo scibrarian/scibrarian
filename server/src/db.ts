@@ -1167,6 +1167,38 @@ function sourceMembership(
   };
 }
 
+// Every collection holding a paper, for the all-collections view — "which
+// engagement's package is this in", which is what decides whether a copy can be
+// reused. Only that source asks: inside one collection every row is in that
+// collection, and a topic or folder holds nothing.
+//
+// Deliberately not read off the linked file. That resolves to MIN(id), so a
+// paper filed under three clients would name one and drop the other two, which
+// is the same double-count that keeps a paper total off the All collections
+// picker entry.
+//
+// GROUP_CONCAT can take DISTINCT or a separator but not both — SQLite rejects a
+// two-argument DISTINCT aggregate — so the inner select dedupes and the outer
+// one joins. char(31) rather than a comma because a collection name is text the
+// user typed, and a comma in one is far likelier than a control character.
+const COLLECTION_SEP = "\x1f";
+const HOLDING_COLLECTIONS = `LEFT JOIN (
+         SELECT pmid, GROUP_CONCAT(name, char(31)) AS collections FROM (
+           SELECT DISTINCT cf3.pmid AS pmid, col3.name AS name
+           FROM collection_files cf3
+           JOIN collections col3 ON col3.id = cf3.collection_id
+           WHERE ${heldFile("cf3.")}
+         ) GROUP BY pmid
+       ) hc ON hc.pmid = a.pmid`;
+
+// Sorted here rather than in SQL: an ORDER BY inside the subquery feeding
+// GROUP_CONCAT is not a guarantee about aggregate order, and the column has to
+// read the same way every time or the table appears to reshuffle itself.
+function splitCollections(joined: string | null | undefined): string[] {
+  if (!joined) return [];
+  return joined.split(COLLECTION_SEP).sort((a, b) => a.localeCompare(b));
+}
+
 // The linked-PDF columns for a source. Only a collection has uploaded files
 // behind its papers; topics and bookmark folders select constant nulls so every
 // source hands back the same row shape.
@@ -1383,23 +1415,29 @@ export function listPapers(
 ): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
   const { join, params } = sourceMembership(source, true);
   const search = filterClause(source, filter, params);
+  // Only the all-collections view can be told something it doesn't already
+  // know, so only it pays for the aggregate.
+  const holding = "allCollections" in source;
   const rows = db
     .prepare(
       `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_name,
               a.authors, a.pub_date, a.pub_date_display, a.doi, a.url,
               COALESCE(pc.citation_count, 0) AS citation_count,
               ${sourceFileCols(source)}
+              ${holding ? ", hc.collections AS collections" : ""}
        FROM articles a
        ${join}
        ${JOURNAL_LOOKUP}
        LEFT JOIN paper_citations pc ON pc.pmid = a.pmid
+       ${holding ? HOLDING_COLLECTIONS : ""}
        ${search}
        ORDER BY a.pub_date DESC, a.pmid DESC`
     )
     .all(...params) as Array<
-    Omit<Paper, "file_exists" | "authors" | "snippet"> & {
+    Omit<Paper, "file_exists" | "authors" | "snippet" | "collections"> & {
       authors: string;
       content_hash: string | null;
+      collections?: string | null;
     }
   >;
   // Excerpts exist only for a collection search, and only for papers the query
@@ -1410,6 +1448,7 @@ export function listPapers(
     ...r,
     authors: safeParseAuthors(r.authors),
     snippet: snippets?.get(r.pmid) ?? null,
+    collections: splitCollections(r.collections),
   }));
 }
 

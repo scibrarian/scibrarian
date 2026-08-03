@@ -178,6 +178,15 @@ export interface Paper {
   file_id: number | null;
   file_name: string | null;
   file_exists: boolean; // false when file_id is null
+  // Every collection holding this paper, sorted by name. Empty except in the
+  // all-collections view: inside one collection every row is in that
+  // collection, and a topic or folder holds nothing.
+  //
+  // A list rather than one name, and deliberately not read off file_id. That
+  // resolves to the lowest-id file, so a paper filed under three clients would
+  // name one and silently drop the other two — and reuse across engagements is
+  // the thing this view is read to find out about.
+  collections: string[];
   // An excerpt from the PDF's body around the current search terms, present
   // whenever the query matched inside the document (whether or not it also
   // matched the title/abstract/authors). Null for a paper matched only on
