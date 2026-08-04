@@ -10,7 +10,7 @@ import type {
   PaperSource,
 } from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
-import { sourceKey } from "./lib/papers";
+import { seedEmptySource, sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
 import { WorkspaceNav, MODES, type Mode } from "./components/WorkspaceNav";
 import { PaperViews } from "./components/PaperViews";
@@ -238,6 +238,16 @@ export default function App() {
     return created;
   }
 
+  // Creating a source and opening it are one gesture, so the view it lands on
+  // would fetch a paper list the app already knows the answer to — and that
+  // request is slow enough to paint a skeleton on the way to an empty state
+  // that was never in doubt. Answering it from here makes the first paint the
+  // real one. Only ever called for a source created a moment ago; see
+  // seedEmptySource for why that restriction matters.
+  function seedNewSource(source: PaperSource) {
+    seedEmptySource(source, tokenFor(reloads, sourceKey(source)));
+  }
+
   // The picker's "New folder" instead opens the folder it just made.
   async function createFolder(name: string) {
     setNamingFolder(false);
@@ -245,6 +255,7 @@ export default function App() {
       const created = await createFolderNamed(name);
       setShowSettings(false);
       setMode("bookmarks");
+      seedNewSource({ folder: created.id });
       setActiveFolderId(created.id);
       setViewByMode((prev) => ({ ...prev, bookmarks: "table" }));
     } catch (e) {
@@ -299,6 +310,7 @@ export default function App() {
       await loadCollections();
       setShowSettings(false);
       setMode("papers");
+      seedNewSource({ collection: created.id });
       setActiveCollectionId(created.id);
       setViewByMode((prev) => ({ ...prev, papers: "table" }));
     } catch (e) {
