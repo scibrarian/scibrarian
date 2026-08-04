@@ -19,6 +19,19 @@ export { sourceHasFiles, sourceKey };
 // a folder — so a stale entry is never served.
 const papersCache: FetchCache<PapersResponse> = new Map();
 
+// The cache key for one source under one server-side filter. A single builder
+// because two callers need it — the hook below, and the seeding function at the
+// bottom of this file — and a drift between them wouldn't fail, it would just
+// quietly stop sharing entries and go back to fetching.
+function papersKey(
+  source: string,
+  search: string,
+  mesh: string[] | undefined,
+  majorOnly: boolean
+): string {
+  return `${source}:${search}:${(mesh ?? []).join(",")}${mesh && majorOnly ? "!" : ""}`;
+}
+
 // Filter state for one paper source, owned above the views (in App) instead of
 // inside them. Each view unmounts as you flip Papers / Timeline / Graph, so
 // state held in a view was silently discarded on every switch — typing a search
@@ -108,9 +121,7 @@ export function usePaperFilters(source: PaperSource) {
     // filter the request drops: majorOnly with nothing selected isn't sent
     // (see filterQuery in api.ts), so keying on it would split the cache in two
     // over one identical URL and refetch on a checkbox that changed nothing.
-    fetchKey: `${key}:${search}:${(serverQuery.mesh ?? []).join(",")}${
-      serverQuery.mesh && majorOnly ? "!" : ""
-    }`,
+    fetchKey: papersKey(key, search, serverQuery.mesh, majorOnly),
     // Whether anything is narrowing the list, so a view can tell "filtered to
     // nothing" apart from "this source is empty".
     active:
@@ -155,6 +166,25 @@ export function bounds(years: (number | null)[]): { min: number; max: number } |
 }
 
 export type PaperFilterState = ReturnType<typeof usePaperFilters>;
+
+// Record that a source holds no papers, without asking the server.
+//
+// For a source the app just created: a brand-new collection or bookmark folder
+// is empty by construction, and the fetch that would establish that takes long
+// enough to skeleton the view — so creating one flashed a loading state on the
+// way to an empty state that was knowable the whole time. Seeding the cache
+// under the same (key, token) a fresh view reads makes the first paint the
+// empty state.
+//
+// Only ever call this for a source that was *just* created. Anything already on
+// the server has to be asked, and asserting emptiness about it here would show
+// an empty view over papers that exist.
+export function seedEmptySource(source: PaperSource, reloadToken: number): void {
+  papersCache.set(papersKey(sourceKey(source), "", undefined, false), {
+    token: reloadToken,
+    data: { papers: [], journals: [] },
+  });
+}
 
 // The paper list for a source, filtered by the shared state above: the search
 // runs server-side (refetch per term), journals and the citation threshold are
