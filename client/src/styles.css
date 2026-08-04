@@ -2293,7 +2293,7 @@ html {
   padding: 9px 0;
 }
 
-/* Both "add" buttons are primary actions; Rename/Delete opt out via .link-btn. */
+/* "Add files" is the primary action; Rename/Delete opt out via .link-btn. */
 .source-actions > button:not(.link-btn) {
   background: var(--accent);
   color: #fff;
@@ -2302,6 +2302,13 @@ html {
   border-radius: 8px;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* Dimmed while an upload is in flight, matching the app's other disabled
+   buttons — a second selection mid-upload would race the first. */
+.source-actions > button:not(.link-btn):disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* import progress */
@@ -2570,6 +2577,20 @@ html {
   font-weight: 700;
   color: var(--danger);
   background: #fdeaea;
+  border-radius: 999px;
+  padding: 1px 8px;
+  vertical-align: middle;
+}
+
+/* Same pill as .file-missing, in the muted palette: a file the scan never
+   reached is unfinished business, not a fault like a missing blob. */
+.file-queued {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--border);
   border-radius: 999px;
   padding: 1px 8px;
   vertical-align: middle;

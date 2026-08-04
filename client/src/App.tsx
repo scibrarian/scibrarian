@@ -28,7 +28,6 @@ import {
   Lock,
   LockOpen,
   FilePlus,
-  FolderPlus,
   Plus,
   SearchCheck,
 } from "lucide-react";
@@ -485,10 +484,9 @@ export default function App() {
   ) : inLibrary ? (
     <>
       No papers yet. Click{" "}
-      <strong><FilePlus size={14} className="inline-icon" aria-hidden /> Add files</strong> or{" "}
-      <strong><FolderPlus size={14} className="inline-icon" aria-hidden /> Add folder</strong> to
-      upload PDFs. The app scans each PDF for its PubMed ID and pulls in the title, authors,
-      journal, year, and citation count.
+      <strong><FilePlus size={14} className="inline-icon" aria-hidden /> Add files</strong> to upload
+      PDFs — select as many as you like, a whole folder's worth at a time. The app scans each PDF for
+      its PubMed ID and pulls in the title, authors, journal, year, and citation count.
     </>
   ) : (
     <>No papers in this folder yet.</>
