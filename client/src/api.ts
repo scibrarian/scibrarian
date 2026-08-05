@@ -156,7 +156,6 @@ export const api = {
   checkHave: async (refs: string[], lookUpFree = true): Promise<HaveResponse> => {
     const capped = refs.slice(0, MAX_HAVE_REFS);
     const results: HaveAnswer[] = [];
-    let windowYears = 0;
     let truncated = refs.length - capped.length;
     for (let i = 0; i < capped.length; i += MAX_REFS_PER_HAVE_REQUEST) {
       const batch = capped.slice(i, i + MAX_REFS_PER_HAVE_REQUEST);
@@ -165,9 +164,8 @@ export const api = {
       );
       results.push(...res.results);
       truncated += res.truncated;
-      windowYears = res.windowYears;
     }
-    return { results, truncated, windowYears };
+    return { results, truncated };
   },
 
   // Abstracts are kept out of the papers list payload; the timeline fetches

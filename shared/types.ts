@@ -247,15 +247,6 @@ export interface ParsedRefView {
 // citable for statements that don't rest on numbers.
 export type EvidenceClass = "primary" | "secondary" | "untyped" | "unknown";
 
-// Whether a paper is recent enough to cite, as distinct from whether it's held.
-// Deliberately orthogonal to `held`: a paper the writer is about to *buy* can
-// also be outside the window, and that's worth knowing before the purchase.
-//   citable       — inside the configured window
-//   out_of_window — held or findable, but too old to cite; still useful for
-//                   verifying a claim back to its source
-//   unknown       — no publication date, or the window is switched off
-export type CiteStatus = "citable" | "out_of_window" | "unknown";
-
 // A legal free copy of a paper the library doesn't hold — the other half of the
 // approved purchase workflow, where the PM is told to look for a free version
 // before approving a buy.
@@ -283,10 +274,6 @@ export interface HaveMatch {
   file_exists: boolean;
   collection_id: number | null;
   collection_name: string | null;
-  cite: CiteStatus;
-  // Publication year, so the UI can say *how far* outside the window a
-  // verification-only paper is rather than only that it is.
-  year: number | null;
   evidence: EvidenceClass;
   // The types behind that verdict, e.g. ["Meta-Analysis", "Systematic Review"].
   // Shown rather than just the class, because "Editorial" and "Meta-Analysis"
@@ -318,9 +305,6 @@ export interface HaveResponse {
   // How many pasted lines were dropped because the request exceeded the
   // per-request cap; the client re-sends those in another batch.
   truncated: number;
-  // The citable window in force, echoed so the UI can name it ("older than 5
-  // years"). 0 means the window is off and every `cite` is "unknown".
-  windowYears: number;
 }
 
 // A minted expiring download link for one stored PDF. `path` is relative so

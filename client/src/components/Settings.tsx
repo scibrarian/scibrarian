@@ -154,37 +154,6 @@ export function Settings({
     }
   }
 
-  // The citable window has its own save button rather than riding along with
-  // the polling form: it belongs to a different question (what you may cite,
-  // not how often PubMed is checked), and the two panels are far apart on the
-  // page. Same patch-one-key discipline as the Open Library switch above.
-  const [windowSaved, setWindowSaved] = useState(false);
-  async function saveWindow(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    if (!settings) return;
-    try {
-      // A cleared field means "no window", which the server stores as 0 — sent
-      // explicitly rather than as "", so the value that comes back is the one
-      // the input will show.
-      const updated = await api.updateSettings({
-        citation_window_years: settings.citation_window_years.trim() || "0",
-      });
-      const value = updated.citation_window_years;
-      setSettings((s) => (s ? { ...s, citation_window_years: value } : updated));
-      setBaseline((b) => (b ? { ...b, citation_window_years: value } : updated));
-      setWindowSaved(true);
-      setTimeout(() => setWindowSaved(false), 2000);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
-
-  const windowDirty =
-    settings != null &&
-    baseline != null &&
-    settings.citation_window_years !== baseline.citation_window_years;
-
   async function saveSettings(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -198,10 +167,7 @@ export function Settings({
       };
       if (apiKey.trim()) payload.ncbi_api_key = apiKey.trim();
       const updated = await api.updateSettings(payload);
-      // Everything except the citable window, which has its own save button:
-      // the response carries the persisted value, and taking it wholesale would
-      // silently revert an edit in progress in that panel.
-      setSettings({ ...updated, citation_window_years: settings.citation_window_years });
+      setSettings(updated);
       setBaseline(updated);
       setApiKey("");
       setSavedMsg("Settings saved.");
@@ -354,45 +320,6 @@ export function Settings({
             </>
           )}
         </ul>
-      </section>
-
-      <section className="panel">
-        <h2>Citable window</h2>
-        <p className="hint">
-          Medical communications work commonly refuses references older than a set number of
-          years. “Check references” uses this to tell <em>held and citable</em> apart from{" "}
-          <em>held but too old to cite</em> — an older paper is still worth having, for verifying
-          a claim back to its source, but it isn’t a reference. Set <code>0</code> to switch the
-          judgement off.
-        </p>
-        {!loaded && <StackedFormSkeleton />}
-        {loaded && settings && (
-          <form className="stacked-form" onSubmit={saveWindow}>
-            <label>
-              Years{" "}
-              {windowSaved && (
-                <span className="pill">
-                  Saved <Check size={12} className="inline-icon" aria-hidden />
-                </span>
-              )}
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={settings.citation_window_years}
-                onChange={(e) =>
-                  setSettings({ ...settings, citation_window_years: e.target.value })
-                }
-              />
-              <span className="hint">
-                Default <code>5</code>: papers published within the last 5 years count as citable.
-              </span>
-            </label>
-            <button type="submit" disabled={!windowDirty}>
-              Save
-            </button>
-          </form>
-        )}
       </section>
 
       <section className="panel">

@@ -133,11 +133,10 @@ export function HaveCheck({
 // The headline the reader acts on. Ordered by what changes a decision: what you
 // already have, then what you can get free, then what the app couldn't read.
 function Summary({ response }: { response: HaveResponse }) {
-  const { results, windowYears } = response;
+  const { results } = response;
   const held = results.filter((r) => r.held).length;
   const free = results.filter((r) => !r.held && r.free).length;
   const unreadable = results.filter((r) => r.parsed.kind === "unknown").length;
-  const stale = results.filter((r) => r.held && r.match?.cite === "out_of_window").length;
   return (
     <p className="have-summary">
       <strong>
@@ -145,8 +144,6 @@ function Summary({ response }: { response: HaveResponse }) {
       </strong>{" "}
       already in your library.
       {free > 0 && ` ${free} unowned ${free === 1 ? "paper has" : "papers have"} a free copy.`}
-      {stale > 0 &&
-        ` ${stale} held paper${stale === 1 ? " is" : "s are"} older than ${windowYears} years — verification only.`}
       {unreadable > 0 &&
         ` ${unreadable} line${unreadable === 1 ? "" : "s"} couldn’t be read.`}
     </p>
@@ -168,10 +165,6 @@ function AnswerRow({
     <li className={`have-row ${kind}`}>
       <div className="have-verdict">
         <Verdict kind={kind} several={several} />
-        {/* The citable judgement rides on the paper, not on whether it's held —
-            a paper about to be bought can also be out of the window, and that
-            is worth knowing before the purchase rather than after. */}
-        {match && <CiteBadge match={match} />}
         {match && <EvidenceBadge match={match} />}
       </div>
 
@@ -249,26 +242,6 @@ function Verdict({ kind, several }: { kind: string; several: boolean }) {
       <Minus size={13} className="inline-icon" aria-hidden /> Not in your library
     </span>
   );
-}
-
-// Citable / verification-only. "unknown" draws nothing: the window is either
-// switched off or the paper has no date, and a badge saying so would be noise
-// on every row.
-function CiteBadge({ match }: { match: HaveMatch }) {
-  if (match.cite === "citable") {
-    return <span className="cite-badge citable">Citable</span>;
-  }
-  if (match.cite === "out_of_window") {
-    return (
-      <span
-        className="cite-badge stale"
-        title="Outside the citable window — still useful for verifying a claim back to its source"
-      >
-        Verification only{match.year ? ` · ${match.year}` : ""}
-      </span>
-    );
-  }
-  return null;
 }
 
 // Whether the paper reports original data, from PubMed's publication types.

@@ -78,7 +78,7 @@ import {
   UPLOAD_TMP_DIR,
 } from "./config.js";
 import { splitRefs } from "./citation-ref.js";
-import { checkHoldings, citationWindowYears, MAX_REFS_PER_REQUEST } from "./have.js";
+import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import { getImportStatus, isImportRunning, startImport } from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
@@ -558,7 +558,6 @@ api.get(
       // being typed, and turns it on for the answer the user acts on.
       results: await checkHoldings(batch, { lookUpFree: req.query.free !== "0" }),
       truncated: lines.length - batch.length,
-      windowYears: citationWindowYears(),
     };
     res.json(body);
   })
@@ -1123,19 +1122,6 @@ const SETTING_RULES = {
   },
   poll_enabled: { kind: "boolean" },
   library_open: { kind: "boolean" },
-  // Years, as a string like every other setting. "0" switches the citable-window
-  // judgement off; anything unparseable would do the same silently, so it's
-  // rejected here instead — the whole point of the field is that a wrong number
-  // hands a writer a reference that fails review.
-  citation_window_years: {
-    kind: "string",
-    validate: (v) => {
-      const n = Number(v);
-      return v === "" || (Number.isInteger(n) && n >= 0 && n <= 100)
-        ? null
-        : "The citable window must be a whole number of years between 0 and 100.";
-    },
-  },
   ncbi_api_key: { kind: "secret", expose: "has_api_key" },
 } satisfies Record<keyof Settings, SettingRule>;
 

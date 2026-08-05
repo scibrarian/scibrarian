@@ -1,7 +1,6 @@
 import { existingBlobHashes } from "./blobstore.js";
 import { parseRef, type ParsedRef } from "./citation-ref.js";
 import {
-  getSetting,
   heldByAuthorYear,
   holdingsByDois,
   holdingsByPmids,
@@ -11,7 +10,7 @@ import {
 } from "./db.js";
 import { lookupWorks, type OaWork } from "./openalex.js";
 import { evidenceFromRows } from "./pubmed-parse.js";
-import type { CiteStatus, HaveAnswer, HaveMatch } from "./types.js";
+import type { HaveAnswer, HaveMatch } from "./types.js";
 
 // "Do I already have this?" — the custody question, answered for a list of
 // pasted references.
@@ -22,12 +21,6 @@ import type { CiteStatus, HaveAnswer, HaveMatch } from "./types.js";
 // answer with the internet down as with it up. OpenAlex is consulted only for
 // the lines that came back *not* held, and only to add things that make a
 // no more useful — the paper's title, and whether a legal free copy exists.
-//
-// The three-state answer the roadmap asks for is composed from two orthogonal
-// facts rather than one enum: `held`, and `cite` (see CiteStatus). They are
-// kept apart because citability applies to papers the library doesn't hold too
-// — a writer about to buy a paper that's already outside the window wants to
-// know that before the purchase, not after.
 
 // A paste bigger than this is chunked by the client (see shared/limits). The
 // cap exists because every line is a bound parameter and a URL segment, not
@@ -40,40 +33,12 @@ export interface HaveOptions {
   lookUpFree?: boolean;
 }
 
-// The citable window, in years. 0 (or an unparseable setting) means the
-// judgement is switched off and every answer's `cite` is "unknown".
-export function citationWindowYears(): number {
-  const n = Number(getSetting("citation_window_years"));
-  return Number.isInteger(n) && n > 0 && n <= 100 ? n : 0;
-}
-
-// Publication year from the stored sortable date ('' when PubMed gave none).
-function yearOf(pubDate: string): number | null {
-  const m = /^(\d{4})/.exec(pubDate);
-  return m ? Number(m[1]) : null;
-}
-
-// Whether a paper is recent enough to cite.
-//
-// Compared at year granularity, not by exact date. Two reasons: the rule is
-// stated in years ("nothing older than five"), and pub_date is padded to
-// January 1st when PubMed reports only a year — so a date comparison would
-// invent precision the stored value doesn't have and age papers out months
-// early. Erring toward "still citable" is the right direction: the writer
-// checks the exact date on a borderline paper anyway, whereas a wrongly
-// flagged reference is one they just don't use.
-export function citeStatus(year: number | null, windowYears: number): CiteStatus {
-  if (windowYears <= 0 || year == null) return "unknown";
-  return year >= new Date().getFullYear() - windowYears ? "citable" : "out_of_window";
-}
-
 // A stored row as the API reports it. `present` is one readdir's worth of blob
 // hashes, so a list of answers costs one directory read rather than a stat per
 // paper (the same trick /papers and /graph use); `pubTypes` is likewise one
 // batched query for every paper in the response.
 function toMatch(row: HoldingRow, ctx: RenderContext): HaveMatch {
-  const { present, windowYears } = ctx;
-  const year = yearOf(row.pub_date);
+  const { present } = ctx;
   const { types, evidence } = evidenceFromRows(ctx.pubTypes.get(row.pmid) ?? []);
   return {
     evidence,
@@ -92,15 +57,13 @@ function toMatch(row: HoldingRow, ctx: RenderContext): HaveMatch {
     file_exists: row.content_hash != null && present.has(row.content_hash),
     collection_id: row.collection_id,
     collection_name: row.collection_name,
-    cite: citeStatus(year, windowYears),
-    year,
   };
 }
 
 // A paper OpenAlex knows about but the library doesn't hold. Its shape matches
 // a held row so the client renders one kind of result card; every
 // custody-related field is null or false, which is the whole point of the row.
-function fromOpenAlex(work: OaWork, { windowYears }: RenderContext): HaveMatch {
+function fromOpenAlex(work: OaWork): HaveMatch {
   return {
     pmid: work.pmid ?? "",
     title: work.title,
@@ -116,8 +79,6 @@ function fromOpenAlex(work: OaWork, { windowYears }: RenderContext): HaveMatch {
     file_exists: false,
     collection_id: null,
     collection_name: null,
-    cite: citeStatus(work.year, windowYears),
-    year: work.year,
     // OpenAlex has no equivalent of PublicationTypeList, and this paper isn't
     // held, so nothing local answers it either.
     evidence: "unknown",
@@ -125,12 +86,11 @@ function fromOpenAlex(work: OaWork, { windowYears }: RenderContext): HaveMatch {
   };
 }
 
-// What every answer row is rendered against: one readdir of blob hashes, one
-// batched publication-type query, and the citable window. Bundled so that
-// adding a lookup doesn't mean a sixth positional argument on three functions.
+// What every answer row is rendered against: one readdir of blob hashes and one
+// batched publication-type query. Bundled so that adding a lookup doesn't mean a
+// sixth positional argument on three functions.
 interface RenderContext {
   present: Set<string>;
-  windowYears: number;
   pubTypes: Map<string, string[]>;
 }
 
@@ -145,7 +105,6 @@ export async function checkHoldings(
   inputs: string[],
   { lookUpFree = true }: HaveOptions = {}
 ): Promise<HaveAnswer[]> {
-  const windowYears = citationWindowYears();
   const refs = inputs.map(parseRef);
   const present = existingBlobHashes();
 
@@ -179,7 +138,6 @@ export async function checkHoldings(
   // Publication types for all of them in one query, rather than one per row.
   const renderContext = (pmids: string[]): RenderContext => ({
     present,
-    windowYears,
     pubTypes: pubTypesByPmids(pmids),
   });
 
@@ -281,7 +239,7 @@ function toAnswer(
   free: HaveAnswer["free"]
 ): HaveAnswer {
   const { authorKey, ...parsed } = r.ref; // authorKey is an internal match key
-  const match = r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa, ctx) : null;
+  const match = r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa) : null;
   return {
     parsed,
     held: r.held,
