@@ -2847,37 +2847,9 @@ html {
   color: var(--warn);
 }
 
-.have-pill.ambiguous {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-/* Whether it may be cited, which is a different fact from whether it's held —
-   see CiteStatus. Drawn as a quieter outline badge so it reads as an annotation
-   on the verdict rather than as a second, competing verdict. */
-.cite-badge {
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-
-.cite-badge.citable {
-  border-color: var(--success);
-  color: var(--success);
-}
-
-.cite-badge.stale {
-  border-color: var(--warn);
-  color: var(--warn);
-  cursor: help;
-}
-
-/* Whether the paper reports original data. Same quiet outline as the citable
-   badge — these are two annotations on one verdict, and giving either of them a
-   fill would make it compete with the held/not-held pill that is the answer. */
+/* Whether the paper reports original data. A quiet outline rather than a fill:
+   it annotates the verdict, and a fill would make it compete with the
+   held/not-held pill that is the answer. */
 .eve-badge {
   font-size: 11.5px;
   font-weight: 600;
@@ -2942,21 +2914,10 @@ html {
   gap: 5px;
 }
 
-.have-ambiguous,
 .have-nothing {
   margin: 0;
   font-size: 13px;
   color: var(--muted);
-}
-
-.have-candidates {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0 0 0 12px;
-  border-left: 2px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .have-free {

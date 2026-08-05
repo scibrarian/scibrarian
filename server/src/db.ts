@@ -1527,32 +1527,6 @@ export function holdingsByDois(dois: string[]): HoldingRow[] {
   return out;
 }
 
-// Held papers matching an author surname and a publication year — the fallback
-// for a citation string, which carries no identifier at all.
-//
-// Restricted to papers the user holds a file for, unlike the two lookups above.
-// A surname and a year select broadly, and running them over the whole article
-// table would rank a topic feed's thousands of merely-seen papers alongside the
-// handful actually in the library — turning a custody question into a search.
-// The answer for a paper with no file is "no" either way, so nothing is lost.
-//
-// `authors` is a JSON array of "Surname II" strings, so a LIKE over the stored
-// text matches any author of the paper, not only the first. That is deliberate:
-// a citation string names whoever led the paper, and reference styles disagree
-// about who that is.
-export function heldByAuthorYear(authorKey: string, year: number, limit = 8): HoldingRow[] {
-  return db
-    .prepare(
-      `${HOLDING_SELECT}
-       WHERE hf.file_id IS NOT NULL
-         AND a.authors LIKE ? ESCAPE '\\'
-         AND a.pub_date LIKE ?
-       ORDER BY a.pub_date DESC, a.pmid DESC
-       LIMIT ?`
-    )
-    .all(`%${escapeLike(authorKey)}%`, `${year}%`, limit) as unknown as HoldingRow[];
-}
-
 // ---------- citations (for the graph view) ----------
 
 export interface CitationInfo {

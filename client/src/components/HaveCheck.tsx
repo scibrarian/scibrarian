@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Check, ExternalLink, FileText, HelpCircle, Minus, TriangleAlert } from "lucide-react";
+import { Check, ExternalLink, FileText, Minus, TriangleAlert } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -11,19 +11,17 @@ import { ModalShell } from "./Dialogs";
 // "Check references" — the check a writer is required to run before asking a
 // project manager to approve buying an article.
 //
-// The point of the design is that it accepts *whatever is on the clipboard*. A
-// writer working from a client-formatted reference doesn't have a PMID to hand;
-// they have `[Smith 2019/p1699/col2/par1/lines 6-12]`. Making them extract an
-// identifier first would put the app's convenience ahead of the step it's
-// supposed to accelerate, and the step is already mandatory and already manual.
+// It answers on identifiers only: a PMID, a DOI, or a PubMed link, alone on the
+// line or buried in a full reference. A line carrying none is reported as such
+// rather than guessed at from its author and year — see citation-ref.ts for why
+// that guess was removed.
 //
 // Answers keep the input's order and there is always exactly one per line, so a
 // pasted reference list can be read straight down beside the original.
 
 const PLACEHOLDER = `10.1056/NEJMoa2035389
 PMID: 33301246
-[Smith 2019/p1699/col2/par1/lines 6-12]
-Jones AB, Lee C. Effects of foo on bar. Lancet. 2022;399:1120-31.`;
+https://pubmed.ncbi.nlm.nih.gov/33301246/`;
 
 export function HaveCheck({
   open,
@@ -75,8 +73,7 @@ export function HaveCheck({
     <ModalShell open={open} onClose={onClose} title="Check references" wide>
       <form className="have-form" onSubmit={check}>
         <label htmlFor="have-input" className="hint">
-          Paste PMIDs, DOIs, PubMed links, or citations — one per line. Up to{" "}
-          {MAX_HAVE_REFS} at a time.
+          Paste PMIDs, DOIs, or PubMed links — one per line. Up to {MAX_HAVE_REFS} at a time.
         </label>
         <textarea
           id="have-input"
@@ -133,11 +130,10 @@ export function HaveCheck({
 // The headline the reader acts on. Ordered by what changes a decision: what you
 // already have, then what you can get free, then what the app couldn't read.
 function Summary({ response }: { response: HaveResponse }) {
-  const { results, windowYears } = response;
+  const { results } = response;
   const held = results.filter((r) => r.held).length;
   const free = results.filter((r) => !r.held && r.free).length;
   const unreadable = results.filter((r) => r.parsed.kind === "unknown").length;
-  const stale = results.filter((r) => r.held && r.match?.cite === "out_of_window").length;
   return (
     <p className="have-summary">
       <strong>
@@ -145,8 +141,6 @@ function Summary({ response }: { response: HaveResponse }) {
       </strong>{" "}
       already in your library.
       {free > 0 && ` ${free} unowned ${free === 1 ? "paper has" : "papers have"} a free copy.`}
-      {stale > 0 &&
-        ` ${stale} held paper${stale === 1 ? " is" : "s are"} older than ${windowYears} years — verification only.`}
       {unreadable > 0 &&
         ` ${unreadable} line${unreadable === 1 ? "" : "s"} couldn’t be read.`}
     </p>
@@ -160,39 +154,19 @@ function AnswerRow({
   answer: HaveAnswer;
   onOpen: (p: HaveMatch) => void;
 }) {
-  const { parsed, match, candidates, held, free, freeChecked } = answer;
-  const several = candidates.length > 0;
+  const { parsed, match, held, free, freeChecked } = answer;
   const kind = held ? "held" : parsed.kind === "unknown" ? "unreadable" : "not-held";
 
   return (
     <li className={`have-row ${kind}`}>
       <div className="have-verdict">
-        <Verdict kind={kind} several={several} />
-        {/* The citable judgement rides on the paper, not on whether it's held —
-            a paper about to be bought can also be out of the window, and that
-            is worth knowing before the purchase rather than after. */}
-        {match && <CiteBadge match={match} />}
+        <Verdict kind={kind} />
         {match && <EvidenceBadge match={match} />}
       </div>
 
-      {several && (
-        <>
-          <p className="have-ambiguous">
-            {candidates.length} papers in your library match {describe(parsed)}. Which one?
-          </p>
-          <ul className="have-candidates">
-            {candidates.map((c) => (
-              <li key={c.pmid}>
-                <PaperLine match={c} onOpen={onOpen} />
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+      {match && <PaperLine match={match} onOpen={onOpen} />}
 
-      {!several && match && <PaperLine match={match} onOpen={onOpen} />}
-
-      {!several && !match && parsed.kind !== "unknown" && (
+      {!match && parsed.kind !== "unknown" && (
         <p className="have-nothing">
           Nothing found for {describe(parsed)}
           {freeChecked ? "" : " (identifier lookup skipped)"}.
@@ -222,14 +196,7 @@ function AnswerRow({
   );
 }
 
-function Verdict({ kind, several }: { kind: string; several: boolean }) {
-  if (several) {
-    return (
-      <span className="have-pill ambiguous">
-        <HelpCircle size={13} className="inline-icon" aria-hidden /> Several matches
-      </span>
-    );
-  }
+function Verdict({ kind }: { kind: string }) {
   if (kind === "held") {
     return (
       <span className="have-pill held">
@@ -249,26 +216,6 @@ function Verdict({ kind, several }: { kind: string; several: boolean }) {
       <Minus size={13} className="inline-icon" aria-hidden /> Not in your library
     </span>
   );
-}
-
-// Citable / verification-only. "unknown" draws nothing: the window is either
-// switched off or the paper has no date, and a badge saying so would be noise
-// on every row.
-function CiteBadge({ match }: { match: HaveMatch }) {
-  if (match.cite === "citable") {
-    return <span className="cite-badge citable">Citable</span>;
-  }
-  if (match.cite === "out_of_window") {
-    return (
-      <span
-        className="cite-badge stale"
-        title="Outside the citable window — still useful for verifying a claim back to its source"
-      >
-        Verification only{match.year ? ` · ${match.year}` : ""}
-      </span>
-    );
-  }
-  return null;
 }
 
 // Whether the paper reports original data, from PubMed's publication types.
@@ -350,6 +297,5 @@ function PaperLine({
 function describe(parsed: ParsedRefView): string {
   if (parsed.kind === "pmid") return `PMID ${parsed.pmid}`;
   if (parsed.kind === "doi") return `DOI ${parsed.doi}`;
-  if (parsed.kind === "citation") return `${parsed.author}, ${parsed.year}`;
   return parsed.input;
 }

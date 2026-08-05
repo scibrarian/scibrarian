@@ -222,18 +222,15 @@ export interface AbstractsResponse {
 
 // ---------- "do I already have this?" ----------
 
-// What one pasted line was understood to be. `citation` is an author + year
-// pulled off a citation string; `unknown` means nothing usable came out of it,
-// and `reason` says what was missing.
-export type RefKind = "pmid" | "doi" | "citation" | "unknown";
+// What one pasted line was understood to be. `unknown` means no identifier came
+// out of it, and `reason` says so.
+export type RefKind = "pmid" | "doi" | "unknown";
 
 export interface ParsedRefView {
   kind: RefKind;
   input: string; // the line as pasted, trimmed
   pmid?: string;
   doi?: string;
-  author?: string;
-  year?: number;
   reason?: string;
 }
 
@@ -246,15 +243,6 @@ export interface ParsedRefView {
 // to original data, but reviews are where writers start and are perfectly
 // citable for statements that don't rest on numbers.
 export type EvidenceClass = "primary" | "secondary" | "untyped" | "unknown";
-
-// Whether a paper is recent enough to cite, as distinct from whether it's held.
-// Deliberately orthogonal to `held`: a paper the writer is about to *buy* can
-// also be outside the window, and that's worth knowing before the purchase.
-//   citable       — inside the configured window
-//   out_of_window — held or findable, but too old to cite; still useful for
-//                   verifying a claim back to its source
-//   unknown       — no publication date, or the window is switched off
-export type CiteStatus = "citable" | "out_of_window" | "unknown";
 
 // A legal free copy of a paper the library doesn't hold — the other half of the
 // approved purchase workflow, where the PM is told to look for a free version
@@ -283,10 +271,6 @@ export interface HaveMatch {
   file_exists: boolean;
   collection_id: number | null;
   collection_name: string | null;
-  cite: CiteStatus;
-  // Publication year, so the UI can say *how far* outside the window a
-  // verification-only paper is rather than only that it is.
-  year: number | null;
   evidence: EvidenceClass;
   // The types behind that verdict, e.g. ["Meta-Analysis", "Systematic Review"].
   // Shown rather than just the class, because "Editorial" and "Meta-Analysis"
@@ -298,13 +282,9 @@ export interface HaveMatch {
 export interface HaveAnswer {
   parsed: ParsedRefView;
   held: boolean;
-  // The paper, when exactly one was identified. Null when nothing matched, or
-  // when an author+year search found several — those go in `candidates`.
+  // The paper, when one was identified; null when nothing matched. An
+  // identifier names at most one paper, so there is never a set to choose from.
   match: HaveMatch | null;
-  // Held papers an author+year search matched, when it matched more than one.
-  // The writer picks; the app must not guess which paper a citation string
-  // meant.
-  candidates: HaveMatch[];
   // Only looked up for papers the library doesn't hold, and only when the
   // request asked for it. Null means "no free copy found, or we couldn't ask".
   free: FreeCopy | null;
@@ -318,9 +298,6 @@ export interface HaveResponse {
   // How many pasted lines were dropped because the request exceeded the
   // per-request cap; the client re-sends those in another batch.
   truncated: number;
-  // The citable window in force, echoed so the UI can name it ("older than 5
-  // years"). 0 means the window is off and every `cite` is "unknown".
-  windowYears: number;
 }
 
 // A minted expiring download link for one stored PDF. `path` is relative so
