@@ -30,12 +30,12 @@ describe("parseRef — identifiers", () => {
     );
   });
 
-  it("prefers the DOI when a reference carries an author and year too", () => {
-    // A full Vancouver reference has all three. The DOI identifies the paper
-    // exactly; the author/year pair only narrows it.
+  it("finds the DOI buried in a full Vancouver reference", () => {
+    // The common paste: a whole reference, answered on the one part of it that
+    // identifies the paper exactly.
     const ref = parseRef("Smith J, Jones AB. Effects of foo. N Engl J Med. 2019;380:1699. doi:10.1056/NEJMoa1");
     expect(ref.kind).toBe("doi");
-    expect(ref.author).toBeUndefined();
+    expect(ref.doi).toBe("10.1056/nejmoa1");
   });
 
   it("reads a labelled PMID", () => {
@@ -53,102 +53,40 @@ describe("parseRef — identifiers", () => {
   });
 
   it("does not treat a number inside prose as a PMID", () => {
-    // Without a label there is nothing to say which number this is, and 2019 in
-    // a citation string is a year.
-    expect(parseRef("we enrolled 31234567 patients").kind).not.toBe("pmid");
+    // Without a label there is nothing to say which number this is.
+    expect(parseRef("we enrolled 31234567 patients").kind).toBe("unknown");
   });
 });
 
-describe("parseRef — citation strings", () => {
-  it("parses the client locator format", () => {
-    expect(parseRef("[Smith 2019/p1699/col2/par1/lines 6-12]")).toMatchObject({
-      kind: "citation",
-      author: "Smith",
-      authorKey: "smith",
-      year: 2019,
-    });
-  });
-
-  it("does not read the page number in a locator as the year", () => {
-    // `p1699` is four digits in a plausible range; only the standalone number
-    // is a year. Getting this wrong searches the wrong year and reports a held
-    // paper as not held.
-    expect(parseRef("[Smith 2019/p1699/col2/par1/lines 6-12]").year).toBe(2019);
-    expect(parseRef("[Jones 1998/p2001/col1]").year).toBe(1998);
-  });
-
-  it("parses an in-text citation", () => {
-    expect(parseRef("(Smith et al., 2019)")).toMatchObject({
-      author: "Smith",
-      year: 2019,
-    });
-  });
-
-  it("parses a Vancouver reference with no DOI", () => {
-    expect(
-      parseRef("Smith J, Jones AB, Lee C. Effects of foo on bar. N Engl J Med. 2019;380(4):1699-710.")
-    ).toMatchObject({ kind: "citation", author: "Smith", year: 2019 });
-  });
-
-  it("skips leading initials on a given-name-first name", () => {
-    expect(parseRef("J Smith 2019").author).toBe("Smith");
-  });
-
-  it("skips 'et al' when it leads the line", () => {
-    expect(parseRef("et al. Smith 2019").author).toBe("Smith");
-  });
-
-  it("keeps surname particles together but matches on the distinctive word", () => {
-    // PubMed stores the whole surname in one string ("Van Der Berg J"), so the
-    // last word is what a substring match should look for.
-    expect(parseRef("van der Berg 2019")).toMatchObject({
-      author: "van der Berg",
-      authorKey: "berg",
-    });
-    expect(parseRef("de Silva M, et al. 2021")).toMatchObject({
-      author: "de Silva",
-      authorKey: "silva",
-    });
-  });
-
-  it("keeps accented surnames intact", () => {
-    expect(parseRef("Müller K. Some title. 2020;1:1.")).toMatchObject({
-      author: "Müller",
-      authorKey: "müller",
-    });
-  });
-
-  it("takes the author from before the year, not from the title", () => {
-    expect(parseRef("Smith J. Berg syndrome revisited. Lancet. 2019;1:1.").author).toBe("Smith");
-  });
-});
-
+// An author and year used to be read off these and matched against held papers.
+// That match couldn't uphold the one guarantee the feature makes — see the note
+// at the top of citation-ref.ts. They are now reported unreadable, which says
+// what the reader has to do: go and fetch the identifier.
 describe("parseRef — what it refuses to guess", () => {
   it("reports a blank line", () => {
     expect(parseRef("   ").kind).toBe("unknown");
   });
 
-  it("reports an author with no year", () => {
-    const ref = parseRef("Smith et al.");
+  it("refuses a reference carrying no identifier", () => {
+    const ref = parseRef(
+      "Smith J, Jones AB, Lee C. Effects of foo on bar. N Engl J Med. 2019;380(4):1699-710."
+    );
     expect(ref.kind).toBe("unknown");
-    expect(ref.reason).toMatch(/year/i);
+    expect(ref.reason).toMatch(/PMID or DOI/i);
   });
 
-  it("reports a year with no author", () => {
-    const ref = parseRef("(2019)");
-    expect(ref.kind).toBe("unknown");
-    expect(ref.reason).toMatch(/author/i);
+  it("refuses the client locator format", () => {
+    expect(parseRef("[Smith 2019/p1699/col2/par1/lines 6-12]").kind).toBe("unknown");
+  });
+
+  it("refuses an in-text citation", () => {
+    expect(parseRef("(Smith et al., 2019)").kind).toBe("unknown");
   });
 
   it("reads a lone number as a PMID even when it looks like a year", () => {
-    // Documented ambiguity: short PMIDs are real, and a bare year answers
-    // nothing anyway, so the paste-a-column-of-ids case wins.
+    // Documented ambiguity: short PMIDs are real, so the paste-a-column-of-ids
+    // case wins. Search makes the opposite call, and says why.
     expect(parseRef("2019")).toMatchObject({ kind: "pmid", pmid: "2019" });
-  });
-
-  it("rejects a year outside the plausible range", () => {
-    expect(parseRef("Smith 1492").kind).toBe("unknown");
-    expect(parseRef("Smith 2199").kind).toBe("unknown");
   });
 
   it("always echoes the input back", () => {

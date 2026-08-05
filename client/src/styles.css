@@ -2847,11 +2847,6 @@ html {
   color: var(--warn);
 }
 
-.have-pill.ambiguous {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
 /* Whether the paper reports original data. A quiet outline rather than a fill:
    it annotates the verdict, and a fill would make it compete with the
    held/not-held pill that is the answer. */
@@ -2919,21 +2914,10 @@ html {
   gap: 5px;
 }
 
-.have-ambiguous,
 .have-nothing {
   margin: 0;
   font-size: 13px;
   color: var(--muted);
-}
-
-.have-candidates {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0 0 0 12px;
-  border-left: 2px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .have-free {

@@ -222,18 +222,15 @@ export interface AbstractsResponse {
 
 // ---------- "do I already have this?" ----------
 
-// What one pasted line was understood to be. `citation` is an author + year
-// pulled off a citation string; `unknown` means nothing usable came out of it,
-// and `reason` says what was missing.
-export type RefKind = "pmid" | "doi" | "citation" | "unknown";
+// What one pasted line was understood to be. `unknown` means no identifier came
+// out of it, and `reason` says so.
+export type RefKind = "pmid" | "doi" | "unknown";
 
 export interface ParsedRefView {
   kind: RefKind;
   input: string; // the line as pasted, trimmed
   pmid?: string;
   doi?: string;
-  author?: string;
-  year?: number;
   reason?: string;
 }
 
@@ -285,13 +282,9 @@ export interface HaveMatch {
 export interface HaveAnswer {
   parsed: ParsedRefView;
   held: boolean;
-  // The paper, when exactly one was identified. Null when nothing matched, or
-  // when an author+year search found several — those go in `candidates`.
+  // The paper, when one was identified; null when nothing matched. An
+  // identifier names at most one paper, so there is never a set to choose from.
   match: HaveMatch | null;
-  // Held papers an author+year search matched, when it matched more than one.
-  // The writer picks; the app must not guess which paper a citation string
-  // meant.
-  candidates: HaveMatch[];
   // Only looked up for papers the library doesn't hold, and only when the
   // request asked for it. Null means "no free copy found, or we couldn't ask".
   free: FreeCopy | null;

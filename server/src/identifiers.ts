@@ -20,7 +20,8 @@ export const PUBMED_URL_RE = /pubmed\.ncbi\.nlm\.nih\.gov\/(\d{1,8})/i;
 // A string that is nothing but a number.
 export const BARE_PMID_RE = /^(\d{1,8})$/;
 
-// Four digits in 1800–2099: what citation-ref.ts reads as a publication year.
+// Four digits in 1800–2099 — a number far more likely to be a publication year
+// than a PMID. Starts at 1800 because MEDLINE's oldest records are 19th century.
 const YEAR_LIKE_RE = /^(?:1[89]\d{2}|20\d{2})$/;
 
 export interface Identifiers {

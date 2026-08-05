@@ -519,15 +519,15 @@ api.get("/abstracts", (req, res) => {
 
 // ---------- "do I already have this?" ----------
 
-// The purchase-avoidance check. Accepts whatever the writer had on the
-// clipboard: `?q=` is a block of pasted lines, one reference per line, and
-// `?pmid=` / `?doi=` are the explicit single-identifier form the roadmap names.
-// All three funnel into the same parser, so a citation string, a DOI and a PMID
-// are answered by one code path.
+// The purchase-avoidance check. `?q=` is a block of pasted lines, one reference
+// per line, and `?pmid=` / `?doi=` are the explicit single-identifier form the
+// roadmap names. All three funnel into the same parser, so a bare identifier
+// and one buried in a full reference are answered by one code path.
 //
 // Newline is the only separator. `;` was tried as a URL-friendlier alternative
 // and is wrong: every Vancouver reference contains one (`2014;383:1699-710`),
-// so it splits real references in half and reports both halves as unreadable.
+// so it splits real references in half — and the half holding the DOI is the
+// only one that could have been answered.
 //
 // A GET, and public like /papers: this is a read, and the whole value of the
 // feature is that it takes one action. A POST would put it behind the admin
@@ -549,7 +549,7 @@ api.get(
       ...toList(req.query.doi, false),
     ];
     if (lines.length === 0) {
-      return res.status(400).json({ error: "Paste a PMID, DOI, or citation to check." });
+      return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
     const body: HaveResponse = {

@@ -1,7 +1,6 @@
 import { existingBlobHashes } from "./blobstore.js";
 import { parseRef, type ParsedRef } from "./citation-ref.js";
 import {
-  heldByAuthorYear,
   holdingsByDois,
   holdingsByPmids,
   pubTypesByPmids,
@@ -118,22 +117,11 @@ export async function checkHoldings(
     byDoi.set(row.doi.toLowerCase(), row);
   }
 
-  // Citation strings can't be batched — each is its own surname/year pair — but
-  // they're a small, bounded set (at most MAX_REFS_PER_REQUEST) and each query
-  // is a single indexed scan of the held papers.
-  const candidatesByInput = new Map<string, HoldingRow[]>();
-  for (const ref of refs) {
-    if (ref.kind !== "citation" || !ref.authorKey || ref.year == null) continue;
-    candidatesByInput.set(ref.input, heldByAuthorYear(ref.authorKey, ref.year));
-  }
+  const local = refs.map((ref) => resolveLocally(ref, byPmid, byDoi));
 
-  const local = refs.map((ref) => resolveLocally(ref, byPmid, byDoi, candidatesByInput));
-
-  // Every paper any answer might name — the single identified match, plus the
-  // candidates of an ambiguous author+year search, which aren't known until the
-  // local pass has run.
+  // Every paper any answer might name.
   const namedPmids = (results: LocalResult[]) =>
-    results.flatMap((r) => [...(r.row ? [r.row.pmid] : []), ...r.rows.map((x) => x.pmid)]);
+    results.flatMap((r) => (r.row ? [r.row.pmid] : []));
 
   // Publication types for all of them in one query, rather than one per row.
   const renderContext = (pmids: string[]): RenderContext => ({
@@ -199,8 +187,7 @@ export async function checkHoldings(
 // whatever the library could say about it without leaving the machine.
 interface LocalResult {
   ref: ParsedRef;
-  row: HoldingRow | null; // the one paper, when exactly one was identified
-  rows: HoldingRow[]; // several held candidates from an author+year search
+  row: HoldingRow | null; // the paper the identifier named, when it's on file
   held: boolean;
   oa?: OaWork | null;
 }
@@ -208,10 +195,9 @@ interface LocalResult {
 function resolveLocally(
   ref: ParsedRef,
   byPmid: Map<string, HoldingRow>,
-  byDoi: Map<string, HoldingRow>,
-  candidatesByInput: Map<string, HoldingRow[]>
+  byDoi: Map<string, HoldingRow>
 ): LocalResult {
-  const empty: LocalResult = { ref, row: null, rows: [], held: false };
+  const empty: LocalResult = { ref, row: null, held: false };
   if (ref.kind === "pmid" && ref.pmid) {
     const row = byPmid.get(ref.pmid) ?? null;
     return { ...empty, row, held: row?.file_id != null };
@@ -219,15 +205,6 @@ function resolveLocally(
   if (ref.kind === "doi" && ref.doi) {
     const row = byDoi.get(ref.doi) ?? null;
     return { ...empty, row, held: row?.file_id != null };
-  }
-  if (ref.kind === "citation") {
-    const rows = candidatesByInput.get(ref.input) ?? [];
-    // One hit is an answer; several are a question for the reader. A citation
-    // string names an author and a year, and a library can legitimately hold
-    // two papers matching both — picking one would put a writer in front of the
-    // wrong PDF while telling them it's the right one.
-    if (rows.length === 1) return { ...empty, row: rows[0], held: true };
-    return { ...empty, rows, held: rows.length > 0 };
   }
   return empty;
 }
@@ -238,13 +215,10 @@ function toAnswer(
   freeChecked: boolean,
   free: HaveAnswer["free"]
 ): HaveAnswer {
-  const { authorKey, ...parsed } = r.ref; // authorKey is an internal match key
-  const match = r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa) : null;
   return {
-    parsed,
+    parsed: r.ref,
     held: r.held,
-    match: r.rows.length > 1 ? null : match,
-    candidates: r.rows.length > 1 ? r.rows.map((row) => toMatch(row, ctx)) : [],
+    match: r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa) : null,
     free,
     freeChecked,
   };
