@@ -21,8 +21,7 @@ import { ModalShell } from "./Dialogs";
 
 const PLACEHOLDER = `10.1056/NEJMoa2035389
 PMID: 33301246
-https://pubmed.ncbi.nlm.nih.gov/33301246/
-Jones AB, Lee C. Effects of foo on bar. Lancet. 2022;399:1120-31. doi:10.1016/S0140-6736(22)00001-2`;
+https://pubmed.ncbi.nlm.nih.gov/33301246/`;
 
 export function HaveCheck({
   open,
