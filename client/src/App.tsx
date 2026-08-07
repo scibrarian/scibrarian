@@ -20,8 +20,8 @@ import { Settings } from "./components/Settings";
 import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
-import { ViewSwitcher, type ViewMode } from "./components/ViewSwitcher";
-import { HaveCheck } from "./components/HaveCheck";
+import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
+import { HaveCheck, HAVE_CHECK_TITLE } from "./components/HaveCheck";
 import {
   Dna,
   Settings as SettingsIcon,
@@ -140,11 +140,26 @@ export default function App() {
     setAuthRejectedHandler(() => setIsAdmin(false));
     // Admin state resolves with the same `loaded` flip so the admin controls
     // don't pop in after the skeletons clear.
-    const auth = api
-      .getAuth()
-      .catch(() => ({ admin: false, token_required: true, library_open: false }));
+    // null rather than a viewer-shaped fallback, so the handler below can tell
+    // "the server said you are not admin" from "we couldn't ask it".
+    const auth = api.getAuth().catch(() => null);
     Promise.all([loadTopics(), loadFolders(), loadCollections(), auth, loadBookmarks()]).then(
-      ([ds, fs, cs, { admin, token_required, library_open }]) => {
+      ([ds, fs, cs, status]) => {
+        const { admin, token_required, library_open } = status ?? {
+          admin: false,
+          token_required: true,
+          library_open: false,
+        };
+        // A stored token the server has just refused is dead weight. /api/auth
+        // answers 200 with admin:false rather than 401, so the 401 path in
+        // api.ts never clears it — and nothing else would either, because a
+        // demoted viewer makes no mutating calls to get a 401 from. Left alone
+        // it sits in localStorage forever, telling every later load's header
+        // skeleton to reserve an admin button that never lands. Only on a real
+        // answer: a request that failed is not the server saying no, and
+        // dropping a good token because the network blinked would lock an admin
+        // out of their own instance.
+        if (status && !admin) setAdminToken(null);
         setIsAdmin(admin);
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
@@ -575,10 +590,38 @@ export default function App() {
         <div className="header-actions">
           {!loaded ? (
             // Reserve the controls' space during the first load so they don't
-            // pop in and shift the header once data arrives.
+            // pop in and shift the header once data arrives. Stand-ins built
+            // from the real controls, not bars sized by eye: the row is
+            // right-aligned, so anything narrower than what lands slides every
+            // control along it — which is what two guessed bars did here.
+            //
+            // What's reserved is what the load is about to produce. The view
+            // switch: `source` is null until then, but the load lands in the
+            // first workspace that holds anything (see the effect above), so it
+            // appears for everyone past an empty app. "Check references" is
+            // ungated and always does. The icon buttons are one or two — a
+            // viewer's padlock, or an admin's gear beside the one that locks
+            // again — and a stored token is what tells the two apart, which is
+            // readable here and now rather than after /api/auth answers.
+            //
+            // The token is a fair proxy because a refused one doesn't survive:
+            // the bootstrap above drops it the first time the server answers
+            // that it isn't admin, so a token still here means the last real
+            // answer was yes. A revoked token still costs one wrong guess, on
+            // the load that discovers it.
             <>
-              <SkeletonBar w={150} h={32} style={{ borderRadius: "var(--radius)" }} />
-              <SkeletonBar w={108} h={35} style={{ borderRadius: "var(--radius)" }} />
+              <ViewSwitcherSkeleton />
+              <button className="have-btn" disabled aria-hidden="true">
+                <SkeletonBar w={16} h={16} />
+                <span className="have-btn-label">
+                  <SkeletonBar h={14}>{HAVE_CHECK_TITLE}</SkeletonBar>
+                </span>
+              </button>
+              {Array.from({ length: getAdminToken() != null ? 2 : 1 }).map((_, i) => (
+                <button key={i} className="gear-btn" disabled aria-hidden="true">
+                  <SkeletonBar w={16} h={16} />
+                </button>
+              ))}
             </>
           ) : (
             <>
@@ -604,7 +647,7 @@ export default function App() {
                 title="Check a reference list against the library — paste PMIDs, DOIs, PubMed links or citations, one per line"
               >
                 <SearchCheck size={16} aria-hidden />
-                <span className="have-btn-label">Check references</span>
+                <span className="have-btn-label">{HAVE_CHECK_TITLE}</span>
               </button>
               {isAdmin && (
                 <button

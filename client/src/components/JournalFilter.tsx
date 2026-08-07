@@ -7,6 +7,11 @@ import { ChevronDown } from "lucide-react";
 // *deselected* journals so a journal that newly appears (e.g. after a refresh)
 // is shown by default. Every item preventDefaults its select so the menu stays
 // open while toggling several journals in a row.
+// What the trigger reads with nothing deselected, which is where a first load
+// always lands — so it is also what the loading stand-in has to measure itself
+// against (see FilterSkeleton).
+export const ALL_JOURNALS_LABEL = "All journals";
+
 export function JournalFilter({
   journals,
   deselected,
@@ -19,7 +24,7 @@ export function JournalFilter({
   const selectedCount = journals.reduce((n, j) => n + (deselected.has(j) ? 0 : 1), 0);
   const label =
     selectedCount === journals.length
-      ? "All journals"
+      ? ALL_JOURNALS_LABEL
       : selectedCount === 0
         ? "No journals"
         : `${selectedCount} of ${journals.length} journals`;

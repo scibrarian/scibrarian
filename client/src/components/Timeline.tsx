@@ -52,6 +52,7 @@ export function Timeline({
     error,
     allDeselected,
     filtered,
+    total,
   } = usePapers(source, reloadToken, filters);
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
@@ -87,6 +88,7 @@ export function Timeline({
             // The full filtered list; the timeline renders it a chunk at a time.
             <SaveAllButton
               pmids={visible.map((p) => p.pmid)}
+              total={total}
               bookmarking={bookmarking}
               onError={setActionError}
               onDone={setNotice}

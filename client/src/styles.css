@@ -321,8 +321,13 @@ body {
   cursor: pointer;
 }
 
-.filter-trigger:hover {
+.filter-trigger:hover:not(:disabled) {
   border-color: var(--accent);
+}
+
+/* The loading stand-in, which is this same button holding shimmer bars. */
+.filter-trigger:disabled {
+  cursor: default;
 }
 
 /* Radix positions the menu (portal + popper), so no position/top/left here;
@@ -1086,6 +1091,13 @@ code {
   color: #fff;
 }
 
+/* The loading stand-ins (see ViewSwitcherSkeleton), and the header's other two. */
+.view-toggle button:disabled,
+.have-btn:disabled,
+.gear-btn:disabled {
+  cursor: default;
+}
+
 /* Roving focus makes the group a single tab stop, so the ring on the focused
    item is the only cue for where keyboard focus actually is. */
 .view-toggle button:focus-visible {
@@ -1148,58 +1160,6 @@ code {
 .citation-filter input[type="range"] {
   width: 180px;
   padding: 0;
-}
-
-.graph-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.graph-check input {
-  width: auto;
-  padding: 0;
-}
-
-/* Cluster-grouping switch (Citations | Topic). A compact sibling of
-   .view-toggle sized to sit inline in the graph's filter row. */
-.group-by {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.group-toggle {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: var(--panel);
-}
-
-.group-toggle button {
-  background: transparent;
-  border: none;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.group-toggle button[data-state="on"] {
-  background: var(--accent);
-  color: #fff;
-}
-
-.group-toggle button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 
 .graph-count {
@@ -1858,7 +1818,7 @@ code {
   cursor: pointer;
 }
 
-.gear-btn:hover {
+.gear-btn:hover:not(:disabled) {
   color: var(--text);
 }
 
@@ -1931,8 +1891,13 @@ html {
   cursor: pointer;
 }
 
-.mode-switch button:hover {
+.mode-switch button:hover:not(:disabled) {
   color: var(--text);
+}
+
+/* The loading stand-ins, which are the same buttons holding shimmer bars. */
+.mode-switch button:disabled {
+  cursor: default;
 }
 
 .mode-switch button.active {
@@ -2200,6 +2165,7 @@ html {
 .save-all-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2210,6 +2176,13 @@ html {
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
+  /* One fixed box for every state this reaches — "Save 4 papers", "Save 12,480
+     papers", "Saving…", and the empty stand-in that holds the slot when nothing
+     matches. .filter-row wraps, so a button that changed width as the filters
+     narrowed could pull itself onto a second line and walk the whole paper list
+     up and down behind it. Wide enough for five-figure counts; past that it
+     grows, which only moves its own left edge (it is margin-left: auto). */
+  min-width: 190px;
 }
 
 .save-all-btn:hover:not(:disabled),
@@ -2221,6 +2194,11 @@ html {
 .save-all-btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* Holds the slot open when the filters match nothing to save. */
+.save-all-empty {
+  visibility: hidden;
 }
 
 /* The bulk menu lists folders with their current size, so you can see what
@@ -2693,6 +2671,11 @@ html {
   border-radius: 6px;
   vertical-align: middle;
   max-width: 100%;
+  /* A bar may be given the real label as content so it measures itself against
+     the text it stands in for (see SkeletonBar). The bar paints over it either
+     way; this is what keeps it from showing through. */
+  color: transparent;
+  user-select: none;
 }
 
 .skeleton::after {
@@ -2744,7 +2727,7 @@ html {
   cursor: pointer;
 }
 
-.have-btn:hover,
+.have-btn:hover:not(:disabled),
 .have-btn.active {
   border-color: var(--accent);
   color: var(--accent);

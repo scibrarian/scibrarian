@@ -48,6 +48,7 @@ export function PapersTable({
     error,
     allDeselected,
     filtered,
+    total,
   } = usePapers(source, reloadToken, filters);
   const [sortKey, setSortKey] = useState<SortKey>("year");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -143,6 +144,7 @@ export function PapersTable({
             // table lazy-renders, so `shown` would silently save a scroll depth.
             <SaveAllButton
               pmids={visible.map((p) => p.pmid)}
+              total={total}
               bookmarking={bookmarking!}
               onError={setActionError}
               onDone={setNotice}

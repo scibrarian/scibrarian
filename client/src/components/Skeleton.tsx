@@ -1,16 +1,44 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { ALL_JOURNALS_LABEL } from "./JournalFilter";
 
 // Shimmering placeholder bar — the building block for the skeleton screens.
+//
+// `w` is usually a guess at how wide the real thing will be. Omitting it and
+// passing the real text as `children` instead makes the bar exactly that text's
+// width: .skeleton paints its own background over transparent text, so the
+// label sizes the bar without ever being read (the bar is aria-hidden) or seen.
+// Worth it where being a few pixels out would slide a neighbour sideways on the
+// handoff; a guess is fine everywhere else.
 export function SkeletonBar({
   w,
-  h = 14,
+  h,
   style,
+  children,
 }: {
-  w: number | string;
+  w?: number | string;
   h?: number;
   style?: CSSProperties;
+  children?: ReactNode;
 }) {
-  return <span className="skeleton" style={{ width: w, height: h, ...style }} aria-hidden="true" />;
+  // `children` sizes the WIDTH. The height is always set rather than left to
+  // the text: a bar is an inline-block with vertical-align: middle, so in a line
+  // box it is centred on the baseline plus half an x-height instead of sitting
+  // on the strut the way the text it replaces does. Letting the text set its
+  // height there makes the line box taller than the label will, not equal to it.
+  //
+  // Measured in the view switch, whose buttons hold nothing but a label: with
+  // the text setting it, .view-toggle stood 1.13px taller than the control it
+  // replaces and carried 0.13px of that up into .header-actions, moving the
+  // header on the handoff. Fixed, the residual is 0.63px and .header-actions
+  // matches exactly — a stand-in that has to match a real control's height gets
+  // it from the control (its padding, its border, a real-sized sibling beside
+  // the bar), never from the bar itself.
+  const height = h ?? 14;
+  return (
+    <span className="skeleton" style={{ width: w, height, ...style }} aria-hidden="true">
+      {children}
+    </span>
+  );
 }
 
 // Mirrors the timeline layout (month label + dotted rows of article cards) so
@@ -32,7 +60,7 @@ export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolea
             tabIndex={-1}
           />
           <div className="filter-row">
-            <FilterSkeleton />
+            <FilterSkeleton label={ALL_JOURNALS_LABEL} />
           </div>
         </div>
       )}
@@ -62,10 +90,32 @@ export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolea
   );
 }
 
-// Placeholder for the journal-filter dropdown trigger — a fixed size so the
-// real dropdown drops in without shifting the toolbar.
-export function FilterSkeleton() {
-  return <SkeletonBar w={160} h={32} style={{ borderRadius: "var(--radius)" }} />;
+// Placeholder for a filter dropdown trigger: the real trigger, disabled, with
+// shimmer bars over its label and its caret.
+//
+// The real control has no width — .filter-trigger is whatever its label, its
+// padding, its border and its 16px caret add up to, in the button's own font
+// rather than the body's. A bar guessed at that (this was 160x32) lands beside
+// it, not on it, and .filter-row is a flex row, so the miss slides every control
+// after it the moment the real one arrives. Same element, same classes, same
+// label text is the only thing that measures the same.
+//
+// `label` is the trigger's unfiltered text, which is what a first load always
+// resolves to — passed from the filter that owns it so a rename can't leave the
+// stand-in holding the old width.
+export function FilterSkeleton({ label }: { label: string }) {
+  return (
+    <div className="filter-picker" aria-hidden="true">
+      <button className="filter-trigger" disabled>
+        <span className="filter-label">
+          <SkeletonBar h={14}>{label}</SkeletonBar>
+        </span>
+        <span className="ws-caret">
+          <SkeletonBar w={16} h={16} />
+        </span>
+      </button>
+    </div>
+  );
 }
 
 // One placeholder row for the settings lists and the journal-manager panes: a

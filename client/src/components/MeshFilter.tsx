@@ -63,7 +63,7 @@ export function useMeshFacets(source: PaperSource, reloadToken: number) {
     return () => clearTimeout(t);
   }, [query]);
 
-  const { data } = useCachedFetch(facetCache, `${key}:${search}`, reloadToken, () =>
+  const { data, loading } = useCachedFetch(facetCache, `${key}:${search}`, reloadToken, () =>
     api.getMeshHeadings(source, search || undefined)
   );
 
@@ -84,10 +84,21 @@ export function useMeshFacets(source: PaperSource, reloadToken: number) {
     setQuery,
     searching: search !== "",
     available: shown != null && (shown.filing.filed > 0 || shown.filing.unchecked > 0),
+    // A first load for this source, with nothing yet to stand in its place —
+    // the toolbar holds the slot with a skeleton rather than letting the
+    // control drop into the row once the facets land. Deliberately not true
+    // for a search refetch: `shown` still holds the previous response then, so
+    // the control stays where it is instead of blinking into a skeleton on
+    // every keystroke past the debounce.
+    loading: shown == null && loading,
   };
 }
 
 export type MeshFacets = ReturnType<typeof useMeshFacets>;
+
+// The unfiltered trigger text, which is what a first load resolves to and so
+// what the loading stand-in measures itself against (see FilterSkeleton).
+export const ALL_SUBJECTS_LABEL = "All subjects";
 
 // Multiselect subject filter, driven by the descriptors a source is actually
 // filed under. Unlike the journal filter beside it this tracks what is
@@ -127,7 +138,7 @@ export function MeshFilter({
 
   const label =
     selected.length === 0
-      ? "All subjects"
+      ? ALL_SUBJECTS_LABEL
       : selected.length === 1
         ? selected[0].name
         : `${selected.length} subjects`;
@@ -169,6 +180,11 @@ export function MeshFilter({
               value={query}
               placeholder="Search subjects…"
               aria-label="Search subjects"
+              // Every term this box can match is a MeSH descriptor, so the
+              // squiggles mark correct input as wrong and never mark anything
+              // that is — more so than the paper search beside it, which at
+              // least sees ordinary words in titles.
+              spellCheck={false}
               autoFocus
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.stopPropagation()}

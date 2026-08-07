@@ -192,47 +192,6 @@ export function Settings({
       {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
 
       <section className="panel">
-        <h2>Journals</h2>
-        <p className="hint">
-          Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
-          citations per article — an open stand-in for impact factor.
-        </p>
-        <button type="button" className="accent-btn" onClick={() => setManagingJournals(true)}>
-          Manage journals…
-        </button>
-        <ul className="list scroll-list">
-          {!loaded ? (
-            // Six rows to match the fixed height, so the panel doesn't resize on load.
-            ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
-              <ListRowSkeleton key={i} w={w} pill />
-            ))
-          ) : (
-            <>
-              {journals.map((j) => (
-                <li key={j.id}>
-                  {/* Name and badge are one column: the badge annotates the
-                      journal, so space-between must not strand it mid-row. */}
-                  <div className="list-label">
-                    <span>{j.name}</span>
-                    {j.medline_indexed === false && <MeshBadge name={j.name} />}
-                  </div>
-                  {j.metric != null && (
-                    <span
-                      className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
-                      title="OpenAlex 2-yr citations per article"
-                    >
-                      {round1(j.metric)}
-                    </span>
-                  )}
-                </li>
-              ))}
-              {journals.length === 0 && <li className="muted">No journals yet.</li>}
-            </>
-          )}
-        </ul>
-      </section>
-
-      <section className="panel">
         <h2>Topics</h2>
         <p className="hint">
           Each topic appears under{" "}
@@ -317,6 +276,47 @@ export function Settings({
                 </li>
               ))}
               {topics.length === 0 && <li className="muted">No topics yet.</li>}
+            </>
+          )}
+        </ul>
+      </section>
+
+      <section className="panel">
+        <h2>Journals</h2>
+        <p className="hint">
+          Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
+          citations per article — an open stand-in for impact factor.
+        </p>
+        <button type="button" className="accent-btn" onClick={() => setManagingJournals(true)}>
+          Manage journals…
+        </button>
+        <ul className="list scroll-list">
+          {!loaded ? (
+            // Six rows to match the fixed height, so the panel doesn't resize on load.
+            ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
+              <ListRowSkeleton key={i} w={w} pill />
+            ))
+          ) : (
+            <>
+              {journals.map((j) => (
+                <li key={j.id}>
+                  {/* Name and badge are one column: the badge annotates the
+                      journal, so space-between must not strand it mid-row. */}
+                  <div className="list-label">
+                    <span>{j.name}</span>
+                    {j.medline_indexed === false && <MeshBadge name={j.name} />}
+                  </div>
+                  {j.metric != null && (
+                    <span
+                      className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
+                      title="OpenAlex 2-yr citations per article"
+                    >
+                      {round1(j.metric)}
+                    </span>
+                  )}
+                </li>
+              ))}
+              {journals.length === 0 && <li className="muted">No journals yet.</li>}
             </>
           )}
         </ul>
