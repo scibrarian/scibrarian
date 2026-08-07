@@ -23,11 +23,15 @@ type Target = { kind: "existing"; id: number; name: string } | { kind: "new"; na
 // filtered set, never the lazily-rendered chunk on screen.
 export function SaveAllButton({
   pmids,
+  total,
   bookmarking,
   onError,
   onDone,
 }: {
   pmids: string[];
+  // The same list before the filters ran. Only read when `pmids` is empty, to
+  // tell the two reasons for that apart — see below.
+  total: number;
   bookmarking: Bookmarking;
   onError: (message: string) => void;
   onDone: (message: string) => void;
@@ -38,7 +42,34 @@ export function SaveAllButton({
   const count = pmids.length;
   const papers = `${count.toLocaleString()} paper${count === 1 ? "" : "s"}`;
 
-  if (count === 0) return null;
+  // Nothing to save. Two reasons, wanting opposite things.
+  //
+  // The filters narrowed the list to nothing: the row around this button is full
+  // of the controls that did the narrowing, and it wraps — unmounting here and
+  // remounting when they widen again pulls the row between one line and two and
+  // walks every paper below it up and down. So the slot stays.
+  //
+  // Or the source is empty, and there are no such controls to hold a line: a
+  // source with no papers has no journals, no citation range and no year span,
+  // so the row is this button and nothing else. A slot held open there is a
+  // blank band above the empty state with nothing in it to explain it, and it
+  // is the *first* thing you see in a folder you just made.
+  if (count === 0) {
+    if (total === 0) return null;
+
+    // A disabled button holding the trigger's own children, not an empty span:
+    // measured both ways, an empty inline-flex collapses to its padding (7px
+    // short) and a filled <span> picks up the body's line-height where a
+    // <button> takes the UA's (4.5px tall). Only the same element with the same
+    // content measures the same, and it holds if the padding or font changes.
+    return (
+      <button className="save-all-btn save-all-empty" disabled aria-hidden="true">
+        <Bookmark size={14} aria-hidden />
+        Save
+        <ChevronDown size={14} aria-hidden />
+      </button>
+    );
+  }
 
   // The size of the set is known before anything is sent, so a save the server
   // would refuse is reported here — and reported instead of the confirmation,

@@ -8,6 +8,12 @@ import type { HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../type
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
+// What this feature is called wherever it is named: the header button, that
+// button's loading stand-in (which is sized from this text, so a rename that
+// missed it would leave the stand-in holding the old width), and the modal's
+// own title. It has been renamed once already — see commit 88626cf.
+export const HAVE_CHECK_TITLE = "Check references";
+
 // "Check references" — the check a writer is required to run before asking a
 // project manager to approve buying an article.
 //
@@ -70,7 +76,7 @@ export function HaveCheck({
   }
 
   return (
-    <ModalShell open={open} onClose={onClose} title="Check references" wide>
+    <ModalShell open={open} onClose={onClose} title={HAVE_CHECK_TITLE} wide>
       <form className="have-form" onSubmit={check}>
         <label htmlFor="have-input" className="hint">
           Paste PMIDs, DOIs, or PubMed links — one per line. Up to {MAX_HAVE_REFS} at a time.

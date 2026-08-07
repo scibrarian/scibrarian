@@ -1,4 +1,5 @@
 import * as ToggleGroup from "@radix-ui/react-toggle-group";
+import { SkeletonBar } from "./Skeleton";
 
 export type ViewMode = "table" | "timeline" | "graph";
 
@@ -44,5 +45,24 @@ export function ViewSwitcher({
         </ToggleGroup.Item>
       ))}
     </ToggleGroup.Root>
+  );
+}
+
+// The switch's box, one paint early. Disabled copies of the real buttons rather
+// than a guessed bar, holding shimmer bars that carry the real labels — so the
+// group is exactly as wide as the one replacing it. That matters more here than
+// most places: .header-actions is right-aligned, so a stand-in a few pixels off
+// slides every control beside it sideways on the handoff.
+//
+// It lives here so VIEWS stays the one list a new view has to be added to.
+export function ViewSwitcherSkeleton() {
+  return (
+    <div className="view-toggle" aria-hidden="true">
+      {VIEWS.map((v) => (
+        <button key={v.value} disabled>
+          <SkeletonBar h={14}>{v.label}</SkeletonBar>
+        </button>
+      ))}
+    </div>
   );
 }

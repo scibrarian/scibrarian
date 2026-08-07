@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import * as ToggleGroup from "@radix-ui/react-toggle-group";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { FileText, ExternalLink, X } from "lucide-react";
 import { api } from "../api";
@@ -9,7 +8,7 @@ import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import type { Bookmarking } from "../lib/bookmarking";
 import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
-import { clusterByTitle, clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
+import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
 import {
   buildAdjacency,
   depthAlpha,
@@ -23,11 +22,6 @@ import { BookmarkMenu } from "./BookmarkMenu";
 import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
-
-// How cluster colors are derived: by citation links (the collection's citation
-// structure) or by title similarity (what papers are about, so related-but-
-// uncited work groups together). See clusterByTitle for the v2 abstract upgrade.
-type GroupBy = "citation" | "content";
 
 // react-force-graph mutates node/link objects in place (positions on nodes,
 // resolved refs on links), so allow extras.
@@ -110,11 +104,8 @@ export function CitationGraph({
   const [notice, setNotice] = useState<string | null>(null);
   // The paper waiting on a new folder, if any (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
-  // The citation threshold is shared with the other views (instant: slider +
-  // box); hide-unconnected is about edges, so it stays graph-local.
+  // The citation threshold is shared with the other views (instant: slider + box).
   const { minCitations } = filters;
-  const [hideUnconnected, setHideUnconnected] = useState(false);
-  const [groupBy, setGroupBy] = useState<GroupBy>("citation");
   const [hiddenClusters, setHiddenClusters] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -191,40 +182,28 @@ export function CitationGraph({
   // a real collection here. A paper cannot cite itself, and the edge is invisible
   // on the canvas either way (force-graph only draws a loop when linkCurvature is
   // set, which it isn't), so it can only ever surface as a wrong answer: it
-  // inflates the link readout, and it makes "hide unconnected" count a paper as
-  // connected to itself, leaving a lone dot in the one view meant to exclude it.
-  // Dropped once, here, rather than at each of the places that read edges.
+  // inflates the link readout. Dropped once, here, rather than at each of the
+  // places that read edges.
   const edges = useMemo(() => (data?.edges ?? []).filter((e) => e.source !== e.target), [data]);
 
-  // The set of nodes/links the *simulation* lays out. Only changes with the data
-  // or the "hide unconnected" choice — never with the slider — so filtering and
-  // clustering never restart (jolt) the layout.
+  // The set of nodes/links the *simulation* lays out: everything the server
+  // returned. Only changes with the data — never with the slider — so filtering
+  // and clustering never restart (jolt) the layout.
   const graphData = useMemo(() => {
     if (!data) return { nodes: [] as FGNode[], links: [] as FGLink[] };
     const links: FGLink[] = edges.map((e) => ({ source: e.source, target: e.target }));
-    let pmids = data.nodes.map((n) => n.pmid);
-    if (hideUnconnected) {
-      const connected = new Set<string>();
-      for (const e of edges) {
-        connected.add(e.source);
-        connected.add(e.target);
-      }
-      pmids = pmids.filter((p) => connected.has(p));
-    }
-    const nodes = pmids.map((p) => allNodes.get(p)).filter(Boolean) as FGNode[];
-    return { nodes, links };
-  }, [data, edges, allNodes, hideUnconnected]);
+    // allNodes is built from data.nodes in the same memo cycle and keyed by
+    // pmid, so its values are those nodes, in that order — walking data.nodes to
+    // look each one up again could only ever return all of them.
+    return { nodes: [...allNodes.values()], links };
+  }, [data, edges, allNodes]);
 
   // Both directions of the citation graph, keyed by pmid, for the hover walk.
   // Built once per fetch.
   const adjacency = useMemo(() => buildAdjacency(edges), [edges]);
 
   // The narrowing the clustering applies on top of what the server returned:
-  // citation threshold, journal deselection, year range. Named rather than
-  // inlined because the empty state has to count what these leave standing
-  // without hide-unconnected in the way, and a second copy of the rule that
-  // drifted from this one would produce exactly the sort of wrong number the
-  // message is there to replace.
+  // citation threshold, journal deselection, year range.
   const passesNarrowing = useCallback(
     (n: FGNode): boolean =>
       (n.citationCount as number) >= activeMin &&
@@ -234,11 +213,10 @@ export function CitationGraph({
   );
 
   // Community detection on the *active* subgraph (papers passing the threshold
-  // and the journal filter). Recomputes when the data, the debounced threshold,
-  // the journal selection, or the grouping mode changes. Filtering here rather
-  // than in graphData keeps it out of the simulation set, so narrowing never
-  // restarts the layout. "citation" groups by who cites whom (uses the edges);
-  // "content" groups by title similarity (ignores the edges).
+  // and the journal filter): groups by who cites whom. Recomputes when the data,
+  // the debounced threshold, or the journal selection changes. Filtering here
+  // rather than in graphData keeps it out of the simulation set, so narrowing
+  // never restarts the layout.
   const clustering = useMemo<ClusteringResult>(() => {
     if (!data) return { byPmid: new Map(), clusters: [] };
     const active = graphData.nodes.filter(passesNarrowing);
@@ -247,8 +225,8 @@ export function CitationGraph({
       title: String(n.title ?? ""),
       citationCount: n.citationCount as number,
     }));
-    return groupBy === "content" ? clusterByTitle(inputs) : clusterGraph(inputs, edges);
-  }, [data, edges, graphData, passesNarrowing, groupBy]);
+    return clusterGraph(inputs, edges);
+  }, [data, edges, graphData, passesNarrowing]);
 
   // Cluster ids/membership change on each recompute, so old visibility toggles no
   // longer map — reset them whenever the clustering changes.
@@ -300,9 +278,8 @@ export function CitationGraph({
     // A closure of just the anchor is nothing to show: dimming the entire canvas
     // to spotlight one dot presents "this paper reaches nothing on screen" as if
     // it were a finding, and the legend can only report it as two zeroes. Both
-    // an unconnected paper (with the hide toggle off) and one whose neighbours
-    // all fall below the threshold land here. Same floor the modal button
-    // applies before it will pin anything.
+    // an unconnected paper and one whose neighbours all fall below the threshold
+    // land here. Same floor the modal button applies before it will pin anything.
     return found && found.nodes.size > 1 ? found : null;
   }, [settledHover, adjacency, isVisible]);
 
@@ -327,18 +304,8 @@ export function CitationGraph({
     return { nodes: visiblePmids.length, links };
   }, [visiblePmids, edges, isVisible, focusPaths]);
 
-  // How many papers turning "Hide unconnected" off would actually put back:
-  // everything the server returned that the rest of the narrowing keeps. Read
-  // only when the toggle has emptied the canvas, where the alternative — the
-  // raw response count — promises papers the threshold, the journals or the
-  // years are also excluding, and turning the toggle off then changes nothing.
-  const wouldShow = useMemo(
-    () => [...allNodes.values()].filter(passesNarrowing).length,
-    [allNodes, passesNarrowing]
-  );
-
   // Spread the cluster out so it reads as a network, not a hairball. Re-applied
-  // when the simulation set changes (data or hide-unconnected), not on filtering.
+  // when the simulation set changes (the data), not on filtering.
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg || graphData.nodes.length === 0) return;
@@ -503,6 +470,7 @@ export function CitationGraph({
             // thing as the "N of M papers" readout it sits beside.
             <SaveAllButton
               pmids={visiblePmids}
+              total={data?.nodes.length ?? 0}
               bookmarking={bookmarking}
               onError={setActionError}
               onDone={setNotice}
@@ -510,30 +478,6 @@ export function CitationGraph({
           )
         }
       >
-        <div className="group-by">
-          <span>Group by:</span>
-          <ToggleGroup.Root
-            className="group-toggle"
-            type="single"
-            value={groupBy}
-            // Radix allows deselecting the pressed item (firing ""); keep the
-            // current mode rather than leaving the graph with no grouping.
-            onValueChange={(v) => v && setGroupBy(v as GroupBy)}
-            loop
-            aria-label="Cluster grouping"
-          >
-            <ToggleGroup.Item value="citation">Citations</ToggleGroup.Item>
-            <ToggleGroup.Item value="content">Content</ToggleGroup.Item>
-          </ToggleGroup.Root>
-        </div>
-        <label className="graph-check">
-          <input
-            type="checkbox"
-            checked={hideUnconnected}
-            onChange={(e) => setHideUnconnected(e.target.checked)}
-          />
-          Hide unconnected papers
-        </label>
         {data && (
           <span className="graph-count">
             {shown.nodes} of {data.nodes.length} papers · {shown.links} citation links
@@ -627,36 +571,13 @@ export function CitationGraph({
             <>
               {shown.nodes === 0 && (
                 <div className="empty">
-                  {graphData.nodes.length === 0 && wouldShow > 0 ? (
-                    // The papers *did* match — "hide unconnected" then removed
-                    // them for having no citation links, which is a display
-                    // choice, not a filter. Saying "no papers match" here sends
-                    // the reader off to debug their search: a text query usually
-                    // narrows to a handful of papers that don't cite each other,
-                    // so the canvas empties and the search looks broken.
-                    //
-                    // Gated on the set the toggle produces (nothing else can
-                    // empty graphData) and on there being papers left for it to
-                    // hold back, so it can't take the blame for a canvas the
-                    // threshold or the year range emptied — and `wouldShow` is
-                    // what turning it off actually reveals, which the response
-                    // count is not.
-                    <>
-                      {wouldShow === 1
-                        ? "1 paper matches, but it has no citation links to show."
-                        : `${wouldShow} papers match, but none of them cite each other.`}{" "}
-                      Turn off Hide unconnected papers to see{" "}
-                      {wouldShow === 1 ? "it" : "them"}.
-                    </>
-                  ) : hiddenClusters.size > 0 && clustering.byPmid.size > 0 ? (
-                    // One click of "Hide all" in the cluster panel lands here.
-                    // These papers passed every filter — they were switched off
-                    // by hand, and the panel beside the canvas is where they
-                    // come back.
-                    "Every cluster is hidden. Use Show all in the Clusters panel to bring the papers back."
-                  ) : (
-                    "No papers match the current filters."
-                  )}
+                  {hiddenClusters.size > 0 && clustering.byPmid.size > 0
+                    ? // One click of "Hide all" in the cluster panel lands here.
+                      // These papers passed every filter — they were switched
+                      // off by hand, and the panel beside the canvas is where
+                      // they come back.
+                      "Every cluster is hidden. Use Show all in the Clusters panel to bring the papers back."
+                    : "No papers match the current filters."}
                 </div>
               )}
               <ForceGraph2D

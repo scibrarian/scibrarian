@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { sourceHasFiles, type PaperFilterState } from "../lib/papers";
 import type { PaperSource } from "../types";
-import { JournalFilter } from "./JournalFilter";
-import { MeshFilter, useMeshFacets } from "./MeshFilter";
+import { ALL_JOURNALS_LABEL, JournalFilter } from "./JournalFilter";
+import { ALL_SUBJECTS_LABEL, MeshFilter, useMeshFacets } from "./MeshFilter";
 import { FilterSkeleton } from "./Skeleton";
 
 // One end of the year range. Holds its own text so a 4-digit year can be typed
@@ -47,8 +47,7 @@ function YearBox({
 //   searchable   — the view's data source supports the free-text query
 //   journals     — the journal list is known (omit to hide the dropdown)
 //   maxCitations — the source's citation range is known
-//   children     — view-specific extras (the graph's hide-unconnected toggle
-//                  and its node/link readout)
+//   children     — view-specific extras (the graph's node/link readout)
 //   action       — an action *on* the filtered result (the bulk save), pushed
 //                  to the far end so it reads as "…and do this with it" rather
 //                  than as one more control that narrows
@@ -138,6 +137,7 @@ export function PaperFilters({
   const hasRow =
     showJournals ||
     facets.available ||
+    facets.loading ||
     showCitations ||
     showYears ||
     Boolean(children) ||
@@ -154,6 +154,10 @@ export function PaperFilters({
               ? "Search titles, abstracts, authors & PDF text…"
               : "Search titles, abstracts & authors…"
           }
+          // Almost nothing typed here is a dictionary word — drug names, genes,
+          // MeSH headings, author surnames — so the squiggles mark correct input
+          // as wrong and never mark anything that is.
+          spellCheck={false}
           value={filters.query}
           onChange={(e) => filters.setQuery(e.target.value)}
         />
@@ -169,10 +173,14 @@ export function PaperFilters({
                 onChange={filters.setDeselected}
               />
             ) : (
-              <FilterSkeleton />
+              <FilterSkeleton label={ALL_JOURNALS_LABEL} />
             ))}
 
-          {facets.available && (
+          {/* Same handoff as the journal slot beside it: hold the space during
+              the first load so the row doesn't grow a control once the facets
+              arrive. A source with nothing filed still drops the slot — the
+              skeleton says "a control may land here", not "one will". */}
+          {facets.available ? (
             <MeshFilter
               facets={facets}
               selected={filters.subjects}
@@ -180,6 +188,8 @@ export function PaperFilters({
               majorOnly={filters.majorOnly}
               onMajorOnlyChange={filters.setMajorOnly}
             />
+          ) : (
+            facets.loading && <FilterSkeleton label={ALL_SUBJECTS_LABEL} />
           )}
 
           {showCitations && (

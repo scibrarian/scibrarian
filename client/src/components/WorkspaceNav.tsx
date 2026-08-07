@@ -182,21 +182,47 @@ export function WorkspaceNav({
 
   return (
     <nav className="workspace-nav">
-      <div className="mode-switch" role="group" aria-label="Workspace">
-        {/* aria-pressed, not just the class: which workspace you're in is state,
-            and drawn on its own it reaches only the people who can see the fill.
-            Same condition as the class so the two can't disagree — under
-            Settings none of them is pressed, because none of them is current. */}
-        {MODE_ORDER.map(([value, m]) => (
-          <button
-            key={value}
-            className={mode === value && !settingsActive ? "active" : ""}
-            aria-pressed={mode === value && !settingsActive}
-            onClick={() => onModeChange(value)}
-          >
-            <m.icon size={16} aria-hidden /> {m.label}
-          </button>
-        ))}
+      {/* Hidden outright while it stands in, rather than a named group whose
+          every button is hidden under it — that announces "Workspace" and then
+          nothing, which is worse than either being absent or being read. The
+          buttons are disabled, so nothing inside can take focus while it is.
+          Same shape as ViewSwitcherSkeleton, which hides its own container. */}
+      <div
+        className="mode-switch"
+        role="group"
+        aria-label="Workspace"
+        aria-hidden={!loaded || undefined}
+      >
+        {/* Skeleton until the first load resolves, like the picker beside it:
+            switching workspace before there is anything to switch to lands on an
+            empty one, and a live control sitting among skeletons reads as the
+            one part of the bar that's ready when it is the least ready of them.
+            The real labels go inside the bars (see SkeletonBar) so each is
+            exactly the width it replaces and the picker doesn't slide. */}
+        {!loaded
+          ? // Real buttons, disabled: they pick up `.mode-switch button` and the
+            // UA's own button font, so the box and the text metrics are the ones
+            // being stood in for rather than a span's approximation of them.
+            MODE_ORDER.map(([value, m]) => (
+              <button key={value} disabled>
+                <SkeletonBar w={16} h={16} />
+                <SkeletonBar h={14}>{m.label}</SkeletonBar>
+              </button>
+            ))
+          : /* aria-pressed, not just the class: which workspace you're in is
+               state, and drawn on its own it reaches only the people who can see
+               the fill. Same condition as the class so the two can't disagree —
+               under Settings none of them is pressed, because none is current. */
+            MODE_ORDER.map(([value, m]) => (
+              <button
+                key={value}
+                className={mode === value && !settingsActive ? "active" : ""}
+                aria-pressed={mode === value && !settingsActive}
+                onClick={() => onModeChange(value)}
+              >
+                <m.icon size={16} aria-hidden /> {m.label}
+              </button>
+            ))}
       </div>
 
       <div className="ws-picker">

@@ -258,5 +258,9 @@ export function usePapers(
     allDeselected,
     // Whether an empty `visible` means "filters matched nothing" vs "no papers".
     filtered: filters.active,
+    // The list before the client-side filters, so a view can tell an empty
+    // source from one the filters emptied — `filtered` says a filter is set, not
+    // that there was ever anything for it to cut (see SaveAllButton).
+    total: shown?.papers.length ?? 0,
   };
 }

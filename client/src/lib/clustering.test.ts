@@ -39,17 +39,30 @@ describe("clusterGraph", () => {
     expect(community("a1")).not.toBe(community("b1"));
   });
 
-  it("ranks clusters by size and colors them from the curated palette", () => {
+  it("pins Singletons first, then ranks real clusters by size from the curated palette", () => {
     const { clusters } = clusterGraph(nodes, edges);
-    // Size-3 first, size-2 second, singleton bucket last.
-    expect(clusters.map((c) => c.size)).toEqual([3, 2, 1]);
-    expect(clusters[0].color).toBe("#4e79a7");
-    expect(clusters[1].color).toBe("#f28e2b");
+    // The pin is what puts the size-1 bucket ahead of the size-3 and size-2
+    // clusters — this fixture is the case that tells the two rules apart, since
+    // ranking by size would have put the smallest bucket last instead.
+    expect(clusters.map((c) => c.size)).toEqual([1, 3, 2]);
+    // Palette order follows size among the real clusters, unaffected by the pin.
+    expect(clusters[1].color).toBe("#4e79a7");
+    expect(clusters[2].color).toBe("#f28e2b");
   });
 
-  it("buckets isolated nodes into a neutral Singletons entry", () => {
+  it("adds no Singletons entry when every paper has a link", () => {
+    // Same two components, minus the isolated paper: the bucket is built only
+    // when something lands in it, so nothing should be pinned ahead here.
+    const linked = nodes.filter((n) => n.pmid !== "c1");
+    const { clusters } = clusterGraph(linked, edges);
+
+    expect(clusters.map((c) => c.label)).not.toContain("Singletons");
+    expect(clusters.map((c) => c.size)).toEqual([3, 2]);
+  });
+
+  it("buckets isolated nodes into a neutral Singletons entry pinned first", () => {
     const { byPmid, clusters } = clusterGraph(nodes, edges);
-    const singletons = clusters[clusters.length - 1];
+    const singletons = clusters[0];
 
     expect(singletons.label).toBe("Singletons");
     expect(singletons.size).toBe(1);
