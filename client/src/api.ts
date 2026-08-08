@@ -22,6 +22,10 @@ import type {
   PaperQuery,
   PaperSource,
   PapersResponse,
+  ProMasterStatus,
+  ProNodesResponse,
+  ProPairingMinted,
+  ProPullResult,
   RefreshResponse,
   ShareLinkResponse,
   TopicRemovalResult,
@@ -248,4 +252,38 @@ export const api = {
   getSettings: () => req<AppSettings>("/api/settings"),
   updateSettings: (s: Partial<AppSettings> & { ncbi_api_key?: string }) =>
     req<AppSettings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+
+  // ---------- Pro: shared holdings ----------
+  //
+  // Every one of these 404s in a free build, where /api/pro is unmounted. The
+  // UI never reaches them: it renders off `auth.pro`, which is null there.
+
+  proNodes: () => req<ProNodesResponse>("/api/pro/nodes"),
+  proMintNode: (name: string, masterUrl: string, ttlDays?: number) =>
+    req<ProPairingMinted>("/api/pro/nodes", {
+      method: "POST",
+      body: JSON.stringify({ name, master_url: masterUrl, ttl_days: ttlDays }),
+    }),
+  proRevokeNode: (id: number) =>
+    req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
+  proSetOrgName: (orgName: string) =>
+    req<{ org_name: string }>("/api/pro/org-name", {
+      method: "PUT",
+      body: JSON.stringify({ org_name: orgName }),
+    }),
+
+  proMaster: () => req<ProMasterStatus>("/api/pro/master"),
+  proConnect: (code: string) =>
+    req<{ connected: boolean; name: string }>("/api/pro/master", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  proDisconnect: () => req<ProMasterStatus>("/api/pro/master", { method: "DELETE" }),
+
+  // The PMID goes in the body rather than the path on purpose — see the route.
+  proPull: (pmid: string) =>
+    req<ProPullResult>("/api/pro/holdings/pull", {
+      method: "POST",
+      body: JSON.stringify({ pmid }),
+    }),
 };

@@ -2,11 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
-import express, { NextFunction, Request, Response } from "express";
+import express, { NextFunction, Request, Response, Router } from "express";
 import cors from "cors";
 import { ADMIN_TOKEN, CLIENT_DIST, HOST, HOST_IS_LOOPBACK, PORT, setBoundPort } from "./config.js";
-import "./db.js"; // initialize schema + seed on startup
-import { api } from "./routes.js";
+import { db, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
+import { api, isAdminRequest } from "./routes.js";
+import { loadPro } from "./pro-hooks.js";
+import { ensureCollection, heldFile, storePulledFile } from "./pro-storage.js";
 import { startScheduler } from "./poller.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
@@ -57,6 +59,40 @@ app.use((_req, res, next) => {
 // are same-origin, so remote viewers never need CORS headers.
 app.use(cors({ origin: [/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/] }));
 
+// Refuse cross-site mutations outright, before any body is parsed.
+//
+// CORS is not this. CORS stops a page *reading* a response; it never stops the
+// request from happening. A form-encoded POST is a "simple request", so it is
+// sent with no preflight, executes, and only the reply is withheld — which is
+// no comfort when the side effect was the point.
+//
+// Most of the API is protected from that by accident rather than by design: its
+// mutations need a JSON body, a form POST cannot carry one, and asking for
+// `application/json` forces the preflight that CORS then blocks. Any route
+// taking everything it needs from the URL falls straight through that gap.
+// `POST /api/refresh` did, and so did the Pro pull before it moved its PMID into
+// a body — the far worse case, because the side effect there is copying
+// licensed articles onto disk.
+//
+// Fetch Metadata closes the class instead of the instance. Browsers always send
+// Sec-Fetch-Site and script cannot forge it; non-browser callers — the Vite dev
+// proxy, curl, and the spoke→master requests in the Pro module — do not send it
+// at all. So the rule is *if present, it must be same-origin*: absent is not a
+// bypass, it is a caller that was never subject to a browser's ambient
+// credentials in the first place.
+//
+// Registered before the body parsers so a refused request is never parsed, and
+// before both /api mounts so it covers the Pro routes that deliberately sit
+// outside the admin gate.
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+app.use("/api", (req, res, next) => {
+  if (SAFE_METHODS.has(req.method)) return next();
+  const site = req.get("sec-fetch-site");
+  if (site == null || site === "same-origin") return next();
+  res.status(403).json({ error: "Cross-site requests are not allowed." });
+});
+
 // The bulk bookmark save posts one PMID per paper in the filtered set, which is
 // thousands of them by design — past body-parser's 100kb default at around nine
 // thousand. It gets its own parser rather than a raised global limit, so no
@@ -67,6 +103,25 @@ app.use(cors({ origin: [/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/] }));
 // route. The count is capped in the handler, which is what reports it.
 app.use("/api/bookmark-folders/:id/papers", express.json({ limit: MAX_BULK_BOOKMARK_BYTES }));
 app.use(express.json());
+
+// Pro-tier routes, mounted ahead of /api and deliberately *outside* the api
+// router.
+//
+// The admin gate in routes.ts authenticates the owner of this instance. A
+// paired node is not that: it is a peer with one narrow permission, and its
+// pairing token must never be accepted as an admin token. Mounting here keeps
+// the two authentications from ever meeting — /api/pro never reaches the admin
+// middleware, and the Pro module carries its own. Mounting inside `api` would
+// put every Pro POST behind the admin gate, where a spoke would be rejected
+// before its own auth ever ran, and the tempting fix is to widen the gate.
+//
+// The router is created empty and filled in during start(): route registration
+// order is fixed at mount time, so waiting for the async module load to mount
+// it would place it after the /api 404 below and every Pro request would 404.
+// An express Router is mutable after mounting, which sidesteps that. In a free
+// build it stays empty, falls through, and the 404 answers — which is correct.
+const proRouter = Router();
+app.use("/api/pro", proRouter);
 
 app.use("/api", api);
 
@@ -125,6 +180,25 @@ export async function start(): Promise<{ port: number; url: string }> {
       `Refusing to start: HOST=${HOST} is reachable by other machines but ` +
         `ADMIN_TOKEN is not set. Set ADMIN_TOKEN in server/.env so only you can modify data.`
     );
+  }
+
+  // Before the bind, so no request can arrive at a half-registered Pro router.
+  // A module that fails to load is fatal rather than a silent downgrade to the
+  // free tier — see loadPro for why that distinction matters.
+  const pro = await loadPro({
+    db,
+    isAdminRequest,
+    // file_id is the whole test — see ProContext.heldPmids for why it is this
+    // and not the presence of an articles row.
+    heldPmids: (pmids) =>
+      new Set(holdingsByPmids(pmids).flatMap((r) => (r.file_id != null ? [r.pmid] : []))),
+    heldFile,
+    ensureCollection,
+    storePulledFile,
+  });
+  if (pro) {
+    proRouter.use(pro.routes());
+    console.log(`[server] Pro module ${pro.version} loaded`);
   }
 
   const server = await new Promise<Server>((resolve, reject) => {

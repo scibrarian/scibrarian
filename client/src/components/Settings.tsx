@@ -8,11 +8,13 @@ import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { Typeahead } from "./Typeahead";
+import { ProPanel } from "./ProPanel";
 import type {
   AppSettings,
   Topic,
   Journal,
   MeshSearchResult,
+  ProStatus,
   TopicSuggestResponse,
 } from "../types";
 
@@ -20,9 +22,13 @@ import type {
 const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
 
 export function Settings({
+  pro,
   onDataChanged,
   onPapersRemoved,
 }: {
+  // Null in a free build, which is the only thing gating the shared-holdings
+  // panel — there is no separate feature flag to keep in step with it.
+  pro: ProStatus | null;
   onDataChanged: () => void;
   // Papers left the Interests feeds (journal removal): the app refreshes the
   // paper views and reports the count.
@@ -385,6 +391,9 @@ export function Settings({
           </form>
         )}
       </section>
+
+      {/* Absent entirely in a free build — `pro` is null there. */}
+      {pro && <ProPanel pro={pro} />}
 
       <section className="panel">
         <h2>Sharing</h2>

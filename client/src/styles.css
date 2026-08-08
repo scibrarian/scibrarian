@@ -2830,6 +2830,104 @@ html {
   color: var(--warn);
 }
 
+/* Held by the org but not by you. Deliberately not the green of `held` — the
+   file isn't on this machine and a writer skimming pill colours must not read
+   it as "open it". Blue reads as "there's a route to this" without promising
+   a click. */
+.have-pill.org-held {
+  background: #e6effb;
+  color: #1d4ed8;
+}
+
+.have-org {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+/* The action on an org-held row. Sized like the free-copy link beside it
+   rather than like a form button: it sits inside a list of answers, and a
+   full-height primary button per row would turn the results into a toolbar. */
+.have-pull {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* ---- Shared holdings (Pro) settings panel ---- */
+
+.pro-form {
+  margin: 8px 0 12px;
+}
+
+.pro-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.pro-row input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* Shown once and never again, so it reads as something to act on now. */
+.pro-minted {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.pro-code {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.pro-nodes {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+
+.pro-nodes li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Revoked or expired rows stay listed — the row is the only record the
+   connection existed — but read as history rather than as something live. */
+.pro-nodes li.inactive .pro-node-name {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.pro-node-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+.pro-connected {
+  margin: 8px 0 12px;
+}
+
 /* Whether the paper reports original data. A quiet outline rather than a fill:
    it annotates the verdict, and a fill would make it compete with the
    held/not-held pill that is the answer. */
@@ -2991,10 +3089,19 @@ html {
     color: #f3a3a3;
   }
 
-  /* The one "have" tint written as a literal (the rest ride on variables). */
+  /* The "have" tints written as literals (the rest ride on variables). */
   .have-pill.held {
     background: #16301f;
     color: #82d79a;
+  }
+
+  .have-pill.org-held {
+    background: #17253f;
+    color: #8fb6f2;
+  }
+
+  .have-org {
+    color: #8fb6f2;
   }
 
   /* Bright shimmer washes out on dark panels; use a faint sheen instead. */

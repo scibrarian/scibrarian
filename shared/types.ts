@@ -2,6 +2,8 @@
 // The client extends some of these with fields its API responses add — see
 // client/src/types.ts.
 
+import type { OrgHolding } from "./pro.js";
+
 export interface Topic {
   id: number;
   name: string;
@@ -291,6 +293,13 @@ export interface HaveAnswer {
   // True when the free-copy lookup was attempted, so the UI can tell "no free
   // version exists" from "we never checked".
   freeChecked: boolean;
+  // The third verdict — your org holds this even though you don't. Null in a
+  // free build, and also whenever the master couldn't be reached.
+  org: OrgHolding | null;
+  // The same distinction `freeChecked` draws, and it matters more here: without
+  // it the UI cannot tell "the org doesn't have it" from "nobody answered", and
+  // rendering the second as the first is what ends in a duplicate purchase.
+  orgChecked: boolean;
 }
 
 export interface HaveResponse {

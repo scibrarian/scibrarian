@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
+import { proStatus } from "./pro-hooks.js";
 import {
   addBookmarks,
   addCollectionFiles,
@@ -138,7 +139,11 @@ function tokenMatches(provided: string): boolean {
 
 // No ADMIN_TOKEN configured = single-user mode: everyone is admin (index.ts
 // refuses to bind non-loopback in that case).
-function isAdminRequest(req: Request): boolean {
+//
+// Exported for the Pro seam: Pro's owner-facing routes sit outside this
+// router's admin gate (see the mount in index.ts) and must answer to the same
+// predicate rather than a second copy of it.
+export function isAdminRequest(req: Request): boolean {
   if (!ADMIN_TOKEN) return true;
   const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
   return m != null && tokenMatches(m[1].trim());
@@ -194,11 +199,17 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
 // need minted links (token mode) or open directly (tokenless single-user or
 // an open library).
+// `pro` is null in a free build, which is what the client keys its Pro UI off.
+// The client trusts this for *rendering only* — every Pro capability is
+// enforced server-side, so a tampered response reveals nothing and unlocks
+// nothing. That split is what lets all the Pro-aware client code live in the
+// open repo behind an optional field.
 api.get("/auth", (req, res) => {
   res.json({
     admin: isAdminRequest(req),
     token_required: ADMIN_TOKEN.length > 0,
     library_open: libraryOpen(),
+    pro: proStatus(),
   });
 });
 
@@ -552,11 +563,14 @@ api.get(
       return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
+    const offline = req.query.free === "0";
     const body: HaveResponse = {
-      // The free-copy lookup is the one part that leaves the machine, so it can
-      // be switched off (?free=0) — the client does that while a paste is still
-      // being typed, and turns it on for the answer the user acts on.
-      results: await checkHoldings(batch, { lookUpFree: req.query.free !== "0" }),
+      // ?free=0 means "answer without leaving the machine" — the client sends
+      // it while a paste is still being typed, and drops it for the answer the
+      // user acts on. It gates the org check as well as the free-copy lookup,
+      // because both are network calls and the flag is really about that.
+      // (The held/not-held verdict itself is local either way.)
+      results: await checkHoldings(batch, { lookUpFree: !offline, checkOrg: !offline }),
       truncated: lines.length - batch.length,
     };
     res.json(body);

@@ -8,7 +8,9 @@ import {
   type HoldingRow,
 } from "./db.js";
 import { lookupWorks, type OaWork } from "./openalex.js";
+import { orgCheck } from "./pro-hooks.js";
 import { evidenceFromRows } from "./pubmed-parse.js";
+import type { OrgHolding } from "../../shared/pro.js";
 import type { HaveAnswer, HaveMatch } from "./types.js";
 
 // "Do I already have this?" — the custody question, answered for a list of
@@ -28,8 +30,10 @@ import type { HaveAnswer, HaveMatch } from "./types.js";
 export { MAX_REFS_PER_HAVE_REQUEST as MAX_REFS_PER_REQUEST } from "../../shared/limits.js";
 
 export interface HaveOptions {
-  /** Ask OpenAlex about the not-held lines. Off makes the check purely local. */
+  /** Ask OpenAlex about the not-held lines. */
   lookUpFree?: boolean;
+  /** Ask the paired master about the not-held lines (Pro; no-op in a free build). */
+  checkOrg?: boolean;
 }
 
 // A stored row as the API reports it. `present` is one readdir's worth of blob
@@ -102,7 +106,7 @@ interface RenderContext {
  */
 export async function checkHoldings(
   inputs: string[],
-  { lookUpFree = true }: HaveOptions = {}
+  { lookUpFree = true, checkOrg = true }: HaveOptions = {}
 ): Promise<HaveAnswer[]> {
   const refs = inputs.map(parseRef);
   const present = existingBlobHashes();
@@ -129,6 +133,46 @@ export async function checkHoldings(
     pubTypes: pubTypesByPmids(pmids),
   });
 
+  // --- org pass: the third verdict, held by your org but not by you ---
+  //
+  // Ordered between the local pass and OpenAlex on purpose. An org hit makes
+  // the free-copy lookup moot — the same reasoning that suppresses it for a
+  // paper rediscovered on disk below — so asking the master first also shrinks
+  // what has to leave for OpenAlex.
+  //
+  // Identity is the PMID and only the PMID. A registry keyed on anything softer
+  // produces near-miss rows and false "someone has it" answers, which is the
+  // one answer this must never get wrong. A not-held line with no PMID at all
+  // is simply not asked about.
+  //
+  // Nothing here can change `held`: that verdict was decided above, locally,
+  // before anything touched the network, and it stays the same answer with the
+  // master down as with it up. The org line is strictly an addition.
+  if (checkOrg) {
+    const candidates = local.filter((r) => !r.held);
+    const orgPmids = candidates.flatMap((r) => {
+      const pmid = orgKey(r);
+      return pmid ? [pmid] : [];
+    });
+    const holdings = await orgCheck(orgPmids);
+    // null means no Pro module *or* an unreachable master, and the two collapse
+    // deliberately: both are "nobody answered", which orgChecked reports as
+    // such rather than as a no.
+    if (holdings) {
+      for (const r of candidates) {
+        // A line carrying no identifier was never in the batch, so it wasn't
+        // answered either. Marking it checked would be harmless today — the UI
+        // has no org line to draw on an unreadable row — but the field would
+        // stop meaning what it says, and it is the field that stands between
+        // "the org doesn't have it" and "nobody asked".
+        const pmid = orgKey(r);
+        if (!pmid) continue;
+        r.orgChecked = true;
+        r.org = holdings.get(pmid) ?? null;
+      }
+    }
+  }
+
   // --- enrichment pass: only the lines that came back not held ---
   //
   // Two things are being asked at once, which is why this is worth a request:
@@ -136,8 +180,12 @@ export async function checkHoldings(
   // to a PMID we *do* hold? The second is a genuine second chance at a "yes",
   // since a DOI can be absent or differently cased on an article record whose
   // PMID we have.
+  //
+  // Lines the org holds are excluded: a writer who can get the file from the
+  // master has no use for a free-copy link, and offering one invites a second
+  // copy of something the agency already bought.
   const needsLookup = new Set(
-    local.filter((r) => !r.held && (r.ref.kind === "doi" || r.ref.kind === "pmid"))
+    local.filter((r) => !r.held && !r.org && (r.ref.kind === "doi" || r.ref.kind === "pmid"))
   );
   if (!lookUpFree || needsLookup.size === 0) {
     // Hoisted: inside the map this rebuilt the whole context — a flatMap over
@@ -190,6 +238,15 @@ interface LocalResult {
   row: HoldingRow | null; // the paper the identifier named, when it's on file
   held: boolean;
   oa?: OaWork | null;
+  org?: OrgHolding | null;
+  orgChecked?: boolean;
+}
+
+// The PMID an org lookup would use for this line. A cached article row is
+// preferred over the pasted identifier because a line carrying only a DOI can
+// still name a paper whose PMID the library knows.
+function orgKey(r: LocalResult): string {
+  return r.row?.pmid ?? r.ref.pmid ?? "";
 }
 
 function resolveLocally(
@@ -221,5 +278,7 @@ function toAnswer(
     match: r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa) : null,
     free,
     freeChecked,
+    org: r.org ?? null,
+    orgChecked: r.orgChecked ?? false,
   };
 }

@@ -8,6 +8,7 @@ import type {
   CollectionSelection,
   Topic,
   PaperSource,
+  ProStatus,
 } from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
 import { seedEmptySource, sourceKey } from "./lib/papers";
@@ -81,6 +82,10 @@ export default function App() {
   const [tokenRequired, setTokenRequired] = useState(true);
   // The owner's Open Library opt-in: viewers download stored PDFs directly.
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // The Pro module's report, or null in a free build. Everything Pro-related in
+  // the UI hangs off this being non-null, so a free build renders none of it
+  // without a single feature check of its own.
+  const [pro, setPro] = useState<ProStatus | null>(null);
   const [unlocking, setUnlocking] = useState(false);
 
   function loadTopics(): Promise<Topic[]> {
@@ -163,6 +168,7 @@ export default function App() {
         setIsAdmin(admin);
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
+        setPro(status?.pro ?? null);
         // Preselect each workspace's first entry, then land in the first one
         // that actually has something in it (nav order: Interests, Bookmarks,
         // Library) so switching modes never opens on an empty picker.
@@ -724,6 +730,7 @@ export default function App() {
           </div>
         ) : showSettings ? (
           <Settings
+            pro={pro}
             onDataChanged={loadTopics}
             onPapersRemoved={(count) => {
               setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
