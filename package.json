@@ -7,8 +7,7 @@
   "workspaces": [
     "server",
     "client",
-    "electron",
-    "pro"
+    "electron"
   ],
   "engines": {
     "node": ">=22.13"
