@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
 import type { ProModule } from "./pro-hooks.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
@@ -205,6 +205,32 @@ describe("what the master is asked", () => {
     const [answer] = await check(["Smith J. Some article title. Lancet. 2019."]);
     expect(asked).toEqual([]); // no request worth making
     expect(answer.orgChecked).toBe(false);
+  });
+
+  // Rejection was already covered above; latency is the other way an answer
+  // goes missing, and it is the one that takes the local verdict with it. A
+  // host that drops packets rather than refusing the connection leaves the
+  // promise pending, not rejected — so nothing above catches it, and /have
+  // waits out the OS TCP timeout while the held/not-held answer sits ready.
+  it("degrades to 'not asked' when the master never answers at all", async () => {
+    vi.useFakeTimers();
+    try {
+      orgAnswer = () => new Promise(() => {}); // never settles, never rejects
+      hooks.registerPro(stub);
+
+      const pending = check([OWNED.pmid, LOCAL.pmid]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const [owned, local] = await pending;
+
+      // The org line is dropped — as "nobody answered", never as "no".
+      expect(owned.orgChecked).toBe(false);
+      expect(owned.org).toBeNull();
+      // And the verdict decided locally, before any of this, is untouched.
+      expect(owned.held).toBe(false);
+      expect(local.held).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not mark an unreadable line as checked just because others were", async () => {

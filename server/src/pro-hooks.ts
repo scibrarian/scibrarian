@@ -85,37 +85,63 @@ export function registerPro(m: ProModule | null): void {
   mod = m;
 }
 
-export function proLoaded(): boolean {
-  return mod != null;
-}
-
 /** null in a free build — which is exactly what GET /auth reports. */
 export function proStatus(): ProStatus | null {
   return mod?.status() ?? null;
 }
 
-export function proRoutes(): Router | null {
-  return mod?.routes() ?? null;
-}
+/**
+ * How long a Pro module gets to answer an org check before the line is dropped.
+ *
+ * A backstop, not the budget. A module is expected to bound its own network
+ * calls, and the current one allows itself 4s; this is for the case where one
+ * doesn't. `orgCheck` is an interface method and nothing in its type promises a
+ * bound, so without a ceiling here a master whose host drops packets — a VPN
+ * down, a laptop asleep — rather than refusing the connection holds
+ * GET /api/have open for the OS TCP timeout, minutes on some platforms. That
+ * takes the *local* verdict down with it, which is the one thing this file
+ * promises the network can never do.
+ *
+ * Set well above any sane module budget on purpose: in an ordinary failure the
+ * module's own error should surface with its own message, not lose a race to
+ * this.
+ */
+const ORG_CHECK_BACKSTOP_MS = 10_000;
 
 /**
  * The org half of the custody question, for the /have lines that came back not
  * held locally.
  *
- * Returns null both when there is no Pro module and when the master could not
- * be reached, and those two collapse deliberately: **the local verdict must
- * never depend on the network.** A writer asking whether the agency already
- * bought a paper gets the same held/not-held answer with the master down as
- * with it up; the org line is an addition on top, and its absence degrades to
- * exactly the free-tier answer rather than to a wrong one.
+ * Returns null when there is no Pro module, when the master could not be
+ * reached, and when nothing answered in time. Those collapse deliberately:
+ * **the local verdict must never depend on the network.** A writer asking
+ * whether the agency already bought a paper gets the same held/not-held answer
+ * with the master down as with it up; the org line is an addition on top, and
+ * its absence degrades to exactly the free-tier answer rather than to a wrong
+ * one. Latency is part of that promise — an answer that arrives after the
+ * reader gave up is not an answer.
  */
 export async function orgCheck(pmids: string[]): Promise<Map<string, OrgHolding> | null> {
   if (!mod || pmids.length === 0) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await mod.orgCheck(pmids);
+    return await Promise.race([
+      mod.orgCheck(pmids),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`no answer in ${ORG_CHECK_BACKSTOP_MS}ms`)),
+          ORG_CHECK_BACKSTOP_MS
+        );
+      }),
+    ]);
   } catch (err) {
     console.warn(`[pro] org check unavailable: ${(err as Error).message}`);
     return null;
+  } finally {
+    // The losing side of a race is never awaited, so an uncleared timer holds
+    // an event-loop handle for its full duration after every successful check
+    // — which in a test run is a process that will not exit.
+    clearTimeout(timer);
   }
 }
 
@@ -127,26 +153,46 @@ export async function orgCheck(pmids: string[]): Promise<Map<string, OrgHolding>
  * which has no pro/ directory — fails to typecheck. A variable defeats that
  * resolution, so both builds compile from one source tree.
  *
- * The catch is narrow on purpose. A blanket `catch { return null }` would make
+ * Nothing about loading is caught. A blanket `catch { return null }` would make
  * a Pro module that *throws during init* indistinguishable from one that isn't
  * installed, silently downgrading a paying customer to the free tier — which
  * looks like the product working rather than like a bug, and reaches support as
- * "sync stopped" with no signal anywhere.
+ * "sync stopped" with no signal anywhere. Absence is established first, by
+ * `installed()`, so a failure after that point is a real one and stays fatal.
  */
 const PRO_SPECIFIER = "@scibrarian/pro";
 
 export async function loadPro(ctx: ProContext): Promise<ProModule | null> {
-  let imported: { default?: ProModule };
-  try {
-    imported = (await import(PRO_SPECIFIER)) as { default?: ProModule };
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") return null;
-    throw err;
-  }
+  if (!installed(PRO_SPECIFIER)) return null;
+  const imported = (await import(PRO_SPECIFIER)) as { default?: ProModule };
   const m = imported.default;
   if (!m) throw new Error(`${PRO_SPECIFIER} loaded but exported no default module`);
   await m.init(ctx);
   registerPro(m);
   return m;
+}
+
+/**
+ * Whether the specifier resolves at all — "is Pro installed?", asked on its own
+ * rather than inferred from why an import failed.
+ *
+ * Matching ERR_MODULE_NOT_FOUND on the import cannot answer it. Node raises
+ * that one code for two unrelated things: this package is absent, and this
+ * package is present but *its own* import of something else did not resolve — a
+ * dependency dropped by `npm ci --omit=dev`, a bad relative path, a bare
+ * specifier missing from pro/package.json. Both arrive as
+ * `err.code === "ERR_MODULE_NOT_FOUND"`; only the message differs, and it
+ * differs by naming a file path instead of the package.
+ *
+ * Reading the second as the first is the exact silent downgrade the comment
+ * above rules out, arrived at through the guard meant to prevent it.
+ * import.meta.resolve asks about this specifier and nothing else.
+ */
+function installed(specifier: string): boolean {
+  try {
+    import.meta.resolve(specifier);
+    return true;
+  } catch {
+    return false;
+  }
 }
