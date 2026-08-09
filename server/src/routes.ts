@@ -205,12 +205,31 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
 // enforced server-side, so a tampered response reveals nothing and unlocks
 // nothing. That split is what lets all the Pro-aware client code live in the
 // open repo behind an optional field.
+//
+// This route is deliberately unauthenticated — the client calls it before it
+// knows whether it holds a token — so everything in the response has to be safe
+// for a stranger to read. admin/token_required/library_open all describe the
+// caller's own access, which is exactly what they came to ask.
+//
+// `pro` does not: version, master/spoke role and node count describe the
+// *organization's* topology, not this caller's access. An exposed instance (open
+// library, a share link, a LAN viewer) would hand any passer-by the number of
+// writers paired to the agency and an exact module version to match against a
+// known-bad build. shared/pro.ts calls the holdings index sensitive because what
+// an agency is reading reveals which drugs and indications are in play; how many
+// people are reading it is the same class of signal.
+//
+// Owner-only, then — and null for everyone else, which is the same answer a free
+// build gives. That collapse is the point: a viewer cannot tell a Pro instance
+// from a free one, and the only client that consumes this block is the Settings
+// panel, which no viewer can open.
 api.get("/auth", (req, res) => {
+  const admin = isAdminRequest(req);
   res.json({
-    admin: isAdminRequest(req),
+    admin,
     token_required: ADMIN_TOKEN.length > 0,
     library_open: libraryOpen(),
-    pro: proStatus(),
+    pro: admin ? proStatus() : null,
   });
 });
 

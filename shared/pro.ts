@@ -6,7 +6,14 @@
 // present — which it can, because every field below is optional or nullable and
 // the free build simply never populates them.
 
-/** What GET /auth reports about this instance's Pro module. `null` when free. */
+/**
+ * What GET /auth reports about this instance's Pro module.
+ *
+ * `null` in a free build **and to any caller who is not the owner** — /auth is
+ * unauthenticated, and these fields describe the organization's topology rather
+ * than the caller's own access. The two cases collapse on purpose: a viewer
+ * cannot tell a Pro instance from a free one.
+ */
 export interface ProStatus {
   /** Module version, for support ("what are you running?"). */
   version: string;
