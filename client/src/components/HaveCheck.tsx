@@ -169,6 +169,13 @@ export function HaveCheck({
                 // go and get — and is pointed at the person who can act on it.
                 onPull={access.isAdmin ? (pmid) => pull(i, pmid) : null}
                 pulling={pulling === i}
+                // "One at a time" was the stated design but nothing enforced
+                // it: only the pulling row's own button was disabled, so a
+                // second row could be started mid-transfer — and the first
+                // pull's finally would then clear the second's spinner while
+                // its bytes were still moving, with two refreshes racing to
+                // set the same response.
+                busy={pulling !== null}
               />
             ))}
           </ul>
@@ -211,12 +218,16 @@ function AnswerRow({
   onOpen,
   onPull,
   pulling,
+  busy,
 }: {
   answer: HaveAnswer;
   onOpen: (p: HaveMatch) => void;
   /** Null for a viewer who can't mutate this library. */
   onPull: ((pmid: string) => void) | null;
+  /** This row's own transfer is in flight — drives the spinner and the label. */
   pulling: boolean;
+  /** Some row's transfer is in flight. Disables every Copy button, not just this one. */
+  busy: boolean;
 }) {
   const { parsed, match, held, free, freeChecked, org } = answer;
   const kind = held
@@ -265,7 +276,7 @@ function AnswerRow({
               type="button"
               className="have-pull"
               onClick={() => onPull(org.pmid)}
-              disabled={pulling}
+              disabled={busy}
             >
               {pulling && <span className="btn-spinner" aria-hidden="true" />}
               {pulling ? "Copying…" : "Copy to my library"}

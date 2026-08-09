@@ -393,7 +393,7 @@ export function Settings({
       </section>
 
       {/* Absent entirely in a free build — `pro` is null there. */}
-      {pro && <ProPanel pro={pro} />}
+      {pro && <ProPanel />}
 
       <section className="panel">
         <h2>Sharing</h2>

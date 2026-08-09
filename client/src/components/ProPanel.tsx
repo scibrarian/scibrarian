@@ -4,7 +4,7 @@ import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage } from "../lib/format";
 import { Banner } from "./Banner";
-import type { ProMasterStatus, ProNode, ProStatus } from "../types";
+import type { ProMasterStatus, ProNode } from "../types";
 
 // Shared holdings — the Settings panel for the Pro tier.
 //
@@ -17,8 +17,14 @@ import type { ProMasterStatus, ProNode, ProStatus } from "../types";
 // with it, and a *spoke* if it paired with something. Both halves are shown to
 // whoever holds the admin token — which is the person who runs this instance,
 // not an account with a tier.
+//
+// Takes no props. The /auth block gates whether Settings renders this at all,
+// but it is fetched once at page load and never refreshed, so anything read
+// from it here would go stale the moment the operator mints or revokes
+// something — which is the only thing this panel does. Everything on screen is
+// derived from the node list, which reload() refreshes after every mutation.
 
-export function ProPanel({ pro }: { pro: ProStatus }) {
+export function ProPanel() {
   const [nodes, setNodes] = useState<ProNode[]>([]);
   const [orgName, setOrgName] = useState("");
   const [master, setMaster] = useState<ProMasterStatus>({ connected: false });
@@ -75,8 +81,21 @@ export function ProPanel({ pro }: { pro: ProStatus }) {
     });
   }
 
-  const active = (n: ProNode) =>
-    !n.revoked_at && n.confirmed_at != null && new Date(n.expires_at) > new Date();
+  // One derivation, read by both the row's styling and its label. Those used to
+  // be two independent ladders, and they disagreed: a code minted a moment ago
+  // has no confirmed_at, which the old predicate read as not-live, so the row
+  // rendered struck through as history directly above its own label saying
+  // "code not used yet" — the operator looking at the code they had just
+  // created, presented as dead.
+  //
+  // Only revoked and expired rows are history, which is what the stylesheet
+  // says .inactive means. A pending one is the most live thing on this panel:
+  // it is the code the operator is about to send someone.
+  const nodeState = (n: ProNode): "revoked" | "expired" | "pending" | "active" => {
+    if (n.revoked_at) return "revoked";
+    if (new Date(n.expires_at) <= new Date()) return "expired";
+    return n.confirmed_at == null ? "pending" : "active";
+  };
 
   return (
     <section className="panel">
@@ -210,34 +229,43 @@ export function ProPanel({ pro }: { pro: ProStatus }) {
         <p className="hint">Nobody is connected yet.</p>
       ) : (
         <ul className="pro-nodes">
-          {nodes.map((n) => (
-            <li key={n.id} className={active(n) ? "" : "inactive"}>
-              <span className="pro-node-name">{n.name}</span>
-              <span className="hint">
-                {n.revoked_at
-                  ? "revoked"
-                  : n.confirmed_at == null
-                    ? "code not used yet"
-                    : new Date(n.expires_at) <= new Date()
+          {nodes.map((n) => {
+            const state = nodeState(n);
+            return (
+              <li key={n.id} className={state === "revoked" || state === "expired" ? "inactive" : ""}>
+                <span className="pro-node-name">{n.name}</span>
+                <span className="hint">
+                  {state === "revoked"
+                    ? "revoked"
+                    : state === "expired"
                       ? "expired"
-                      : `expires ${n.expires_at.slice(0, 10)}`}
-              </span>
-              {!n.revoked_at && (
-                <button
-                  type="button"
-                  className="danger"
-                  disabled={busy}
-                  onClick={() => void run(() => api.proRevokeNode(n.id))}
-                >
-                  Revoke
-                </button>
-              )}
-            </li>
-          ))}
+                      : state === "pending"
+                        ? "code not used yet"
+                        : `expires ${n.expires_at.slice(0, 10)}`}
+                </span>
+                {!n.revoked_at && (
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={busy}
+                    onClick={() => void run(() => api.proRevokeNode(n.id))}
+                  >
+                    Revoke
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
 
-      {pro.node_count > 0 && (
+      {/* Shown exactly when a Revoke button is on screen. This used to read
+          pro.node_count — a number from the /auth call made once at page load
+          and never refreshed, while the list beside it reloads after every mint
+          and revoke. On a fresh master, pairing the first writer left this
+          hidden with a live node listed above it; revoking the last one left it
+          showing. The loaded list is the answer already in hand. */}
+      {nodes.some((n) => !n.revoked_at) && (
         <p className="hint">
           Revoking stops future lookups and copies. It cannot take back anything already copied
           to someone&rsquo;s machine.
