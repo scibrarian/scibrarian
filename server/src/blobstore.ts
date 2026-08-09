@@ -35,11 +35,35 @@ export async function isPdfFile(tmpPath: string): Promise<boolean> {
   }
 }
 
-// Multer decodes originalname as latin1; also drop any path the browser or a
-// crafted request may have prepended.
+/**
+ * The last path segment of a name that came from outside the process.
+ *
+ * Every write into `collection_files.file_name` goes through this, because that
+ * column is not only a label. The archive route hands it to the zip writer as
+ * an entry name, so a stored name that kept its separators is a zip-slip on
+ * whoever extracts the download — the file lands wherever the name says, not in
+ * the folder they unpacked into.
+ *
+ * Splitting rather than the obvious `replace(/^.*[\\/]/, "")`: regex `.` does
+ * not match a line terminator, so that strip returns "a\n../../evil.pdf"
+ * exactly as it found it, separators intact, for any name a filesystem let a
+ * newline into.
+ */
+export function safeFileName(raw: string, fallback = "upload.pdf"): string {
+  const base = raw.split(/[\\/]/).pop() ?? "";
+  // Control characters are what turn a name into a second header line or a
+  // second zip entry — and the newline that defeated the strip above is one.
+  const clean = base.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  // "." and ".." name directories, not files, and survive the split intact.
+  return clean === "" || clean === "." || clean === ".." ? fallback : clean;
+}
+
+// Multer decodes originalname as latin1. The transcode belongs here rather than
+// in safeFileName, which also takes names that arrived already decoded — a
+// pulled file's Content-Disposition — and a second latin1 pass would mangle
+// every non-ASCII one of those.
 export function cleanUploadName(raw: string): string {
-  const utf8 = Buffer.from(raw, "latin1").toString("utf8");
-  return utf8.replace(/^.*[\\/]/, "").trim() || "upload.pdf";
+  return safeFileName(Buffer.from(raw, "latin1").toString("utf8"));
 }
 
 export function blobExists(hash: string): boolean {

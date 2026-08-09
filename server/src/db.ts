@@ -1819,6 +1819,19 @@ export function listCollectionFiles(collectionId: number): CollectionFile[] {
     .all(collectionId) as unknown as CollectionFile[];
 }
 
+// One file by its content, for a writer that needs the row it just inserted.
+// UNIQUE(collection_id, content_hash) makes this an index lookup, where a
+// listCollectionFiles(...).find() would select and hydrate every file in the
+// collection to pick one out.
+export function collectionFileByHash(
+  collectionId: number,
+  hash: string
+): CollectionFile | undefined {
+  return db
+    .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? AND content_hash = ?`)
+    .get(collectionId, hash) as CollectionFile | undefined;
+}
+
 export function pendingCollectionFiles(collectionId: number): CollectionFile[] {
   return db
     .prepare(

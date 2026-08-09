@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Check, ExternalLink, FileText, Minus, TriangleAlert } from "lucide-react";
+import { Check, ExternalLink, FileText, Minus, TriangleAlert, Users } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -42,6 +42,9 @@ export function HaveCheck({
   const [response, setResponse] = useState<HaveResponse | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which row is mid-copy, by index. One at a time: each pull moves a whole
+  // PDF, and a list of simultaneous transfers is neither useful nor readable.
+  const [pulling, setPulling] = useState<number | null>(null);
   const { openPaper, openError, clearOpenError } = usePaperOpener(access);
 
   // Split here as well as on the server so the button can say how many
@@ -63,6 +66,44 @@ export function HaveCheck({
       setError(errorMessage(err));
     } finally {
       setChecking(false);
+    }
+  }
+
+  // Copy a paper the organization holds into this library.
+  //
+  // The row is refreshed by re-asking about that one line rather than by
+  // patching it from the pull response: a held row carries a file id and a
+  // collection the reader can click through to, and assembling that here from
+  // what the pull happened to return is how the two drift apart. One extra
+  // request, on an action that just moved a whole PDF.
+  //
+  // A full check, network and all. This used to pass allowNetwork: false to
+  // skip the free-copy lookup on a row about to come back held — but that flag
+  // suppresses the org check too, so any pull that did *not* leave the paper
+  // held locally refreshed into "Not in your library" with no org line at all.
+  // A pull can succeed and still not match: the collection may already hold
+  // these exact bytes under someone's manual match, which storePulledFile
+  // deliberately refuses to overwrite. Losing the org line there turns a
+  // conflict the writer could act on into the false negative this whole feature
+  // exists to prevent.
+  async function pull(index: number, pmid: string) {
+    const line = response?.results[index]?.parsed.input;
+    if (!line) return;
+    setPulling(index);
+    setError(null);
+    try {
+      await api.proPull(pmid);
+      const fresh = await api.checkHave([line]);
+      const updated = fresh.results[0];
+      if (updated) {
+        setResponse((r) =>
+          r ? { ...r, results: r.results.map((a, i) => (i === index ? updated : a)) } : r
+        );
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setPulling(null);
     }
   }
 
@@ -118,7 +159,24 @@ export function HaveCheck({
             {response.results.map((answer, i) => (
               // Index-keyed on purpose: the same reference pasted twice is two
               // rows, and both must stay put.
-              <AnswerRow key={i} answer={answer} onOpen={openPaper} />
+              <AnswerRow
+                key={i}
+                answer={answer}
+                onOpen={openPaper}
+                // Copying writes to this library, so it follows the same rule as
+                // every other mutation. A read-only viewer still sees that the
+                // organization holds it — which is the answer they were told to
+                // go and get — and is pointed at the person who can act on it.
+                onPull={access.isAdmin ? (pmid) => pull(i, pmid) : null}
+                pulling={pulling === i}
+                // "One at a time" was the stated design but nothing enforced
+                // it: only the pulling row's own button was disabled, so a
+                // second row could be started mid-transfer — and the first
+                // pull's finally would then clear the second's spinner while
+                // its bytes were still moving, with two refreshes racing to
+                // set the same response.
+                busy={pulling !== null}
+              />
             ))}
           </ul>
           {response.truncated > 0 && (
@@ -138,7 +196,8 @@ export function HaveCheck({
 function Summary({ response }: { response: HaveResponse }) {
   const { results } = response;
   const held = results.filter((r) => r.held).length;
-  const free = results.filter((r) => !r.held && r.free).length;
+  const org = results.filter((r) => !r.held && r.org).length;
+  const free = results.filter((r) => !r.held && !r.org && r.free).length;
   const unreadable = results.filter((r) => r.parsed.kind === "unknown").length;
   return (
     <p className="have-summary">
@@ -146,6 +205,7 @@ function Summary({ response }: { response: HaveResponse }) {
         {held} of {results.length}
       </strong>{" "}
       already in your library.
+      {org > 0 && ` ${org} more ${org === 1 ? "is" : "are"} held by your organization.`}
       {free > 0 && ` ${free} unowned ${free === 1 ? "paper has" : "papers have"} a free copy.`}
       {unreadable > 0 &&
         ` ${unreadable} line${unreadable === 1 ? "" : "s"} couldn’t be read.`}
@@ -156,12 +216,27 @@ function Summary({ response }: { response: HaveResponse }) {
 function AnswerRow({
   answer,
   onOpen,
+  onPull,
+  pulling,
+  busy,
 }: {
   answer: HaveAnswer;
   onOpen: (p: HaveMatch) => void;
+  /** Null for a viewer who can't mutate this library. */
+  onPull: ((pmid: string) => void) | null;
+  /** This row's own transfer is in flight — drives the spinner and the label. */
+  pulling: boolean;
+  /** Some row's transfer is in flight. Disables every Copy button, not just this one. */
+  busy: boolean;
 }) {
-  const { parsed, match, held, free, freeChecked } = answer;
-  const kind = held ? "held" : parsed.kind === "unknown" ? "unreadable" : "not-held";
+  const { parsed, match, held, free, freeChecked, org } = answer;
+  const kind = held
+    ? "held"
+    : parsed.kind === "unknown"
+      ? "unreadable"
+      : org
+        ? "org-held"
+        : "not-held";
 
   return (
     <li className={`have-row ${kind}`}>
@@ -172,7 +247,12 @@ function AnswerRow({
 
       {match && <PaperLine match={match} onOpen={onOpen} />}
 
-      {!match && parsed.kind !== "unknown" && (
+      {/* Not for an org hit. A paper the organization holds but this library has
+          never seen has no match row — the org line below *is* the answer, and
+          "Nothing found for PMID 30000001 (identifier lookup skipped)" printed
+          directly above "Held by Acme Medical" reads as a contradiction on the
+          one row where the copy is most worth offering. */}
+      {!match && !org && parsed.kind !== "unknown" && (
         <p className="have-nothing">
           Nothing found for {describe(parsed)}
           {freeChecked ? "" : " (identifier lookup skipped)"}.
@@ -181,9 +261,35 @@ function AnswerRow({
 
       {parsed.kind === "unknown" && <p className="have-nothing">{parsed.reason}</p>}
 
+      {/* The org line sits above the free-copy one because it changes the
+          decision more: a copy the agency already bought costs nothing and
+          needs no licence argument. The server suppresses the free-copy lookup
+          for these rows for the same reason. */}
+      {!held && org && (
+        <p className="have-org">
+          <span>Held by {org.node}.</span>{" "}
+          {/* Keyed off org.pmid, not match.pmid: the org can hold a paper this
+              library has never seen, which is exactly the case with no match
+              row — and the one where the copy is most worth offering. */}
+          {onPull ? (
+            <button
+              type="button"
+              className="have-pull"
+              onClick={() => onPull(org.pmid)}
+              disabled={busy}
+            >
+              {pulling && <span className="btn-spinner" aria-hidden="true" />}
+              {pulling ? "Copying…" : "Copy to my library"}
+            </button>
+          ) : (
+            <span>Ask your project manager for a copy.</span>
+          )}
+        </p>
+      )}
+
       {/* Only ever offered for a paper the library doesn't hold: pointing at a
           free copy of something already on disk would invite a second copy. */}
-      {!held && free && (
+      {!held && !org && free && (
         <a className="have-free" href={free.url} target="_blank" rel="noopener noreferrer">
           <ExternalLink size={13} className="inline-icon" aria-hidden />
           Free copy
@@ -191,7 +297,7 @@ function AnswerRow({
           {free.license ? ` (${free.license})` : ""}
         </a>
       )}
-      {!held && !free && freeChecked && parsed.kind !== "unknown" && (
+      {!held && !org && !free && freeChecked && parsed.kind !== "unknown" && (
         <span className="have-free none">No free copy found</span>
       )}
 
@@ -214,6 +320,16 @@ function Verdict({ kind }: { kind: string }) {
     return (
       <span className="have-pill unreadable">
         <TriangleAlert size={13} className="inline-icon" aria-hidden /> Couldn’t read this
+      </span>
+    );
+  }
+  // Distinct from both: not a purchase, but not something you can open either.
+  // Saying "not in your library" here would send a writer to buy a paper the
+  // agency already owns, which is the whole failure this feature exists to stop.
+  if (kind === "org-held") {
+    return (
+      <span className="have-pill org-held">
+        <Users size={13} className="inline-icon" aria-hidden /> In your organization
       </span>
     );
   }

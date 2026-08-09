@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
+import { proStatus } from "./pro-hooks.js";
 import {
   addBookmarks,
   addCollectionFiles,
@@ -67,6 +68,7 @@ import {
   cleanUploadName,
   existingBlobHashes,
   isPdfFile,
+  safeFileName,
   storeBlobFromTemp,
 } from "./blobstore.js";
 import {
@@ -138,7 +140,11 @@ function tokenMatches(provided: string): boolean {
 
 // No ADMIN_TOKEN configured = single-user mode: everyone is admin (index.ts
 // refuses to bind non-loopback in that case).
-function isAdminRequest(req: Request): boolean {
+//
+// Exported for the Pro seam: Pro's owner-facing routes sit outside this
+// router's admin gate (see the mount in index.ts) and must answer to the same
+// predicate rather than a second copy of it.
+export function isAdminRequest(req: Request): boolean {
   if (!ADMIN_TOKEN) return true;
   const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
   return m != null && tokenMatches(m[1].trim());
@@ -194,11 +200,36 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
 // need minted links (token mode) or open directly (tokenless single-user or
 // an open library).
+// `pro` is null in a free build, which is what the client keys its Pro UI off.
+// The client trusts this for *rendering only* — every Pro capability is
+// enforced server-side, so a tampered response reveals nothing and unlocks
+// nothing. That split is what lets all the Pro-aware client code live in the
+// open repo behind an optional field.
+//
+// This route is deliberately unauthenticated — the client calls it before it
+// knows whether it holds a token — so everything in the response has to be safe
+// for a stranger to read. admin/token_required/library_open all describe the
+// caller's own access, which is exactly what they came to ask.
+//
+// `pro` does not: version, master/spoke role and node count describe the
+// *organization's* topology, not this caller's access. An exposed instance (open
+// library, a share link, a LAN viewer) would hand any passer-by the number of
+// writers paired to the agency and an exact module version to match against a
+// known-bad build. shared/pro.ts calls the holdings index sensitive because what
+// an agency is reading reveals which drugs and indications are in play; how many
+// people are reading it is the same class of signal.
+//
+// Owner-only, then — and null for everyone else, which is the same answer a free
+// build gives. That collapse is the point: a viewer cannot tell a Pro instance
+// from a free one, and the only client that consumes this block is the Settings
+// panel, which no viewer can open.
 api.get("/auth", (req, res) => {
+  const admin = isAdminRequest(req);
   res.json({
-    admin: isAdminRequest(req),
+    admin,
     token_required: ADMIN_TOKEN.length > 0,
     library_open: libraryOpen(),
+    pro: admin ? proStatus() : null,
   });
 });
 
@@ -552,11 +583,14 @@ api.get(
       return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
+    const offline = req.query.free === "0";
     const body: HaveResponse = {
-      // The free-copy lookup is the one part that leaves the machine, so it can
-      // be switched off (?free=0) — the client does that while a paste is still
-      // being typed, and turns it on for the answer the user acts on.
-      results: await checkHoldings(batch, { lookUpFree: req.query.free !== "0" }),
+      // ?free=0 means "answer without leaving the machine" — the client sends
+      // it while a paste is still being typed, and drops it for the answer the
+      // user acts on. It gates the org check as well as the free-copy lookup,
+      // because both are network calls and the flag is really about that.
+      // (The held/not-held verdict itself is local either way.)
+      results: await checkHoldings(batch, { lookUpFree: !offline, checkOrg: !offline }),
       truncated: lines.length - batch.length,
     };
     res.json(body);
@@ -909,7 +943,12 @@ api.get("/collections/files/:fileId/content", (req, res) => {
     return res.status(410).json({ error: "That file's PDF is no longer stored." });
   }
   // Header values must stay ASCII and quote-free; the name is display-only.
-  const filename = file.file_name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  // safeFileName first, because the scrub below leaves forward slashes alone —
+  // and because rows written before file_name was sanitised on the way in are
+  // still in the database.
+  const filename = safeFileName(file.file_name)
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/["\\]/g, "_");
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
   res.sendFile(blobPath(file.content_hash));
@@ -1014,8 +1053,12 @@ api.get("/collections/:id/archive", (req, res) => {
   zip.pipe(res);
   const used = new Set<string>();
   for (const f of files) {
+    // The zip-slip sink: an entry name is a *path*, so whatever is in
+    // file_name decides where this lands when someone extracts the download.
+    // Sanitised on the way in now, but rows predate that, and one call here
+    // makes the guarantee a property of the writer rather than of history.
     zip.append(fs.createReadStream(blobPath(f.content_hash)), {
-      name: uniqueZipName(f.file_name, used),
+      name: uniqueZipName(safeFileName(f.file_name), used),
     });
   }
   // The "error" handler above already logs and destroys the response; the

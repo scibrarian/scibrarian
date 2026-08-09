@@ -36,6 +36,20 @@ import type {
   TopicSuggestResponse,
 } from "../../shared/types";
 
+import type { ProStatus as ProStatusRow } from "../../shared/pro";
+
+// The Pro tier's wire shapes. Public like the rest of the client — only the
+// implementations behind /api/pro are closed.
+export type {
+  OrgHolding,
+  ProMasterStatus,
+  ProNode,
+  ProNodesResponse,
+  ProPairingMinted,
+  ProPullResult,
+  ProStatus,
+} from "../../shared/pro";
+
 export type {
   AbstractsResponse,
   BookmarkEntry,
@@ -127,6 +141,10 @@ export interface AuthStatus {
   admin: boolean;
   token_required: boolean;
   library_open: boolean;
+  // The Pro module's report, or null in a free build — which is what every
+  // piece of Pro UI keys off. Optional so a response from an older server
+  // (or a test stub) doesn't have to carry it.
+  pro?: ProStatusRow | null;
 }
 
 // What /api/settings exposes: never the API key itself, just whether one is set.

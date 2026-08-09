@@ -4,6 +4,22 @@ node_modules
 client/dist
 **/dist
 
+# The proprietary Pro workspace. This repository and every image built from it
+# by default are AGPL-3.0; pro/ is not, and must never end up inside one.
+#
+# .gitignore already keeps it out of the repo, but Docker does not read
+# .gitignore — without this line `COPY . .` in the builder stage pulls the
+# proprietary source into an intermediate layer, which leaks the moment anyone
+# builds with --target builder. The runtime stage's explicit COPY allowlist is
+# what keeps it out of the published image today; this makes that a property of
+# the build context rather than of nobody having edited those lines.
+#
+# The Pro image is built from pro/Dockerfile.pro, which BuildKit pairs with
+# pro/Dockerfile.pro.dockerignore — a file that lives in the private repo and
+# omits this entry on purpose. Both are absent from a public checkout, so the
+# only build this repository can perform on its own is the AGPL one.
+pro
+
 # Local data + secrets never belong in the image.
 data
 *.db
@@ -19,7 +35,7 @@ data
 .github
 .vscode
 .claude
-Dockerfile
+Dockerfile*
 docker-compose*.yml
 Caddyfile*
 .dockerignore

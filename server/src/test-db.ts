@@ -21,6 +21,19 @@ let tmpDir: string | undefined;
 export async function openTempDb(name: string): Promise<Db> {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `scibrarian-${name}-`));
   process.env.DB_PATH = path.join(tmpDir, "test.db");
+  // The blob store has to be redirected too, and it is not optional. Anything
+  // that reaches blobstore.ts — a test importing have.js or routes.js, not just
+  // one that touches files — runs its module body, which mkdirs BLOBS_DIR and
+  // then *unlinks every entry* in UPLOAD_TMP_DIR to clear dead uploads. Left
+  // pointing at the defaults that is the developer's real data/tmp-uploads: a
+  // `npm test` run during an upload destroys that upload's temp file, and
+  // existingBlobHashes() reads real blobs, so file_exists in any assertion
+  // would depend on the machine.
+  //
+  // Only BLOBS_DIR is set because UPLOAD_TMP_DIR is derived from it (config.ts)
+  // — the tmp dir sits beside the blobs so the post-hash rename stays on one
+  // filesystem, and that keeps both inside tmpDir for closeTempDb to remove.
+  process.env.BLOBS_DIR = path.join(tmpDir, "blobs");
   db = await import("./db.js");
   return db;
 }
