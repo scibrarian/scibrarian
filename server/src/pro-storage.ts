@@ -2,14 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { UPLOAD_TMP_DIR } from "./config.js";
-import { blobExists, blobPath, isPdfFile, storeBlobFromTemp } from "./blobstore.js";
+import { blobExists, blobPath, isPdfFile, safeFileName, storeBlobFromTemp } from "./blobstore.js";
 import {
   addCollectionFiles,
   collectionByName,
+  collectionFileByHash,
   createCollection,
   existingPmids,
   holdingsByPmids,
-  listCollectionFiles,
   setFileMatched,
   upsertArticles,
 } from "./db.js";
@@ -66,10 +66,14 @@ async function ensureArticle(pmid: string): Promise<boolean> {
 /**
  * File bytes pulled from a master as a genuinely held paper.
  *
- * Returns null when the bytes aren't a PDF — which is not a formality. These
- * arrive over the network from another instance, and "a master said so" is not
- * a reason to write arbitrary content into the blob store under a .pdf name.
- * The same check guards ordinary uploads.
+ * Returns null when the pull could not be filed: the bytes aren't a PDF, or
+ * PubMed couldn't supply the metadata the paper needs to be visible. The PDF
+ * check is not a formality — these bytes arrive over the network from another
+ * instance, and "a master said so" is not a reason to write arbitrary content
+ * into the blob store under a .pdf name. The same check guards ordinary
+ * uploads. Anything else that goes wrong throws: null is the caller's "the
+ * master sent something unusable", and it should not have to mean "a write
+ * failed halfway" as well.
  *
  * The sequence is the reason this lives here: metadata, then blob, then the
  * row, then the match. Metadata first so a PubMed outage fails the pull with
@@ -87,21 +91,68 @@ export async function storePulledFile(o: {
 }): Promise<{ fileId: number; hash: string } | null> {
   if (!(await ensureArticle(o.pmid))) return null;
 
-  fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
-  const tmpPath = path.join(UPLOAD_TMP_DIR, `pull-${crypto.randomUUID()}.pdf`);
-  await fs.promises.writeFile(tmpPath, o.bytes);
+  const hash = await storePulledBlob(o.bytes);
+  if (hash === null) return null;
 
-  if (!(await isPdfFile(tmpPath))) {
-    await fs.promises.unlink(tmpPath).catch(() => {});
-    return null;
+  // Sanitised here, at the boundary, not upstream. pullFromMaster does strip a
+  // path off the Content-Disposition it parses, and that is not the same thing:
+  // this function is a ProContext method, so the name reaching it is whatever
+  // *some* build of the Pro module chose to pass. The rule the seam rests on is
+  // that the open repo owns the invariants the free tier depends on, and
+  // "nothing with a path separator in it is ever written to file_name" is one of
+  // them — see safeFileName for what the archive route does with this column.
+  const name = safeFileName(o.fileName, `${o.pmid}.pdf`);
+  const added = addCollectionFiles(o.collectionId, [{ hash, name }]);
+  const file = collectionFileByHash(o.collectionId, hash);
+  if (!file) {
+    // Not reachable: the insert either added the row or found one already
+    // there. Deliberately not `return null` — that is the caller's "the master
+    // sent something that isn't a PDF", and answering it here, after the blob
+    // and the row are both written, would report the wrong half as the failure.
+    throw new Error(`pull: no collection_files row for ${hash} after insert`);
   }
 
-  const { hash } = await storeBlobFromTemp(tmpPath);
-  addCollectionFiles(o.collectionId, [{ hash, name: o.fileName }]);
-  const file = listCollectionFiles(o.collectionId).find((f) => f.content_hash === hash);
-  if (!file) return null;
   // Matched by PMID, because that is literally how it was found: the master was
   // asked about this PMID and answered about this PMID.
-  setFileMatched(file.id, o.pmid, "pmid");
+  //
+  // Only for a row this pull actually created, or one nothing has claimed yet.
+  // addCollectionFiles is INSERT OR IGNORE against UNIQUE(collection_id,
+  // content_hash), so it is a no-op when the collection already holds these
+  // bytes — the same PDF uploaded by hand and matched manually, or filed under
+  // another name by an earlier pull. Matching unconditionally would overwrite
+  // that row's pmid, status and method with the master's claim, and if the two
+  // PMIDs differ the paper the user had matched now answers *not held*.
+  //
+  // One PDF cannot be two papers, so a disagreement here is a real conflict.
+  // Leaving the existing match and saying so is the honest outcome; resolving
+  // it silently in favour of whoever wrote last is not.
+  if (added > 0 || !file.pmid) {
+    setFileMatched(file.id, o.pmid, "pmid");
+  } else if (file.pmid !== o.pmid) {
+    console.warn(
+      `[pro] pulled ${o.pmid}, but collection ${o.collectionId} already stores these bytes as ${file.pmid}; keeping the existing match`
+    );
+  }
   return { fileId: file.id, hash };
+}
+
+/**
+ * The pulled bytes as a stored blob, or null if they aren't a PDF.
+ *
+ * Split out so one `finally` owns the temp file for every exit. storeBlobFromTemp
+ * renames or unlinks it on each path it *returns* from, but not on the ones it
+ * throws from — a hash stream error, or a rename that failed with the blob still
+ * absent — and a leaked temp then survives until the next server start sweeps
+ * UPLOAD_TMP_DIR.
+ */
+async function storePulledBlob(bytes: Buffer): Promise<string | null> {
+  fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
+  const tmpPath = path.join(UPLOAD_TMP_DIR, `pull-${crypto.randomUUID()}.pdf`);
+  try {
+    await fs.promises.writeFile(tmpPath, bytes);
+    if (!(await isPdfFile(tmpPath))) return null;
+    return (await storeBlobFromTemp(tmpPath)).hash;
+  } finally {
+    await fs.promises.unlink(tmpPath).catch(() => {});
+  }
 }

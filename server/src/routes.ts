@@ -68,6 +68,7 @@ import {
   cleanUploadName,
   existingBlobHashes,
   isPdfFile,
+  safeFileName,
   storeBlobFromTemp,
 } from "./blobstore.js";
 import {
@@ -923,7 +924,12 @@ api.get("/collections/files/:fileId/content", (req, res) => {
     return res.status(410).json({ error: "That file's PDF is no longer stored." });
   }
   // Header values must stay ASCII and quote-free; the name is display-only.
-  const filename = file.file_name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  // safeFileName first, because the scrub below leaves forward slashes alone —
+  // and because rows written before file_name was sanitised on the way in are
+  // still in the database.
+  const filename = safeFileName(file.file_name)
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/["\\]/g, "_");
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
   res.sendFile(blobPath(file.content_hash));
@@ -1028,8 +1034,12 @@ api.get("/collections/:id/archive", (req, res) => {
   zip.pipe(res);
   const used = new Set<string>();
   for (const f of files) {
+    // The zip-slip sink: an entry name is a *path*, so whatever is in
+    // file_name decides where this lands when someone extracts the download.
+    // Sanitised on the way in now, but rows predate that, and one call here
+    // makes the guarantee a property of the writer rather than of history.
     zip.append(fs.createReadStream(blobPath(f.content_hash)), {
-      name: uniqueZipName(f.file_name, used),
+      name: uniqueZipName(safeFileName(f.file_name), used),
     });
   }
   // The "error" handler above already logs and destroys the response; the
