@@ -31,6 +31,39 @@ const OWNED = { pmid: "30000001", hash: "a".repeat(64), doi: "10.1000/owned" };
 const SEEN = { pmid: "30000002", hash: "b".repeat(64), doi: "10.1000/seen" };
 // Held by this instance, locally. Never needs an org answer at all.
 const LOCAL = { pmid: "30000003", hash: "c".repeat(64), doi: "10.1000/local" };
+// Held by the org, and *entirely unknown here* — no articles row, no file. A
+// bare DOI for this paper is the case the first org pass cannot cover: there is
+// no PMID to ask about until OpenAlex supplies one.
+const STRANGER = { pmid: "30000004", doi: "10.1000/stranger" };
+
+// OpenAlex, controllable and offline.
+//
+// The second org pass runs only after a real enrichment call, so pinning it
+// needs an answer this test can choose. Recording what was asked also pins the
+// free-copy suppression directly, rather than by inferring it from a request
+// that never left.
+const oa = vi.hoisted(() => ({
+  asked: [] as { dois: string[]; pmids: string[] }[],
+  works: {
+    byDoi: new Map<string, unknown>(),
+    byPmid: new Map<string, unknown>(),
+  },
+}));
+
+vi.mock("./openalex.js", () => ({
+  lookupWorks: async (dois: string[], pmids: string[]) => {
+    oa.asked.push({ dois, pmids });
+    return oa.works;
+  },
+}));
+
+const oaWork = (o: { pmid: string; doi: string }) => ({
+  pmid: o.pmid,
+  doi: o.doi,
+  title: `Paper ${o.pmid}`,
+  year: 2024,
+  free: null,
+});
 
 function article(p: { pmid: string; doi: string }) {
   return {
@@ -96,6 +129,8 @@ afterAll(closeTempDb);
 afterEach(() => {
   hooks.registerPro(null);
   asked = [];
+  oa.asked = [];
+  oa.works = { byDoi: new Map(), byPmid: new Map() };
 });
 
 // lookUpFree is off everywhere except the one test that pins its suppression:
@@ -264,5 +299,54 @@ describe("interaction with the free-copy lookup", () => {
     expect(answer.org).not.toBeNull();
     expect(answer.freeChecked).toBe(false);
     expect(answer.free).toBeNull();
+    // Directly: the batch was never assembled, so OpenAlex was never called.
+    expect(oa.asked).toEqual([]);
+  });
+});
+
+// The half the first org pass structurally cannot reach.
+//
+// orgKey reads a PMID off the cached row or off the pasted reference. A bare
+// DOI for a paper this library has never seen has neither, so the line is
+// dropped from the first batch — and OpenAlex, twenty lines later, is the thing
+// that knows its PMID. Without a second ask the writer is told "not in your
+// library", with a free-copy link, for a paper the agency already bought.
+describe("a DOI the library has never seen", () => {
+  it("is asked about once OpenAlex places it", async () => {
+    oa.works = { byDoi: new Map([[STRANGER.doi, oaWork(STRANGER)]]), byPmid: new Map() };
+    orgAnswer = holds(STRANGER.pmid);
+    hooks.registerPro(stub);
+
+    const [answer] = await have.checkHoldings([STRANGER.doi], { lookUpFree: true });
+
+    // The first pass had nothing to ask; the second asks about the PMID
+    // OpenAlex just supplied.
+    expect(asked).toEqual([[STRANGER.pmid]]);
+    expect(answer.held).toBe(false);
+    expect(answer.orgChecked).toBe(true);
+    expect(answer.org).toEqual({ pmid: STRANGER.pmid, node: "Acme Medical" });
+  });
+
+  it("still reports 'not asked' rather than 'no' when the master is down", async () => {
+    oa.works = { byDoi: new Map([[STRANGER.doi, oaWork(STRANGER)]]), byPmid: new Map() };
+    orgAnswer = async () => {
+      throw new Error("fetch failed");
+    };
+    hooks.registerPro(stub);
+
+    const [answer] = await have.checkHoldings([STRANGER.doi], { lookUpFree: true });
+    expect(answer.orgChecked).toBe(false);
+    expect(answer.org).toBeNull();
+  });
+
+  it("does not ask twice about a line the first pass already covered", async () => {
+    // OWNED has an articles row here, so the first pass had its PMID and used
+    // it. The second pass must not re-ask — the request is the expensive part.
+    oa.works = { byDoi: new Map([[OWNED.doi, oaWork(OWNED)]]), byPmid: new Map() };
+    orgAnswer = holds();
+    hooks.registerPro(stub);
+
+    await have.checkHoldings([OWNED.doi], { lookUpFree: true });
+    expect(asked).toEqual([[OWNED.pmid]]);
   });
 });

@@ -76,6 +76,16 @@ export function HaveCheck({
   // collection the reader can click through to, and assembling that here from
   // what the pull happened to return is how the two drift apart. One extra
   // request, on an action that just moved a whole PDF.
+  //
+  // A full check, network and all. This used to pass allowNetwork: false to
+  // skip the free-copy lookup on a row about to come back held — but that flag
+  // suppresses the org check too, so any pull that did *not* leave the paper
+  // held locally refreshed into "Not in your library" with no org line at all.
+  // A pull can succeed and still not match: the collection may already hold
+  // these exact bytes under someone's manual match, which storePulledFile
+  // deliberately refuses to overwrite. Losing the org line there turns a
+  // conflict the writer could act on into the false negative this whole feature
+  // exists to prevent.
   async function pull(index: number, pmid: string) {
     const line = response?.results[index]?.parsed.input;
     if (!line) return;
@@ -83,7 +93,7 @@ export function HaveCheck({
     setError(null);
     try {
       await api.proPull(pmid);
-      const fresh = await api.checkHave([line], false);
+      const fresh = await api.checkHave([line]);
       const updated = fresh.results[0];
       if (updated) {
         setResponse((r) =>
@@ -226,7 +236,12 @@ function AnswerRow({
 
       {match && <PaperLine match={match} onOpen={onOpen} />}
 
-      {!match && parsed.kind !== "unknown" && (
+      {/* Not for an org hit. A paper the organization holds but this library has
+          never seen has no match row — the org line below *is* the answer, and
+          "Nothing found for PMID 30000001 (identifier lookup skipped)" printed
+          directly above "Held by Acme Medical" reads as a contradiction on the
+          one row where the copy is most worth offering. */}
+      {!match && !org && parsed.kind !== "unknown" && (
         <p className="have-nothing">
           Nothing found for {describe(parsed)}
           {freeChecked ? "" : " (identifier lookup skipped)"}.

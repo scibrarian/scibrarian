@@ -157,14 +157,20 @@ export const api = {
   // guarantee in the UI where it's easy to break. Batches run in sequence, not
   // in parallel — the enrichment step calls OpenAlex, and firing six of those at
   // once at a free service to save a second is not a trade worth making.
-  checkHave: async (refs: string[], lookUpFree = true): Promise<HaveResponse> => {
+  // `allowNetwork: false` sends ?free=0, which means "answer without leaving
+  // the machine". It suppresses the org check as well as the free-copy lookup —
+  // the flag is about network calls, not about free copies — so a caller that
+  // passes false gets the local held/not-held verdict and nothing else. It was
+  // named lookUpFree, which read as if only OpenAlex were at stake, and the
+  // post-pull refresh below turned that misreading into a wrong answer.
+  checkHave: async (refs: string[], allowNetwork = true): Promise<HaveResponse> => {
     const capped = refs.slice(0, MAX_HAVE_REFS);
     const results: HaveAnswer[] = [];
     let truncated = refs.length - capped.length;
     for (let i = 0; i < capped.length; i += MAX_REFS_PER_HAVE_REQUEST) {
       const batch = capped.slice(i, i + MAX_REFS_PER_HAVE_REQUEST);
       const res = await req<HaveResponse>(
-        `/api/have?q=${encodeURIComponent(batch.join("\n"))}${lookUpFree ? "" : "&free=0"}`
+        `/api/have?q=${encodeURIComponent(batch.join("\n"))}${allowNetwork ? "" : "&free=0"}`
       );
       results.push(...res.results);
       truncated += res.truncated;

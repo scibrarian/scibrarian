@@ -208,6 +208,38 @@ export async function checkHoldings(
   const secondLook = new Map<string, HoldingRow>();
   for (const row of holdingsByPmids(resolvedPmids)) secondLook.set(row.pmid, row);
 
+  // --- second org pass: the lines OpenAlex just gave a PMID to ---
+  //
+  // A pasted DOI naming a paper this library has never seen has no PMID when
+  // the first pass runs: orgKey finds nothing on the row (there is no row) and
+  // nothing on the ref, so the line is not in that batch. OpenAlex has now
+  // supplied one, and without asking again the writer is told "not in your
+  // library" — with a free-copy link — for a paper the agency already bought.
+  // That is the false negative this whole feature exists to prevent, reached by
+  // the one route the first pass structurally cannot cover.
+  //
+  // Kept as a second ask rather than by moving the first pass after OpenAlex:
+  // an org hit suppresses the free-copy lookup, and that only shrinks anything
+  // if the org is asked first. This covers the remainder — the lines that had
+  // no PMID to ask about — and asks about nothing the first pass already did.
+  if (checkOrg) {
+    const oaPmid = (r: LocalResult): string =>
+      (r.ref.doi ? oaByDoi.get(r.ref.doi)?.pmid : undefined) ?? "";
+    // Rows the second look found on disk are held now, and a held row never
+    // shows an org line — asking about them would spend the request on an
+    // answer nothing renders.
+    const late = pending.filter(
+      (r) => !r.orgChecked && oaPmid(r) && secondLook.get(oaPmid(r))?.file_id == null
+    );
+    const holdings = await orgCheck(late.map(oaPmid));
+    if (holdings) {
+      for (const r of late) {
+        r.orgChecked = true;
+        r.org = holdings.get(oaPmid(r)) ?? null;
+      }
+    }
+  }
+
   // Built here rather than above so it also covers the papers the second look
   // just turned up — those are held, so they're exactly the rows whose
   // publication types a reader will want.
