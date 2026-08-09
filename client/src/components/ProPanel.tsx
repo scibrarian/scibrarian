@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Copy, Check, Link2, Unlink } from "lucide-react";
+import { Copy, Check, KeyRound, Link2, TriangleAlert, Unlink } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { errorMessage } from "../lib/format";
 import { Banner } from "./Banner";
-import type { ProMasterStatus, ProNode } from "../types";
+import type { ProLicense, ProMasterStatus, ProNode } from "../types";
 
 // Shared holdings — the Settings panel for the Pro tier.
 //
@@ -28,6 +28,8 @@ export function ProPanel() {
   const [nodes, setNodes] = useState<ProNode[]>([]);
   const [orgName, setOrgName] = useState("");
   const [master, setMaster] = useState<ProMasterStatus>({ connected: false });
+  const [license, setLicense] = useState<ProLicense | null>(null);
+  const [licenseKey, setLicenseKey] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   // The pairing code, held only until the operator navigates away. It is
@@ -46,6 +48,7 @@ export function ProPanel() {
       const [n, m] = await Promise.all([api.proNodes(), api.proMaster()]);
       setNodes(n.nodes);
       setOrgName(n.org_name);
+      setLicense(n.license);
       setMaster(m);
     } catch (err) {
       setError(errorMessage(err));
@@ -161,6 +164,36 @@ export function ProPanel() {
         code to each writer. Each code is for one person and expires on its own.
       </p>
 
+      {/* The licence. Shown before the mint form because it is what decides
+          whether minting will work — finding that out from a 402 after typing
+          someone's name is the wrong order. */}
+      <LicenseRow license={license} />
+      <form
+        className="pro-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run(async () => {
+            await api.proSetLicense(licenseKey.trim());
+            setLicenseKey("");
+          });
+        }}
+      >
+        <div className="pro-row">
+          <input
+            value={licenseKey}
+            onChange={(e) => setLicenseKey(e.target.value)}
+            placeholder={license?.verdict === "valid" ? "Replace licence key" : "Licence key"}
+            spellCheck={false}
+          />
+          <button type="submit" disabled={busy || !licenseKey.trim()}>
+            Save licence
+          </button>
+        </div>
+        <p className="hint">
+          Entered once per organization. It is checked on this machine and never sent anywhere.
+        </p>
+      </form>
+
       <div className="pro-row">
         <input
           value={orgName}
@@ -272,5 +305,62 @@ export function ProPanel() {
         </p>
       )}
     </section>
+  );
+}
+
+// The licence, as a single line an operator can act on.
+//
+// Every state names what to do next rather than only what is wrong: an expired
+// licence says existing connections keep working, because the first question a
+// Scientific Director asks on seeing "expired" is whether their writers just
+// lost access. They didn't — the gate only refuses *new* pairings — and saying
+// so here is cheaper than fielding the call.
+function LicenseRow({ license }: { license: ProLicense | null }) {
+  if (!license) return null;
+
+  if (license.verdict === "absent") {
+    return (
+      <p className="pro-license absent">
+        <KeyRound size={14} className="inline-icon" aria-hidden />
+        No licence yet. Writers can&rsquo;t be connected until one is added.
+      </p>
+    );
+  }
+
+  if (license.verdict === "invalid") {
+    return (
+      <p className="pro-license bad">
+        <TriangleAlert size={14} className="inline-icon" aria-hidden />
+        This licence key isn&rsquo;t valid. Check it was pasted in full, or ask for a new one.
+      </p>
+    );
+  }
+
+  const on = license.expires_at?.slice(0, 10) ?? "";
+
+  if (license.verdict === "expired") {
+    return (
+      <p className="pro-license bad">
+        <TriangleAlert size={14} className="inline-icon" aria-hidden />
+        <span>
+          Licence for <strong>{license.org}</strong> expired on {on}. Existing connections keep
+          working — renew to connect anyone new.
+        </span>
+      </p>
+    );
+  }
+
+  // Valid. The seat count reads as a fraction because the number that matters
+  // is how many are left, and "7 of 10" answers that without arithmetic.
+  const full = license.nodes_in_use >= license.seats;
+  return (
+    <p className={`pro-license ${full ? "bad" : "ok"}`}>
+      <KeyRound size={14} className="inline-icon" aria-hidden />
+      <span>
+        Licensed to <strong>{license.org}</strong> — {license.nodes_in_use} of {license.seats}{" "}
+        seats in use, until {on}.
+        {full && " Revoke a connection, or upgrade, to connect anyone new."}
+      </span>
+    </p>
   );
 }

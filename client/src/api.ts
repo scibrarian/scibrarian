@@ -22,6 +22,7 @@ import type {
   PaperQuery,
   PaperSource,
   PapersResponse,
+  ProLicense,
   ProMasterStatus,
   ProNodesResponse,
   ProPairingMinted,
@@ -272,6 +273,14 @@ export const api = {
     }),
   proRevokeNode: (id: number) =>
     req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
+  // An empty string clears it. There is no getter: the licence is reported
+  // through proNodes(), which never returns the key itself.
+  proSetLicense: (licenseKey: string) =>
+    req<{ license: ProLicense }>("/api/pro/license", {
+      method: "PUT",
+      body: JSON.stringify({ license_key: licenseKey }),
+    }),
+
   proSetOrgName: (orgName: string) =>
     req<{ org_name: string }>("/api/pro/org-name", {
       method: "PUT",

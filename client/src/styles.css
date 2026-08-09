@@ -2928,6 +2928,46 @@ html {
   margin: 8px 0 12px;
 }
 
+/* The licence line. Sits above the mint form and carries the answer to "can I
+   connect another writer", so it reads as a status line rather than as a
+   warning banner — it is present in every state, including the good one. */
+.pro-license {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.pro-license .inline-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.pro-license.ok {
+  background: #e7f6ec;
+  color: #15803d;
+}
+
+/* Expired, invalid, or every seat taken — all of them mean "you cannot connect
+   anyone new until you act", so they share one treatment. */
+.pro-license.bad {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+@media (prefers-color-scheme: dark) {
+  .pro-license.ok {
+    background: #16301f;
+    color: #82d79a;
+  }
+}
+
 /* Whether the paper reports original data. A quiet outline rather than a fill:
    it annotates the verdict, and a fill would make it compete with the
    held/not-held pill that is the answer. */
