@@ -360,10 +360,15 @@ export default function App() {
   async function unlock(token: string) {
     setUnlocking(false);
     setAdminToken(token.trim());
-    const { admin } = await api
+    const { admin, pro: proStatus } = await api
       .getAuth()
-      .catch(() => ({ admin: false, token_required: true, library_open: false }));
+      .catch(() => ({ admin: false, token_required: true, library_open: false, pro: null }));
     setIsAdmin(admin);
+    // /auth reports the Pro block to the owner only, so a viewer's first load
+    // always answered null for it. Without this, unlocking reveals the gear but
+    // Settings still renders without the shared-holdings panel until a reload —
+    // which is every token-protected instance's only route to it.
+    setPro(proStatus ?? null);
     if (!admin) {
       setAdminToken(null);
       setStatus("That admin token wasn't accepted.");
@@ -373,6 +378,11 @@ export default function App() {
   function lock() {
     setAdminToken(null);
     setIsAdmin(false);
+    // Relocking hides the gear but leaves showSettings true, so the page keeps
+    // rendering. Dropping this would leave the org's node count and module
+    // version on screen for a viewer — the exact thing keeping `pro` owner-only
+    // is meant to prevent.
+    setPro(null);
   }
 
   // A title click in any view re-fetches /auth to decide PDF access; fold that
@@ -382,6 +392,10 @@ export default function App() {
     setIsAdmin(a.admin);
     setTokenRequired(a.token_required);
     setLibraryOpen(a.library_open);
+    // Part of the same snapshot since /auth started gating it on the caller: a
+    // token change that this fold-back exists to catch changes whether the Pro
+    // block was sent at all.
+    setPro(a.pro ?? null);
   }
 
   async function handleRefresh() {
