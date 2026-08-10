@@ -187,6 +187,104 @@ describe("storePulledFile", () => {
   });
 });
 
+// The push candidates, and the pair that fetches their bytes.
+//
+// These two are one mechanism: matchedFilesIn decides what may leave this
+// library, readFileBytes hands over the bytes, and the collection is the
+// boundary between them. Both halves are checked in the open repo on purpose —
+// the closed module supplies the ids, and "the caller only ever passes ids we
+// gave it" is not something this side can verify or should assume.
+
+describe("matchedFilesIn", () => {
+  // Seeds a row with the exact name given, the way a build that predates
+  // sanitising-on-upload left them in the database.
+  async function seed(collectionId: number, name: string, marker: string, pmid?: string) {
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf(marker)));
+    db.addCollectionFiles(collectionId, [{ hash, name }]);
+    const row = db.listCollectionFiles(collectionId).find((f) => f.content_hash === hash)!;
+    if (pmid) db.setFileMatched(row.id, pmid, "manual");
+    return row.id;
+  }
+
+  it("returns only rows matched to a paper", async () => {
+    const id = storage.ensureCollection("Candidates");
+    const matched = await seed(id, "matched.pdf", "cand-matched", PULLED);
+    await seed(id, "pending.pdf", "cand-pending");
+
+    const out = storage.matchedFilesIn(id);
+    expect(out.map((f) => f.id)).toEqual([matched]);
+    expect(out[0].pmid).toBe(PULLED);
+  });
+
+  it("tags each row with the collection it came from", async () => {
+    const id = storage.ensureCollection("Tagged");
+    await seed(id, "one.pdf", "tagged-one", PULLED);
+    expect(storage.matchedFilesIn(id)[0].collection_id).toBe(id);
+  });
+
+  // The row this exists for: written before the column was cleaned on the way
+  // in, and read here to build an outbound request. A newline in a filename is
+  // a second header on that request.
+  it("sanitises a legacy file_name on the way out", async () => {
+    const id = storage.ensureCollection("Legacy");
+    await seed(id, "report.pdf\nX-Injected: 1", "legacy-header", PULLED);
+    expect(storage.matchedFilesIn(id)[0].file_name).toBe("report.pdfX-Injected: 1");
+
+    const id2 = storage.ensureCollection("Legacy traversal");
+    await seed(id2, "../../etc/passwd.pdf", "legacy-path", MINE);
+    expect(storage.matchedFilesIn(id2)[0].file_name).toBe("passwd.pdf");
+  });
+
+  it("falls back to the PMID when the stored name sanitises to nothing", async () => {
+    const id = storage.ensureCollection("Nameless");
+    await seed(id, "..", "nameless", PULLED);
+    expect(storage.matchedFilesIn(id)[0].file_name).toBe(`${PULLED}.pdf`);
+  });
+});
+
+describe("readFileBytes", () => {
+  it("returns the bytes for a file in the collection asked for", async () => {
+    const id = storage.ensureCollection("Readable");
+    const bytes = pdf("readable");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
+    db.addCollectionFiles(id, [{ hash, name: "ok.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+
+    expect(storage.readFileBytes(id, row.id)).toEqual(bytes);
+  });
+
+  // The engagement boundary. A writer keeps a collection local precisely so its
+  // PDFs are not copied to the agency; a bare file id would make that promise
+  // depend on the closed module never handing over an id from the wrong list.
+  it("refuses a file that belongs to a different collection", async () => {
+    const shared = storage.ensureCollection("Shared with Acme");
+    const priv = storage.ensureCollection("Kept local");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("private")));
+    db.addCollectionFiles(priv, [{ hash, name: "confidential.pdf" }]);
+    const row = db.listCollectionFiles(priv).find((f) => f.content_hash === hash)!;
+
+    // Readable as part of its own collection...
+    expect(storage.readFileBytes(priv, row.id)).not.toBeNull();
+    // ...and not as part of one it was never in.
+    expect(storage.readFileBytes(shared, row.id)).toBeNull();
+  });
+
+  it("is null for a row that doesn't exist", () => {
+    const id = storage.ensureCollection("Readable");
+    expect(storage.readFileBytes(id, 999_999)).toBeNull();
+  });
+
+  it("is null when the row outlived its blob", async () => {
+    const id = storage.ensureCollection("Lost blob");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("lost")));
+    db.addCollectionFiles(id, [{ hash, name: "gone.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+
+    fs.unlinkSync(blob.blobPath(hash));
+    expect(storage.readFileBytes(id, row.id)).toBeNull();
+  });
+});
+
 // A temp file in the same directory the blob store renames out of, so
 // storeBlobFromTemp can be used directly to seed content.
 async function tmpWith(bytes: Buffer): Promise<string> {

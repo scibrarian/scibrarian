@@ -200,6 +200,19 @@ export interface Paper {
   // client renders this as text, and a server that emitted <mark> would be
   // asking it to trust markup assembled from PDF contents.
   snippet: string | null;
+  // The organisation that supplied this paper, when one did — Pro only, and
+  // omitted entirely otherwise.
+  //
+  // Optional rather than nullable because a papers page carries hundreds of
+  // rows and a free build would otherwise pay `"from_org":null` on every one of
+  // them for a field it can never populate.
+  //
+  // Additive, not exclusive: a writer can buy a paper *and* later receive it
+  // from the org. This says the org supplied it at least once, which is the
+  // licensing-relevant fact and stays true either way. It is a label and must
+  // never become a default filter — a search that hides org-supplied papers is
+  // a search that ends in buying one again.
+  from_org?: string;
 }
 
 export interface PapersResponse {

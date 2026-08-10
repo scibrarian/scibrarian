@@ -22,10 +22,13 @@ import type {
   PaperQuery,
   PaperSource,
   PapersResponse,
+  ProLicense,
   ProMasterStatus,
   ProNodesResponse,
   ProPairingMinted,
   ProPullResult,
+  ProPushResult,
+  ProSyncStatus,
   RefreshResponse,
   ShareLinkResponse,
   TopicRemovalResult,
@@ -272,11 +275,31 @@ export const api = {
     }),
   proRevokeNode: (id: number) =>
     req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
+  // An empty string clears it. There is no getter: the licence is reported
+  // through proNodes(), which never returns the key itself.
+  proSetLicense: (licenseKey: string) =>
+    req<{ license: ProLicense }>("/api/pro/license", {
+      method: "PUT",
+      body: JSON.stringify({ license_key: licenseKey }),
+    }),
+
   proSetOrgName: (orgName: string) =>
     req<{ org_name: string }>("/api/pro/org-name", {
       method: "PUT",
       body: JSON.stringify({ org_name: orgName }),
     }),
+
+  // The engagement boundary: which collection syncs to the master.
+  proSync: () => req<ProSyncStatus>("/api/pro/sync"),
+  // Stamps a collection for the organisation paired right now. Called straight
+  // after creating one when the dialog's box was left ticked, and from the
+  // panel to share or un-share an existing collection.
+  proShareCollection: (collectionId: number) =>
+    req<{ shared_with: string }>(`/api/pro/sync/${collectionId}`, { method: "PUT" }),
+  proUnshareCollection: (collectionId: number) =>
+    req<{ shared_with: null }>(`/api/pro/sync/${collectionId}`, { method: "DELETE" }),
+  // Runs a sweep now. One also runs on a timer; this is for watching it happen.
+  proRunSync: () => req<ProPushResult>("/api/pro/sync/run", { method: "POST" }),
 
   proMaster: () => req<ProMasterStatus>("/api/pro/master"),
   proConnect: (code: string) =>

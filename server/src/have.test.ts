@@ -101,6 +101,10 @@ const stub: ProModule = {
     asked.push(pmids);
     return orgAnswer(pmids);
   },
+  // Not exercised here — this feeds the papers list, not /have — but the stub
+  // has to satisfy the whole interface, which is the point: a hook added to
+  // ProModule without a free-tier answer fails to compile in the open repo.
+  pulledOrgByPmid: () => new Map<string, string>(),
 };
 
 const holds = (...pmids: string[]) =>

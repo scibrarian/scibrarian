@@ -2898,13 +2898,31 @@ html {
   padding: 6px 8px;
 }
 
-.pro-nodes {
+/* The two row-lists in the Pro panel — paired nodes, and per-collection
+   sharing — drawn as one thing. They appear in the same panel, so a difference
+   in row height or divider would read as a difference in kind. Joined rather
+   than copied: as two identical blocks a few hundred lines apart, a change to
+   the row treatment lands on one and silently misses the other. Only the space
+   around the lists differs. */
+.pro-nodes,
+.pro-collections {
   list-style: none;
-  margin: 8px 0;
   padding: 0;
 }
 
-.pro-nodes li {
+.pro-nodes {
+  margin: 8px 0;
+}
+
+/* Per-collection sharing reads as a list of facts about collections rather
+   than a bank of switches: the stamp is normally set at creation, so this is
+   somewhere to check what is shared, not the primary way to decide it. */
+.pro-collections {
+  margin: 6px 0 10px;
+}
+
+.pro-nodes li,
+.pro-collections li {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2919,13 +2937,79 @@ html {
   text-decoration: line-through;
 }
 
-.pro-node-name {
+.pro-node-name,
+.pro-collection-name {
   flex: 1 1 auto;
   font-weight: 600;
 }
 
 .pro-connected {
   margin: 8px 0 12px;
+}
+
+/* Provenance: this paper came from the organisation's library rather than
+   being bought here. Sized and toned like .file-missing beside it — an
+   annotation on a row, not a status the eye should land on first. Blue rather
+   than green: it is a fact about where a file came from, not a judgement that
+   anything is good or wrong. */
+.from-org {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+  background: #e6effb;
+  color: #1d4ed8;
+}
+
+@media (prefers-color-scheme: dark) {
+  .from-org {
+    background: #17253f;
+    color: #8fb6f2;
+  }
+}
+
+/* The licence line. Sits above the mint form and carries the answer to "can I
+   connect another writer", so it reads as a status line rather than as a
+   warning banner — it is present in every state, including the good one. */
+.pro-license {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.pro-license .inline-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.pro-license.ok {
+  background: #e7f6ec;
+  color: #15803d;
+}
+
+/* Expired, invalid, or every seat taken — all of them mean "you cannot connect
+   anyone new until you act", so they share one treatment. */
+.pro-license.bad {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+@media (prefers-color-scheme: dark) {
+  .pro-license.ok {
+    background: #16301f;
+    color: #82d79a;
+  }
 }
 
 /* Whether the paper reports original data. A quiet outline rather than a fill:
@@ -3108,4 +3192,24 @@ html {
   .skeleton::after {
     background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.07), transparent);
   }
+}
+
+/* The pre-filled choice in a prompt dialog. */
+.modal-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.modal-option input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+.modal-option .hint {
+  display: block;
+  margin-top: 2px;
 }

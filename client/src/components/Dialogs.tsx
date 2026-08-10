@@ -75,6 +75,7 @@ export function PromptDialog({
   initialValue = "",
   inputType = "text",
   submitLabel,
+  option,
   onSubmit,
   onCancel,
 }: {
@@ -84,22 +85,34 @@ export function PromptDialog({
   initialValue?: string;
   inputType?: "text" | "password";
   submitLabel: string;
-  onSubmit: (value: string) => void;
+  /**
+   * An optional pre-filled choice shown beneath the input.
+   *
+   * Pre-filled, never a gate: the dialog submits whether or not it is touched.
+   * A forced confirmation gets pattern-matched and clicked through within a
+   * week, leaving the same failure mode plus a step everyone resents.
+   */
+  option?: { label: string; hint?: string; defaultChecked: boolean };
+  onSubmit: (value: string, optionChecked: boolean) => void;
   onCancel: () => void;
 }) {
   const [value, setValue] = useState(initialValue);
+  const [checked, setChecked] = useState(option?.defaultChecked ?? false);
 
   // Each opening starts fresh; a stale draft from the last use would be worse
   // than empty. Runs in a layout effect (before paint) so the previous session's
   // text can't flash for a frame before being reset to initialValue.
   useLayoutEffect(() => {
-    if (open) setValue(initialValue);
-  }, [open, initialValue]);
+    if (open) {
+      setValue(initialValue);
+      setChecked(option?.defaultChecked ?? false);
+    }
+  }, [open, initialValue, option?.defaultChecked]);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const v = value.trim();
-    if (v) onSubmit(v);
+    if (v) onSubmit(v, checked);
   }
 
   return (
@@ -112,6 +125,19 @@ export function PromptDialog({
           placeholder={placeholder}
           autoFocus
         />
+        {option && (
+          <label className="modal-option">
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={(e) => setChecked(e.target.checked)}
+            />
+            <span>
+              {option.label}
+              {option.hint && <span className="hint">{option.hint}</span>}
+            </span>
+          </label>
+        )}
         <div className="modal-actions">
           <button type="button" onClick={onCancel}>
             Cancel

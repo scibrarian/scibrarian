@@ -9,7 +9,9 @@ import {
   collectionFileByHash,
   createCollection,
   existingPmids,
+  getCollectionFile,
   holdingsByPmids,
+  listCollectionFiles,
   setFileMatched,
   upsertArticles,
 } from "./db.js";
@@ -36,6 +38,64 @@ export function heldFile(pmid: string): { path: string; fileName: string } | nul
   const row = holdingsByPmids([pmid]).find((r) => r.file_id != null && r.content_hash);
   if (!row?.content_hash || !blobExists(row.content_hash)) return null;
   return { path: blobPath(row.content_hash), fileName: row.file_name || `${pmid}.pdf` };
+}
+
+/**
+ * Files in a collection that are matched to a paper.
+ *
+ * The push candidates. Filtered to `matched` here rather than at the call site
+ * because the reason is an invariant of this schema, not of the Pro module:
+ * identity between instances is the PMID, and a file without one cannot be
+ * filed by whoever receives it.
+ *
+ * `file_name` is sanitised on the way out, like every other read of that column
+ * (see the archive and zip routes). Rows written before the column was cleaned
+ * on the way in are still in the database, and this one is read to build an
+ * outbound HTTP request — a name carrying a newline is a second header, and one
+ * carrying a path is a traversal at whatever receives it. The far end sanitises
+ * too, but by then the header is already written, so it cannot be the only
+ * place this happens.
+ *
+ * Each row carries the collection it came from, so a caller holding a candidate
+ * always holds the pair readFileBytes needs. Rebuilding that pairing from two
+ * separate values is how a file ends up read against the wrong collection.
+ */
+export function matchedFilesIn(
+  collectionId: number
+): { id: number; collection_id: number; pmid: string; file_name: string }[] {
+  return listCollectionFiles(collectionId).flatMap((f) =>
+    f.match_status === "matched" && f.pmid
+      ? [
+          {
+            id: f.id,
+            collection_id: collectionId,
+            pmid: f.pmid,
+            file_name: safeFileName(f.file_name, `${f.pmid}.pdf`),
+          },
+        ]
+      : []
+  );
+}
+
+/**
+ * The stored bytes for one file row, read *as part of* a collection.
+ *
+ * Null when the row is gone, when its blob is gone, and when the row is not in
+ * the collection named — the last one is the engagement boundary, and it is
+ * checked here because this is where it is owned. Everything Pro is allowed to
+ * copy up is scoped by matchedFilesIn to a collection the writer shared; a bare
+ * file id crossing the seam would put that scoping entirely in the closed
+ * module's hands, where a stale candidate list, a re-used id after a delete or
+ * an off-by-one on a cursor turns into a PDF from a deliberately local
+ * collection landing in the agency's library. The boundary is the headline
+ * promise of this feature, so it is enforced the same way `heldFile` enforces
+ * "held" rather than trusting what it is handed.
+ */
+export function readFileBytes(collectionId: number, fileId: number): Buffer | null {
+  const file = getCollectionFile(fileId);
+  if (!file || file.collection_id !== collectionId) return null;
+  if (!blobExists(file.content_hash)) return null;
+  return fs.readFileSync(blobPath(file.content_hash));
 }
 
 /** Find or create a collection by name. Idempotent, so a pull can call it every time. */

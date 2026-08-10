@@ -24,12 +24,17 @@ const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unche
 export function Settings({
   pro,
   onDataChanged,
+  onPairingChanged,
   onPapersRemoved,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
   // panel — there is no separate feature flag to keep in step with it.
   pro: ProStatus | null;
   onDataChanged: () => void;
+  // This instance connected to an organization's library or left one, so the
+  // `pro` block above is now stale. Passed straight through to the panel that
+  // does it — Settings has no opinion on it beyond being in the way.
+  onPairingChanged: () => void;
   // Papers left the Interests feeds (journal removal): the app refreshes the
   // paper views and reports the count.
   onPapersRemoved: (count: number) => void;
@@ -393,7 +398,7 @@ export function Settings({
       </section>
 
       {/* Absent entirely in a free build — `pro` is null there. */}
-      {pro && <ProPanel />}
+      {pro && <ProPanel onPairingChanged={onPairingChanged} />}
 
       <section className="panel">
         <h2>Sharing</h2>

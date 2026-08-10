@@ -8,6 +8,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["client/src/**/*.test.ts", "server/src/**/*.test.ts"],
+    // pro/ is a private workspace that is absent from a public checkout, where
+    // this glob simply matches nothing. Listing it here rather than in a second
+    // config keeps one `npm test` covering whichever halves are present.
+    include: ["client/src/**/*.test.ts", "server/src/**/*.test.ts", "pro/src/**/*.test.ts"],
   },
 });

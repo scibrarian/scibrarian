@@ -30,6 +30,25 @@ export interface ProStatus {
 }
 
 /**
+ * What the API reports about the licence — deliberately never the key itself.
+ *
+ * A licence key is a credential. A Settings page that echoes it back is how one
+ * gets copied to a second install, so the API answers with what an operator
+ * needs to *see* and nothing they could re-enter elsewhere.
+ */
+export interface ProLicense {
+  verdict: "valid" | "expired" | "invalid" | "absent";
+  /** Customer name from the licence, so an operator can tell which one is loaded. */
+  org: string;
+  /** Seats the licence permits. 0 when there is no readable licence. */
+  seats: number;
+  /** ISO date, or null when nothing verified. */
+  expires_at: string | null;
+  /** Active paired nodes right now, for "7 of 10 seats in use". */
+  nodes_in_use: number;
+}
+
+/**
  * The third verdict on a /have line: the org holds this even though you don't.
  *
  * Deliberately thin. The master answers about the PMIDs it was asked about and
@@ -52,6 +71,9 @@ export interface OrgHolding {
 export interface ProNode {
   id: number;
   name: string;
+  /** Files this node has fetched, and contributed. See ProNodesResponse. */
+  pulled?: number;
+  shared?: number;
   created_at: string;
   expires_at: string;
   confirmed_at: string | null;
@@ -63,6 +85,11 @@ export interface ProNodesResponse {
   nodes: ProNode[];
   active: number;
   org_name: string;
+  // Carried here rather than on ProStatus so the panel has one source of truth
+  // that reload() refreshes. /auth is fetched once at page load, and a seat
+  // count read from there would be wrong the moment a node is minted or
+  // revoked — which is all this panel does.
+  license: ProLicense;
 }
 
 /** Returned once, at mint time. The token behind it is never stored in the clear. */
@@ -76,6 +103,29 @@ export interface ProMasterStatus {
   connected: boolean;
   url?: string;
   name?: string;
+}
+
+/** A collection's organisation stamp. `active` means it syncs to the *current* pairing. */
+export interface ProCollectionStamp {
+  collection_id: number;
+  master_url: string;
+  org_name: string;
+  since: string;
+  active: boolean;
+}
+
+export interface ProSyncStatus {
+  stamps: ProCollectionStamp[];
+}
+
+/** What one copy-up sweep did. */
+export interface ProPushResult {
+  sent: number;
+  /** Already on the master, so recorded as done without transferring bytes. */
+  skipped: number;
+  /** Still outstanding — a first sync reports progress this way. */
+  remaining: number;
+  error?: string;
 }
 
 export interface ProPullResult {
