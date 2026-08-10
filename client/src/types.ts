@@ -42,12 +42,15 @@ import type { ProStatus as ProStatusRow } from "../../shared/pro";
 // implementations behind /api/pro are closed.
 export type {
   OrgHolding,
+  ProCollectionStamp,
   ProLicense,
   ProMasterStatus,
   ProNode,
   ProNodesResponse,
   ProPairingMinted,
   ProPullResult,
+  ProPushResult,
+  ProSyncStatus,
   ProStatus,
 } from "../../shared/pro";
 

@@ -71,6 +71,9 @@ export interface OrgHolding {
 export interface ProNode {
   id: number;
   name: string;
+  /** Files this node has fetched, and contributed. See ProNodesResponse. */
+  pulled?: number;
+  shared?: number;
   created_at: string;
   expires_at: string;
   confirmed_at: string | null;
@@ -100,6 +103,29 @@ export interface ProMasterStatus {
   connected: boolean;
   url?: string;
   name?: string;
+}
+
+/** A collection's organisation stamp. `active` means it syncs to the *current* pairing. */
+export interface ProCollectionStamp {
+  collection_id: number;
+  master_url: string;
+  org_name: string;
+  since: string;
+  active: boolean;
+}
+
+export interface ProSyncStatus {
+  stamps: ProCollectionStamp[];
+}
+
+/** What one copy-up sweep did. */
+export interface ProPushResult {
+  sent: number;
+  /** Already on the master, so recorded as done without transferring bytes. */
+  skipped: number;
+  /** Still outstanding — a first sync reports progress this way. */
+  remaining: number;
+  error?: string;
 }
 
 export interface ProPullResult {

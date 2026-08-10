@@ -82,6 +82,15 @@ export function ArticleCard({
             file missing
           </span>
         )}
+        {/* See PapersTable for why this is a label and never a filter. */}
+        {article.from_org && (
+          <span
+            className="from-org"
+            title={`Copied from ${article.from_org}'s library — bought by the organization, not here`}
+          >
+            {article.from_org}
+          </span>
+        )}
       </h3>
       {article.authors.length > 0 && (
         <p className="card-authors">{formatAuthors(article.authors, 4)}</p>

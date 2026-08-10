@@ -1,5 +1,35 @@
 import { describe, it, expect } from "vitest";
-import { formatAuthors, errorMessage, round1, titleCaseJournal } from "./format";
+import { describeSweep, formatAuthors, errorMessage, round1, titleCaseJournal } from "./format";
+
+describe("describeSweep", () => {
+  it("reports a genuinely finished sweep as finished", () => {
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 0 })).toBe(
+      "Everything shared is already with your organization."
+    );
+  });
+
+  // The finding this exists for: sent and skipped are both zero, so the old
+  // test called it complete — with twelve papers still outstanding.
+  it("does not call a sweep finished while work remains", () => {
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 12 })).toBe(
+      "Nothing copied yet — 12 still to go."
+    );
+  });
+
+  it("keeps partial progress when a sweep stopped part way", () => {
+    expect(describeSweep({ sent: 3, skipped: 0, remaining: 9, error: "master refused: 507" })).toBe(
+      "Copied 3 up, 9 still to go."
+    );
+  });
+
+  it("names each count that happened, and none that didn't", () => {
+    expect(describeSweep({ sent: 3, skipped: 2, remaining: 0 })).toBe(
+      "Copied 3 up, 2 already there."
+    );
+    expect(describeSweep({ sent: 0, skipped: 4, remaining: 0 })).toBe("4 already there.");
+    expect(describeSweep({ sent: 5, skipped: 0, remaining: 0 })).toBe("Copied 5 up.");
+  });
+});
 
 describe("formatAuthors", () => {
   it("shows a dash for no authors", () => {

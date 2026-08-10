@@ -8,7 +8,13 @@ import { ADMIN_TOKEN, CLIENT_DIST, HOST, HOST_IS_LOOPBACK, PORT, setBoundPort } 
 import { db, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
 import { api, isAdminRequest } from "./routes.js";
 import { loadPro } from "./pro-hooks.js";
-import { ensureCollection, heldFile, storePulledFile } from "./pro-storage.js";
+import {
+  ensureCollection,
+  heldFile,
+  matchedFilesIn,
+  readFileBytes,
+  storePulledFile,
+} from "./pro-storage.js";
 import { startScheduler } from "./poller.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
@@ -194,6 +200,8 @@ export async function start(): Promise<{ port: number; url: string }> {
       new Set(holdingsByPmids(pmids).flatMap((r) => (r.file_id != null ? [r.pmid] : []))),
     heldFile,
     ensureCollection,
+    matchedFilesIn,
+    readFileBytes,
     storePulledFile,
   });
   if (pro) {

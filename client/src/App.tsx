@@ -323,10 +323,25 @@ export default function App() {
     reloadSource({ folder: folderId });
   }
 
-  async function createCollection(name: string) {
+  async function createCollection(name: string, shareWithOrg: boolean) {
     setNamingCollection(false);
     try {
       const created = await api.createCollection(name);
+      // Stamped immediately, from the pairing that was live when it was made.
+      // That ordering is the point: a boundary set later is one the writer
+      // forgets, and one derived from the *current* pairing would hand an old
+      // client's collections to a new one the moment they re-pair.
+      //
+      // A failure here must not lose the collection — it exists and the writer
+      // is about to be dropped into it, so the stamp is reported and skipped
+      // rather than unwound.
+      if (shareWithOrg && pro?.is_paired) {
+        try {
+          await api.proShareCollection(created.id);
+        } catch (e) {
+          setStatus(`Collection created, but sharing couldn't be set up: ${errorMessage(e)}`);
+        }
+      }
       await loadCollections();
       setShowSettings(false);
       setMode("papers");
@@ -383,6 +398,24 @@ export default function App() {
     // version on screen for a viewer — the exact thing keeping `pro` owner-only
     // is meant to prevent.
     setPro(null);
+  }
+
+  // The shared-holdings panel connected this instance to an organization or
+  // left one. `pro` came from /auth at page load, so it now describes a pairing
+  // that no longer exists — and the thing that reads it is the new-collection
+  // dialog, which sets an engagement boundary that is deliberately permanent.
+  // Getting it wrong is therefore not a stale label: pair, create the very
+  // collection the pairing was done for, and it is silently kept local forever.
+  //
+  // Re-read rather than patch the flag from what the panel just did. /auth is
+  // the one place that decides what the owner is told about Pro, and a second
+  // copy of that decision here is the drift the block was narrowed to avoid.
+  async function handlePairingChanged() {
+    const a = await api.getAuth().catch(() => null);
+    // A failed re-read leaves the last known snapshot in place. The panel has
+    // already reported its own outcome, and blanking `pro` here would close the
+    // shared-holdings panel out from under the operator who just used it.
+    if (a) handleAuthRefreshed(a);
   }
 
   // A title click in any view re-fetches /auth to decide PDF access; fold that
@@ -746,6 +779,7 @@ export default function App() {
           <Settings
             pro={pro}
             onDataChanged={loadTopics}
+            onPairingChanged={handlePairingChanged}
             onPapersRemoved={(count) => {
               setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
               // A journal or topic removal sweeps papers out of any number of
@@ -840,6 +874,20 @@ export default function App() {
         title="New collection"
         placeholder="Collection name"
         submitLabel="Create"
+        // Pre-filled, never a gate. The common case — this really is work for
+        // the organization you are paired to — costs nothing, and the exception
+        // is one click at the only moment the writer knows the answer. Absent
+        // entirely when unpaired, which is why such collections stay local
+        // permanently rather than being adopted on a later pairing.
+        option={
+          pro?.is_paired
+            ? {
+                label: "Share with your organization",
+                hint: " Papers you add here are copied to its library — the PDF and its PubMed ID, nothing else.",
+                defaultChecked: true,
+              }
+            : undefined
+        }
         onSubmit={createCollection}
         onCancel={() => setNamingCollection(false)}
       />

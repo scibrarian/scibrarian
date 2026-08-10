@@ -1,6 +1,7 @@
 import type { Request, Router } from "express";
 import type { DatabaseSync } from "node:sqlite";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
+import { errMessage } from "./util.js";
 
 // The open-core seam.
 //
@@ -52,6 +53,30 @@ export interface ProContext {
   heldFile(pmid: string): { path: string; fileName: string } | null;
   /** Find or create a collection by name. */
   ensureCollection(name: string): number;
+  /**
+   * Files in a collection that are matched to a paper — the candidates for a
+   * push.
+   *
+   * Matched only, because identity between instances is the PMID and only the
+   * PMID. An unmatched file has nothing the other end could file it under, and
+   * sending one would put a paper on the agency's shelf that no query reaches.
+   *
+   * `file_name` arrives sanitised and each row names its collection — the pair
+   * readFileBytes wants. Both are properties of this call, not requests of the
+   * caller; see pro-storage for why neither can be left to the other side.
+   */
+  matchedFilesIn(
+    collectionId: number
+  ): { id: number; collection_id: number; pmid: string; file_name: string }[];
+  /**
+   * The stored bytes for one file row, read as part of a collection. Null if
+   * the row is gone, the blob is gone, or the row is not in that collection.
+   *
+   * Takes the pair rather than a bare file id so the engagement boundary is
+   * checked on this side of the seam. Pass the `collection_id` that came back
+   * with the candidate, never one re-derived alongside it.
+   */
+  readFileBytes(collectionId: number, fileId: number): Buffer | null;
   /** File bytes pulled from a master as a held paper. Null if they aren't a PDF. */
   storePulledFile(o: {
     bytes: Buffer;
@@ -71,6 +96,14 @@ export interface ProModule {
   routes(): Router;
   status(): ProStatus;
   /**
+   * Which of these PMIDs the organisation supplied, mapped to its name.
+   *
+   * By PMID, not by file id: a paper's `file_id` resolves to the lowest-id
+   * file, so a paper held in several collections names one arbitrarily — which
+   * is precisely the all-collections view this badge exists for.
+   */
+  pulledOrgByPmid(pmids: string[]): Map<string, string>;
+  /**
    * Ask the paired master which of these PMIDs it holds. Keyed by PMID; absent
    * means not held. Network-dependent by nature, so callers must treat a
    * rejection as "no answer" rather than "not held" — see orgCheck below.
@@ -88,6 +121,36 @@ export function registerPro(m: ProModule | null): void {
 /** null in a free build — which is exactly what GET /auth reports. */
 export function proStatus(): ProStatus | null {
   return mod?.status() ?? null;
+}
+
+/**
+ * Provenance for a page of papers. Empty map in a free build, so callers spread
+ * it in unconditionally and add nothing.
+ *
+ * Synchronous and local on purpose — this runs inside the /papers response
+ * path, and a badge is never worth a network call or an await on the list every
+ * view of the app is built from.
+ *
+ * A throw degrades to the free-tier answer, for the same reason orgCheck's does:
+ * this decorates the papers list, and the papers list is the view the whole app
+ * is built from. Letting a failure inside Pro's own provenance query — a bad row,
+ * a locked database, a schema half-applied — escape into the /papers handler
+ * takes out every paper from every source, free-tier rows included, over a
+ * label. The badge is additive; its absence understates provenance, which is why
+ * the failure is logged rather than swallowed silently, but a page of papers
+ * missing a badge beats no page of papers.
+ */
+export function pulledOrgByPmid(pmids: string[]): Map<string, string> {
+  if (!mod || pmids.length === 0) return new Map();
+  try {
+    return mod.pulledOrgByPmid(pmids);
+  } catch (err) {
+    // Once per /papers request while the module stays broken. Left unthrottled:
+    // this is meant to be unreachable, and a log that repeats is how anyone
+    // finds out it wasn't.
+    console.warn(`[pro] provenance unavailable: ${errMessage(err)}`);
+    return new Map();
+  }
 }
 
 /**
