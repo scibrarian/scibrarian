@@ -71,9 +71,22 @@ export interface OrgHolding {
 export interface ProNode {
   id: number;
   name: string;
-  /** Files this node has fetched, and contributed. See ProNodesResponse. */
+  /**
+   * Files this node has fetched from the master, and sent up to it.
+   *
+   * `uploaded` counts transfers, not gifts: a writer who buys a paper on the
+   * organisation's behalf and uploads it is counted the same as one donating
+   * their own purchase, because who paid is procurement and the app never sees
+   * it.
+   *
+   * Optional because absent and zero are different answers, and this row is
+   * read by someone deciding whether a freelancer is pulling their weight.
+   * Absent is "nothing recorded either way" — a node that paired this morning.
+   * Zero is a measurement: this node appears in one table and not the other.
+   * Both fields are sent together or not at all, so a reader can test either.
+   */
   pulled?: number;
-  shared?: number;
+  uploaded?: number;
   created_at: string;
   expires_at: string;
   confirmed_at: string | null;
@@ -85,6 +98,8 @@ export interface ProNodesResponse {
   nodes: ProNode[];
   active: number;
   org_name: string;
+  /** This library's own address, as a remote spoke must reach it. */
+  public_url: string;
   // Carried here rather than on ProStatus so the panel has one source of truth
   // that reload() refreshes. /auth is fetched once at page load, and a seat
   // count read from there would be wrong the moment a node is minted or
@@ -103,6 +118,15 @@ export interface ProMasterStatus {
   connected: boolean;
   url?: string;
   name?: string;
+  /**
+   * When the master last refused this node — revoked, expired, or simply no
+   * longer knowing it. Null while the pairing works.
+   *
+   * Reported because a spoke otherwise cannot tell: revocation takes effect on
+   * the master instantly, and every path that meets the 401 swallows it so a
+   * writer's local verdict survives an ordinary network blip.
+   */
+  rejected_at?: string | null;
 }
 
 /** A collection's organisation stamp. `active` means it syncs to the *current* pairing. */

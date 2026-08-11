@@ -268,10 +268,12 @@ export const api = {
   // UI never reaches them: it renders off `auth.pro`, which is null there.
 
   proNodes: () => req<ProNodesResponse>("/api/pro/nodes"),
-  proMintNode: (name: string, masterUrl: string, ttlDays?: number) =>
+  // No URL: the master's own address is a stored setting, so every code is
+  // minted from one value that was validated once.
+  proMintNode: (name: string, ttlDays?: number) =>
     req<ProPairingMinted>("/api/pro/nodes", {
       method: "POST",
-      body: JSON.stringify({ name, master_url: masterUrl, ttl_days: ttlDays }),
+      body: JSON.stringify({ name, ttl_days: ttlDays }),
     }),
   proRevokeNode: (id: number) =>
     req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
@@ -281,6 +283,16 @@ export const api = {
     req<{ license: ProLicense }>("/api/pro/license", {
       method: "PUT",
       body: JSON.stringify({ license_key: licenseKey }),
+    }),
+
+  // Unlike the licence above, an empty string is refused rather than treated as
+  // a clear: every pairing code is built from this, and nothing is gained by
+  // holding none. The panel saves on blur, so "empty" is a state the form
+  // passes through rather than an instruction.
+  proSetPublicUrl: (publicUrl: string) =>
+    req<{ public_url: string }>("/api/pro/public-url", {
+      method: "PUT",
+      body: JSON.stringify({ public_url: publicUrl }),
     }),
 
   proSetOrgName: (orgName: string) =>

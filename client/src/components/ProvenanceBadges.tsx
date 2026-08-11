@@ -51,20 +51,29 @@ function provenanceLabel(entry: PaperProvenance): string {
 }
 
 /**
- * The hover text, which is where the licensing story actually gets told.
+ * The hover text: what the one-word badge beside it actually means.
  *
- * Each case says who supplied it *and* that it was not bought here — the second
- * half being the point. The org case says "not you" because that badge is read
- * on a writer's own machine; the contributor cases say "not bought here"
- * because they are read on the agency's.
+ * Deliberately asymmetric, because the two badges are read by different people
+ * who are wrong about different things.
+ *
+ * The contributor cases just name the source. The badge is a bare "Dana", so
+ * saying who Dana is completes it — and a reader who knows a writer contributed
+ * the paper already knows the agency did not buy it. A clause spelling that out
+ * would be a policy statement repeated on every row of a papers page, which is
+ * the wrong place for one; the panel says it once.
+ *
+ * The org case keeps its second clause because there it is load-bearing. That
+ * badge is read on a *freelancer's* machine, where the live mistake is assuming
+ * a paper sitting in your own library is yours to reuse on the next client.
+ * "Not you" is the only place anything says otherwise.
  */
 function provenanceTitle(entry: PaperProvenance): string {
   switch (entry.kind) {
     case "org":
       return `Copied from ${entry.label}'s library — bought by the organization, not you`;
     case "node":
-      return `Contributed by ${entry.label} — copied from their library, not bought here`;
+      return `Contributed by ${entry.label}`;
     case "former-node":
-      return "Contributed by a writer whose pairing has ended — copied from their library, not bought here";
+      return "Contributed by a writer whose pairing has ended";
   }
 }
