@@ -1,0 +1,26 @@
+# Line endings are decided here, not by whichever editor saved last.
+#
+# There was no .gitattributes and core.autocrlf=false, which together mean the
+# bytes a tool writes to disk are the bytes committed. That is how five files in
+# the Pro repo came to be stored with CRLF among LF neighbours, and how a
+# thirty-line change to routes.ts once landed as 2,492 changed lines with blame
+# on every one of them pointing at the reformat instead of the author.
+#
+# text=auto lets Git decide what is text and normalise it to LF in the object
+# store. eol=lf checks it back out as LF on every platform, and that half is the
+# one doing the work here: this is developed on Windows, so without it a
+# checkout would write CRLF and every working tree would disagree with the
+# repository all over again.
+#
+# This replaces a convention with a rule. CLAUDE.md still describes the rule for
+# anything editing files outside Git's normalisation.
+* text=auto eol=lf
+
+# Binary, stated rather than left to detection. Auto-detection already gets
+# these right; saying so means a heuristic that changes its mind can never
+# rewrite an icon as text. PDFs are listed ahead of need — this app stores them,
+# and a corrupted fixture would fail in a way nobody would think to look for.
+*.png  binary
+*.ico  binary
+*.icns binary
+*.pdf  binary
