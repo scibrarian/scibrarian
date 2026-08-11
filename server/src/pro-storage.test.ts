@@ -91,7 +91,7 @@ describe("safeFileName", () => {
 
 describe("storePulledFile", () => {
   it("files the PDF, sanitises the master's name, and matches by PMID", async () => {
-    const id = storage.ensureCollection("Acme Medical");
+    const id = storage.newCollection("Acme Medical");
     const out = await storage.storePulledFile({
       bytes: pdf("pulled"),
       // A hostile master's filename. Stored verbatim this becomes a zip entry
@@ -110,7 +110,7 @@ describe("storePulledFile", () => {
   });
 
   it("rejects bytes that aren't a PDF, writing nothing", async () => {
-    const id = storage.ensureCollection("Acme Medical");
+    const id = storage.newCollection("Acme Medical (bad bytes)");
     const before = db.listCollectionFiles(id).length;
     const out = await storage.storePulledFile({
       bytes: Buffer.from("<html>not a pdf</html>"),
@@ -127,7 +127,7 @@ describe("storePulledFile", () => {
   // old code then rewrote that row to the master's PMID — silently replacing
   // the user's match and making the paper they *did* hold answer not-held.
   it("keeps an existing manual match when the collection already holds the bytes", async () => {
-    const id = storage.ensureCollection("Overlap");
+    const id = storage.newCollection("Overlap");
     const bytes = pdf("shared-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
 
@@ -152,7 +152,7 @@ describe("storePulledFile", () => {
   });
 
   it("matches a pre-existing row that nothing had claimed yet", async () => {
-    const id = storage.ensureCollection("Unclaimed");
+    const id = storage.newCollection("Unclaimed");
     const bytes = pdf("unmatched-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "scan.pdf" }]);
@@ -170,7 +170,7 @@ describe("storePulledFile", () => {
   });
 
   it("leaves no temp file behind, on either outcome", async () => {
-    const id = storage.ensureCollection("Acme Medical");
+    const id = storage.newCollection("Acme Medical (temp files)");
     await storage.storePulledFile({
       bytes: pdf("temp-check"),
       fileName: "ok.pdf",
@@ -207,7 +207,7 @@ describe("matchedFilesIn", () => {
   }
 
   it("returns only rows matched to a paper", async () => {
-    const id = storage.ensureCollection("Candidates");
+    const id = storage.newCollection("Candidates");
     const matched = await seed(id, "matched.pdf", "cand-matched", PULLED);
     await seed(id, "pending.pdf", "cand-pending");
 
@@ -217,7 +217,7 @@ describe("matchedFilesIn", () => {
   });
 
   it("tags each row with the collection it came from", async () => {
-    const id = storage.ensureCollection("Tagged");
+    const id = storage.newCollection("Tagged");
     await seed(id, "one.pdf", "tagged-one", PULLED);
     expect(storage.matchedFilesIn(id)[0].collection_id).toBe(id);
   });
@@ -226,17 +226,17 @@ describe("matchedFilesIn", () => {
   // in, and read here to build an outbound request. A newline in a filename is
   // a second header on that request.
   it("sanitises a legacy file_name on the way out", async () => {
-    const id = storage.ensureCollection("Legacy");
+    const id = storage.newCollection("Legacy");
     await seed(id, "report.pdf\nX-Injected: 1", "legacy-header", PULLED);
     expect(storage.matchedFilesIn(id)[0].file_name).toBe("report.pdfX-Injected: 1");
 
-    const id2 = storage.ensureCollection("Legacy traversal");
+    const id2 = storage.newCollection("Legacy traversal");
     await seed(id2, "../../etc/passwd.pdf", "legacy-path", MINE);
     expect(storage.matchedFilesIn(id2)[0].file_name).toBe("passwd.pdf");
   });
 
   it("falls back to the PMID when the stored name sanitises to nothing", async () => {
-    const id = storage.ensureCollection("Nameless");
+    const id = storage.newCollection("Nameless");
     await seed(id, "..", "nameless", PULLED);
     expect(storage.matchedFilesIn(id)[0].file_name).toBe(`${PULLED}.pdf`);
   });
@@ -244,7 +244,7 @@ describe("matchedFilesIn", () => {
 
 describe("readFileBytes", () => {
   it("returns the bytes for a file in the collection asked for", async () => {
-    const id = storage.ensureCollection("Readable");
+    const id = storage.newCollection("Readable");
     const bytes = pdf("readable");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "ok.pdf" }]);
@@ -257,8 +257,8 @@ describe("readFileBytes", () => {
   // PDFs are not copied to the agency; a bare file id would make that promise
   // depend on the closed module never handing over an id from the wrong list.
   it("refuses a file that belongs to a different collection", async () => {
-    const shared = storage.ensureCollection("Shared with Acme");
-    const priv = storage.ensureCollection("Kept local");
+    const shared = storage.newCollection("Shared with Acme");
+    const priv = storage.newCollection("Kept local");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("private")));
     db.addCollectionFiles(priv, [{ hash, name: "confidential.pdf" }]);
     const row = db.listCollectionFiles(priv).find((f) => f.content_hash === hash)!;
@@ -270,12 +270,12 @@ describe("readFileBytes", () => {
   });
 
   it("is null for a row that doesn't exist", () => {
-    const id = storage.ensureCollection("Readable");
+    const id = storage.newCollection("Readable (missing row)");
     expect(storage.readFileBytes(id, 999_999)).toBeNull();
   });
 
   it("is null when the row outlived its blob", async () => {
-    const id = storage.ensureCollection("Lost blob");
+    const id = storage.newCollection("Lost blob");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("lost")));
     db.addCollectionFiles(id, [{ hash, name: "gone.pdf" }]);
     const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;

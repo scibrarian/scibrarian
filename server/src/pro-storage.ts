@@ -5,7 +5,6 @@ import { UPLOAD_TMP_DIR } from "./config.js";
 import { blobExists, blobPath, isPdfFile, safeFileName, storeBlobFromTemp } from "./blobstore.js";
 import {
   addCollectionFiles,
-  collectionByName,
   collectionFileByHash,
   createCollection,
   existingPmids,
@@ -99,20 +98,21 @@ export function readFileBytes(collectionId: number, fileId: number): Buffer | nu
   return fs.readFileSync(blobPath(file.content_hash));
 }
 
-/** Find or create a collection by name. Idempotent, so a pull can call it every time. */
-export function ensureCollection(name: string): number {
-  return (collectionByName(name) ?? createCollection(name)).id;
-}
-
 /**
- * A new collection, even if one already carries this name.
+ * A new collection — always an insert, never an adoption.
  *
- * The counterpart to ensureCollection, for the caller that must not adopt what
- * it finds. Name matching is the right identity when the name is specific to
- * what is being filed — an organisation's own collection on a spoke — and the
- * wrong one when it is generic. `collectionByName` also matches COLLATE NOCASE,
- * so "from writers" and "From Writers" are the same shelf to it, which widens
- * the accident rather than narrowing it.
+ * The only way Pro creates one. A find-or-create counterpart used to sit beside
+ * this, on the reasoning that a name is the right identity when it is specific
+ * to what is being filed — an organisation's own collection on a spoke. It
+ * wasn't: an organisation's display name is self-declared and unvalidated, so
+ * two of them sharing one shared a collection, and the pull that adopted it
+ * re-pointed that collection at whichever had been pulled from last. Nothing
+ * files by name any more.
+ *
+ * **Throws when the name is taken.** `collections.name` carries a unique index,
+ * COLLATE NOCASE, so "from writers" and "From Writers" collide. That is a real
+ * outcome a caller has to answer for, not a theoretical one: the master's inbox
+ * is named for a role rather than a party, so an owner may well have used it.
  */
 export function newCollection(name: string): number {
   return createCollection(name).id;

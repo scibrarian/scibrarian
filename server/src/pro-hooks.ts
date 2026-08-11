@@ -53,23 +53,25 @@ export interface ProContext {
   /** The stored PDF behind a held PMID, for serving to a paired node. */
   heldFile(pmid: string): { path: string; fileName: string } | null;
   /**
-   * Find or create a collection by name.
+   * A new collection — always an insert, never an adoption.
    *
-   * For a name specific to what is being filed — an organisation's own
-   * collection on a spoke — where finding an existing one is the point. Not for
-   * a generic name: see newCollection.
-   */
-  ensureCollection(name: string): number;
-  /**
-   * A new collection, even if one already carries this name.
+   * The only way Pro creates one, and deliberately the only way: **a name is
+   * never an identity here.** For the master's inbox, "From writers" describes
+   * a role rather than a party, so it is a label an owner could plausibly have
+   * used already; adopting theirs would point paired nodes at a shelf the owner
+   * created for their own purposes — a spoke writing into a collection it is
+   * not supposed to be able to see, reached by name collision instead of by
+   * request. A find-or-create counterpart used to sit here for the spoke side,
+   * where the name was an organisation's own, and it turned out to have the
+   * same flaw one step removed: two organisations sharing a display name shared
+   * a collection, and a pull from the second claimed everything the first had
+   * supplied. Destinations are chosen by the writer and checked against the
+   * live pairing now, so nothing is looked up by name at all.
    *
-   * For the master's inbox, whose name ("From writers") describes a role rather
-   * than a party, and so is one an owner could plausibly have used already.
-   * Adopting theirs would point paired nodes at a shelf the owner created for
-   * their own purposes — a spoke writing into a collection it is not supposed
-   * to be able to see, reached by name collision instead of by request.
-   *
-   * The caller is expected to remember the id rather than call this each time.
+   * Throws when the name is taken — collections are uniquely named, COLLATE
+   * NOCASE — so a caller that cannot tolerate that has to say what a collision
+   * means. The caller is expected to remember the id rather than call this each
+   * time.
    */
   newCollection(name: string): number;
   /** Whether a collection id still resolves — for a caller holding a remembered id. */
