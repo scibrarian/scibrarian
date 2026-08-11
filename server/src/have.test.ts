@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
+import type { PaperProvenance } from "../../shared/types.js";
 import type { ProModule } from "./pro-hooks.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
@@ -101,10 +102,11 @@ const stub: ProModule = {
     asked.push(pmids);
     return orgAnswer(pmids);
   },
-  // Not exercised here — this feeds the papers list, not /have — but the stub
+  // Not exercised here — these feed the papers list, not /have — but the stub
   // has to satisfy the whole interface, which is the point: a hook added to
   // ProModule without a free-tier answer fails to compile in the open repo.
-  pulledOrgByPmid: () => new Map<string, string>(),
+  pulledOrgByPmid: () => new Map<string, PaperProvenance>(),
+  receivedNodeByPmid: () => new Map<string, PaperProvenance>(),
 };
 
 const holds = (...pmids: string[]) =>

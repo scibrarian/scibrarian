@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
+import type { PaperProvenance } from "../../shared/types.js";
 import type { ProModule } from "./pro-hooks.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
@@ -30,7 +31,7 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 process.env.ADMIN_TOKEN = "test-admin-token";
 const AUTH = { authorization: "Bearer test-admin-token" };
 
-const ORG = "Acme Pharma MedComms";
+const ORG: PaperProvenance = { kind: "org", label: "Acme Pharma MedComms" };
 
 // Pulled from the org, so the Pro module has a name to attach to it.
 const PULLED = { pmid: "40000001", hash: "a".repeat(64), doi: "10.1000/pulled" };
@@ -43,11 +44,17 @@ let hooks: typeof import("./pro-hooks.js");
 let server: Server;
 let base: string;
 
-// Every PMID the module was asked about, so the anonymous case can assert the
-// lookup never ran at all rather than that its answer was filtered out
-// afterwards. Skipping the work is the fix; filtering is the bug one refactor
-// away from coming back.
-let asked: string[][] = [];
+// Every provenance lookup the module was asked to run, by hook, so the
+// anonymous case can assert the work never happened rather than that its answer
+// was filtered out afterwards. Skipping the work is the fix; filtering is the
+// bug one refactor away from coming back.
+//
+// Both hooks record, and the owner case asserts on the hook *names* rather than
+// on a count. A gate that covered only the org lookup would otherwise leave
+// this suite green while /papers handed a freelancer's self-declared name to
+// any unauthenticated caller who can reach the port — arguably the more
+// sensitive of the two, since the org name is the customer's own.
+let asked: { hook: string; pmids: string[] }[] = [];
 
 const stub: ProModule = {
   version: "test",
@@ -61,8 +68,12 @@ const stub: ProModule = {
     is_paired: true,
     node_count: 1,
   }),
+  receivedNodeByPmid: (pmids) => {
+    asked.push({ hook: "receivedNodeByPmid", pmids });
+    return new Map<string, PaperProvenance>();
+  },
   pulledOrgByPmid: (pmids) => {
-    asked.push(pmids);
+    asked.push({ hook: "pulledOrgByPmid", pmids });
     return new Map(pmids.filter((p) => p === PULLED.pmid).map((p) => [p, ORG]));
   },
   orgCheck: async (): Promise<Map<string, OrgHolding>> => new Map(),
@@ -96,6 +107,16 @@ beforeAll(async () => {
   const { api } = await import("./routes.js");
 
   db.upsertArticles([article(PULLED), article(LOCAL)]);
+  // Seed citation counts so the first /papers request doesn't await an iCite
+  // round-trip. The handler backfills anything missing or older than 14 days
+  // *before* responding, so freshly inserted articles make it call the live API
+  // — which put this suite's first test at 4.8s against a 5s timeout, and over
+  // it whenever the network was slower. What is under test here is who may see
+  // provenance; nothing about it should depend on api.icite.od.nih.gov being
+  // reachable, let alone fast.
+  db.upsertCitations(
+    [PULLED, LOCAL].map((p) => ({ pmid: p.pmid, info: { citation_count: 0, references: [] } }))
+  );
   const c = db.createCollection("Study 402").id;
   db.addCollectionFiles(c, [
     { hash: PULLED.hash, name: "pulled.pdf" },
@@ -129,37 +150,42 @@ describe("GET /papers with a Pro module registered", () => {
     const body = await get("/api/papers?collection=all", AUTH);
     const rows: Record<string, unknown>[] = body.papers;
     expect(rows).toHaveLength(2);
-    expect(rows.find((r) => r.pmid === PULLED.pmid)?.from_org).toBe(ORG);
+    expect(rows.find((r) => r.pmid === PULLED.pmid)?.provenance).toEqual([ORG]);
   });
 
   it("omits it on a paper the library bought itself", async () => {
     const body = await get("/api/papers?collection=all", AUTH);
     const local = body.papers.find((r: { pmid: string }) => r.pmid === LOCAL.pmid);
-    expect("from_org" in local).toBe(false);
+    expect("provenance" in local).toBe(false);
   });
 
   it("tells an unauthenticated reader nothing — no key, on any row", async () => {
     const body = await get("/api/papers?collection=all");
     expect(body.papers).toHaveLength(2);
-    // Absent, not null: a `"from_org": null` on every row would still say a Pro
-    // module is loaded here.
-    for (const row of body.papers) expect("from_org" in row).toBe(false);
+    // Absent, not null: a `"provenance": null` on every row would still say a
+    // Pro module is loaded here.
+    for (const row of body.papers) expect("provenance" in row).toBe(false);
   });
 
   it("does not even ask the module for a reader who isn't the owner", async () => {
     asked = [];
     await get("/api/papers?collection=all");
     expect(asked).toEqual([]);
+
+    // By name, not by count: every provenance lookup has to sit behind the
+    // gate, and a count of one passes just as happily when only half of them
+    // does. This is the assertion that fails if a later refactor gates the org
+    // lookup and leaves the contributor lookup running for everyone.
     await get("/api/papers?collection=all", AUTH);
-    expect(asked).toHaveLength(1);
+    expect(asked.map((a) => a.hook).sort()).toEqual(["pulledOrgByPmid", "receivedNodeByPmid"]);
   });
 });
 
 describe("GET /papers in a free build", () => {
-  it("omits from_org even for the owner", async () => {
+  it("omits provenance even for the owner", async () => {
     hooks.registerPro(null);
     const body = await get("/api/papers?collection=all", AUTH);
-    for (const row of body.papers) expect("from_org" in row).toBe(false);
+    for (const row of body.papers) expect("provenance" in row).toBe(false);
   });
 });
 

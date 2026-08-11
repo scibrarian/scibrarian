@@ -200,20 +200,48 @@ export interface Paper {
   // client renders this as text, and a server that emitted <mark> would be
   // asking it to trust markup assembled from PDF contents.
   snippet: string | null;
-  // The organisation that supplied this paper, when one did — Pro only, and
+  // Where this paper came from, when it wasn't acquired here — Pro only, and
   // omitted entirely otherwise.
   //
   // Optional rather than nullable because a papers page carries hundreds of
-  // rows and a free build would otherwise pay `"from_org":null` on every one of
-  // them for a field it can never populate.
+  // rows and a free build would otherwise pay `"provenance":null` on every one
+  // of them for a field it can never populate. Omitted rather than empty for
+  // the same reason.
   //
-  // Additive, not exclusive: a writer can buy a paper *and* later receive it
-  // from the org. This says the org supplied it at least once, which is the
+  // Additive, not exclusive: a reader can buy a paper *and* later receive the
+  // same one. This says it was supplied at least once, which is the
   // licensing-relevant fact and stays true either way. It is a label and must
-  // never become a default filter — a search that hides org-supplied papers is
-  // a search that ends in buying one again.
-  from_org?: string;
+  // never become a default filter — a search that hides supplied papers is a
+  // search that ends in buying one again.
+  provenance?: PaperProvenance[];
 }
+
+/**
+ * Where a paper came from, when it wasn't acquired here.
+ *
+ * Discriminated rather than a bare display string. The three cases carry
+ * different licensing stories — the organisation bought it, a writer supplied
+ * it, a writer who has since gone supplied it — and the wording for each
+ * belongs to whatever renders it. An earlier version sent one string and
+ * overloaded the literal `"contributed"` to mean the third case, which no
+ * reader could tell from a writer who happened to be named that, and which left
+ * every row asserting the organisation's story no matter which case it was.
+ *
+ * `label` is absent on `former-node` deliberately: there is no name left to
+ * show. Only the badge fades — the attribution itself is kept permanently, by
+ * node id, in the Pro schema. A row here always means the paper was supplied
+ * from someone else's purchase, which is the fact that outlives the connection.
+ *
+ * A *list* on Paper because an instance can be a master and a spoke at once: an
+ * agency paired up to a client's master while its own freelancers push up to it
+ * can hold one paper that a writer supplied and that the client's library also
+ * supplied. Both are true, both bear on licensing, and picking one would drop
+ * the half that happened to lose a tie-break.
+ */
+export type PaperProvenance =
+  | { kind: "org"; label: string }
+  | { kind: "node"; label: string }
+  | { kind: "former-node" };
 
 export interface PapersResponse {
   papers: Paper[];

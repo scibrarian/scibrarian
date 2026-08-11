@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
-import { proStatus, pulledOrgByPmid, registerPro, type ProModule } from "./pro-hooks.js";
+import type { PaperProvenance } from "../../shared/types.js";
+import { paperProvenance, proStatus, registerPro, type ProModule } from "./pro-hooks.js";
 
 // What the seam does when the Pro module misbehaves.
 //
@@ -14,7 +15,8 @@ import { proStatus, pulledOrgByPmid, registerPro, type ProModule } from "./pro-h
 // hook cannot throw, the handler that calls it cannot 500 because of it — so a
 // stub that throws on demand pins the whole behaviour.
 
-const ORG = "Acme Pharma MedComms";
+const ORG: PaperProvenance = { kind: "org", label: "Acme Pharma MedComms" };
+const NODE: PaperProvenance = { kind: "node", label: "Dana" };
 
 function moduleThat(over: Partial<ProModule>): ProModule {
   return {
@@ -29,7 +31,8 @@ function moduleThat(over: Partial<ProModule>): ProModule {
       is_paired: true,
       node_count: 1,
     }),
-    pulledOrgByPmid: () => new Map<string, string>(),
+    pulledOrgByPmid: () => new Map<string, PaperProvenance>(),
+    receivedNodeByPmid: () => new Map<string, PaperProvenance>(),
     orgCheck: async (): Promise<Map<string, OrgHolding>> => new Map(),
     ...over,
   };
@@ -46,14 +49,111 @@ afterEach(() => {
   warn.mockRestore();
 });
 
-describe("pulledOrgByPmid", () => {
+describe("paperProvenance", () => {
   it("passes the module's answer through", () => {
     registerPro(moduleThat({ pulledOrgByPmid: (p) => new Map(p.map((x) => [x, ORG])) }));
-    expect(pulledOrgByPmid(["111"]).get("111")).toBe(ORG);
+    expect(paperProvenance(["111"]).get("111")).toEqual([ORG]);
+  });
+
+  // The master's half, which reaches the caller by a different hook. Worth its
+  // own case because every other test here drives the spoke side, so a merge
+  // that dropped the contributed answer entirely would still pass them all.
+  it("answers from the master side on an instance with no organisation", () => {
+    registerPro(moduleThat({ receivedNodeByPmid: () => new Map([["111", NODE]]) }));
+    expect(paperProvenance(["111"]).get("111")).toEqual([NODE]);
+  });
+
+  it("keeps both answers when one paper arrived by both routes", () => {
+    // A hybrid instance: an agency that is a master to its freelancers and a
+    // spoke of its client's master. Dana pushed 111 up; the same PMID was later
+    // pulled down from the client's library. Neither fact corrects the other —
+    // the agency did not buy it either way — and an earlier version merged the
+    // two maps by key, silently keeping whichever was spread last and dropping
+    // the record that a writer had covered it.
+    registerPro(
+      moduleThat({
+        pulledOrgByPmid: () => new Map([["111", ORG]]),
+        receivedNodeByPmid: () => new Map([["111", NODE]]),
+      })
+    );
+    expect(paperProvenance(["111"]).get("111")).toEqual([ORG, NODE]);
+  });
+
+  // The failure the per-source containment exists for. These two hooks answer
+  // independent questions from independent tables, and they used to share a
+  // try — with both calls evaluated as arguments to one expression, so whichever
+  // ran first could take the other down before it was ever called.
+  it("keeps the org answer when the contributed lookup throws", () => {
+    registerPro(
+      moduleThat({
+        pulledOrgByPmid: () => new Map([["111", ORG]]),
+        receivedNodeByPmid: () => {
+          throw new Error("no such table: received_files");
+        },
+      })
+    );
+    expect(paperProvenance(["111"]).get("111")).toEqual([ORG]);
+  });
+
+  it("keeps the contributed answer when the org lookup throws", () => {
+    registerPro(
+      moduleThat({
+        pulledOrgByPmid: () => {
+          throw new Error("no such table: pulled_files");
+        },
+        receivedNodeByPmid: () => new Map([["111", NODE]]),
+      })
+    );
+    expect(paperProvenance(["111"]).get("111")).toEqual([NODE]);
+  });
+
+  // A Pro image older than the interface it is being called through. The type
+  // describes the contract, not the artefact on disk, and pro/ ships as its own
+  // package on its own version.
+  it("answers from whatever half a module older than the interface still has", () => {
+    const older = moduleThat({ pulledOrgByPmid: () => new Map([["111", ORG]]) });
+    delete (older as Partial<ProModule>).receivedNodeByPmid;
+    registerPro(older);
+
+    expect(paperProvenance(["111"]).get("111")).toEqual([ORG]);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  // The skew no try/catch can see: the call *succeeds* and answers in the shape
+  // this interface used before provenance was discriminated. Forwarding those
+  // strings would put blank badges on a paying customer's rows — the failure
+  // mode that matters most on a feature about licensing accuracy.
+  it("rejects an answer in the pre-discriminated shape instead of forwarding it", () => {
+    registerPro(
+      moduleThat({
+        pulledOrgByPmid: (() =>
+          new Map([["111", "Acme Pharma MedComms"]])) as unknown as ProModule["pulledOrgByPmid"],
+        receivedNodeByPmid: () => new Map([["111", NODE]]),
+      })
+    );
+    // The readable half still answers; only the unreadable source is dropped.
+    expect(paperProvenance(["111"]).get("111")).toEqual([NODE]);
+  });
+
+  it("discards a source's whole answer when any one entry is unreadable", () => {
+    // All-or-nothing per source: a hook whose idea of the contract differs from
+    // ours has said so, and the entries that happened to parse are no more
+    // credible than the one that didn't. Half a licensing answer reads as a
+    // complete one.
+    registerPro(
+      moduleThat({
+        pulledOrgByPmid: (() =>
+          new Map<string, unknown>([
+            ["111", ORG],
+            ["222", { kind: "sideways" }],
+          ])) as unknown as ProModule["pulledOrgByPmid"],
+      })
+    );
+    expect(paperProvenance(["111", "222"]).size).toBe(0);
   });
 
   it("is empty in a free build", () => {
-    expect(pulledOrgByPmid(["111"]).size).toBe(0);
+    expect(paperProvenance(["111"]).size).toBe(0);
   });
 
   it("never consults the module for an empty page", () => {
@@ -66,7 +166,7 @@ describe("pulledOrgByPmid", () => {
         },
       })
     );
-    expect(pulledOrgByPmid([]).size).toBe(0);
+    expect(paperProvenance([]).size).toBe(0);
     expect(called).toBe(false);
   });
 
@@ -81,8 +181,8 @@ describe("pulledOrgByPmid", () => {
         },
       })
     );
-    let got: Map<string, string> | undefined;
-    expect(() => (got = pulledOrgByPmid(["111", "222"]))).not.toThrow();
+    let got: Map<string, PaperProvenance[]> | undefined;
+    expect(() => (got = paperProvenance(["111", "222"]))).not.toThrow();
     expect(got?.size).toBe(0);
   });
 
@@ -94,7 +194,7 @@ describe("pulledOrgByPmid", () => {
         },
       })
     );
-    pulledOrgByPmid(["111"]);
+    paperProvenance(["111"]);
     expect(warn).toHaveBeenCalledOnce();
     expect(String(warn.mock.calls[0][0])).toContain("no such table: pro_pulled");
   });
@@ -107,7 +207,7 @@ describe("pulledOrgByPmid", () => {
         },
       })
     );
-    expect(pulledOrgByPmid(["111"]).size).toBe(0);
+    expect(paperProvenance(["111"]).size).toBe(0);
     expect(String(warn.mock.calls[0][0])).toContain("database is locked");
   });
 });
