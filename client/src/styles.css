@@ -3234,3 +3234,24 @@ html {
   display: block;
   margin-top: 2px;
 }
+
+/* The connection this instance believed it had, after the organisation ended
+   it. Warn rather than error: nothing is broken and nothing was lost — the
+   relationship simply stopped, and the writer's own library is untouched. */
+.pro-rejected {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.pro-rejected .inline-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}

@@ -60,7 +60,14 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
   const [copied, setCopied] = useState(false);
 
   const [newNodeName, setNewNodeName] = useState("");
-  const [masterUrl, setMasterUrl] = useState("");
+  // This library's own public address — a stored setting, not a per-code field.
+  //
+  // Two values because the box is editable and the setting is not: `publicUrl`
+  // is what is on screen, `savedPublicUrl` what the server last confirmed it
+  // holds. Every save compares them, so tabbing through the field without
+  // typing sends nothing — see savePublicUrl.
+  const [publicUrl, setPublicUrl] = useState("");
+  const [savedPublicUrl, setSavedPublicUrl] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -81,6 +88,12 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
     if (n.status === "fulfilled") {
       setNodes(n.value.nodes);
       setOrgName(n.value.org_name);
+      // Both, always. Without the first the box renders empty on every visit
+      // after the one where it was typed, which reads as "no address is set" —
+      // and the mint button, which is gated on it, stays disabled against a
+      // server that holds a perfectly good one.
+      setPublicUrl(n.value.public_url);
+      setSavedPublicUrl(n.value.public_url);
       setLicense(n.value.license);
     }
     if (m.status === "fulfilled") setMaster(m.value);
@@ -153,11 +166,55 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
     });
   }
 
+  // The address. Reports whether it actually wrote, and throws like the call it
+  // wraps — so each caller below decides what a refusal means.
+  //
+  // Nothing is sent when it hasn't changed. Blur fires on tabbing past the
+  // field, on clicking anywhere else in the panel, on switching windows; with
+  // an unconditional PUT any of those sent whatever the box happened to
+  // contain, and an empty box — the state every visit began in until reload()
+  // started hydrating it — erased a working address.
+  async function savePublicUrl(): Promise<boolean> {
+    const next = publicUrl.trim();
+    if (next === savedPublicUrl) return false;
+    const res = await api.proSetPublicUrl(next);
+    // Set from the answer, not from what was typed: the server strips a
+    // trailing slash, so echoing the input back would leave the box differing
+    // from the stored value and every later blur saving again.
+    setPublicUrl(res.public_url);
+    setSavedPublicUrl(res.public_url);
+    return true;
+  }
+
+  // Blur is not an action, so this deliberately isn't run(): run() sets `busy`,
+  // and the mint button is disabled on it. A click on "Create code" blurs this
+  // field first (mousedown, blur, mouseup, click), so a save that flipped
+  // `busy` synchronously left the button disabled by the time the click landed
+  // — and a disabled button dispatches nothing, so the operator's first press
+  // did nothing at all. It reports failure and never reloads: a refused address
+  // has to stay in the box, where it can be corrected.
+  async function savePublicUrlOnBlur(): Promise<void> {
+    try {
+      if (await savePublicUrl()) setError(null);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   async function mint(e: FormEvent) {
     e.preventDefault();
-    if (!newNodeName.trim() || !masterUrl.trim()) return;
+    if (!newNodeName.trim()) return;
     await run(async () => {
-      const res = await api.proMintNode(newNodeName.trim(), masterUrl.trim());
+      // The address on screen is the one the code must be built from, so it is
+      // committed here rather than trusted to have been. Submitting with Enter
+      // never blurs the field, and the blur save isn't awaited when it does
+      // happen — this is the only point where the ordering is guaranteed. A
+      // no-op when the value is already stored, and a throw when it is refused,
+      // which stops the mint and skips run()'s reload — the reload would
+      // replace the rejected text with the stored address and leave a banner
+      // about a URL no longer on screen.
+      await savePublicUrl();
+      const res = await api.proMintNode(newNodeName.trim());
       setMinted({ code: res.code, name: res.node.name });
       setCopied(false);
       setNewNodeName("");
@@ -174,6 +231,14 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
   // Only revoked and expired rows are history, which is what the stylesheet
   // says .inactive means. A pending one is the most live thing on this panel:
   // it is the code the operator is about to send someone.
+  // The connection is on record as over. Everything the spoke side does needs a
+  // master that still answers, so the actions come down with the status line —
+  // otherwise the panel says "Lookups and copies have stopped" directly above a
+  // "Sync now" button, and clicking it out of hope replaces that sentence with
+  // a raw "master answered 401". Disconnect stays: it is the one action here
+  // that still means something.
+  const ended = master.connected && Boolean(master.rejected_at);
+
   const nodeState = (n: ProNode): "revoked" | "expired" | "pending" | "active" => {
     if (n.revoked_at) return "revoked";
     if (new Date(n.expires_at) <= new Date()) return "expired";
@@ -195,10 +260,26 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
       <h4>Your organization</h4>
       {master.connected ? (
         <div className="pro-connected">
-          <p>
-            <Link2 size={14} className="inline-icon" aria-hidden /> Connected to{" "}
-            <strong>{master.name}</strong> <span className="hint">({master.url})</span>
-          </p>
+          {master.rejected_at ? (
+            /* The panel used to keep saying "Connected" indefinitely after a
+               master revoked this node: the check is a live lookup there, and
+               every path that meets the 401 here swallows it by design. Now the
+               first refused request records it and this says so. */
+            <p className="pro-rejected">
+              <Unlink size={14} className="inline-icon" aria-hidden />
+              <span>
+                <strong>{master.name}</strong> has ended this connection
+                {` (${master.rejected_at.slice(0, 10)})`}. Lookups and
+                copies have stopped. Papers already here stay in your library — ask them for a
+                new pairing code to reconnect.
+              </span>
+            </p>
+          ) : (
+            <p>
+              <Link2 size={14} className="inline-icon" aria-hidden /> Connected to{" "}
+              <strong>{master.name}</strong> <span className="hint">({master.url})</span>
+            </p>
+          )}
           <button type="button" disabled={busy} onClick={() => void disconnect()}>
             <Unlink size={14} className="inline-icon" aria-hidden /> Disconnect
           </button>
@@ -213,7 +294,9 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
               live then — so this list is normally something to read rather than
               something to operate. It stays editable because a stamp can be
               wrong, and because un-sharing has to be possible without deleting
-              anything. */}
+              anything — but not once the master has ended the connection, when
+              stamping a collection against a pairing that is over would record
+              a boundary with nobody on the other side of it. */}
           <h5>Collections</h5>
           {collections.length === 0 ? (
             <p className="hint">No collections yet.</p>
@@ -234,7 +317,7 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
                     </span>
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || ended}
                       onClick={() =>
                         void run(() =>
                           shared ? api.proUnshareCollection(c.id) : api.proShareCollection(c.id)
@@ -249,14 +332,15 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
             </ul>
           )}
           <div className="pro-row">
-            <button type="button" disabled={busy} onClick={() => void syncNow()}>
+            <button type="button" disabled={busy || ended} onClick={() => void syncNow()}>
               Sync now
             </button>
           </div>
           {syncMsg && <p className="hint">{syncMsg}</p>}
           <p className="hint">
-            Stopping sharing affects future copies only — papers already sent to {master.name}{" "}
-            stay there.
+            {ended
+              ? `Sharing can't be changed while ${master.name} has this connection ended — reconnect with a new pairing code first. Papers already sent to them stay there.`
+              : `Stopping sharing affects future copies only — papers already sent to ${master.name} stay there.`}
           </p>
         </div>
       ) : (
@@ -325,6 +409,23 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
         />
       </div>
 
+      {/* Entered once. Every pairing code is built from it, so a typo here is a
+          typo in all of them — and it surfaces on someone else's machine, days
+          later, as a code that simply will not connect. */}
+      <div className="pro-row">
+        <input
+          value={publicUrl}
+          onChange={(e) => setPublicUrl(e.target.value)}
+          placeholder="https://library.youragency.com"
+          spellCheck={false}
+          onBlur={() => void savePublicUrlOnBlur()}
+        />
+      </div>
+      <p className="hint">
+        This library&rsquo;s address, as writers reach it from outside your network. Every code
+        you create points here.
+      </p>
+
       <form className="pro-form" onSubmit={mint}>
         <div className="pro-row">
           <input
@@ -332,23 +433,17 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
             onChange={(e) => setNewNodeName(e.target.value)}
             placeholder="Who is this for? e.g. Dana (freelancer)"
           />
-          <input
-            value={masterUrl}
-            onChange={(e) => setMasterUrl(e.target.value)}
-            placeholder="https://library.youragency.com"
-            spellCheck={false}
-          />
           <button
             type="submit"
             className="primary"
-            disabled={busy || !newNodeName.trim() || !masterUrl.trim()}
+            disabled={busy || !newNodeName.trim() || !publicUrl.trim()}
           >
             Create code
           </button>
         </div>
-        <p className="hint">
-          The address has to be one they can reach from outside your network.
-        </p>
+        {!publicUrl.trim() && (
+          <p className="hint">Set the address above before creating codes.</p>
+        )}
       </form>
 
       {minted && (
@@ -395,12 +490,12 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
 
                     Both fields are optional, and absent is not zero: a build
                     that doesn't record these counters, or a node row predating
-                    them, sends neither. `?? 0` printed "pulled 0 · shared 0"
+                    them, sends neither. `?? 0` printed "pulled 0 · uploaded 0"
                     against every writer at once — turning "not measured" into
                     exactly the accusation this row exists to raise. */}
-                {(n.pulled !== undefined || n.shared !== undefined) && (
+                {(n.pulled !== undefined || n.uploaded !== undefined) && (
                   <span className="hint">
-                    pulled {n.pulled ?? 0} · shared {n.shared ?? 0}
+                    pulled {n.pulled ?? 0} · uploaded {n.uploaded ?? 0}
                   </span>
                 )}
                 <span className="hint">
