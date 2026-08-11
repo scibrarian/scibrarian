@@ -1,24 +1,31 @@
 # SciLuminate — working notes
 
-## Line endings: match the file, never reformat it
+## Never reformat a file as a side effect
 
-Neither repo (this one or the nested private `pro/`) has a `.gitattributes`, and
-both set `core.autocrlf=false`. Git does no translation in either direction, so
-**the bytes written to disk are the bytes committed.** An editor or tool that
-rewrites a file wholesale in "its" convention therefore lands as a real diff.
+Line endings used to be the whole of this section, and are now settled by
+machine. Both repos — this one and the nested private `pro/` — carry a
+`.gitattributes` saying `* text=auto eol=lf`. Git normalises text to LF in the
+object store on commit and checks it back out as LF on every platform, so a tool
+that saves CRLF can no longer land it as a diff. `core.autocrlf=false` is still
+set in both, and no longer matters: the attribute wins.
 
-Current state — verified 2026-08-10:
+Verified 2026-08-11: no tracked text file in either repo contains a CR byte, in
+the working tree or at HEAD. The only CRs anywhere are inside
+`electron/build/icon.{png,ico,icns}`, which are declared `binary`. `pro/`'s five
+CRLF sources were normalised in its `d8c2a36` "Normalize pro sources to LF"; this
+repo's rule arrived in `c32176c`. There is no longer a mixed area to be careful
+around, and nothing to match by hand.
 
-| Area | Convention |
-|---|---|
-| `server/`, `client/`, `shared/` | LF, uniformly |
-| `pro/` | **mixed at HEAD.** `routes.ts`, `sync.ts`, `sync.test.ts`, `push.ts`, `push.test.ts` are CRLF; the rest are LF |
+**What is not automated is the rest of it.** Git normalises line terminators and
+nothing else, so every other kind of wholesale rewrite still lands as a real
+diff: re-indenting, rewrapping prose or JSX, changing quote style, reordering
+imports, stripping or adding trailing whitespace across a file. The rule that
+matters is therefore the general one:
 
-**The rule: match whatever the file you are editing already uses.** Do not
-normalize a file's endings as a side effect of an unrelated change, and do not
-convert `pro/` to one convention without deciding to do that on purpose. Appending
-LF lines to a CRLF file is the same mistake in miniature — it leaves one file with
-mixed terminators.
+**Change the lines the task requires and leave every other line byte-identical.**
+Match the file's existing indentation, wrapping and quoting rather than your
+tool's defaults. If a formatter wants to reformat a file you are editing for an
+unrelated reason, that is a separate, deliberate commit.
 
 Why it is worth the care: a whole-file rewrite turns a 30-line change into a
 ~2,200-line diff, makes `git blame` attribute every line to that commit, and
@@ -32,13 +39,17 @@ git diff --stat
 git diff --ignore-all-space --stat
 ```
 
-If they disagree, whitespace churn crept in. To find which files are affected:
+A gap between them is whitespace churn, and `--numstat` in place of `--stat`
+names the files it is in:
 
 ```bash
-# lists files whose endings differ from the rest of their directory
 git diff --numstat && git diff --ignore-all-space --numstat
 ```
 
-To repair a file in place, rewrite it with the endings its HEAD version uses
-(drop the CR of each CRLF for LF; insert CR before each LF for CRLF) rather than
-re-saving it from an editor, which may re-apply the wrong convention.
+Read the gap before acting on it: a re-indent that the change genuinely required
+— wrapping four existing lines in a new conditional, say — shows up here too and
+is not churn. What you are looking for is a file whose gap is larger than the
+edit you made.
+
+Run both in `pro/` as well. It is a separate repository, so a `git diff` at the
+top level says nothing about it.
