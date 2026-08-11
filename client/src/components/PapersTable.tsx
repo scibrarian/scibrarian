@@ -11,6 +11,7 @@ import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
 import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
+import { ProvenanceBadges } from "./ProvenanceBadges";
 import { SaveAllButton } from "./SaveAllButton";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { Snippet } from "./Snippet";
@@ -233,22 +234,9 @@ export function PapersTable({
                         </span>
                       )}
                       {/* Where this came from, when it wasn't bought here.
-                          Absent in a free build and on locally acquired
-                          papers, so it reads as an exception rather than as a
-                          column everything carries.
-
-                          A label, never a filter: a search that hid
-                          org-supplied papers would end in buying one again,
-                          which is the failure the whole feature exists to
-                          stop. */}
-                      {p.from_org && (
-                        <span
-                          className="from-org"
-                          title={`Copied from ${p.from_org}'s library — bought by the organization, not here`}
-                        >
-                          {p.from_org}
-                        </span>
-                      )}
+                          Wording lives in the component — see it for why the
+                          copy is chosen by kind rather than assumed. */}
+                      <ProvenanceBadges entries={p.provenance} />
                     </td>
                     <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>
                     <td>{p.journal_name}</td>

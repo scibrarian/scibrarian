@@ -1402,10 +1402,15 @@ function escapeLike(s: string): string {
 // matched uploaded file per pmid (the copy a title click opens; same rule as
 // the old per-client fileByPmid). content_hash is returned so the route can
 // check the blob still exists; it is stripped before the response.
+//
+// `provenance` is omitted rather than left optional: it is not a column and
+// never comes from this query. The route adds it afterwards from the Pro seam,
+// and a row type that admitted it would let a caller believe these rows carry
+// provenance when they never can.
 export function listPapers(
   source: PaperSource,
   filter: PaperFilter = {}
-): Array<Omit<Paper, "file_exists"> & { content_hash: string | null }> {
+): Array<Omit<Paper, "file_exists" | "provenance"> & { content_hash: string | null }> {
   const { join, params } = sourceMembership(source, true);
   const search = filterClause(source, filter, params);
   // Only the all-collections view can be told something it doesn't already
@@ -1427,7 +1432,7 @@ export function listPapers(
        ORDER BY a.pub_date DESC, a.pmid DESC`
     )
     .all(...params) as Array<
-    Omit<Paper, "file_exists" | "authors" | "snippet" | "collections"> & {
+    Omit<Paper, "file_exists" | "authors" | "snippet" | "collections" | "provenance"> & {
       authors: string;
       content_hash: string | null;
       collections?: string | null;

@@ -9,6 +9,7 @@ import {
   collectionFileByHash,
   createCollection,
   existingPmids,
+  getCollection,
   getCollectionFile,
   holdingsByPmids,
   listCollectionFiles,
@@ -101,6 +102,25 @@ export function readFileBytes(collectionId: number, fileId: number): Buffer | nu
 /** Find or create a collection by name. Idempotent, so a pull can call it every time. */
 export function ensureCollection(name: string): number {
   return (collectionByName(name) ?? createCollection(name)).id;
+}
+
+/**
+ * A new collection, even if one already carries this name.
+ *
+ * The counterpart to ensureCollection, for the caller that must not adopt what
+ * it finds. Name matching is the right identity when the name is specific to
+ * what is being filed — an organisation's own collection on a spoke — and the
+ * wrong one when it is generic. `collectionByName` also matches COLLATE NOCASE,
+ * so "from writers" and "From Writers" are the same shelf to it, which widens
+ * the accident rather than narrowing it.
+ */
+export function newCollection(name: string): number {
+  return createCollection(name).id;
+}
+
+/** Whether a collection id still resolves. For a caller holding a remembered id. */
+export function collectionExists(id: number): boolean {
+  return getCollection(id) != null;
 }
 
 /**

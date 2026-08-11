@@ -1,6 +1,7 @@
 import type { Request, Router } from "express";
 import type { DatabaseSync } from "node:sqlite";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
+import type { PaperProvenance } from "../../shared/types.js";
 import { errMessage } from "./util.js";
 
 // The open-core seam.
@@ -51,8 +52,28 @@ export interface ProContext {
   heldPmids(pmids: string[]): Set<string>;
   /** The stored PDF behind a held PMID, for serving to a paired node. */
   heldFile(pmid: string): { path: string; fileName: string } | null;
-  /** Find or create a collection by name. */
+  /**
+   * Find or create a collection by name.
+   *
+   * For a name specific to what is being filed — an organisation's own
+   * collection on a spoke — where finding an existing one is the point. Not for
+   * a generic name: see newCollection.
+   */
   ensureCollection(name: string): number;
+  /**
+   * A new collection, even if one already carries this name.
+   *
+   * For the master's inbox, whose name ("From writers") describes a role rather
+   * than a party, and so is one an owner could plausibly have used already.
+   * Adopting theirs would point paired nodes at a shelf the owner created for
+   * their own purposes — a spoke writing into a collection it is not supposed
+   * to be able to see, reached by name collision instead of by request.
+   *
+   * The caller is expected to remember the id rather than call this each time.
+   */
+  newCollection(name: string): number;
+  /** Whether a collection id still resolves — for a caller holding a remembered id. */
+  collectionExists(id: number): boolean;
   /**
    * Files in a collection that are matched to a paper — the candidates for a
    * push.
@@ -96,13 +117,22 @@ export interface ProModule {
   routes(): Router;
   status(): ProStatus;
   /**
-   * Which of these PMIDs the organisation supplied, mapped to its name.
+   * Which of these PMIDs the organisation supplied — the spoke's half.
    *
    * By PMID, not by file id: a paper's `file_id` resolves to the lowest-id
    * file, so a paper held in several collections names one arbitrarily — which
    * is precisely the all-collections view this badge exists for.
    */
-  pulledOrgByPmid(pmids: string[]): Map<string, string>;
+  pulledOrgByPmid(pmids: string[]): Map<string, PaperProvenance>;
+  /**
+   * The master's mirror: which of these PMIDs a paired node contributed.
+   *
+   * Separate from pulledOrgByPmid because they answer opposite questions — one
+   * is "the org gave me this", the other "a writer gave us this" — and an
+   * instance can be both a master and a spoke at once, so one paper can have an
+   * answer from each. paperProvenance keeps both rather than picking.
+   */
+  receivedNodeByPmid(pmids: string[]): Map<string, PaperProvenance>;
   /**
    * Ask the paired master which of these PMIDs it holds. Keyed by PMID; absent
    * means not held. Network-dependent by nature, so callers must treat a
@@ -131,26 +161,128 @@ export function proStatus(): ProStatus | null {
  * path, and a badge is never worth a network call or an await on the list every
  * view of the app is built from.
  *
- * A throw degrades to the free-tier answer, for the same reason orgCheck's does:
- * this decorates the papers list, and the papers list is the view the whole app
- * is built from. Letting a failure inside Pro's own provenance query — a bad row,
- * a locked database, a schema half-applied — escape into the /papers handler
- * takes out every paper from every source, free-tier rows included, over a
- * label. The badge is additive; its absence understates provenance, which is why
- * the failure is logged rather than swallowed silently, but a page of papers
- * missing a badge beats no page of papers.
+ * A throw degrades *that source* to the free-tier answer, for the same reason
+ * orgCheck's does: this decorates the papers list, and the papers list is the
+ * view the whole app is built from. Letting a failure inside Pro's own
+ * provenance query — a bad row, a locked database, a schema half-applied —
+ * escape into the /papers handler takes out every paper from every source,
+ * free-tier rows included, over a label. The badge is additive; its absence
+ * understates provenance, which is why the failure is logged rather than
+ * swallowed silently, but a page of papers missing a badge beats no page of
+ * papers. See askProvenance for why each source is contained separately.
  */
-export function pulledOrgByPmid(pmids: string[]): Map<string, string> {
+export function paperProvenance(pmids: string[]): Map<string, PaperProvenance[]> {
   if (!mod || pmids.length === 0) return new Map();
+
+  // A spoke answers from what it pulled down, a master from what was pushed up,
+  // and an instance that is both answers from both — including, for one paper,
+  // an answer from each. An agency paired up to a client's master while its own
+  // freelancers push up to it can pull a PMID down from the client that one of
+  // its writers had already supplied.
+  //
+  // Both are kept. An earlier version merged the two maps by key on the
+  // reasoning that no paper travels in both directions, which is true of a pure
+  // spoke or a pure master and false of the hybrid the module explicitly
+  // supports; the loser of that merge was silently dropped, and it was the
+  // contributed half — the one saying a *writer* covered a purchase the agency
+  // then also made — that went. Neither fact is a correction of the other and a
+  // licensing question wants both.
+  //
+  // Org first, so the badge a spoke has always shown is the one it still shows;
+  // the contributed entry is added after it rather than in place of it. Within
+  // each source the order is that source's own.
+  //
+  // **One source failing must not silence the other.** Both used to share a
+  // try, with the two calls evaluated as arguments to a single expression, so
+  // whichever ran first could take the other down with it before it was ever
+  // called — a master-side fault erasing every spoke-side badge, or the reverse.
+  // They answer independent questions from independent tables; they fail
+  // independently too, and each degrades on its own.
+  const out = new Map<string, PaperProvenance[]>();
+  for (const hook of ["pulledOrgByPmid", "receivedNodeByPmid"] as const) {
+    for (const [pmid, entry] of askProvenance(mod, hook, pmids) ?? []) {
+      const existing = out.get(pmid);
+      if (existing) existing.push(entry);
+      else out.set(pmid, [entry]);
+    }
+  }
+  return out;
+}
+
+/**
+ * One provenance source, contained — its entries, or null if it could not be
+ * trusted to produce any.
+ *
+ * All-or-nothing per source. A hook that answers for six papers and then hands
+ * back something unrecognisable has already told us its idea of the contract
+ * differs from ours, and the six that parsed are no more credible than the one
+ * that didn't; half a licensing answer is worse than none, because it reads as
+ * a complete one.
+ *
+ * The guards below are not paranoia about our own code — they are about *whose*
+ * code this is. `pro/` is a separate package with its own version, shipped as
+ * its own image, and this file is the only contract between them. A Pro build
+ * older than the interface it is being called through is a real deployment, not
+ * a hypothetical:
+ *
+ *   - it may not have the method at all, which the type system cannot know
+ *     because the type describes the interface, not the artefact on disk;
+ *   - it may have it and return the *previous* shape. That one throws nothing.
+ *     Before provenance was discriminated these hooks returned bare strings,
+ *     and a try/catch cannot notice a call that succeeds and answers wrongly —
+ *     the strings would have gone out on the wire and rendered as empty badges.
+ *
+ * So the shape is checked rather than assumed, and a mismatch degrades to the
+ * free-tier answer like any other failure. A paying customer seeing no badge is
+ * a bug; a paying customer seeing a *wrong* one, on the feature whose entire
+ * purpose is licensing accuracy, is worse.
+ */
+function askProvenance(
+  m: ProModule,
+  hook: "pulledOrgByPmid" | "receivedNodeByPmid",
+  pmids: string[]
+): Array<[string, PaperProvenance]> | null {
+  const fn = m[hook];
+  // Logged, not silent: a Pro image that cannot answer half of what it is
+  // being asked is exactly the case nobody would otherwise find out about.
+  if (typeof fn !== "function") {
+    console.warn(`[pro] provenance: this module has no ${hook}()`);
+    return null;
+  }
   try {
-    return mod.pulledOrgByPmid(pmids);
+    const found = fn.call(m, pmids);
+    const entries: Array<[string, PaperProvenance]> = [];
+    for (const [pmid, entry] of found) {
+      if (typeof pmid !== "string" || !isProvenance(entry)) {
+        console.warn(`[pro] provenance: ${hook}() answered in a shape this build cannot read`);
+        return null;
+      }
+      entries.push([pmid, entry]);
+    }
+    return entries;
   } catch (err) {
     // Once per /papers request while the module stays broken. Left unthrottled:
     // this is meant to be unreachable, and a log that repeats is how anyone
     // finds out it wasn't.
-    console.warn(`[pro] provenance unavailable: ${errMessage(err)}`);
-    return new Map();
+    console.warn(`[pro] provenance: ${hook}() failed: ${errMessage(err)}`);
+    return null;
   }
+}
+
+/**
+ * Whether a value is one this build knows how to render.
+ *
+ * Mirrors PaperProvenance in shared/types.ts, and has to be kept beside it: a
+ * kind added there without a case here is dropped at the seam rather than
+ * displayed. That is the safe direction to fail, but it is silent, so the union
+ * is small on purpose.
+ */
+function isProvenance(v: unknown): v is PaperProvenance {
+  if (typeof v !== "object" || v === null) return false;
+  const kind = (v as { kind?: unknown }).kind;
+  if (kind === "former-node") return true;
+  if (kind !== "org" && kind !== "node") return false;
+  return typeof (v as { label?: unknown }).label === "string";
 }
 
 /**

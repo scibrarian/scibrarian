@@ -24,6 +24,7 @@ export type {
   MeshHeading,
   MeshHeadingsResponse,
   Paper,
+  PaperProvenance,
   PapersResponse,
   PollResult,
   ShareLinkResponse,

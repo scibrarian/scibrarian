@@ -5,6 +5,7 @@ import type { Bookmarking } from "../lib/bookmarking";
 import { formatAuthors } from "../lib/format";
 import { openTitle, type PaperOpener } from "../lib/openPaper";
 import { BookmarkMenu } from "./BookmarkMenu";
+import { ProvenanceBadges } from "./ProvenanceBadges";
 import { SkeletonBar } from "./Skeleton";
 import { Snippet } from "./Snippet";
 
@@ -82,15 +83,7 @@ export function ArticleCard({
             file missing
           </span>
         )}
-        {/* See PapersTable for why this is a label and never a filter. */}
-        {article.from_org && (
-          <span
-            className="from-org"
-            title={`Copied from ${article.from_org}'s library — bought by the organization, not here`}
-          >
-            {article.from_org}
-          </span>
-        )}
+        <ProvenanceBadges entries={article.provenance} />
       </h3>
       {article.authors.length > 0 && (
         <p className="card-authors">{formatAuthors(article.authors, 4)}</p>

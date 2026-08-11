@@ -2972,6 +2972,27 @@ html {
   }
 }
 
+/* A contribution whose writer is no longer paired.
+
+   Muted rather than hidden. The badge still has to appear — the paper still
+   came from someone else's purchase, and that is the licensing fact, which
+   outlives the engagement that produced it. What it loses is the blue that
+   reads as "here is who", because there is no longer a who to name: this is
+   the one case whose label is a word rather than a person. Kept on the same
+   pill so a row with both reads as one kind of thing at two strengths. */
+.from-org-faded {
+  background: #ececf0;
+  color: #5c5c6b;
+  font-style: italic;
+}
+
+@media (prefers-color-scheme: dark) {
+  .from-org-faded {
+    background: #26262e;
+    color: #9a9aa8;
+  }
+}
+
 /* The licence line. Sits above the mint form and carries the answer to "can I
    connect another writer", so it reads as a status line rather than as a
    warning banner — it is present in every state, including the good one. */

@@ -9,9 +9,11 @@ import { db, holdingsByPmids } from "./db.js"; // importing also initializes sch
 import { api, isAdminRequest } from "./routes.js";
 import { loadPro } from "./pro-hooks.js";
 import {
+  collectionExists,
   ensureCollection,
   heldFile,
   matchedFilesIn,
+  newCollection,
   readFileBytes,
   storePulledFile,
 } from "./pro-storage.js";
@@ -200,6 +202,8 @@ export async function start(): Promise<{ port: number; url: string }> {
       new Set(holdingsByPmids(pmids).flatMap((r) => (r.file_id != null ? [r.pmid] : []))),
     heldFile,
     ensureCollection,
+    newCollection,
+    collectionExists,
     matchedFilesIn,
     readFileBytes,
     storePulledFile,

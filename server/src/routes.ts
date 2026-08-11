@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
-import { proStatus, pulledOrgByPmid } from "./pro-hooks.js";
+import { paperProvenance, proStatus } from "./pro-hooks.js";
 import {
   addBookmarks,
   addCollectionFiles,
@@ -111,6 +111,7 @@ import type {
   GraphResponse,
   HaveResponse,
   MeshHeadingsResponse,
+  PaperProvenance,
   PapersResponse,
   Settings,
   TopicSuggestResponse,
@@ -521,23 +522,24 @@ api.get(
     const present = sourceHasFiles(source) ? existingBlobHashes() : null;
     // One batched lookup for the page, not one per row — the same shape as the
     // publication-type and blob-hash passes above it. Empty in a free build, so
-    // `from_org` is simply never present there.
+    // `provenance` is simply never present there.
     //
     // Owner-only, and skipped outright for anyone else. GETs are open to
     // everyone (see the gate above), so this route is read by share-link
-    // visitors and by anything that can reach the port; the org's *name* on a
+    // visitors and by anything that can reach the port. The org's *name* on a
     // paper row tells such a reader both that this instance is paired and who
-    // it is paired with. GET /auth already narrowed its Pro block to the owner
-    // for that reason, and a badge is not the place to give it back. Not a
-    // filter after the fact: the lookup itself doesn't run.
-    const fromOrg = isAdminRequest(req)
-      ? pulledOrgByPmid(rows.map((r) => r.pmid))
-      : new Map<string, string>();
+    // it is paired with; a contributor's name is a freelancer's, self-declared
+    // and never theirs to publish. GET /auth already narrowed its Pro block to
+    // the owner for that reason, and a badge is not the place to give it back.
+    // Not a filter after the fact: the lookup itself doesn't run.
+    const provenance = isAdminRequest(req)
+      ? paperProvenance(rows.map((r) => r.pmid))
+      : new Map<string, PaperProvenance[]>();
     const body: PapersResponse = {
       papers: rows.map(({ content_hash, ...p }) => ({
         ...p,
         file_exists: content_hash != null && present != null && present.has(content_hash),
-        ...(fromOrg.has(p.pmid) ? { from_org: fromOrg.get(p.pmid) } : {}),
+        ...(provenance.has(p.pmid) ? { provenance: provenance.get(p.pmid) } : {}),
       })),
       journals: journalsForSource(source),
     };
