@@ -4,7 +4,7 @@ import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { MAX_HAVE_REFS } from "../../../shared/limits";
-import type { HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../types";
+import type { Collection, HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
@@ -45,6 +45,14 @@ export function HaveCheck({
   // Which row is mid-copy, by index. One at a time: each pull moves a whole
   // PDF, and a list of simultaneous transfers is neither useful nor readable.
   const [pulling, setPulling] = useState<number | null>(null);
+  // Which row has its destination picker open, by index. One at a time, like
+  // the transfers themselves.
+  const [choosing, setChoosing] = useState<number | null>(null);
+  // The collections a copy may be filed into: those shared with the
+  // organisation paired right now. Loaded after a check that turned up an org
+  // hit rather than when the modal opens — these endpoints don't exist in a
+  // free build, and a check with nothing held by the org never shows a picker.
+  const [destinations, setDestinations] = useState<Collection[]>([]);
   const { openPaper, openError, clearOpenError } = usePaperOpener(access);
 
   // Split here as well as on the server so the button can say how many
@@ -61,12 +69,29 @@ export function HaveCheck({
     setChecking(true);
     setError(null);
     try {
-      setResponse(await api.checkHave(refs));
+      const answers = await api.checkHave(refs);
+      setResponse(answers);
+      setChoosing(null);
+      // Only when there is something to copy and someone able to copy it.
+      if (access.isAdmin && answers.results.some((r) => !r.held && r.org)) {
+        await loadDestinations();
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setChecking(false);
     }
+  }
+
+  // Where a copy is allowed to land: collections shared with the organisation
+  // paired *now*. `active` is computed by the server against the current
+  // pairing, so a collection stamped for a previous engagement is absent here
+  // for exactly the reason the pull route would refuse it — which keeps the
+  // picker from ever offering a choice that cannot be taken.
+  async function loadDestinations() {
+    const [sync, all] = await Promise.all([api.proSync(), api.getCollections()]);
+    const shared = new Set(sync.stamps.filter((s) => s.active).map((s) => s.collection_id));
+    setDestinations(all.filter((c) => shared.has(c.id)));
   }
 
   // Copy a paper the organization holds into this library.
@@ -86,13 +111,14 @@ export function HaveCheck({
   // deliberately refuses to overwrite. Losing the org line there turns a
   // conflict the writer could act on into the false negative this whole feature
   // exists to prevent.
-  async function pull(index: number, pmid: string) {
+  async function pull(index: number, pmid: string, collectionIds: number[]) {
     const line = response?.results[index]?.parsed.input;
     if (!line) return;
     setPulling(index);
     setError(null);
     try {
-      await api.proPull(pmid);
+      await api.proPull(pmid, collectionIds);
+      setChoosing(null);
       const fresh = await api.checkHave([line]);
       const updated = fresh.results[0];
       if (updated) {
@@ -114,6 +140,8 @@ export function HaveCheck({
     setText("");
     setResponse(null);
     setError(null);
+    // The index refers to a row that no longer exists.
+    setChoosing(null);
   }
 
   return (
@@ -167,7 +195,17 @@ export function HaveCheck({
                 // every other mutation. A read-only viewer still sees that the
                 // organization holds it — which is the answer they were told to
                 // go and get — and is pointed at the person who can act on it.
-                onPull={access.isAdmin ? (pmid) => pull(i, pmid) : null}
+                canPull={access.isAdmin}
+                // The button opens the destination picker rather than copying:
+                // where a paper is filed is the writer's decision, and it is
+                // the only decision that keeps one organisation's material off
+                // another's shelf.
+                choosing={choosing === i}
+                onChoose={() => setChoosing(i)}
+                onCancel={() => setChoosing(null)}
+                onPull={(collectionIds) => pull(i, answer.org!.pmid, collectionIds)}
+                destinations={destinations}
+                onCreated={(c) => setDestinations((d) => [...d, c])}
                 pulling={pulling === i}
                 // "One at a time" was the stated design but nothing enforced
                 // it: only the pulling row's own button was disabled, so a
@@ -216,14 +254,28 @@ function Summary({ response }: { response: HaveResponse }) {
 function AnswerRow({
   answer,
   onOpen,
+  canPull,
+  choosing,
+  onChoose,
+  onCancel,
   onPull,
+  destinations,
+  onCreated,
   pulling,
   busy,
 }: {
   answer: HaveAnswer;
   onOpen: (p: HaveMatch) => void;
-  /** Null for a viewer who can't mutate this library. */
-  onPull: ((pmid: string) => void) | null;
+  /** False for a viewer who can't mutate this library. */
+  canPull: boolean;
+  /** This row's destination picker is open. */
+  choosing: boolean;
+  onChoose: () => void;
+  onCancel: () => void;
+  onPull: (collectionIds: number[]) => void;
+  /** Collections shared with the organisation — the only legal destinations. */
+  destinations: Collection[];
+  onCreated: (c: Collection) => void;
   /** This row's own transfer is in flight — drives the spinner and the label. */
   pulling: boolean;
   /** Some row's transfer is in flight. Disables every Copy button, not just this one. */
@@ -271,12 +323,12 @@ function AnswerRow({
           {/* Keyed off org.pmid, not match.pmid: the org can hold a paper this
               library has never seen, which is exactly the case with no match
               row — and the one where the copy is most worth offering. */}
-          {onPull ? (
+          {canPull ? (
             <button
               type="button"
               className="have-pull"
-              onClick={() => onPull(org.pmid)}
-              disabled={busy}
+              onClick={onChoose}
+              disabled={busy || choosing}
             >
               {pulling && <span className="btn-spinner" aria-hidden="true" />}
               {pulling ? "Copying…" : "Copy to my library"}
@@ -285,6 +337,18 @@ function AnswerRow({
             <span>Ask your project manager for a copy.</span>
           )}
         </p>
+      )}
+
+      {/* Outside the org line rather than inside it: that line is a <p>, and a
+          picker nested in one is invalid markup the browser silently reflows. */}
+      {!held && org && choosing && (
+        <DestinationPicker
+          destinations={destinations}
+          onCreated={onCreated}
+          onCancel={onCancel}
+          onConfirm={onPull}
+          busy={busy}
+        />
       )}
 
       {/* Only ever offered for a paper the library doesn't hold: pointing at a
@@ -305,6 +369,127 @@ function AnswerRow({
           original reference list without counting rows. */}
       <code className="have-input-echo">{parsed.input}</code>
     </li>
+  );
+}
+
+// Where a copy goes, asked at the moment of copying.
+//
+// The list is only ever collections shared with the organisation being pulled
+// from, which is the same set the route validates against — so nothing offered
+// here can be refused there. That symmetry is the point of the whole control:
+// the destination used to be derived from the organisation's *display name*,
+// and two organisations sharing a name shared a shelf.
+//
+// Creating one inline shares it immediately rather than leaving that to a
+// second step. A collection made to hold this organisation's material is that
+// organisation's by construction — the same reasoning the New Collection
+// dialog's pre-ticked box rests on — and an unshared one is a destination the
+// route would refuse, so offering it unshared would put an untakeable choice
+// on screen.
+function DestinationPicker({
+  destinations,
+  onCreated,
+  onCancel,
+  onConfirm,
+  busy,
+}: {
+  destinations: Collection[];
+  onCreated: (c: Collection) => void;
+  onCancel: () => void;
+  onConfirm: (collectionIds: number[]) => void;
+  busy: boolean;
+}) {
+  const [picked, setPicked] = useState<number[]>([]);
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  async function create() {
+    const name = newName.trim();
+    if (!name) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const made = await api.createCollection(name);
+      await api.proShareCollection(made.id);
+      onCreated(made);
+      // Ticked on arrival: naming a collection here is already the choice to
+      // copy into it, and leaving it unticked means a Copy button that stays
+      // disabled directly under the thing you just made.
+      setPicked((p) => [...p, made.id]);
+      setNewName("");
+    } catch (err) {
+      setCreateError(errorMessage(err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="have-dest">
+      {destinations.length === 0 ? (
+        <p className="hint">
+          No collections are shared with your organization yet — name one below.
+        </p>
+      ) : (
+        <>
+          <p className="hint">Copy into:</p>
+          <ul className="have-dest-list">
+            {destinations.map((c) => (
+              <li key={c.id}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(c.id)}
+                    onChange={() =>
+                      setPicked((p) =>
+                        p.includes(c.id) ? p.filter((x) => x !== c.id) : [...p, c.id]
+                      )
+                    }
+                  />
+                  {c.name}
+                </label>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <div className="have-dest-new">
+        <input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="New collection"
+          spellCheck={false}
+          // This sits outside the check form above it, so Enter would otherwise
+          // do nothing at all here.
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void create();
+            }
+          }}
+        />
+        <button type="button" onClick={() => void create()} disabled={!newName.trim() || creating}>
+          {creating ? "Creating…" : "Create"}
+        </button>
+      </div>
+      {createError && <Banner kind="error" message={createError} onDismiss={() => setCreateError(null)} />}
+
+      <div className="have-dest-actions">
+        <button type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => onConfirm(picked)}
+          disabled={picked.length === 0 || busy}
+        >
+          Copy
+        </button>
+      </div>
+    </div>
   );
 }
 

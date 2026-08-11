@@ -2862,6 +2862,57 @@ html {
   font-weight: 600;
 }
 
+/* Choosing where a copy lands. Indented under its own row rather than floated
+   into a dialog: which shelf a paper goes on is a decision about *this*
+   answer, and a modal over the results hides the list it was chosen from.
+   Built from the theme variables so it follows dark mode without a second
+   block, unlike the .have-* colours above it, which are tuned by hand. */
+.have-dest {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+
+.have-dest > .hint {
+  margin: 0 0 6px;
+}
+
+.have-dest-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.have-dest-list label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.have-dest-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.have-dest-new input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.have-dest-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
 /* ---- Shared holdings (Pro) settings panel ---- */
 
 .pro-form {

@@ -154,6 +154,12 @@ export interface ProPushResult {
 
 export interface ProPullResult {
   pmid: string;
-  collection: string;
+  /**
+   * The collections the copy was filed into — the ids the caller chose, echoed
+   * back rather than resolved to names. The caller picked them from a list it
+   * already holds, so names here would be a second lookup whose only use is to
+   * be compared against what the client already knows.
+   */
+  collection_ids: number[];
   file_name: string;
 }
