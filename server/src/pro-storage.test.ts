@@ -27,6 +27,24 @@ const pdf = (marker: string) => Buffer.from(`%PDF-1.4\n% ${marker}\n`, "latin1")
 const PULLED = "40000001";
 const MINE = "40000002";
 
+/**
+ * A collection with a name nothing else in this file can collide with.
+ *
+ * Every test here shares one database. It has to: db.ts opens its connection at
+ * import time, so openTempDb can only run once per file, and vitest caches the
+ * module graph — a second call in beforeEach would hand back the first
+ * database. Collections carry `UNIQUE INDEX … ON collections(name COLLATE
+ * NOCASE)`, so a literal reused by a later test throws SQLITE_CONSTRAINT_UNIQUE
+ * from inside createCollection, with nothing pointing at the sibling test
+ * eighty lines away that took the name first.
+ *
+ * That trap was live: three names in this file had to be hand-disambiguated
+ * ("Acme Medical (bad bytes)") for exactly this reason, which is a fix that
+ * only holds until the next person writes the obvious thing.
+ */
+let collectionSeq = 0;
+const collection = (label: string) => storage.newCollection(`${label} #${++collectionSeq}`);
+
 function article(pmid: string) {
   return {
     pmid,
@@ -91,18 +109,18 @@ describe("safeFileName", () => {
 
 describe("storePulledFile", () => {
   it("files the PDF, sanitises the master's name, and matches by PMID", async () => {
-    const id = storage.ensureCollection("Acme Medical");
+    const id = collection("Acme Medical");
     const out = await storage.storePulledFile({
       bytes: pdf("pulled"),
       // A hostile master's filename. Stored verbatim this becomes a zip entry
       // that escapes the folder the recipient extracts into.
       fileName: "../../evil.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
 
     expect(out).not.toBeNull();
-    const row = db.getCollectionFile(out!.fileId);
+    const row = db.getCollectionFile(out!.filed[0].fileId);
     expect(row?.file_name).toBe("evil.pdf");
     expect(row?.pmid).toBe(PULLED);
     expect(row?.match_status).toBe("matched");
@@ -110,13 +128,13 @@ describe("storePulledFile", () => {
   });
 
   it("rejects bytes that aren't a PDF, writing nothing", async () => {
-    const id = storage.ensureCollection("Acme Medical");
+    const id = collection("Acme Medical");
     const before = db.listCollectionFiles(id).length;
     const out = await storage.storePulledFile({
       bytes: Buffer.from("<html>not a pdf</html>"),
       fileName: "trap.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
     expect(out).toBeNull();
     expect(db.listCollectionFiles(id)).toHaveLength(before);
@@ -127,7 +145,7 @@ describe("storePulledFile", () => {
   // old code then rewrote that row to the master's PMID — silently replacing
   // the user's match and making the paper they *did* hold answer not-held.
   it("keeps an existing manual match when the collection already holds the bytes", async () => {
-    const id = storage.ensureCollection("Overlap");
+    const id = collection("Overlap");
     const bytes = pdf("shared-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
 
@@ -139,11 +157,11 @@ describe("storePulledFile", () => {
       bytes,
       fileName: "master-copy.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
 
     // The pull still succeeds and points at the row that holds these bytes...
-    expect(out?.fileId).toBe(mine.id);
+    expect(out?.filed[0].fileId).toBe(mine.id);
     // ...but nothing about the user's match was touched.
     const row = db.getCollectionFile(mine.id);
     expect(row?.pmid).toBe(MINE);
@@ -152,7 +170,7 @@ describe("storePulledFile", () => {
   });
 
   it("matches a pre-existing row that nothing had claimed yet", async () => {
-    const id = storage.ensureCollection("Unclaimed");
+    const id = collection("Unclaimed");
     const bytes = pdf("unmatched-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "scan.pdf" }]);
@@ -161,29 +179,184 @@ describe("storePulledFile", () => {
       bytes,
       fileName: "scan.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
 
-    const row = db.getCollectionFile(out!.fileId);
+    const row = db.getCollectionFile(out!.filed[0].fileId);
     expect(row?.pmid).toBe(PULLED);
     expect(row?.match_method).toBe("pmid");
   });
 
+  // The multi-destination path, which is the whole reason this takes a list.
+  it("files one blob onto every shelf asked for, and reports each", async () => {
+    const a = collection("Multi A");
+    const b = collection("Multi B");
+    const c = collection("Multi C");
+    const bytes = pdf("three-shelves");
+
+    const out = await storage.storePulledFile({
+      bytes,
+      fileName: "paper.pdf",
+      pmid: PULLED,
+      collectionIds: [a, b, c],
+    });
+
+    expect(out?.failed).toEqual([]);
+    expect(out?.filed.map((f) => f.collectionId)).toEqual([a, b, c]);
+    // Three rows over one blob — the property the whole shape exists for.
+    for (const f of out!.filed) {
+      const row = db.getCollectionFile(f.fileId);
+      expect(row?.content_hash).toBe(out!.hash);
+      expect(row?.pmid).toBe(PULLED);
+      expect(row?.match_status).toBe("matched");
+    }
+    expect(new Set(out!.filed.map((f) => f.fileId)).size).toBe(3);
+  });
+
+  // A shelf named twice is one shelf. UNIQUE(collection_id, content_hash) only
+  // ever allows one row, so reporting two would claim a copy that isn't there.
+  it("files a repeated destination once", async () => {
+    const id = collection("Repeated");
+    const out = await storage.storePulledFile({
+      bytes: pdf("repeated-shelf"),
+      fileName: "paper.pdf",
+      pmid: PULLED,
+      collectionIds: [id, id, id],
+    });
+    expect(out?.filed).toHaveLength(1);
+    expect(db.listCollectionFiles(id)).toHaveLength(1);
+  });
+
+  // The conflict. A shelf that already holds these exact bytes under someone's
+  // manual match keeps that match — and must say so, because the paper is not
+  // retrievable there as the PMID that was pulled. Reported as "filed but not
+  // matched to the pull", never as a plain success: the caller uses it to
+  // decide whether the organisation may be recorded as having supplied a paper
+  // this row is not, and to tell the writer why the row will not go held.
+  it("flags a shelf whose existing manual match disagrees with the pull", async () => {
+    const id = collection("Disagrees");
+    const bytes = pdf("conflicting-content");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
+    db.addCollectionFiles(id, [{ hash, name: "mine.pdf" }]);
+    const mine = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+    db.setFileMatched(mine.id, MINE, "manual");
+
+    const out = await storage.storePulledFile({
+      bytes,
+      fileName: "theirs.pdf",
+      pmid: PULLED,
+      collectionIds: [id],
+    });
+
+    expect(out!.filed).toEqual([
+      { collectionId: id, fileId: mine.id, matchedToPull: false, matchedTo: MINE },
+    ]);
+    // The user's match is untouched, as before.
+    expect(db.getCollectionFile(mine.id)?.pmid).toBe(MINE);
+  });
+
+  // The other side of the same branch: already matched to the paper being
+  // pulled is agreement, not conflict, and the org did supply these bytes.
+  it("treats a row already matched to the pulled paper as a clean file", async () => {
+    const id = collection("Agrees");
+    const bytes = pdf("agreeing-content");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
+    db.addCollectionFiles(id, [{ hash, name: "same.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+    db.setFileMatched(row.id, PULLED, "manual");
+
+    const out = await storage.storePulledFile({
+      bytes,
+      fileName: "same.pdf",
+      pmid: PULLED,
+      collectionIds: [id],
+    });
+    expect(out!.filed[0]).toMatchObject({ fileId: row.id, matchedToPull: true });
+    expect(out!.filed[0].matchedTo).toBeUndefined();
+  });
+
+  // A destination that cannot be written is reported rather than thrown, and
+  // must not take the shelves that worked down with it: those rows are real,
+  // and the paper genuinely is in the library.
+  it("keeps the shelves that worked when one fails", async () => {
+    const ok = collection("Survives");
+    const gone = 999_999; // no such collection — the FK refuses the insert
+    const out = await storage.storePulledFile({
+      bytes: pdf("partial-failure"),
+      fileName: "paper.pdf",
+      pmid: PULLED,
+      collectionIds: [ok, gone],
+    });
+
+    expect(out).not.toBeNull();
+    expect(out!.filed.map((f) => f.collectionId)).toEqual([ok]);
+    expect(out!.failed.map((f) => f.collectionId)).toEqual([gone]);
+    expect(db.listCollectionFiles(ok)).toHaveLength(1);
+  });
+
   it("leaves no temp file behind, on either outcome", async () => {
-    const id = storage.ensureCollection("Acme Medical");
+    const id = collection("Acme Medical");
     await storage.storePulledFile({
       bytes: pdf("temp-check"),
       fileName: "ok.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
     await storage.storePulledFile({
       bytes: Buffer.from("not a pdf"),
       fileName: "bad.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
     expect(fs.readdirSync(config.UPLOAD_TMP_DIR)).toHaveLength(0);
+  });
+});
+
+// What may leave this library, and what may not.
+//
+// A manual match is a person asserting a PDF is a given paper; the route checks
+// the PMID exists and cannot check the file is it. Locally that is the writer's
+// own business. Crossing the seam it is not, so these never become candidates —
+// and are counted instead, because an exclusion nobody can see is its own bug.
+describe("what syncs and what is held back", () => {
+  it("excludes a hand-matched file from the push candidates, and counts it", async () => {
+    const id = collection("Mixed matches");
+    const scanned = await blob.storeBlobFromTemp(await tmpWith(pdf("scanner-matched")));
+    const byHand = await blob.storeBlobFromTemp(await tmpWith(pdf("hand-matched")));
+    db.addCollectionFiles(id, [
+      { hash: scanned.hash, name: "scanned.pdf" },
+      { hash: byHand.hash, name: "byhand.pdf" },
+    ]);
+    const rows = db.listCollectionFiles(id);
+    const a = rows.find((f) => f.content_hash === scanned.hash)!;
+    const b = rows.find((f) => f.content_hash === byHand.hash)!;
+    db.setFileMatched(a.id, PULLED, "pmid");
+    db.setFileMatched(b.id, MINE, "manual");
+
+    expect(storage.matchedFilesIn(id).map((f) => f.id)).toEqual([a.id]);
+    expect(storage.manualMatchCountIn(id)).toBe(1);
+  });
+
+  it("counts nothing when everything was matched by evidence", async () => {
+    const id = collection("All scanned");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("all-scanned")));
+    db.addCollectionFiles(id, [{ hash, name: "s.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+    db.setFileMatched(row.id, PULLED, "doi");
+
+    expect(storage.matchedFilesIn(id)).toHaveLength(1);
+    expect(storage.manualMatchCountIn(id)).toBe(0);
+  });
+
+  // Unmatched rows are excluded by both, and counted by neither: nothing is
+  // being withheld from the organisation, there is simply no paper yet.
+  it("does not count an unmatched file as held back", async () => {
+    const id = collection("Still pending");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("pending-row")));
+    db.addCollectionFiles(id, [{ hash, name: "p.pdf" }]);
+
+    expect(storage.matchedFilesIn(id)).toHaveLength(0);
+    expect(storage.manualMatchCountIn(id)).toBe(0);
   });
 });
 
@@ -198,16 +371,20 @@ describe("storePulledFile", () => {
 describe("matchedFilesIn", () => {
   // Seeds a row with the exact name given, the way a build that predates
   // sanitising-on-upload left them in the database.
+  //
+  // Matched by "pmid", deliberately. These tests are about names and collection
+  // tagging, and a "manual" match would make every one of them pass or fail on
+  // the *exclusion* instead — which is checked on its own above.
   async function seed(collectionId: number, name: string, marker: string, pmid?: string) {
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf(marker)));
     db.addCollectionFiles(collectionId, [{ hash, name }]);
     const row = db.listCollectionFiles(collectionId).find((f) => f.content_hash === hash)!;
-    if (pmid) db.setFileMatched(row.id, pmid, "manual");
+    if (pmid) db.setFileMatched(row.id, pmid, "pmid");
     return row.id;
   }
 
   it("returns only rows matched to a paper", async () => {
-    const id = storage.ensureCollection("Candidates");
+    const id = collection("Candidates");
     const matched = await seed(id, "matched.pdf", "cand-matched", PULLED);
     await seed(id, "pending.pdf", "cand-pending");
 
@@ -217,7 +394,7 @@ describe("matchedFilesIn", () => {
   });
 
   it("tags each row with the collection it came from", async () => {
-    const id = storage.ensureCollection("Tagged");
+    const id = collection("Tagged");
     await seed(id, "one.pdf", "tagged-one", PULLED);
     expect(storage.matchedFilesIn(id)[0].collection_id).toBe(id);
   });
@@ -226,17 +403,17 @@ describe("matchedFilesIn", () => {
   // in, and read here to build an outbound request. A newline in a filename is
   // a second header on that request.
   it("sanitises a legacy file_name on the way out", async () => {
-    const id = storage.ensureCollection("Legacy");
+    const id = collection("Legacy");
     await seed(id, "report.pdf\nX-Injected: 1", "legacy-header", PULLED);
     expect(storage.matchedFilesIn(id)[0].file_name).toBe("report.pdfX-Injected: 1");
 
-    const id2 = storage.ensureCollection("Legacy traversal");
+    const id2 = collection("Legacy traversal");
     await seed(id2, "../../etc/passwd.pdf", "legacy-path", MINE);
     expect(storage.matchedFilesIn(id2)[0].file_name).toBe("passwd.pdf");
   });
 
   it("falls back to the PMID when the stored name sanitises to nothing", async () => {
-    const id = storage.ensureCollection("Nameless");
+    const id = collection("Nameless");
     await seed(id, "..", "nameless", PULLED);
     expect(storage.matchedFilesIn(id)[0].file_name).toBe(`${PULLED}.pdf`);
   });
@@ -244,7 +421,7 @@ describe("matchedFilesIn", () => {
 
 describe("readFileBytes", () => {
   it("returns the bytes for a file in the collection asked for", async () => {
-    const id = storage.ensureCollection("Readable");
+    const id = collection("Readable");
     const bytes = pdf("readable");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "ok.pdf" }]);
@@ -257,8 +434,8 @@ describe("readFileBytes", () => {
   // PDFs are not copied to the agency; a bare file id would make that promise
   // depend on the closed module never handing over an id from the wrong list.
   it("refuses a file that belongs to a different collection", async () => {
-    const shared = storage.ensureCollection("Shared with Acme");
-    const priv = storage.ensureCollection("Kept local");
+    const shared = collection("Shared with Acme");
+    const priv = collection("Kept local");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("private")));
     db.addCollectionFiles(priv, [{ hash, name: "confidential.pdf" }]);
     const row = db.listCollectionFiles(priv).find((f) => f.content_hash === hash)!;
@@ -270,12 +447,12 @@ describe("readFileBytes", () => {
   });
 
   it("is null for a row that doesn't exist", () => {
-    const id = storage.ensureCollection("Readable");
+    const id = collection("Readable");
     expect(storage.readFileBytes(id, 999_999)).toBeNull();
   });
 
   it("is null when the row outlived its blob", async () => {
-    const id = storage.ensureCollection("Lost blob");
+    const id = collection("Lost blob");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("lost")));
     db.addCollectionFiles(id, [{ hash, name: "gone.pdf" }]);
     const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;

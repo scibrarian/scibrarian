@@ -53,34 +53,41 @@ export interface ProContext {
   /** The stored PDF behind a held PMID, for serving to a paired node. */
   heldFile(pmid: string): { path: string; fileName: string } | null;
   /**
-   * Find or create a collection by name.
+   * A new collection — always an insert, never an adoption.
    *
-   * For a name specific to what is being filed — an organisation's own
-   * collection on a spoke — where finding an existing one is the point. Not for
-   * a generic name: see newCollection.
-   */
-  ensureCollection(name: string): number;
-  /**
-   * A new collection, even if one already carries this name.
+   * The only way Pro creates one, and deliberately the only way: **a name is
+   * never an identity here.** For the master's inbox, "From writers" describes
+   * a role rather than a party, so it is a label an owner could plausibly have
+   * used already; adopting theirs would point paired nodes at a shelf the owner
+   * created for their own purposes — a spoke writing into a collection it is
+   * not supposed to be able to see, reached by name collision instead of by
+   * request. A find-or-create counterpart used to sit here for the spoke side,
+   * where the name was an organisation's own, and it turned out to have the
+   * same flaw one step removed: two organisations sharing a display name shared
+   * a collection, and a pull from the second claimed everything the first had
+   * supplied. Destinations are chosen by the writer and checked against the
+   * live pairing now, so nothing is looked up by name at all.
    *
-   * For the master's inbox, whose name ("From writers") describes a role rather
-   * than a party, and so is one an owner could plausibly have used already.
-   * Adopting theirs would point paired nodes at a shelf the owner created for
-   * their own purposes — a spoke writing into a collection it is not supposed
-   * to be able to see, reached by name collision instead of by request.
-   *
-   * The caller is expected to remember the id rather than call this each time.
+   * Throws when the name is taken — collections are uniquely named, COLLATE
+   * NOCASE — so a caller that cannot tolerate that has to say what a collision
+   * means. The caller is expected to remember the id rather than call this each
+   * time.
    */
   newCollection(name: string): number;
   /** Whether a collection id still resolves — for a caller holding a remembered id. */
   collectionExists(id: number): boolean;
   /**
-   * Files in a collection that are matched to a paper — the candidates for a
-   * push.
+   * Files in a collection matched to a paper **by evidence** — the candidates
+   * for a push.
    *
-   * Matched only, because identity between instances is the PMID and only the
-   * PMID. An unmatched file has nothing the other end could file it under, and
+   * Matched, because identity between instances is the PMID and only the PMID:
+   * an unmatched file has nothing the other end could file it under, and
    * sending one would put a paper on the agency's shelf that no query reaches.
+   *
+   * And never a *manual* match. That one is a person's unverified assertion
+   * that a PDF is a given paper — the writer's own business locally, and
+   * everyone's once a copy crosses the seam. See pro-storage for the failure it
+   * prevents, and manualMatchCountIn for how the exclusion is kept visible.
    *
    * `file_name` arrives sanitised and each row names its collection — the pair
    * readFileBytes wants. Both are properties of this call, not requests of the
@@ -90,6 +97,13 @@ export interface ProContext {
     collectionId: number
   ): { id: number; collection_id: number; pmid: string; file_name: string }[];
   /**
+   * How many files in a collection matchedFilesIn held back for being matched
+   * by hand. A count and never the rows, so their ids stay on this side of the
+   * seam — the module that reports the number is the one that must not be able
+   * to send them.
+   */
+  manualMatchCountIn(collectionId: number): number;
+  /**
    * The stored bytes for one file row, read as part of a collection. Null if
    * the row is gone, the blob is gone, or the row is not in that collection.
    *
@@ -98,13 +112,39 @@ export interface ProContext {
    * with the candidate, never one re-derived alongside it.
    */
   readFileBytes(collectionId: number, fileId: number): Buffer | null;
-  /** File bytes pulled from a master as a held paper. Null if they aren't a PDF. */
+  /**
+   * File bytes pulled from a master as a held paper, onto every chosen shelf.
+   * Null if they aren't a PDF, or if the PMID has no article row to be visible
+   * under — both properties of the bytes, decided once.
+   *
+   * Takes all destinations rather than one, so a caller filing a copy into
+   * several collections cannot turn that into several hashes of the same
+   * buffer. Reports which shelves took the copy and which didn't: a partial
+   * result is a real outcome here, not an error, because a copy that reached
+   * one shelf is on disk and its row is valid.
+   */
   storePulledFile(o: {
     bytes: Buffer;
     fileName: string;
     pmid: string;
-    collectionId: number;
-  }): Promise<{ fileId: number; hash: string } | null>;
+    collectionIds: number[];
+  }): Promise<{
+    hash: string;
+    filed: {
+      collectionId: number;
+      fileId: number;
+      /**
+       * Whether that row answers as the PMID pulled. False when the shelf
+       * already held these exact bytes under a different match, which is never
+       * overwritten — so nothing may record the organisation as having supplied
+       * a paper the row is not matched to.
+       */
+      matchedToPull: boolean;
+      /** What it is matched to instead. Set only when matchedToPull is false. */
+      matchedTo?: string;
+    }[];
+    failed: { collectionId: number; error: string }[];
+  } | null>;
 }
 
 export interface ProModule {

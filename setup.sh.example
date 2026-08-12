@@ -1,0 +1,144 @@
+#!/bin/bash
+#
+# One-shot provisioning for a fresh Ubuntu VPS: swap, Docker, the deployment
+# files, generated secrets, HTTPS. Copy to `setup.sh`, fill in the config block,
+# then run it as root on a box with nothing on it yet.
+#
+#   scp setup.sh root@203.0.113.10:/root/
+#   ssh root@203.0.113.10 'bash /root/setup.sh'
+#
+# This is DEPLOY.md's "Option B" walkthrough with the typing removed. Read that
+# first if you want to know what each step is for; nothing here does anything
+# the manual instructions don't.
+#
+# **DNS comes first and this script will not do it for you.** Create the A
+# record, wait for it to resolve, then run this — Let's Encrypt validates over
+# HTTP against the name, so Caddy cannot get a certificate for a hostname that
+# doesn't point here yet. The preflight below refuses to continue rather than
+# letting you discover that in the ACME logs.
+
+set -euo pipefail
+
+# ============ CONFIG — fill these in ============
+DOMAIN="scibrarian.example.com"        # A record must already point at this box
+ACME_EMAIL="you@example.com"           # Let's Encrypt expiry notices
+BASIC_AUTH_USER="admin"                # edge login for the whole site
+# Pin a release instead of tracking `latest`. Leave empty to track latest.
+SCIBRARIAN_TAG=""
+# ==================================================
+
+INSTALL_DIR="/root/scibrarian"
+CREDS_FILE="/root/credentials.txt"
+
+# --- Preflight ------------------------------------------------------------
+# Everything below writes to /root, installs packages and binds 80/443.
+[ "$(id -u)" -eq 0 ] || { echo "Run as root."; exit 1; }
+
+case "$DOMAIN" in
+  scibrarian.example.com|"")
+    echo "Set DOMAIN in the config block first."; exit 1 ;;
+esac
+case "$ACME_EMAIL" in
+  you@example.com|"")
+    echo "Set ACME_EMAIL in the config block first."; exit 1 ;;
+esac
+
+apt-get update
+apt-get install -y ca-certificates curl dnsutils
+
+# The check that saves the confusing failure: a name that resolves somewhere
+# else produces a Caddy that retries ACME forever and a site that never comes
+# up, with nothing in the output pointing at DNS.
+PUBLIC_IP="$(curl -fsS https://ifconfig.me)"
+RESOLVED="$(dig +short "$DOMAIN" A | tail -n1)"
+if [ -z "$RESOLVED" ]; then
+  echo "$DOMAIN does not resolve yet. Create the A record:"
+  echo "    A    $DOMAIN    ->    $PUBLIC_IP"
+  echo "then wait for it (dig +short $DOMAIN) and re-run."
+  exit 1
+fi
+if [ "$RESOLVED" != "$PUBLIC_IP" ]; then
+  echo "$DOMAIN resolves to $RESOLVED, but this box is $PUBLIC_IP."
+  echo "Point the A record here (or wait for the old one to expire) and re-run."
+  exit 1
+fi
+
+# --- Swap (a 1 GB box has no headroom without it) -------------------------
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  echo 'vm.swappiness=10' >> /etc/sysctl.conf
+  sysctl -p
+fi
+
+# --- Docker ----------------------------------------------------------------
+if ! command -v docker >/dev/null 2>&1; then
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+    https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
+
+# --- Deployment files ------------------------------------------------------
+mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
+base=https://raw.githubusercontent.com/scibrarian/scibrarian/master
+curl -fsSLO "$base/docker-compose.prod.yml"
+curl -fsSL "$base/Caddyfile.example" -o Caddyfile
+
+# --- Secrets ---------------------------------------------------------------
+# Generated rather than chosen: these are typed once into a browser and then
+# lived with, so there is no reason for them to be memorable.
+ADMIN_TOKEN="$(openssl rand -hex 32)"
+BASIC_AUTH_PASS="$(openssl rand -hex 12)"
+
+{
+  echo "ADMIN_TOKEN=${ADMIN_TOKEN}"
+  echo "DOMAIN=${DOMAIN}"
+  echo "ACME_EMAIL=${ACME_EMAIL}"
+  [ -n "$SCIBRARIAN_TAG" ] && echo "SCIBRARIAN_TAG=${SCIBRARIAN_TAG}"
+} > .env
+chmod 600 .env
+
+# The hash goes in the Caddyfile, never .env — docker-compose mangles the `$`
+# characters in a bcrypt hash.
+HASH="$(docker run --rm caddy:2 caddy hash-password --plaintext "$BASIC_AUTH_PASS")"
+sed -i "s|admin REPLACE_WITH_YOUR_BCRYPT_HASH|${BASIC_AUTH_USER} ${HASH}|" Caddyfile
+
+cat > "$CREDS_FILE" <<EOF
+URL:              https://${DOMAIN}
+Basic auth user:  ${BASIC_AUTH_USER}
+Basic auth pass:  ${BASIC_AUTH_PASS}
+ADMIN_TOKEN:      ${ADMIN_TOKEN}
+
+The basic-auth prompt gates the site. ADMIN_TOKEN unlocks writes inside it —
+padlock in the header.
+EOF
+chmod 600 "$CREDS_FILE"
+
+# --- Launch ----------------------------------------------------------------
+docker compose -f docker-compose.prod.yml up -d
+
+# The first certificate takes a few seconds, so report the app rather than the
+# edge: a 200 here means the container is healthy even if ACME is still going.
+echo -n "waiting for the app"
+for _ in $(seq 1 60); do
+  if docker compose -f docker-compose.prod.yml exec -T scibrarian \
+      node -e "fetch('http://127.0.0.1:3001/api/auth').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then
+    echo " — up"; break
+  fi
+  echo -n "."; sleep 2
+done
+
+echo
+echo "Done. https://${DOMAIN}"
+echo "Credentials: ${CREDS_FILE}"
+echo
+echo "If the site doesn't answer, watch the certificate being issued:"
+echo "  docker compose -f docker-compose.prod.yml -p ${INSTALL_DIR##*/} logs -f caddy"

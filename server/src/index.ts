@@ -10,8 +10,8 @@ import { api, isAdminRequest } from "./routes.js";
 import { loadPro } from "./pro-hooks.js";
 import {
   collectionExists,
-  ensureCollection,
   heldFile,
+  manualMatchCountIn,
   matchedFilesIn,
   newCollection,
   readFileBytes,
@@ -201,10 +201,10 @@ export async function start(): Promise<{ port: number; url: string }> {
     heldPmids: (pmids) =>
       new Set(holdingsByPmids(pmids).flatMap((r) => (r.file_id != null ? [r.pmid] : []))),
     heldFile,
-    ensureCollection,
     newCollection,
     collectionExists,
     matchedFilesIn,
+    manualMatchCountIn,
     readFileBytes,
     storePulledFile,
   });

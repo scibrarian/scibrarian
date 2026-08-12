@@ -322,9 +322,11 @@ export const api = {
   proDisconnect: () => req<ProMasterStatus>("/api/pro/master", { method: "DELETE" }),
 
   // The PMID goes in the body rather than the path on purpose — see the route.
-  proPull: (pmid: string) =>
+  // The destinations are the writer's choice, and the route refuses any that
+  // isn't shared with the organisation being pulled from.
+  proPull: (pmid: string, collectionIds: number[]) =>
     req<ProPullResult>("/api/pro/holdings/pull", {
       method: "POST",
-      body: JSON.stringify({ pmid }),
+      body: JSON.stringify({ pmid, collection_ids: collectionIds }),
     }),
 };

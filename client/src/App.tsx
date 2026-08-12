@@ -858,6 +858,14 @@ export default function App() {
         open={checkingHave}
         onClose={() => setCheckingHave(false)}
         access={access}
+        // The check is the one modal that writes to the library from outside
+        // the Library view: a copy pulled from the organization lands in a
+        // collection, and its destination picker can create one. Without this
+        // the shell never hears about either — a collection made here was
+        // missing from the sidebar and the source picker for the rest of the
+        // session, and a paper copied into the collection already on screen
+        // didn't appear in it.
+        onChanged={handleCollectionChanged}
       />
 
       <PromptDialog

@@ -14,6 +14,10 @@ import type { ProPushResult } from "../types";
  * read as permission to stop worrying about whether the agency has the paper.
  */
 export function describeSweep(r: ProPushResult): string {
+  return [describeMoved(r), describeHeldBack(r)].filter(Boolean).join(" ");
+}
+
+function describeMoved(r: ProPushResult): string {
   if (r.sent === 0 && r.skipped === 0 && r.remaining === 0) {
     return "Everything shared is already with your organization.";
   }
@@ -30,6 +34,28 @@ export function describeSweep(r: ProPushResult): string {
   ].filter(Boolean);
   const s = parts.join(", ");
   return `${s[0].toUpperCase()}${s.slice(1)}.`;
+}
+
+/**
+ * The files that are never going, and why.
+ *
+ * Papers matched by hand aren't shared: the app checked that the PMID exists,
+ * not that the PDF is that paper, and an unverified claim that travels becomes
+ * the whole organisation's problem rather than the writer's.
+ *
+ * Said out loud because it is otherwise undiscoverable — `match_method` appears
+ * nowhere else in the UI, so a writer would see their files sitting in a shared
+ * collection, never arriving, with nothing to explain it. `0` is a measured
+ * answer worth staying quiet about; `undefined` is a Pro build that doesn't
+ * report this at all, and inventing a "none held back" for it would be a claim
+ * nothing checked.
+ */
+function describeHeldBack(r: ProPushResult): string {
+  if (!r.held_back) return "";
+  const n = r.held_back;
+  return `${n} ${n === 1 ? "paper isn't" : "papers aren't"} shared — matched by hand, so ${
+    n === 1 ? "it" : "they"
+  } can't be verified.`;
 }
 
 // "A, B, C, et al." once the list exceeds `max` names.

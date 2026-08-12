@@ -149,11 +149,40 @@ export interface ProPushResult {
   skipped: number;
   /** Still outstanding — a first sync reports progress this way. */
   remaining: number;
+  /**
+   * Files in shared collections that will never be sent, because a person
+   * matched them by hand rather than the scanner matching them by evidence.
+   *
+   * Optional because a Pro build older than this field simply won't send it,
+   * and "not reported" must not render as a measured zero — the same rule the
+   * node activity counts follow.
+   */
+  held_back?: number;
   error?: string;
 }
 
 export interface ProPullResult {
   pmid: string;
-  collection: string;
+  /**
+   * The collections where this paper now answers as this PMID — ids rather
+   * than names, because the caller picked them from a list it already holds.
+   *
+   * Not an echo of the request. A shelf that could not be written is absent,
+   * and so is one that already held these exact bytes under a different match:
+   * nothing was copied there, and the paper is not retrievable from it. This is
+   * the only way a caller can tell a complete pull from a partial one.
+   */
+  collection_ids: number[];
   file_name: string;
+  /**
+   * A caveat on a success, never a failure — the paper did reach the library,
+   * and a pull that reached nothing at all is a 502 instead.
+   *
+   * Two things arrive here. A destination that couldn't be written, and the
+   * more interesting one: a destination that already holds these exact bytes
+   * matched by hand to a different paper. That is a disagreement only a person
+   * can settle, and before this existed it was a server log the writer never
+   * saw — leaving them clicking Copy against a row that would never go held.
+   */
+  warning?: string;
 }
