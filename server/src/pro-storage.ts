@@ -16,6 +16,7 @@ import {
   upsertArticles,
 } from "./db.js";
 import { fetchArticles } from "./pubmed.js";
+import { errMessage } from "./util.js";
 
 // The library operations the Pro module orchestrates, implemented here in the
 // open repo.
@@ -143,32 +144,61 @@ async function ensureArticle(pmid: string): Promise<boolean> {
   return true;
 }
 
+/** One collection the pull was filed into, and the row it produced there. */
+export interface FiledCopy {
+  collectionId: number;
+  fileId: number;
+}
+
+export interface PulledFile {
+  hash: string;
+  /** Collections the copy reached. Empty only if every one of them failed. */
+  filed: FiledCopy[];
+  /** Collections it did not reach, and why. Normally empty. */
+  failed: { collectionId: number; error: string }[];
+}
+
 /**
- * File bytes pulled from a master as a genuinely held paper.
+ * File bytes pulled from a master as a genuinely held paper, onto one or more
+ * shelves.
  *
- * Returns null when the pull could not be filed: the bytes aren't a PDF, or
- * PubMed couldn't supply the metadata the paper needs to be visible. The PDF
+ * Returns null when the pull could not be filed at all: the bytes aren't a PDF,
+ * or PubMed couldn't supply the metadata the paper needs to be visible. The PDF
  * check is not a formality — these bytes arrive over the network from another
  * instance, and "a master said so" is not a reason to write arbitrary content
  * into the blob store under a .pdf name. The same check guards ordinary
- * uploads. Anything else that goes wrong throws: null is the caller's "the
- * master sent something unusable", and it should not have to mean "a write
- * failed halfway" as well.
+ * uploads.
  *
  * The sequence is the reason this lives here: metadata, then blob, then the
- * row, then the match. Metadata first so a PubMed outage fails the pull with
+ * rows, then the matches. Metadata first so a PubMed outage fails the pull with
  * nothing written, rather than leaving bytes on disk the library can't see. A
  * row written before its blob points at nothing; a blob written with no row is
  * invisible and would be GC'd. storeBlobFromTemp is idempotent on content, so
  * pulling a paper the library already stores under a different name costs one
  * row and no bytes.
+ *
+ * **Takes every destination at once, and that is the whole reason for the
+ * shape.** Both checks above are properties of the *bytes* — whether they are a
+ * PDF, and whether their PMID resolves — so asking them per collection asks the
+ * same question repeatedly and can only ever get the same answer. Called in a
+ * loop it was worse than redundant: each call wrote the entire buffer to a
+ * fresh temp file, sniffed it, and streamed it through SHA-256 before
+ * discovering the blob was already stored. Five shelves for one 40 MB pull
+ * meant 200 MB written and 200 MB hashed to add four rows.
+ *
+ * **Per-collection failures are reported, not rolled back.** A copy that
+ * reached one shelf is on disk and its row is valid; unwinding it so the answer
+ * can be all-or-nothing would destroy a correct write to tell a tidier story.
+ * There is no outer transaction to lean on either — addCollectionFiles brings
+ * its own, and SQLite does not nest them. So each shelf is filed independently
+ * and the caller is told exactly which ones took the copy.
  */
 export async function storePulledFile(o: {
   bytes: Buffer;
   fileName: string;
   pmid: string;
-  collectionId: number;
-}): Promise<{ fileId: number; hash: string } | null> {
+  collectionIds: number[];
+}): Promise<PulledFile | null> {
   if (!(await ensureArticle(o.pmid))) return null;
 
   const hash = await storePulledBlob(o.bytes);
@@ -182,8 +212,31 @@ export async function storePulledFile(o: {
   // "nothing with a path separator in it is ever written to file_name" is one of
   // them — see safeFileName for what the archive route does with this column.
   const name = safeFileName(o.fileName, `${o.pmid}.pdf`);
-  const added = addCollectionFiles(o.collectionId, [{ hash, name }]);
-  const file = collectionFileByHash(o.collectionId, hash);
+
+  const filed: FiledCopy[] = [];
+  const failed: PulledFile["failed"] = [];
+  // De-duplicated: the same shelf named twice is one shelf, and filing it twice
+  // would report two copies of a row that UNIQUE(collection_id, content_hash)
+  // only ever allows one of.
+  for (const collectionId of new Set(o.collectionIds)) {
+    try {
+      filed.push({ collectionId, fileId: fileOnShelf(collectionId, hash, name, o.pmid) });
+    } catch (err) {
+      failed.push({ collectionId, error: errMessage(err) });
+    }
+  }
+  return { hash, filed, failed };
+}
+
+/**
+ * Put one already-stored blob on one shelf, and match it if nothing else has.
+ *
+ * The per-collection half of a pull, split out so the byte-level work above it
+ * happens once however many shelves were chosen.
+ */
+function fileOnShelf(collectionId: number, hash: string, name: string, pmid: string): number {
+  const added = addCollectionFiles(collectionId, [{ hash, name }]);
+  const file = collectionFileByHash(collectionId, hash);
   if (!file) {
     // Not reachable: the insert either added the row or found one already
     // there. Deliberately not `return null` — that is the caller's "the master
@@ -207,13 +260,13 @@ export async function storePulledFile(o: {
   // Leaving the existing match and saying so is the honest outcome; resolving
   // it silently in favour of whoever wrote last is not.
   if (added > 0 || !file.pmid) {
-    setFileMatched(file.id, o.pmid, "pmid");
-  } else if (file.pmid !== o.pmid) {
+    setFileMatched(file.id, pmid, "pmid");
+  } else if (file.pmid !== pmid) {
     console.warn(
-      `[pro] pulled ${o.pmid}, but collection ${o.collectionId} already stores these bytes as ${file.pmid}; keeping the existing match`
+      `[pro] pulled ${pmid}, but collection ${collectionId} already stores these bytes as ${file.pmid}; keeping the existing match`
     );
   }
-  return { fileId: file.id, hash };
+  return file.id;
 }
 
 /**

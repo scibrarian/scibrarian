@@ -155,11 +155,19 @@ export interface ProPushResult {
 export interface ProPullResult {
   pmid: string;
   /**
-   * The collections the copy was filed into — the ids the caller chose, echoed
-   * back rather than resolved to names. The caller picked them from a list it
-   * already holds, so names here would be a second lookup whose only use is to
-   * be compared against what the client already knows.
+   * The collections the copy actually reached — ids rather than names, because
+   * the caller picked them from a list it already holds.
+   *
+   * Not an echo of the request: a shelf that could not be written is absent
+   * here, which is the only way a caller can tell a complete pull from a
+   * partial one. `error` says what went wrong with the rest.
    */
   collection_ids: number[];
   file_name: string;
+  /**
+   * Present only when some destinations were not written. The pull still
+   * succeeded — the paper is in the library — so this is a caveat on a 200,
+   * never a failure. A pull that reached nothing at all is a 502 instead.
+   */
+  error?: string;
 }

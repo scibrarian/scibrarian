@@ -98,11 +98,11 @@ describe("storePulledFile", () => {
       // that escapes the folder the recipient extracts into.
       fileName: "../../evil.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
 
     expect(out).not.toBeNull();
-    const row = db.getCollectionFile(out!.fileId);
+    const row = db.getCollectionFile(out!.filed[0].fileId);
     expect(row?.file_name).toBe("evil.pdf");
     expect(row?.pmid).toBe(PULLED);
     expect(row?.match_status).toBe("matched");
@@ -116,7 +116,7 @@ describe("storePulledFile", () => {
       bytes: Buffer.from("<html>not a pdf</html>"),
       fileName: "trap.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
     expect(out).toBeNull();
     expect(db.listCollectionFiles(id)).toHaveLength(before);
@@ -139,11 +139,11 @@ describe("storePulledFile", () => {
       bytes,
       fileName: "master-copy.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
 
     // The pull still succeeds and points at the row that holds these bytes...
-    expect(out?.fileId).toBe(mine.id);
+    expect(out?.filed[0].fileId).toBe(mine.id);
     // ...but nothing about the user's match was touched.
     const row = db.getCollectionFile(mine.id);
     expect(row?.pmid).toBe(MINE);
@@ -161,12 +161,71 @@ describe("storePulledFile", () => {
       bytes,
       fileName: "scan.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
 
-    const row = db.getCollectionFile(out!.fileId);
+    const row = db.getCollectionFile(out!.filed[0].fileId);
     expect(row?.pmid).toBe(PULLED);
     expect(row?.match_method).toBe("pmid");
+  });
+
+  // The multi-destination path, which is the whole reason this takes a list.
+  it("files one blob onto every shelf asked for, and reports each", async () => {
+    const a = storage.newCollection("Multi A");
+    const b = storage.newCollection("Multi B");
+    const c = storage.newCollection("Multi C");
+    const bytes = pdf("three-shelves");
+
+    const out = await storage.storePulledFile({
+      bytes,
+      fileName: "paper.pdf",
+      pmid: PULLED,
+      collectionIds: [a, b, c],
+    });
+
+    expect(out?.failed).toEqual([]);
+    expect(out?.filed.map((f) => f.collectionId)).toEqual([a, b, c]);
+    // Three rows over one blob — the property the whole shape exists for.
+    for (const f of out!.filed) {
+      const row = db.getCollectionFile(f.fileId);
+      expect(row?.content_hash).toBe(out!.hash);
+      expect(row?.pmid).toBe(PULLED);
+      expect(row?.match_status).toBe("matched");
+    }
+    expect(new Set(out!.filed.map((f) => f.fileId)).size).toBe(3);
+  });
+
+  // A shelf named twice is one shelf. UNIQUE(collection_id, content_hash) only
+  // ever allows one row, so reporting two would claim a copy that isn't there.
+  it("files a repeated destination once", async () => {
+    const id = storage.newCollection("Repeated");
+    const out = await storage.storePulledFile({
+      bytes: pdf("repeated-shelf"),
+      fileName: "paper.pdf",
+      pmid: PULLED,
+      collectionIds: [id, id, id],
+    });
+    expect(out?.filed).toHaveLength(1);
+    expect(db.listCollectionFiles(id)).toHaveLength(1);
+  });
+
+  // A destination that cannot be written is reported rather than thrown, and
+  // must not take the shelves that worked down with it: those rows are real,
+  // and the paper genuinely is in the library.
+  it("keeps the shelves that worked when one fails", async () => {
+    const ok = storage.newCollection("Survives");
+    const gone = 999_999; // no such collection — the FK refuses the insert
+    const out = await storage.storePulledFile({
+      bytes: pdf("partial-failure"),
+      fileName: "paper.pdf",
+      pmid: PULLED,
+      collectionIds: [ok, gone],
+    });
+
+    expect(out).not.toBeNull();
+    expect(out!.filed.map((f) => f.collectionId)).toEqual([ok]);
+    expect(out!.failed.map((f) => f.collectionId)).toEqual([gone]);
+    expect(db.listCollectionFiles(ok)).toHaveLength(1);
   });
 
   it("leaves no temp file behind, on either outcome", async () => {
@@ -175,13 +234,13 @@ describe("storePulledFile", () => {
       bytes: pdf("temp-check"),
       fileName: "ok.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
     await storage.storePulledFile({
       bytes: Buffer.from("not a pdf"),
       fileName: "bad.pdf",
       pmid: PULLED,
-      collectionId: id,
+      collectionIds: [id],
     });
     expect(fs.readdirSync(config.UPLOAD_TMP_DIR)).toHaveLength(0);
   });

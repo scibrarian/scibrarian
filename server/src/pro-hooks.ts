@@ -100,13 +100,27 @@ export interface ProContext {
    * with the candidate, never one re-derived alongside it.
    */
   readFileBytes(collectionId: number, fileId: number): Buffer | null;
-  /** File bytes pulled from a master as a held paper. Null if they aren't a PDF. */
+  /**
+   * File bytes pulled from a master as a held paper, onto every chosen shelf.
+   * Null if they aren't a PDF, or if the PMID has no article row to be visible
+   * under — both properties of the bytes, decided once.
+   *
+   * Takes all destinations rather than one, so a caller filing a copy into
+   * several collections cannot turn that into several hashes of the same
+   * buffer. Reports which shelves took the copy and which didn't: a partial
+   * result is a real outcome here, not an error, because a copy that reached
+   * one shelf is on disk and its row is valid.
+   */
   storePulledFile(o: {
     bytes: Buffer;
     fileName: string;
     pmid: string;
-    collectionId: number;
-  }): Promise<{ fileId: number; hash: string } | null>;
+    collectionIds: number[];
+  }): Promise<{
+    hash: string;
+    filed: { collectionId: number; fileId: number }[];
+    failed: { collectionId: number; error: string }[];
+  } | null>;
 }
 
 export interface ProModule {
