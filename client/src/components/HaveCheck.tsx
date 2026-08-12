@@ -33,10 +33,18 @@ export function HaveCheck({
   open,
   onClose,
   access,
+  onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   access: PaperAccess;
+  /**
+   * This modal wrote to the library — a copy was filed, or a collection was
+   * created to hold one. Reported upward because neither is visible from here:
+   * the sidebar, the source picker and the collection views are the shell's,
+   * and nothing else tells it a check modal just added to them.
+   */
+  onChanged: () => void;
 }) {
   const [text, setText] = useState("");
   const [response, setResponse] = useState<HaveResponse | null>(null);
@@ -138,6 +146,10 @@ export function HaveCheck({
     try {
       await api.proPull(pmid, collectionIds);
       setChoosing(null);
+      // Before the re-check, not after: the copy is already filed, and the
+      // collection the reader is looking at behind this modal is stale from
+      // this moment. The re-check below only refreshes this row.
+      onChanged();
       const fresh = await api.checkHave([line]);
       const updated = fresh.results[0];
       if (updated) {
@@ -226,7 +238,13 @@ export function HaveCheck({
                 destinations={destinations}
                 destError={destError}
                 onReloadDestinations={() => void loadDestinations()}
-                onCreated={(c) => setDestinations((d) => [...d, c])}
+                onCreated={(c) => {
+                  setDestinations((d) => [...d, c]);
+                  // The collection exists whether or not a copy ever lands in
+                  // it, so the shell is told here rather than waiting for the
+                  // Copy that may never be clicked.
+                  onChanged();
+                }}
                 pulling={pulling === i}
                 // "One at a time" was the stated design but nothing enforced
                 // it: only the pulling row's own button was disabled, so a
