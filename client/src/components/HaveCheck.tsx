@@ -241,7 +241,17 @@ export function HaveCheck({
                 // the only decision that keeps one organisation's material off
                 // another's shelf.
                 choosing={choosing === i}
-                onChoose={() => setChoosing(i)}
+                // Re-read on open, not only after the check. The list is a
+                // snapshot, and this modal deliberately keeps its results — so
+                // a reader can check, close it, unshare a collection or pair
+                // with someone else in Settings, reopen, and click Copy against
+                // answers from before any of that. The route refuses a stale
+                // destination, but a refusal the writer can't account for is a
+                // worse answer than not offering it.
+                onChoose={() => {
+                  setChoosing(i);
+                  void loadDestinations();
+                }}
                 onCancel={() => setChoosing(null)}
                 onPull={(collectionIds) => pull(i, answer.org!.pmid, collectionIds)}
                 destinations={destinations}
@@ -521,17 +531,24 @@ function DestinationPicker({
           library, and making it off the back of a request that never answered
           told writers with several shared collections that they had none —
           then sent them to type a name that already exists and collides. */}
-      {destError ? (
+      {destError && (
         <p className="have-dest-failed">
           Couldn’t load your shared collections: {destError}{" "}
           <button type="button" onClick={onReload}>
             Try again
           </button>
         </p>
-      ) : destinations.length === 0 ? (
-        <p className="hint">
-          No collections are shared with your organization yet — name one below.
-        </p>
+      )}
+      {/* Shown alongside a failed refresh rather than instead of it. The list
+          may be a moment out of date, which is what the line above says; hiding
+          it would take away every usable option to report that one of them
+          might have changed. */}
+      {destinations.length === 0 ? (
+        !destError && (
+          <p className="hint">
+            No collections are shared with your organization yet — name one below.
+          </p>
+        )
       ) : (
         <>
           <p className="hint">Copy into:</p>

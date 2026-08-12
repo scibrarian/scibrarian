@@ -27,6 +27,24 @@ const pdf = (marker: string) => Buffer.from(`%PDF-1.4\n% ${marker}\n`, "latin1")
 const PULLED = "40000001";
 const MINE = "40000002";
 
+/**
+ * A collection with a name nothing else in this file can collide with.
+ *
+ * Every test here shares one database. It has to: db.ts opens its connection at
+ * import time, so openTempDb can only run once per file, and vitest caches the
+ * module graph — a second call in beforeEach would hand back the first
+ * database. Collections carry `UNIQUE INDEX … ON collections(name COLLATE
+ * NOCASE)`, so a literal reused by a later test throws SQLITE_CONSTRAINT_UNIQUE
+ * from inside createCollection, with nothing pointing at the sibling test
+ * eighty lines away that took the name first.
+ *
+ * That trap was live: three names in this file had to be hand-disambiguated
+ * ("Acme Medical (bad bytes)") for exactly this reason, which is a fix that
+ * only holds until the next person writes the obvious thing.
+ */
+let collectionSeq = 0;
+const collection = (label: string) => storage.newCollection(`${label} #${++collectionSeq}`);
+
 function article(pmid: string) {
   return {
     pmid,
@@ -91,7 +109,7 @@ describe("safeFileName", () => {
 
 describe("storePulledFile", () => {
   it("files the PDF, sanitises the master's name, and matches by PMID", async () => {
-    const id = storage.newCollection("Acme Medical");
+    const id = collection("Acme Medical");
     const out = await storage.storePulledFile({
       bytes: pdf("pulled"),
       // A hostile master's filename. Stored verbatim this becomes a zip entry
@@ -110,7 +128,7 @@ describe("storePulledFile", () => {
   });
 
   it("rejects bytes that aren't a PDF, writing nothing", async () => {
-    const id = storage.newCollection("Acme Medical (bad bytes)");
+    const id = collection("Acme Medical");
     const before = db.listCollectionFiles(id).length;
     const out = await storage.storePulledFile({
       bytes: Buffer.from("<html>not a pdf</html>"),
@@ -127,7 +145,7 @@ describe("storePulledFile", () => {
   // old code then rewrote that row to the master's PMID — silently replacing
   // the user's match and making the paper they *did* hold answer not-held.
   it("keeps an existing manual match when the collection already holds the bytes", async () => {
-    const id = storage.newCollection("Overlap");
+    const id = collection("Overlap");
     const bytes = pdf("shared-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
 
@@ -152,7 +170,7 @@ describe("storePulledFile", () => {
   });
 
   it("matches a pre-existing row that nothing had claimed yet", async () => {
-    const id = storage.newCollection("Unclaimed");
+    const id = collection("Unclaimed");
     const bytes = pdf("unmatched-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "scan.pdf" }]);
@@ -171,9 +189,9 @@ describe("storePulledFile", () => {
 
   // The multi-destination path, which is the whole reason this takes a list.
   it("files one blob onto every shelf asked for, and reports each", async () => {
-    const a = storage.newCollection("Multi A");
-    const b = storage.newCollection("Multi B");
-    const c = storage.newCollection("Multi C");
+    const a = collection("Multi A");
+    const b = collection("Multi B");
+    const c = collection("Multi C");
     const bytes = pdf("three-shelves");
 
     const out = await storage.storePulledFile({
@@ -198,7 +216,7 @@ describe("storePulledFile", () => {
   // A shelf named twice is one shelf. UNIQUE(collection_id, content_hash) only
   // ever allows one row, so reporting two would claim a copy that isn't there.
   it("files a repeated destination once", async () => {
-    const id = storage.newCollection("Repeated");
+    const id = collection("Repeated");
     const out = await storage.storePulledFile({
       bytes: pdf("repeated-shelf"),
       fileName: "paper.pdf",
@@ -216,7 +234,7 @@ describe("storePulledFile", () => {
   // decide whether the organisation may be recorded as having supplied a paper
   // this row is not, and to tell the writer why the row will not go held.
   it("flags a shelf whose existing manual match disagrees with the pull", async () => {
-    const id = storage.newCollection("Disagrees");
+    const id = collection("Disagrees");
     const bytes = pdf("conflicting-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "mine.pdf" }]);
@@ -240,7 +258,7 @@ describe("storePulledFile", () => {
   // The other side of the same branch: already matched to the paper being
   // pulled is agreement, not conflict, and the org did supply these bytes.
   it("treats a row already matched to the pulled paper as a clean file", async () => {
-    const id = storage.newCollection("Agrees");
+    const id = collection("Agrees");
     const bytes = pdf("agreeing-content");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "same.pdf" }]);
@@ -261,7 +279,7 @@ describe("storePulledFile", () => {
   // must not take the shelves that worked down with it: those rows are real,
   // and the paper genuinely is in the library.
   it("keeps the shelves that worked when one fails", async () => {
-    const ok = storage.newCollection("Survives");
+    const ok = collection("Survives");
     const gone = 999_999; // no such collection — the FK refuses the insert
     const out = await storage.storePulledFile({
       bytes: pdf("partial-failure"),
@@ -277,7 +295,7 @@ describe("storePulledFile", () => {
   });
 
   it("leaves no temp file behind, on either outcome", async () => {
-    const id = storage.newCollection("Acme Medical (temp files)");
+    const id = collection("Acme Medical");
     await storage.storePulledFile({
       bytes: pdf("temp-check"),
       fileName: "ok.pdf",
@@ -302,7 +320,7 @@ describe("storePulledFile", () => {
 // and are counted instead, because an exclusion nobody can see is its own bug.
 describe("what syncs and what is held back", () => {
   it("excludes a hand-matched file from the push candidates, and counts it", async () => {
-    const id = storage.newCollection("Mixed matches");
+    const id = collection("Mixed matches");
     const scanned = await blob.storeBlobFromTemp(await tmpWith(pdf("scanner-matched")));
     const byHand = await blob.storeBlobFromTemp(await tmpWith(pdf("hand-matched")));
     db.addCollectionFiles(id, [
@@ -320,7 +338,7 @@ describe("what syncs and what is held back", () => {
   });
 
   it("counts nothing when everything was matched by evidence", async () => {
-    const id = storage.newCollection("All scanned");
+    const id = collection("All scanned");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("all-scanned")));
     db.addCollectionFiles(id, [{ hash, name: "s.pdf" }]);
     const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
@@ -333,7 +351,7 @@ describe("what syncs and what is held back", () => {
   // Unmatched rows are excluded by both, and counted by neither: nothing is
   // being withheld from the organisation, there is simply no paper yet.
   it("does not count an unmatched file as held back", async () => {
-    const id = storage.newCollection("Still pending");
+    const id = collection("Still pending");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("pending-row")));
     db.addCollectionFiles(id, [{ hash, name: "p.pdf" }]);
 
@@ -366,7 +384,7 @@ describe("matchedFilesIn", () => {
   }
 
   it("returns only rows matched to a paper", async () => {
-    const id = storage.newCollection("Candidates");
+    const id = collection("Candidates");
     const matched = await seed(id, "matched.pdf", "cand-matched", PULLED);
     await seed(id, "pending.pdf", "cand-pending");
 
@@ -376,7 +394,7 @@ describe("matchedFilesIn", () => {
   });
 
   it("tags each row with the collection it came from", async () => {
-    const id = storage.newCollection("Tagged");
+    const id = collection("Tagged");
     await seed(id, "one.pdf", "tagged-one", PULLED);
     expect(storage.matchedFilesIn(id)[0].collection_id).toBe(id);
   });
@@ -385,17 +403,17 @@ describe("matchedFilesIn", () => {
   // in, and read here to build an outbound request. A newline in a filename is
   // a second header on that request.
   it("sanitises a legacy file_name on the way out", async () => {
-    const id = storage.newCollection("Legacy");
+    const id = collection("Legacy");
     await seed(id, "report.pdf\nX-Injected: 1", "legacy-header", PULLED);
     expect(storage.matchedFilesIn(id)[0].file_name).toBe("report.pdfX-Injected: 1");
 
-    const id2 = storage.newCollection("Legacy traversal");
+    const id2 = collection("Legacy traversal");
     await seed(id2, "../../etc/passwd.pdf", "legacy-path", MINE);
     expect(storage.matchedFilesIn(id2)[0].file_name).toBe("passwd.pdf");
   });
 
   it("falls back to the PMID when the stored name sanitises to nothing", async () => {
-    const id = storage.newCollection("Nameless");
+    const id = collection("Nameless");
     await seed(id, "..", "nameless", PULLED);
     expect(storage.matchedFilesIn(id)[0].file_name).toBe(`${PULLED}.pdf`);
   });
@@ -403,7 +421,7 @@ describe("matchedFilesIn", () => {
 
 describe("readFileBytes", () => {
   it("returns the bytes for a file in the collection asked for", async () => {
-    const id = storage.newCollection("Readable");
+    const id = collection("Readable");
     const bytes = pdf("readable");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
     db.addCollectionFiles(id, [{ hash, name: "ok.pdf" }]);
@@ -416,8 +434,8 @@ describe("readFileBytes", () => {
   // PDFs are not copied to the agency; a bare file id would make that promise
   // depend on the closed module never handing over an id from the wrong list.
   it("refuses a file that belongs to a different collection", async () => {
-    const shared = storage.newCollection("Shared with Acme");
-    const priv = storage.newCollection("Kept local");
+    const shared = collection("Shared with Acme");
+    const priv = collection("Kept local");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("private")));
     db.addCollectionFiles(priv, [{ hash, name: "confidential.pdf" }]);
     const row = db.listCollectionFiles(priv).find((f) => f.content_hash === hash)!;
@@ -429,12 +447,12 @@ describe("readFileBytes", () => {
   });
 
   it("is null for a row that doesn't exist", () => {
-    const id = storage.newCollection("Readable (missing row)");
+    const id = collection("Readable");
     expect(storage.readFileBytes(id, 999_999)).toBeNull();
   });
 
   it("is null when the row outlived its blob", async () => {
-    const id = storage.newCollection("Lost blob");
+    const id = collection("Lost blob");
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("lost")));
     db.addCollectionFiles(id, [{ hash, name: "gone.pdf" }]);
     const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
