@@ -53,6 +53,10 @@ export function HaveCheck({
   // hit rather than when the modal opens — these endpoints don't exist in a
   // free build, and a check with nothing held by the org never shows a picker.
   const [destinations, setDestinations] = useState<Collection[]>([]);
+  // Why the list is empty, when it is empty for a reason other than "nothing is
+  // shared". Kept apart from `error` so a failure to load destinations never
+  // banners over a reference check that succeeded.
+  const [destError, setDestError] = useState<string | null>(null);
   const { openPaper, openError, clearOpenError } = usePaperOpener(access);
 
   // Split here as well as on the server so the button can say how many
@@ -74,7 +78,12 @@ export function HaveCheck({
       setChoosing(null);
       // Only when there is something to copy and someone able to copy it.
       if (access.isAdmin && answers.results.some((r) => !r.held && r.org)) {
-        await loadDestinations();
+        // Deliberately outside this try. The check has already succeeded and
+        // its answers are on screen; a destination list that failed to load is
+        // a problem with the *next* action, not with the one just completed.
+        // Awaited inside it, a transient 5xx here put a red banner over a
+        // perfectly good result list.
+        void loadDestinations();
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -86,12 +95,22 @@ export function HaveCheck({
   // Where a copy is allowed to land: collections shared with the organisation
   // paired *now*. `active` is computed by the server against the current
   // pairing, so a collection stamped for a previous engagement is absent here
-  // for exactly the reason the pull route would refuse it — which keeps the
-  // picker from ever offering a choice that cannot be taken.
+  // for the same reason the pull route would refuse it.
+  //
+  // Failure is recorded rather than thrown, and the distinction it preserves is
+  // the whole point: an empty list because nothing is shared and an empty list
+  // because the request failed read identically to the picker, which then told
+  // a writer with several shared collections that they had none — and sent them
+  // to type a name that already exists and collides.
   async function loadDestinations() {
-    const [sync, all] = await Promise.all([api.proSync(), api.getCollections()]);
-    const shared = new Set(sync.stamps.filter((s) => s.active).map((s) => s.collection_id));
-    setDestinations(all.filter((c) => shared.has(c.id)));
+    setDestError(null);
+    try {
+      const [sync, all] = await Promise.all([api.proSync(), api.getCollections()]);
+      const shared = new Set(sync.stamps.filter((s) => s.active).map((s) => s.collection_id));
+      setDestinations(all.filter((c) => shared.has(c.id)));
+    } catch (err) {
+      setDestError(errorMessage(err));
+    }
   }
 
   // Copy a paper the organization holds into this library.
@@ -205,6 +224,8 @@ export function HaveCheck({
                 onCancel={() => setChoosing(null)}
                 onPull={(collectionIds) => pull(i, answer.org!.pmid, collectionIds)}
                 destinations={destinations}
+                destError={destError}
+                onReloadDestinations={() => void loadDestinations()}
                 onCreated={(c) => setDestinations((d) => [...d, c])}
                 pulling={pulling === i}
                 // "One at a time" was the stated design but nothing enforced
@@ -260,6 +281,8 @@ function AnswerRow({
   onCancel,
   onPull,
   destinations,
+  destError,
+  onReloadDestinations,
   onCreated,
   pulling,
   busy,
@@ -275,6 +298,9 @@ function AnswerRow({
   onPull: (collectionIds: number[]) => void;
   /** Collections shared with the organisation — the only legal destinations. */
   destinations: Collection[];
+  /** Why `destinations` is empty, when the reason is a failed load rather than none. */
+  destError: string | null;
+  onReloadDestinations: () => void;
   onCreated: (c: Collection) => void;
   /** This row's own transfer is in flight — drives the spinner and the label. */
   pulling: boolean;
@@ -344,6 +370,8 @@ function AnswerRow({
       {!held && org && choosing && (
         <DestinationPicker
           destinations={destinations}
+          destError={destError}
+          onReload={onReloadDestinations}
           onCreated={onCreated}
           onCancel={onCancel}
           onConfirm={onPull}
@@ -388,12 +416,16 @@ function AnswerRow({
 // on screen.
 function DestinationPicker({
   destinations,
+  destError,
+  onReload,
   onCreated,
   onCancel,
   onConfirm,
   busy,
 }: {
   destinations: Collection[];
+  destError: string | null;
+  onReload: () => void;
   onCreated: (c: Collection) => void;
   onCancel: () => void;
   onConfirm: (collectionIds: number[]) => void;
@@ -406,28 +438,70 @@ function DestinationPicker({
 
   async function create() {
     const name = newName.trim();
-    if (!name) return;
+    // `creating` as well as the name, matching the button's own predicate.
+    // Enter has no form to submit here, so the handler is the only guard on
+    // that path — and without this, two quick presses read one render's
+    // `newName`, fire two creates, and the second comes back "name taken"
+    // against a collection the first had just made, shared and ticked.
+    if (!name || creating) return;
     setCreating(true);
     setCreateError(null);
+
+    let made: Collection;
     try {
-      const made = await api.createCollection(name);
-      await api.proShareCollection(made.id);
-      onCreated(made);
-      // Ticked on arrival: naming a collection here is already the choice to
-      // copy into it, and leaving it unticked means a Copy button that stays
-      // disabled directly under the thing you just made.
-      setPicked((p) => [...p, made.id]);
-      setNewName("");
+      made = await api.createCollection(name);
     } catch (err) {
       setCreateError(errorMessage(err));
-    } finally {
       setCreating(false);
+      return;
     }
+
+    // Sharing is a second request, and its failure must not lose the
+    // collection — it exists, and its name is now taken under a unique index,
+    // so an unwound-looking failure sends the writer to retype a name that can
+    // only ever answer "name taken" from here on. Same reasoning as
+    // createCollection in App.tsx, which wraps this identical call for this
+    // identical reason.
+    //
+    // Not offered as a destination, though: unshared is exactly what the pull
+    // route refuses, so listing it would be the untakeable choice this picker
+    // exists to avoid. Named in the message instead, so the writer knows what
+    // exists and what to do about it.
+    try {
+      await api.proShareCollection(made.id);
+    } catch (err) {
+      setCreateError(
+        `Created “${made.name}”, but sharing it with your organization failed: ${errorMessage(err)} ` +
+          `Copies can only go to a shared collection — share it in Settings, then check again.`
+      );
+      setNewName("");
+      setCreating(false);
+      return;
+    }
+
+    onCreated(made);
+    // Ticked on arrival: naming a collection here is already the choice to
+    // copy into it, and leaving it unticked means a Copy button that stays
+    // disabled directly under the thing you just made.
+    setPicked((p) => [...p, made.id]);
+    setNewName("");
+    setCreating(false);
   }
 
   return (
     <div className="have-dest">
-      {destinations.length === 0 ? (
+      {/* Three states, not two. "Nothing is shared" is a claim about the
+          library, and making it off the back of a request that never answered
+          told writers with several shared collections that they had none —
+          then sent them to type a name that already exists and collides. */}
+      {destError ? (
+        <p className="have-dest-failed">
+          Couldn’t load your shared collections: {destError}{" "}
+          <button type="button" onClick={onReload}>
+            Try again
+          </button>
+        </p>
+      ) : destinations.length === 0 ? (
         <p className="hint">
           No collections are shared with your organization yet — name one below.
         </p>
@@ -462,7 +536,9 @@ function DestinationPicker({
           placeholder="New collection"
           spellCheck={false}
           // This sits outside the check form above it, so Enter would otherwise
-          // do nothing at all here.
+          // do nothing at all here. create() carries the same `creating` guard
+          // the button's `disabled` does — key repeat is the one input that
+          // reaches it twice before the first request returns.
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
