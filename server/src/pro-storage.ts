@@ -42,12 +42,28 @@ export function heldFile(pmid: string): { path: string; fileName: string } | nul
 }
 
 /**
- * Files in a collection that are matched to a paper.
+ * Files in a collection that are matched to a paper **by evidence**.
  *
- * The push candidates. Filtered to `matched` here rather than at the call site
- * because the reason is an invariant of this schema, not of the Pro module:
- * identity between instances is the PMID, and a file without one cannot be
- * filed by whoever receives it.
+ * The push candidates. Filtered here rather than at the call site because the
+ * reasons are invariants of this schema, not of the Pro module.
+ *
+ * `matched`, because identity between instances is the PMID, and a file without
+ * one cannot be filed by whoever receives it.
+ *
+ * And **never a manual match**, which is the narrower and more important rule.
+ * A `pmid` or `doi` match was derived from the document's own text, so there is
+ * evidence the file is what it claims. A manual one is a person asserting it:
+ * the route validates that the PMID exists in PubMed and cannot check that the
+ * PDF is that paper. Locally that is a fair trade — the writer made the claim
+ * and lives with it. Across the seam it is not, because a copy leaves the
+ * machine and one person's mistake becomes the whole organisation's: the agency
+ * then holds bytes filed under a PMID they may not be, and the next writer who
+ * asks "do we have this?" is told yes, skips the purchase, and opens the wrong
+ * paper. That is the failure this product exists to prevent, arrived at from
+ * the other side.
+ *
+ * Silent exclusion would be its own bug, so it is counted and reported — see
+ * manualMatchCountIn and the sweep result that carries it.
  *
  * `file_name` is sanitised on the way out, like every other read of that column
  * (see the archive and zip routes). Rows written before the column was cleaned
@@ -65,7 +81,7 @@ export function matchedFilesIn(
   collectionId: number
 ): { id: number; collection_id: number; pmid: string; file_name: string }[] {
   return listCollectionFiles(collectionId).flatMap((f) =>
-    f.match_status === "matched" && f.pmid
+    f.match_status === "matched" && f.pmid && f.match_method !== "manual"
       ? [
           {
             id: f.id,
@@ -76,6 +92,26 @@ export function matchedFilesIn(
         ]
       : []
   );
+}
+
+/**
+ * How many files in a collection are held back for being matched by hand.
+ *
+ * A count, never the rows. The whole point of excluding them from
+ * matchedFilesIn is that their ids never reach the side of the seam that sends
+ * files, so handing them over here — even to be counted — would put them back
+ * within reach of a module that only meant to tally them.
+ *
+ * It exists because an exclusion nobody can see is worse than the risk it
+ * avoids. `match_method` is surfaced nowhere in the UI, so without this a
+ * writer's genuine contributions would silently never arrive, and the master's
+ * "pulled 12 · uploaded 0" line — the one number a project manager acts on —
+ * would accuse people who had in fact contributed.
+ */
+export function manualMatchCountIn(collectionId: number): number {
+  return listCollectionFiles(collectionId).filter(
+    (f) => f.match_status === "matched" && f.pmid && f.match_method === "manual"
+  ).length;
 }
 
 /**
@@ -148,6 +184,18 @@ async function ensureArticle(pmid: string): Promise<boolean> {
 export interface FiledCopy {
   collectionId: number;
   fileId: number;
+  /**
+   * Whether the row on this shelf answers as the PMID that was pulled.
+   *
+   * False in exactly one case: the collection already held these exact bytes
+   * under a *different* match — typically the user's own manual one, which is
+   * deliberately never overwritten. The bytes are on the shelf either way, but
+   * the paper that was asked for is not retrievable from it, and nothing may
+   * claim the organisation supplied a paper this row is not matched to.
+   */
+  matchedToPull: boolean;
+  /** What the row is matched to instead. Set only when matchedToPull is false. */
+  matchedTo?: string;
 }
 
 export interface PulledFile {
@@ -220,7 +268,7 @@ export async function storePulledFile(o: {
   // only ever allows one of.
   for (const collectionId of new Set(o.collectionIds)) {
     try {
-      filed.push({ collectionId, fileId: fileOnShelf(collectionId, hash, name, o.pmid) });
+      filed.push({ collectionId, ...fileOnShelf(collectionId, hash, name, o.pmid) });
     } catch (err) {
       failed.push({ collectionId, error: errMessage(err) });
     }
@@ -233,8 +281,19 @@ export async function storePulledFile(o: {
  *
  * The per-collection half of a pull, split out so the byte-level work above it
  * happens once however many shelves were chosen.
+ *
+ * Reports whether the row it settled on answers as `pmid`. The branch was
+ * already computed here and thrown away, and the caller needs it for two
+ * decisions it cannot make otherwise: whether the organisation may be recorded
+ * as having supplied this paper, and whether to tell the writer that the shelf
+ * they picked holds these bytes as something else entirely.
  */
-function fileOnShelf(collectionId: number, hash: string, name: string, pmid: string): number {
+function fileOnShelf(
+  collectionId: number,
+  hash: string,
+  name: string,
+  pmid: string
+): Omit<FiledCopy, "collectionId"> {
   const added = addCollectionFiles(collectionId, [{ hash, name }]);
   const file = collectionFileByHash(collectionId, hash);
   if (!file) {
@@ -261,12 +320,19 @@ function fileOnShelf(collectionId: number, hash: string, name: string, pmid: str
   // it silently in favour of whoever wrote last is not.
   if (added > 0 || !file.pmid) {
     setFileMatched(file.id, pmid, "pmid");
-  } else if (file.pmid !== pmid) {
+    return { fileId: file.id, matchedToPull: true };
+  }
+  if (file.pmid !== pmid) {
     console.warn(
       `[pro] pulled ${pmid}, but collection ${collectionId} already stores these bytes as ${file.pmid}; keeping the existing match`
     );
+    return { fileId: file.id, matchedToPull: false, matchedTo: file.pmid };
   }
-  return file.id;
+  // Already matched to the paper that was pulled — an earlier pull, or the user
+  // reaching the same conclusion by hand. Nothing to change, and no conflict:
+  // the organisation did supply these bytes and the row does answer as this
+  // paper, which is the "additive, not exclusive" case the schema describes.
+  return { fileId: file.id, matchedToPull: true };
 }
 
 /**

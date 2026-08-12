@@ -77,12 +77,17 @@ export interface ProContext {
   /** Whether a collection id still resolves — for a caller holding a remembered id. */
   collectionExists(id: number): boolean;
   /**
-   * Files in a collection that are matched to a paper — the candidates for a
-   * push.
+   * Files in a collection matched to a paper **by evidence** — the candidates
+   * for a push.
    *
-   * Matched only, because identity between instances is the PMID and only the
-   * PMID. An unmatched file has nothing the other end could file it under, and
+   * Matched, because identity between instances is the PMID and only the PMID:
+   * an unmatched file has nothing the other end could file it under, and
    * sending one would put a paper on the agency's shelf that no query reaches.
+   *
+   * And never a *manual* match. That one is a person's unverified assertion
+   * that a PDF is a given paper — the writer's own business locally, and
+   * everyone's once a copy crosses the seam. See pro-storage for the failure it
+   * prevents, and manualMatchCountIn for how the exclusion is kept visible.
    *
    * `file_name` arrives sanitised and each row names its collection — the pair
    * readFileBytes wants. Both are properties of this call, not requests of the
@@ -91,6 +96,13 @@ export interface ProContext {
   matchedFilesIn(
     collectionId: number
   ): { id: number; collection_id: number; pmid: string; file_name: string }[];
+  /**
+   * How many files in a collection matchedFilesIn held back for being matched
+   * by hand. A count and never the rows, so their ids stay on this side of the
+   * seam — the module that reports the number is the one that must not be able
+   * to send them.
+   */
+  manualMatchCountIn(collectionId: number): number;
   /**
    * The stored bytes for one file row, read as part of a collection. Null if
    * the row is gone, the blob is gone, or the row is not in that collection.
@@ -118,7 +130,19 @@ export interface ProContext {
     collectionIds: number[];
   }): Promise<{
     hash: string;
-    filed: { collectionId: number; fileId: number }[];
+    filed: {
+      collectionId: number;
+      fileId: number;
+      /**
+       * Whether that row answers as the PMID pulled. False when the shelf
+       * already held these exact bytes under a different match, which is never
+       * overwritten — so nothing may record the organisation as having supplied
+       * a paper the row is not matched to.
+       */
+      matchedToPull: boolean;
+      /** What it is matched to instead. Set only when matchedToPull is false. */
+      matchedTo?: string;
+    }[];
     failed: { collectionId: number; error: string }[];
   } | null>;
 }

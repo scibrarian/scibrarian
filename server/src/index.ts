@@ -11,6 +11,7 @@ import { loadPro } from "./pro-hooks.js";
 import {
   collectionExists,
   heldFile,
+  manualMatchCountIn,
   matchedFilesIn,
   newCollection,
   readFileBytes,
@@ -203,6 +204,7 @@ export async function start(): Promise<{ port: number; url: string }> {
     newCollection,
     collectionExists,
     matchedFilesIn,
+    manualMatchCountIn,
     readFileBytes,
     storePulledFile,
   });

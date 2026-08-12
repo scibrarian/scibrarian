@@ -144,8 +144,17 @@ export function HaveCheck({
     setPulling(index);
     setError(null);
     try {
-      await api.proPull(pmid, collectionIds);
+      const result = await api.proPull(pmid, collectionIds);
       setChoosing(null);
+      // The one thing the re-check below cannot re-derive.
+      //
+      // A pull can succeed and still leave the row not-held: a chosen
+      // collection may already hold these exact bytes under a match someone
+      // made by hand, which is deliberately never overwritten. The row then
+      // refreshes to "in your organization" with a Copy button, and clicking it
+      // again does the same thing forever. Only the pull itself knows why, so
+      // its answer is the one place that can say so.
+      if (result.warning) setError(result.warning);
       // Before the re-check, not after: the copy is already filed, and the
       // collection the reader is looking at behind this modal is stale from
       // this moment. The re-check below only refreshes this row.

@@ -209,6 +209,54 @@ describe("storePulledFile", () => {
     expect(db.listCollectionFiles(id)).toHaveLength(1);
   });
 
+  // The conflict. A shelf that already holds these exact bytes under someone's
+  // manual match keeps that match — and must say so, because the paper is not
+  // retrievable there as the PMID that was pulled. Reported as "filed but not
+  // matched to the pull", never as a plain success: the caller uses it to
+  // decide whether the organisation may be recorded as having supplied a paper
+  // this row is not, and to tell the writer why the row will not go held.
+  it("flags a shelf whose existing manual match disagrees with the pull", async () => {
+    const id = storage.newCollection("Disagrees");
+    const bytes = pdf("conflicting-content");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
+    db.addCollectionFiles(id, [{ hash, name: "mine.pdf" }]);
+    const mine = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+    db.setFileMatched(mine.id, MINE, "manual");
+
+    const out = await storage.storePulledFile({
+      bytes,
+      fileName: "theirs.pdf",
+      pmid: PULLED,
+      collectionIds: [id],
+    });
+
+    expect(out!.filed).toEqual([
+      { collectionId: id, fileId: mine.id, matchedToPull: false, matchedTo: MINE },
+    ]);
+    // The user's match is untouched, as before.
+    expect(db.getCollectionFile(mine.id)?.pmid).toBe(MINE);
+  });
+
+  // The other side of the same branch: already matched to the paper being
+  // pulled is agreement, not conflict, and the org did supply these bytes.
+  it("treats a row already matched to the pulled paper as a clean file", async () => {
+    const id = storage.newCollection("Agrees");
+    const bytes = pdf("agreeing-content");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(bytes));
+    db.addCollectionFiles(id, [{ hash, name: "same.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+    db.setFileMatched(row.id, PULLED, "manual");
+
+    const out = await storage.storePulledFile({
+      bytes,
+      fileName: "same.pdf",
+      pmid: PULLED,
+      collectionIds: [id],
+    });
+    expect(out!.filed[0]).toMatchObject({ fileId: row.id, matchedToPull: true });
+    expect(out!.filed[0].matchedTo).toBeUndefined();
+  });
+
   // A destination that cannot be written is reported rather than thrown, and
   // must not take the shelves that worked down with it: those rows are real,
   // and the paper genuinely is in the library.
@@ -246,6 +294,54 @@ describe("storePulledFile", () => {
   });
 });
 
+// What may leave this library, and what may not.
+//
+// A manual match is a person asserting a PDF is a given paper; the route checks
+// the PMID exists and cannot check the file is it. Locally that is the writer's
+// own business. Crossing the seam it is not, so these never become candidates —
+// and are counted instead, because an exclusion nobody can see is its own bug.
+describe("what syncs and what is held back", () => {
+  it("excludes a hand-matched file from the push candidates, and counts it", async () => {
+    const id = storage.newCollection("Mixed matches");
+    const scanned = await blob.storeBlobFromTemp(await tmpWith(pdf("scanner-matched")));
+    const byHand = await blob.storeBlobFromTemp(await tmpWith(pdf("hand-matched")));
+    db.addCollectionFiles(id, [
+      { hash: scanned.hash, name: "scanned.pdf" },
+      { hash: byHand.hash, name: "byhand.pdf" },
+    ]);
+    const rows = db.listCollectionFiles(id);
+    const a = rows.find((f) => f.content_hash === scanned.hash)!;
+    const b = rows.find((f) => f.content_hash === byHand.hash)!;
+    db.setFileMatched(a.id, PULLED, "pmid");
+    db.setFileMatched(b.id, MINE, "manual");
+
+    expect(storage.matchedFilesIn(id).map((f) => f.id)).toEqual([a.id]);
+    expect(storage.manualMatchCountIn(id)).toBe(1);
+  });
+
+  it("counts nothing when everything was matched by evidence", async () => {
+    const id = storage.newCollection("All scanned");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("all-scanned")));
+    db.addCollectionFiles(id, [{ hash, name: "s.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+    db.setFileMatched(row.id, PULLED, "doi");
+
+    expect(storage.matchedFilesIn(id)).toHaveLength(1);
+    expect(storage.manualMatchCountIn(id)).toBe(0);
+  });
+
+  // Unmatched rows are excluded by both, and counted by neither: nothing is
+  // being withheld from the organisation, there is simply no paper yet.
+  it("does not count an unmatched file as held back", async () => {
+    const id = storage.newCollection("Still pending");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("pending-row")));
+    db.addCollectionFiles(id, [{ hash, name: "p.pdf" }]);
+
+    expect(storage.matchedFilesIn(id)).toHaveLength(0);
+    expect(storage.manualMatchCountIn(id)).toBe(0);
+  });
+});
+
 // The push candidates, and the pair that fetches their bytes.
 //
 // These two are one mechanism: matchedFilesIn decides what may leave this
@@ -257,11 +353,15 @@ describe("storePulledFile", () => {
 describe("matchedFilesIn", () => {
   // Seeds a row with the exact name given, the way a build that predates
   // sanitising-on-upload left them in the database.
+  //
+  // Matched by "pmid", deliberately. These tests are about names and collection
+  // tagging, and a "manual" match would make every one of them pass or fail on
+  // the *exclusion* instead — which is checked on its own above.
   async function seed(collectionId: number, name: string, marker: string, pmid?: string) {
     const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf(marker)));
     db.addCollectionFiles(collectionId, [{ hash, name }]);
     const row = db.listCollectionFiles(collectionId).find((f) => f.content_hash === hash)!;
-    if (pmid) db.setFileMatched(row.id, pmid, "manual");
+    if (pmid) db.setFileMatched(row.id, pmid, "pmid");
     return row.id;
   }
 
