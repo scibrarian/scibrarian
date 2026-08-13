@@ -64,7 +64,11 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   // FormData bodies must set their own multipart boundary header.
   if (!(init?.body instanceof FormData)) headers["Content-Type"] = "application/json";
   const token = getAdminToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  // X-Admin-Token, never Authorization. Behind an HTTP basic-auth edge — every
+  // deployment the setup scripts build — that header already carries the site
+  // login, and overwriting it here 401'd every call at the proxy the instant
+  // the owner unlocked. See isAdminRequest for why that loop had no exit.
+  if (token) headers["X-Admin-Token"] = token;
   const res = await fetch(url, { ...init, headers });
   if (res.status === 401) {
     // The stored token is no longer valid; drop it and lock the UI. The error
