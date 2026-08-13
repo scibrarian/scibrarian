@@ -50,7 +50,10 @@ export const HOST = process.env.HOST || "127.0.0.1";
 export const HOST_IS_LOOPBACK =
   HOST === "localhost" || HOST === "::1" || HOST.startsWith("127.");
 
-// When set, all non-GET API requests require `Authorization: Bearer <token>`.
+// When set, all non-GET API requests must present it: `X-Admin-Token` from the
+// browser client, or `Authorization: Bearer <token>` from a script or curl.
+// isAdminRequest in routes.ts accepts either, and records why the browser can't
+// use Authorization — behind an edge login that header is already taken.
 // When empty, the app behaves as before: single user, no auth (loopback only).
 // Trimmed so a pasted trailing newline in .env doesn't break every unlock.
 export const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();

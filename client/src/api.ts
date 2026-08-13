@@ -70,7 +70,14 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   // the owner unlocked. See isAdminRequest for why that loop had no exit.
   if (token) headers["X-Admin-Token"] = token;
   const res = await fetch(url, { ...init, headers });
-  if (res.status === 401) {
+  // A 401 that challenges is not ours. RFC 9110 requires WWW-Authenticate on
+  // every 401, and the admin gate sends none — it answers plain JSON — so the
+  // header means an edge in front of us refused, not that this token was
+  // rejected. Re-running a setup script rotates the site password, which stops
+  // an already-open tab's cached basic-auth credentials from matching; treating
+  // Caddy's challenge as a verdict on the admin token silently discarded a
+  // perfectly good one for a reason that had nothing to do with it.
+  if (res.status === 401 && !res.headers.get("WWW-Authenticate")) {
     // The stored token is no longer valid; drop it and lock the UI. The error
     // thrown below still surfaces "Admin access required." to the caller.
     setAdminToken(null);

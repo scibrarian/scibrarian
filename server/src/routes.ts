@@ -140,7 +140,7 @@ function tokenMatches(provided: string): boolean {
 }
 
 /**
- * The token as presented, from either header, or null.
+ * Every admin credential the request presents, from either header.
  *
  * **X-Admin-Token is the browser client's, because `Authorization` is not ours
  * to occupy.** Any deployment behind HTTP basic auth — which is what DEPLOY.md's
@@ -160,12 +160,21 @@ function tokenMatches(provided: string): boolean {
  * Bearer stays accepted, and not merely for compatibility: the setup scripts and
  * any curl against /api/pro authenticate that way, from inside the network where
  * no edge login is in play.
+ *
+ * Both are tried, rather than whichever appears first winning. A present but
+ * non-matching X-Admin-Token — a stale one left in localStorage, or one a proxy
+ * or extension inserted — would otherwise shadow a valid Bearer and refuse a
+ * request that carried the right credential all along, which is not what the
+ * paragraph above promises. Trying both costs one more constant-time compare.
  */
-function presentedAdminToken(req: Request): string | null {
+function presentedAdminTokens(req: Request): string[] {
+  const found: string[] = [];
   const own = (req.get("x-admin-token") ?? "").trim();
-  if (own) return own;
+  if (own) found.push(own);
   const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
-  return m ? m[1].trim() : null;
+  const bearer = m ? m[1].trim() : "";
+  if (bearer) found.push(bearer);
+  return found;
 }
 
 // No ADMIN_TOKEN configured = single-user mode: everyone is admin (index.ts
@@ -176,8 +185,7 @@ function presentedAdminToken(req: Request): string | null {
 // predicate rather than a second copy of it.
 export function isAdminRequest(req: Request): boolean {
   if (!ADMIN_TOKEN) return true;
-  const provided = presentedAdminToken(req);
-  return provided != null && tokenMatches(provided);
+  return presentedAdminTokens(req).some((t) => tokenMatches(t));
 }
 
 // Reads are open to everyone; every mutation requires the admin token. This is
