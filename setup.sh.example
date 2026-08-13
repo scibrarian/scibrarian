@@ -49,7 +49,12 @@ apt-get install -y ca-certificates curl dnsutils
 # The check that saves the confusing failure: a name that resolves somewhere
 # else produces a Caddy that retries ACME forever and a site that never comes
 # up, with nothing in the output pointing at DNS.
-PUBLIC_IP="$(curl -fsS https://ifconfig.me)"
+#
+# -4 on purpose. On a dual-stack host an unforced request answers with the box's
+# IPv6 address, which can never equal the IPv4 answer from `dig A` below — so a
+# correctly pointed A record is refused as a mismatch and nothing after this
+# point runs.
+PUBLIC_IP="$(curl -4 -fsS https://ifconfig.me)"
 RESOLVED="$(dig +short "$DOMAIN" A | tail -n1)"
 if [ -z "$RESOLVED" ]; then
   echo "$DOMAIN does not resolve yet. Create the A record:"
@@ -88,6 +93,15 @@ fi
 
 # --- Deployment files ------------------------------------------------------
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
+
+# Empty on a first install. A re-provision finds the previous run's Caddyfile
+# here, and the Caddy already running is still serving from it — which is what
+# the launch step below has to decide about.
+CADDY_CONFIG_WAS=""
+if [ -f Caddyfile ]; then
+  CADDY_CONFIG_WAS="$(md5sum < Caddyfile)"
+fi
+
 base=https://raw.githubusercontent.com/scibrarian/scibrarian/master
 curl -fsSLO "$base/docker-compose.prod.yml"
 curl -fsSL "$base/Caddyfile.example" -o Caddyfile
@@ -131,18 +145,32 @@ docker compose -f docker-compose.prod.yml up -d
 # reading it. Caddy parses that file once at startup and watches nothing, so the
 # previous run's password stays in force while the credentials file confidently
 # reports the new one.
-docker compose -f docker-compose.prod.yml restart caddy
+#
+# Guarded, because on a first install there is nothing to bounce and the bounce
+# is destructive: `up -d` returns as soon as the container starts, Caddy is
+# already mid-HTTP-01 for the name, and a SIGTERM here abandons that order.
+# Let's Encrypt records a failed validation, and five per hostname per hour is
+# the whole budget. On a re-run the certificate is already in the caddy-data
+# volume, so the restart issues nothing and costs a second.
+if [ -n "$CADDY_CONFIG_WAS" ] &&
+   [ "$CADDY_CONFIG_WAS" != "$(md5sum < Caddyfile)" ]; then
+  docker compose -f docker-compose.prod.yml restart caddy
+fi
 
 # The first certificate takes a few seconds, so report the app rather than the
 # edge: a 200 here means the container is healthy even if ACME is still going.
 echo -n "waiting for the app"
+UP=0
 for _ in $(seq 1 60); do
   if docker compose -f docker-compose.prod.yml exec -T scibrarian \
       node -e "fetch('http://127.0.0.1:3001/api/auth').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then
-    echo " — up"; break
+    UP=1; echo " — up"; break
   fi
   echo -n "."; sleep 2
 done
+# Two minutes of dots and then "Done." was a box that never started being
+# reported as a finished install. Both Pro scripts guard this the same way.
+[ "$UP" -eq 1 ] || { echo; echo "App did not come up. docker compose -f docker-compose.prod.yml logs scibrarian"; exit 1; }
 
 echo
 echo "Done. https://${DOMAIN}"
