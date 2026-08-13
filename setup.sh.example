@@ -125,6 +125,14 @@ chmod 600 "$CREDS_FILE"
 # --- Launch ----------------------------------------------------------------
 docker compose -f docker-compose.prod.yml up -d
 
+# Caddy's config is a bind-mounted file, and compose diffs a service's
+# *definition*, not the contents of what it mounts — so a second run fetches a
+# fresh Caddyfile, seds a new hash into it, and does not recreate the container
+# reading it. Caddy parses that file once at startup and watches nothing, so the
+# previous run's password stays in force while the credentials file confidently
+# reports the new one.
+docker compose -f docker-compose.prod.yml restart caddy
+
 # The first certificate takes a few seconds, so report the app rather than the
 # edge: a 200 here means the container is healthy even if ACME is still going.
 echo -n "waiting for the app"
