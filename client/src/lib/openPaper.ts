@@ -77,7 +77,7 @@ export function usePaperOpener({
       if (!auth.token_required || auth.library_open) {
         url = api.fileContentUrl(fileId); // bare URL works for everyone
       } else if (auth.admin) {
-        // window.open can't carry the Authorization header, so mint a
+        // window.open can't carry the admin token in any header, so mint a
         // short-lived signed URL first.
         const { path } = await api.mintShareLink(fileId, 300);
         url = new URL(path, window.location.origin).toString();

@@ -139,6 +139,44 @@ function tokenMatches(provided: string): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
+/**
+ * Every admin credential the request presents, from either header.
+ *
+ * **X-Admin-Token is the browser client's, because `Authorization` is not ours
+ * to occupy.** Any deployment behind HTTP basic auth — which is what DEPLOY.md's
+ * public-domain option and both setup scripts build — has the browser sending
+ * `Authorization: Basic …` on every request. Putting the admin token in that
+ * same header replaced the credentials the edge was checking, so the moment the
+ * owner unlocked, every API call 401'd at the proxy with a Basic challenge.
+ *
+ * That failure had no exit. The browser re-prompted, and whatever password was
+ * typed was overwritten by the next fetch setting the header again; meanwhile
+ * the client reads any 401 as "this token was rejected" and locks itself. So
+ * unlocking logged you out and demanded a password that could not work.
+ *
+ * A custom header also can't be set by a cross-site form and forces a preflight,
+ * which is the same property the Pro push route relies on.
+ *
+ * Bearer stays accepted, and not merely for compatibility: the setup scripts and
+ * any curl against /api/pro authenticate that way, from inside the network where
+ * no edge login is in play.
+ *
+ * Both are tried, rather than whichever appears first winning. A present but
+ * non-matching X-Admin-Token — a stale one left in localStorage, or one a proxy
+ * or extension inserted — would otherwise shadow a valid Bearer and refuse a
+ * request that carried the right credential all along, which is not what the
+ * paragraph above promises. Trying both costs one more constant-time compare.
+ */
+function presentedAdminTokens(req: Request): string[] {
+  const found: string[] = [];
+  const own = (req.get("x-admin-token") ?? "").trim();
+  if (own) found.push(own);
+  const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
+  const bearer = m ? m[1].trim() : "";
+  if (bearer) found.push(bearer);
+  return found;
+}
+
 // No ADMIN_TOKEN configured = single-user mode: everyone is admin (index.ts
 // refuses to bind non-loopback in that case).
 //
@@ -147,8 +185,7 @@ function tokenMatches(provided: string): boolean {
 // predicate rather than a second copy of it.
 export function isAdminRequest(req: Request): boolean {
   if (!ADMIN_TOKEN) return true;
-  const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
-  return m != null && tokenMatches(m[1].trim());
+  return presentedAdminTokens(req).some((t) => tokenMatches(t));
 }
 
 // Reads are open to everyone; every mutation requires the admin token. This is
