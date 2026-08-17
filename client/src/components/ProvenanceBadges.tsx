@@ -8,7 +8,9 @@ import type { PaperProvenance } from "../types";
 // contributions from paired writers started arriving through the same field. A
 // master's rows then read "bought by the organization, not here" about papers a
 // freelancer had donated, which is not a wording slip but the opposite claim, on
-// the one feature whose whole purpose is licensing accuracy.
+// the one feature whose whole purpose is licensing accuracy. That clause is
+// quoted here as history and no longer appears anywhere: the org case has since
+// dropped it too, for a different reason — see provenanceTitle.
 //
 // So the wording lives in exactly one place and is chosen by `kind` rather than
 // assumed. Adding a case to PaperProvenance now fails to compile here until it
@@ -53,24 +55,24 @@ function provenanceLabel(entry: PaperProvenance): string {
 /**
  * The hover text: what the one-word badge beside it actually means.
  *
- * Deliberately asymmetric, because the two badges are read by different people
- * who are wrong about different things.
+ * Uniform, where this used to be deliberately asymmetric: every case names the
+ * source and stops there. The badge is a bare "Acme" or "Dana", so saying whose
+ * library that is completes it, and nothing here goes further.
  *
- * The contributor cases just name the source. The badge is a bare "Dana", so
- * saying who Dana is completes it — and a reader who knows a writer contributed
- * the paper already knows the agency did not buy it. A clause spelling that out
- * would be a policy statement repeated on every row of a papers page, which is
- * the wrong place for one; the panel says it once.
+ * The org case carried a second clause until recently — that a paper the
+ * organisation bought is not yours to reuse on the next client. Its removal is
+ * a decision rather than an oversight to be tidied back in: that is a policy
+ * statement, and every row of a papers page is the wrong place to repeat one.
  *
- * The org case keeps its second clause because there it is load-bearing. That
- * badge is read on a *freelancer's* machine, where the live mistake is assuming
- * a paper sitting in your own library is yours to reuse on the next client.
- * "Not you" is the only place anything says otherwise.
+ * Worth knowing before restoring it somewhere else, though: no other screen
+ * currently makes the point. The shared-holdings panel explains the feature as
+ * not buying a paper twice, which is the argument for pairing rather than a
+ * rule about what may be reused afterwards.
  */
 function provenanceTitle(entry: PaperProvenance): string {
   switch (entry.kind) {
     case "org":
-      return `Copied from ${entry.label}'s library — bought by the organization, not you`;
+      return `Copied from ${entry.label}'s library`;
     case "node":
       return `Contributed by ${entry.label}`;
     case "former-node":

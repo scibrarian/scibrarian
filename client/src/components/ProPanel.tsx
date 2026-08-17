@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Copy, Check, KeyRound, Link2, TriangleAlert, Unlink } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
@@ -38,7 +38,19 @@ import type {
 // paired *for*, and it is silently kept local. So the one thing this panel
 // cannot derive locally is announced instead.
 
-export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void }) {
+export function ProPanel({
+  onPairingChanged,
+  onSharingChanged,
+}: {
+  onPairingChanged: () => void;
+  /**
+   * Reports the stamps this panel has just reloaded, so the Library's badge and
+   * icon are redrawn from the read that already happened here. `null` when that
+   * read is the one thing in the reload that failed, and the parent has to go
+   * and ask for itself.
+   */
+  onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
+}) {
   const [nodes, setNodes] = useState<ProNode[]>([]);
   const [orgName, setOrgName] = useState("");
   const [master, setMaster] = useState<ProMasterStatus>({ connected: false });
@@ -46,6 +58,11 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
   // Which collections belong to which organisation, and the collections
   // themselves so a stamp can be shown against a name.
   const [stamps, setStamps] = useState<ProCollectionStamp[]>([]);
+  // The same list, readable the instant reload() returns. State is not — it
+  // settles a render later — and the parent is told about a share inside the
+  // click that caused it, so this is what gets handed over. Null until a read
+  // of them succeeds, which is exactly the case the parent must not be handed.
+  const lastStamps = useRef<ProCollectionStamp[] | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [licenseKey, setLicenseKey] = useState("");
   // The last sweep's counts, so "Sync now" reports something rather than
@@ -97,6 +114,10 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
       setLicense(n.value.license);
     }
     if (m.status === "fulfilled") setMaster(m.value);
+    // Cleared on a failure rather than left holding the previous answer, which
+    // is the one the share just invalidated: handing that up would redraw the
+    // Library's badge exactly as it was before the click.
+    lastStamps.current = sy.status === "fulfilled" ? sy.value.stamps : null;
     if (sy.status === "fulfilled") setStamps(sy.value.stamps);
     if (cs.status === "fulfilled") setCollections(cs.value);
     // Reports a failure but never clears one: run() has already cleared the
@@ -308,12 +329,18 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
                 return (
                   <li key={c.id}>
                     <span className="pro-collection-name">{c.name}</span>
+                    {/* Three reasons a row is not syncing and only one of them
+                        is "some other organisation" — saying that of the org
+                        named right above, whose connection has merely ended,
+                        was the reading `ended` was added to prevent. */}
                     <span className="hint">
                       {shared
                         ? `shared with ${stamp!.org_name}`
-                        : stamp
-                          ? `${stamp.org_name} (not your current organization)`
-                          : "local"}
+                        : stamp?.ended
+                          ? `${stamp.org_name} (connection ended)`
+                          : stamp
+                            ? `${stamp.org_name} (not your current organization)`
+                            : "local"}
                     </span>
                     <button
                       type="button"
@@ -321,7 +348,16 @@ export function ProPanel({ onPairingChanged }: { onPairingChanged: () => void })
                       onClick={() =>
                         void run(() =>
                           shared ? api.proUnshareCollection(c.id) : api.proShareCollection(c.id)
-                        )
+                        ).then((ok) => {
+                          // Only on success, and only the stamps: the Library's
+                          // icon and badge are drawn from them, and this panel
+                          // is the one place they change without a collection
+                          // being created or a pairing moving.
+                          //
+                          // run() has already reloaded them, so what goes up is
+                          // that answer rather than a signal to fetch it again.
+                          if (ok) onSharingChanged(lastStamps.current);
+                        })
                       }
                     >
                       {shared ? "Stop sharing" : `Share with ${master.name}`}

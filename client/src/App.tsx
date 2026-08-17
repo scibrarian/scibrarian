@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
 import type {
@@ -8,6 +8,7 @@ import type {
   CollectionSelection,
   Topic,
   PaperSource,
+  ProCollectionStamp,
   ProStatus,
 } from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
@@ -38,6 +39,19 @@ import {
 // could drift from the one the mode switch draws. Aliased because JSX needs a
 // capitalized binding to treat it as a component.
 const LibraryIcon = MODES.papers.icon;
+
+// Whether two readings of the organisation stamps say the same thing, so an
+// unchanged one can be dropped rather than re-rendering everything drawn from
+// it. See applyStamps.
+//
+// Compared as JSON rather than field by field. Both sides are parsed from the
+// same endpoint, so key order cannot differ, and a field added to the stamp
+// stays in the comparison instead of silently dropping out of it — which would
+// mean the UI stopped re-rendering for exactly the field someone had just
+// decided was worth sending.
+function sameStamps(a: ProCollectionStamp[], b: ProCollectionStamp[]): boolean {
+  return a.length === b.length && JSON.stringify(a) === JSON.stringify(b);
+}
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -86,6 +100,15 @@ export default function App() {
   // the UI hangs off this being non-null, so a free build renders none of it
   // without a single feature check of its own.
   const [pro, setPro] = useState<ProStatus | null>(null);
+  // Which collections carry an organisation stamp. Kept here rather than in the
+  // Library view because two places draw from it — the picker's icon, which is
+  // rendered by the nav above that view, and the badge inside it.
+  const [stamps, setStamps] = useState<ProCollectionStamp[]>([]);
+  // Ticket taken by each reading of the stamps and checked when it lands, so a
+  // slow answer cannot overwrite a faster one that started after it. Counting
+  // reads rather than tracking one request, because the panel supplies a
+  // reading directly and that has to make an outstanding request stale too.
+  const stampsRead = useRef(0);
   const [unlocking, setUnlocking] = useState(false);
 
   function loadTopics(): Promise<Topic[]> {
@@ -139,10 +162,103 @@ export default function App() {
       .catch(() => []);
   }
 
+  /**
+   * Take a reading of the stamps as the current one, and make any request still
+   * in the air stale.
+   *
+   * Every write to `stamps` goes through here, because two orderings are
+   * otherwise decided by which response happens to land last. The padlock is
+   * one: lock() clears `pro` while a /api/pro/sync started by the last /auth
+   * refresh is still out, and that answer arriving afterwards puts organisation
+   * names back on screen in a UI that has just dropped its privileges. Sharing
+   * a collection from the panel is the other, in the same window and the other
+   * direction — the stamp the owner just removed comes back.
+   *
+   * Unchanged readings are dropped rather than re-set. The effect below re-reads
+   * on every /auth refresh, which a paper-title click triggers, and nearly all
+   * of those readings say exactly what the last one did; handing back the array
+   * we already hold makes React bail out of the update, where a fresh array of
+   * identical rows would invalidate both memos below and re-render the nav and
+   * the whole papers subtree for a state that did not move.
+   */
+  function applyStamps(next: ProCollectionStamp[]): void {
+    stampsRead.current++;
+    setStamps((cur) => (sameStamps(cur, next) ? cur : next));
+  }
+
+  /**
+   * The organisation stamps, or the last ones we had.
+   *
+   * Swallows every failure on purpose, and this is the one caller where that is
+   * right rather than lazy: the stamps are decoration over a fact the rest of
+   * the UI already has, so a build without the module, a Pro module too old to
+   * serve /api/pro/sync, and a viewer whose request the admin gate refuses must
+   * all end the same way — no badges, everything else working. Each of those
+   * arrives at an empty list by never having filled one.
+   *
+   * A *failure* is not one of them, and used to be treated as one. The badge
+   * reads absence as "local" rather than as nothing known, so blanking the list
+   * on a dropped request does not go quiet — it says these collections are
+   * local, which is the one thing it must never say wrongly, and it says it
+   * after a server restart or a lost second of wifi. The demotion that means
+   * "you may not see these" announces itself through setAuthRejectedHandler
+   * below instead of being inferred from a request that didn't come back.
+   */
+  function loadStamps(): Promise<void> {
+    const read = ++stampsRead.current;
+    return api
+      .proSync()
+      .then((s) => {
+        if (read === stampsRead.current) applyStamps(s.stamps);
+      })
+      .catch(() => {});
+  }
+
+  // Stamps are a fact about the collections *and* the pairing, so both are
+  // dependencies: creating or deleting a collection changes the list, and
+  // pairing or disconnecting changes what `active` means for every row of it.
+  // Sharing one from the panel in Settings is the only change neither
+  // dependency can see, which is why that reports back through
+  // handleSharingChanged.
+  //
+  // Gated on a Pro block rather than on is_paired: an instance that has since
+  // disconnected still holds stamps, and they are exactly what the faded badge
+  // exists to show. /auth sends the block to the owner alone, so a viewer never
+  // asks.
+  //
+  // `pro` is depended on as an object, which re-reads on every /auth refresh —
+  // including the one behind each paper-title click. That is deliberate, and
+  // narrowing it to `pro?.is_paired` is the tempting change that breaks it:
+  // re-pairing to a *different* organisation leaves that flag true from first
+  // to last, while flipping `active` on every stamp the badge and icon draw
+  // from. ProStatus carries nothing identifying the master, so the object is
+  // the only dependency that notices. One small local GET is the price — and
+  // only the GET: applyStamps drops the answer when it matches what is already
+  // held, so the re-read a title click causes costs nothing on screen.
+  useEffect(() => {
+    if (!pro) {
+      // Through applyStamps rather than setStamps, so relocking also invalidates
+      // the request the last refresh left in the air. That request is the one
+      // that used to repopulate the badges a moment after the padlock.
+      applyStamps([]);
+      return;
+    }
+    void loadStamps();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pro, collections]);
+
   useEffect(() => {
     // A 401 on any later call means the stored token was rotated/revoked;
     // api.ts drops the token, this demotes the UI to viewer mode.
-    setAuthRejectedHandler(() => setIsAdmin(false));
+    //
+    // The stamps go with the privileges. loadStamps no longer reads a failed
+    // request as "no stamps", so this is where the one failure that really does
+    // mean that gets said — otherwise a revoked owner keeps every badge until
+    // the next /auth refresh notices the Pro block has gone.
+    setAuthRejectedHandler(() => {
+      setIsAdmin(false);
+      applyStamps([]);
+    });
     // Admin state resolves with the same `loaded` flip so the admin controls
     // don't pop in after the skeletons clear.
     // null rather than a viewer-shaped fallback, so the handler below can tell
@@ -191,6 +307,20 @@ export default function App() {
   const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
   const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
+
+  // The two shapes the stamps are read in, built once rather than per render:
+  // this component re-renders on every id, banner and refresh change, and both
+  // of these are handed to children that would otherwise see a new object each
+  // time. The set is only the *active* stamps — see PickerItem.shared for why
+  // the icon answers a narrower question than the badge does.
+  const sharedCollectionIds = useMemo(
+    () => new Set(stamps.filter((s) => s.active).map((s) => s.collection_id)),
+    [stamps]
+  );
+  const stampByCollection = useMemo(
+    () => new Map(stamps.map((s) => [s.collection_id, s])),
+    [stamps]
+  );
 
   const inInterests = mode === "interests";
   const inLibrary = mode === "papers";
@@ -398,6 +528,22 @@ export default function App() {
     // version on screen for a viewer — the exact thing keeping `pro` owner-only
     // is meant to prevent.
     setPro(null);
+  }
+
+  // The panel shared or stopped sharing one collection. Narrower than a pairing
+  // change on purpose: nothing about `pro` moved, so re-reading /auth here would
+  // be asking the wrong question — only the stamps changed, and only they are
+  // re-read.
+  //
+  // Re-read from the panel, in fact, which reloaded them as part of the same
+  // action and hands the list over rather than leaving us to ask for it again.
+  // The second GET was not just wasted: between the two, the panel's copy and
+  // this one disagreed about a collection the owner had just changed. `null` is
+  // the panel saying its own read failed, which is the only case left that has
+  // to go to the server.
+  function handleSharingChanged(next: ProCollectionStamp[] | null) {
+    if (next) applyStamps(next);
+    else void loadStamps();
   }
 
   // The shared-holdings panel connected this instance to an organization or
@@ -750,6 +896,7 @@ export default function App() {
           activeTopicId={activeTopicId}
           activeFolderId={activeFolderId}
           activeCollectionId={activeCollectionId}
+          sharedCollectionIds={sharedCollectionIds}
           settingsActive={showSettings}
           loaded={loaded}
           tokenRequired={tokenRequired}
@@ -780,6 +927,7 @@ export default function App() {
             pro={pro}
             onDataChanged={loadTopics}
             onPairingChanged={handlePairingChanged}
+            onSharingChanged={handleSharingChanged}
             onPapersRemoved={(count) => {
               setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
               // A journal or topic removal sweeps papers out of any number of
@@ -818,6 +966,13 @@ export default function App() {
             // chrome inside the view — see CollectionView's collectionId.
             collectionId={typeof activeCollectionId === "number" ? activeCollectionId : null}
             isAdmin={isAdmin}
+            // Nothing for the all-collections view: the badge is a statement
+            // about one collection, and the aggregate is a mix of them.
+            stamp={
+              typeof activeCollectionId === "number"
+                ? (stampByCollection.get(activeCollectionId) ?? null)
+                : null
+            }
             reloadToken={reloadToken}
             // The graph fills the main area itself, so the collection's long
             // unmatched-files list is suppressed under it; the action row and

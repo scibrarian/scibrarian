@@ -5,7 +5,13 @@ import { errorMessage } from "../lib/format";
 import { useCachedFetch, type FetchCache } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
-import type { CollectionFile, CollectionFilesResponse, ImportJob, ImportStatus } from "../types";
+import type {
+  CollectionFile,
+  CollectionFilesResponse,
+  ImportJob,
+  ImportStatus,
+  ProCollectionStamp,
+} from "../types";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
 
 // Files per upload request, so a large selection doesn't become one gigantic
@@ -55,6 +61,7 @@ const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 export function CollectionView({
   collectionId,
   isAdmin,
+  stamp,
   reloadToken,
   showUnmatched = true,
   onChanged,
@@ -70,6 +77,18 @@ export function CollectionView({
   // you switch.
   collectionId: number | null;
   isAdmin: boolean;
+  /**
+   * This collection's organisation stamp, or null when it has none (and always
+   * in a free build). Where the picker's icon answers "does this sync?", the
+   * badge this drives carries the states that icon cannot: a collection stamped
+   * for an engagement that has since ended, whose papers are nobody's to reuse
+   * even though nothing about it syncs today.
+   *
+   * The wire type whole rather than the two fields read below. It is exported
+   * for this, App hands one straight through, and a subset declared here would
+   * go on compiling against a field that had been renamed out from under it.
+   */
+  stamp: ProCollectionStamp | null;
   reloadToken: number;
   // The unmatched-files section is the one piece of chrome that doesn't suit
   // every view — a long list under a full-height graph. The action row and
@@ -403,6 +422,37 @@ export function CollectionView({
           once empties it the same way: adding files, renaming and deleting all
           name a single collection, and there isn't one. */}
       <div className="source-head">
+        {/* Left of the actions, and outside the isAdmin gate below only because
+            it needs no gate of its own: /auth reports the Pro block to the
+            owner alone, so a viewer's stamps are empty and this never renders
+            for them. Three states, not four — "local" is the ordinary case, and
+            a badge on every unshared collection would mark the majority to
+            label the minority. Absence carries it, exactly as ProvenanceBadges
+            leaves a locally acquired paper unmarked.
+
+            The two faded ones read alike and are not: `ended` is this
+            organisation refusing us, which a new pairing code fixes, and the
+            panel in Settings says so at length. Collapsing them would put "not
+            the organization this library is paired with now" under the name of
+            the organisation it is paired with. */}
+        {stamp && (
+          <span
+            className={stamp.active ? "from-org" : "from-org from-org-faded"}
+            title={
+              stamp.active
+                ? `Papers filed here are copied up to ${stamp.org_name}'s library.`
+                : stamp.ended
+                  ? `${stamp.org_name} has ended this connection, so nothing filed here reaches them. Papers already sent stay there.`
+                  : `Filed for ${stamp.org_name}, which isn't the organization this library is paired with now — nothing here syncs.`
+            }
+          >
+            {stamp.active
+              ? `Shared with ${stamp.org_name}`
+              : stamp.ended
+                ? `Sharing with ${stamp.org_name} ended`
+                : `Was shared with ${stamp.org_name}`}
+          </span>
+        )}
         {isAdmin && collectionId != null && (
           <div className="source-actions">
             {/* One picker, not two. The OS file dialog already selects a whole
