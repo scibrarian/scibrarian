@@ -2255,6 +2255,15 @@ html {
   min-height: 33px;
 }
 
+/* The sharing badge sits at the far end of a row that is otherwise packed to
+   the right, so it claims the slack rather than being pushed along by it. The
+   margin-left reset undoes the 8px .from-org carries for sitting after a paper
+   title, where it is a suffix; here it starts the row. */
+.source-head .from-org {
+  margin-left: 0;
+  margin-right: auto;
+}
+
 .source-actions {
   display: flex;
   align-items: center;
@@ -3290,6 +3299,12 @@ html {
 }
 
 .modal-option input {
+  /* Undoing `.modal-form input { width: 100% }`, which was written for the text
+     field this dialog is built around and reaches the checkbox too. Left alone
+     it claims the whole row, and `flex: 0 0 auto` — there to stop the box being
+     squashed — then refuses to give any of it back, so the label wraps to one
+     character per line against the right edge and reads as a bare checkbox. */
+  width: auto;
   margin-top: 2px;
   flex: 0 0 auto;
 }

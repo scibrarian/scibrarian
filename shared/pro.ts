@@ -129,13 +129,22 @@ export interface ProMasterStatus {
   rejected_at?: string | null;
 }
 
-/** A collection's organisation stamp. `active` means it syncs to the *current* pairing. */
+/**
+ * A collection's organisation stamp.
+ *
+ * Three states between two flags, and both are needed. `active` means papers
+ * filed here are copied up right now. `ended` means they are not, and the
+ * reason is this organisation ending the connection rather than us having left
+ * for another one — the same distinction the panel draws, and the only one of
+ * the two an owner can act on. Both false is a stamp for a previous engagement.
+ */
 export interface ProCollectionStamp {
   collection_id: number;
   master_url: string;
   org_name: string;
   since: string;
   active: boolean;
+  ended: boolean;
 }
 
 export interface ProSyncStatus {

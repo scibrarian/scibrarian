@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Search, Library, Bookmark, ChevronDown, Plus, Folder } from "lucide-react";
+import { Search, Library, Bookmark, ChevronDown, Plus, Folder, FolderSync } from "lucide-react";
 import { api } from "../api";
 import type { BookmarkFolder, Collection, CollectionSelection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -13,6 +13,17 @@ interface PickerItem {
   id: number;
   name: string;
   count: number;
+  /**
+   * Syncs to the organisation paired *right now* — the Library's collections
+   * only, and only in a Pro build.
+   *
+   * Deliberately binary, where the panel in Settings has three states. A
+   * collection stamped for a previous engagement is neither shared nor plainly
+   * local, but nothing about it syncs and it cannot receive a copy pulled from
+   * the master, so a row with one glyph of room has one honest answer: no. The
+   * badge above the papers is where the third state is spelled out.
+   */
+  shared?: boolean;
 }
 
 // An entry pinned above the list and divided from it, because it selects a
@@ -76,6 +87,7 @@ export function WorkspaceNav({
   activeTopicId,
   activeFolderId,
   activeCollectionId,
+  sharedCollectionIds,
   settingsActive,
   loaded,
   tokenRequired,
@@ -96,6 +108,9 @@ export function WorkspaceNav({
   activeTopicId: number | null;
   activeFolderId: number | null;
   activeCollectionId: CollectionSelection | null;
+  // Empty in a free build, and whenever this instance isn't paired — so the
+  // icon below simply never changes and no caller has to branch on the tier.
+  sharedCollectionIds: Set<number>;
   settingsActive: boolean;
   loaded: boolean;
   tokenRequired: boolean;
@@ -142,7 +157,12 @@ export function WorkspaceNav({
             onAdd: onCreateFolder,
           }
         : {
-            items: collections.map((c) => ({ id: c.id, name: c.name, count: c.matchedCount })),
+            items: collections.map((c) => ({
+              id: c.id,
+              name: c.name,
+              count: c.matchedCount,
+              shared: sharedCollectionIds.has(c.id),
+            })),
             // Shown whenever the Library holds anything, including the
             // single-collection case where it selects the same papers the one
             // collection does. Withholding it until a second collection existed
@@ -288,8 +308,21 @@ export function WorkspaceNav({
                     onSelect={() => picker.onSelect(item.id)}
                   >
                     <span className="ws-option-name">
-                      {picker.folderIcon && <Folder size={14} className="inline-icon" aria-hidden />}{" "}
+                      {/* Same silhouette, different state. Swapping to a
+                          share/network glyph was tried and reads as a different
+                          *kind* of thing sitting in a list of folders, which is
+                          the one thing it isn't — so the folder keeps its shape
+                          and gains the sync arrows. The icon is decorative
+                          either way, hence the sr-only text: a screen reader
+                          gets the fact, not the picture. */}
+                      {picker.folderIcon &&
+                        (item.shared ? (
+                          <FolderSync size={14} className="inline-icon" aria-hidden />
+                        ) : (
+                          <Folder size={14} className="inline-icon" aria-hidden />
+                        ))}{" "}
                       {item.name}
+                      {item.shared && <span className="sr-only">, shared with your organization</span>}
                     </span>
                     <span className="count">{item.count}</span>
                   </DropdownMenu.Item>

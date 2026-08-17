@@ -14,6 +14,7 @@ import type {
   Topic,
   Journal,
   MeshSearchResult,
+  ProCollectionStamp,
   ProStatus,
   TopicSuggestResponse,
 } from "../types";
@@ -25,6 +26,7 @@ export function Settings({
   pro,
   onDataChanged,
   onPairingChanged,
+  onSharingChanged,
   onPapersRemoved,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
@@ -35,6 +37,11 @@ export function Settings({
   // `pro` block above is now stale. Passed straight through to the panel that
   // does it — Settings has no opinion on it beyond being in the way.
   onPairingChanged: () => void;
+  // A collection was shared or un-shared. Separate from the above because it
+  // leaves `pro` untouched — what goes stale is the stamp the Library draws its
+  // icon and badge from, and nothing else. Carries the panel's fresh reading of
+  // those stamps, or null if it couldn't take one; see ProPanel.
+  onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
   // Papers left the Interests feeds (journal removal): the app refreshes the
   // paper views and reports the count.
   onPapersRemoved: (count: number) => void;
@@ -398,7 +405,9 @@ export function Settings({
       </section>
 
       {/* Absent entirely in a free build — `pro` is null there. */}
-      {pro && <ProPanel onPairingChanged={onPairingChanged} />}
+      {pro && (
+        <ProPanel onPairingChanged={onPairingChanged} onSharingChanged={onSharingChanged} />
+      )}
 
       <section className="panel">
         <h2>Sharing</h2>

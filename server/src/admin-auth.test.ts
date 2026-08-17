@@ -1,5 +1,5 @@
 import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeTempDb, openTempDb } from "./test-db.js";
@@ -64,6 +64,43 @@ async function post(headers: Record<string, string> = {}): Promise<number> {
   return res.status;
 }
 
+/**
+ * The same POST, with the header lines written out literally.
+ *
+ * fetch cannot send two headers of one name — Headers folds a repeated name
+ * into a single comma-joined value before anything reaches the wire — and what
+ * the gate has to survive is Node performing that same fold on the receiving
+ * side. Sending it as two lines is the only way to assert against the thing
+ * that actually happens rather than against a hand-built imitation of it.
+ */
+function postRaw(headerLines: string[]): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const { port } = server.address() as AddressInfo;
+    const sock = net.connect(port, "127.0.0.1", () => {
+      sock.write(
+        [
+          "POST /api/no-such-route HTTP/1.1",
+          "Host: 127.0.0.1",
+          ...headerLines,
+          "Content-Length: 0",
+          "Connection: close",
+          "",
+          "",
+        ].join("\r\n")
+      );
+    });
+    let buf = "";
+    sock.setEncoding("utf8");
+    sock.on("data", (d) => (buf += d));
+    sock.on("error", reject);
+    sock.on("end", () => {
+      const m = /^HTTP\/1\.1 (\d{3})/.exec(buf);
+      if (m) resolve(Number(m[1]));
+      else reject(new Error(`no status line in: ${buf.slice(0, 200)}`));
+    });
+  });
+}
+
 describe("the admin gate", () => {
   it("refuses a request with no credential at all", async () => {
     expect(await post()).toBe(REFUSED);
@@ -109,6 +146,70 @@ describe("the admin gate", () => {
   // whose Authorization is already spoken for.
   it("accepts X-Admin-Token travelling beside a Basic Authorization", async () => {
     expect(await post({ authorization: BASIC, "x-admin-token": TOKEN })).toBe(ADMITTED);
+  });
+});
+
+// Two of our own header, which is not the same failure as a stale one. Node
+// welds repeated headers into "ours, theirs" instead of letting the first win,
+// so the gate never saw either value — and the request that hits this is the
+// one with no Bearer to fall back to, because the edge owns Authorization.
+// Refusing it 401s every mutation, and api.ts reads that as the token being
+// rejected and drops a perfectly good one.
+describe("a duplicated X-Admin-Token", () => {
+  const dup = (a: string, b: string) => postRaw([`X-Admin-Token: ${a}`, `X-Admin-Token: ${b}`]);
+
+  it("is joined by Node rather than de-duplicated, which is the whole problem", async () => {
+    // Pins the premise the fix rests on. If Node ever kept the first value
+    // instead, the joined-value handling below would be dead code and this
+    // would say so rather than leaving it to be inferred.
+    const seen = await new Promise<string | undefined>((resolve) => {
+      const probe = express();
+      probe.post("*", (req, res) => {
+        resolve(req.get("x-admin-token"));
+        res.end();
+      });
+      const s = probe.listen(0, () => {
+        const { port } = s.address() as AddressInfo;
+        void fetch(`http://127.0.0.1:${port}/x`, {
+          method: "POST",
+          headers: [
+            ["x-admin-token", "one"],
+            ["x-admin-token", "two"],
+          ],
+        }).finally(() => s.close());
+      });
+    });
+    expect(seen).toBe("one, two");
+  });
+
+  it("still admits the request when ours came first", async () => {
+    expect(await dup(TOKEN, "injected")).toBe(ADMITTED);
+  });
+
+  it("still admits it when the inserted one came first", async () => {
+    expect(await dup("injected", TOKEN)).toBe(ADMITTED);
+  });
+
+  it("does not admit a request where neither value is the token", async () => {
+    expect(await dup("injected", "alsowrong")).toBe(REFUSED);
+  });
+
+  // The promise the doc comment makes, in the deployment that needs it.
+  it("lets a valid Bearer through from behind two wrong X-Admin-Tokens", async () => {
+    const status = await postRaw([
+      "X-Admin-Token: injected",
+      "X-Admin-Token: stale",
+      `Authorization: Bearer ${TOKEN}`,
+    ]);
+    expect(status).toBe(ADMITTED);
+  });
+
+  // A comma is not a credential separator on its own. Splitting is a recovery
+  // from Node's join, so the value as sent has to be tried whole first — an
+  // ADMIN_TOKEN set by hand with a comma in it is refused otherwise.
+  it("tries the value as sent before its pieces", async () => {
+    expect(await postRaw([`X-Admin-Token: ${TOKEN}`])).toBe(ADMITTED);
+    expect(await postRaw([`X-Admin-Token: ${TOKEN},`])).toBe(ADMITTED);
   });
 });
 

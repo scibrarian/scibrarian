@@ -166,11 +166,34 @@ function tokenMatches(provided: string): boolean {
  * or extension inserted — would otherwise shadow a valid Bearer and refuse a
  * request that carried the right credential all along, which is not what the
  * paragraph above promises. Trying both costs one more constant-time compare.
+ *
+ * A *second* X-Admin-Token is a third case, and the sentence above did not
+ * cover it. Node joins repeated headers of the same name with ", " — the short
+ * list it de-duplicates instead, keeping the first, has Authorization on it but
+ * not this — so an inserted one does not shadow ours, it is welded to it as
+ * "ours, theirs" and matches nothing. There is no Bearer to fall back to in the
+ * deployment where it matters, because behind a basic-auth edge that header is
+ * the edge's. Every comma-separated piece is therefore tried as well.
  */
+// Bounded because those pieces are attacker-supplied and each costs two hashes;
+// a header packed with commas would otherwise buy thousands of them. One real
+// token plus one inserted is the case that exists, so four is already slack.
+const MAX_ADMIN_TOKEN_CANDIDATES = 4;
+
 function presentedAdminTokens(req: Request): string[] {
   const found: string[] = [];
-  const own = (req.get("x-admin-token") ?? "").trim();
-  if (own) found.push(own);
+  const raw = (req.get("x-admin-token") ?? "").trim();
+  if (raw) found.push(raw);
+  // The whole value first and the pieces only after it, so a token that
+  // genuinely contains a comma still matches. The setup scripts generate hex,
+  // but nothing stops an operator setting ADMIN_TOKEN by hand, and splitting
+  // one would refuse the credential the request presented verbatim.
+  if (raw.includes(",")) {
+    for (const piece of raw.split(",", MAX_ADMIN_TOKEN_CANDIDATES)) {
+      const t = piece.trim();
+      if (t) found.push(t);
+    }
+  }
   const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");
   const bearer = m ? m[1].trim() : "";
   if (bearer) found.push(bearer);

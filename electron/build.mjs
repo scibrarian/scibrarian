@@ -9,12 +9,25 @@
 // here is native code, so there is no rebuild step either way — bundling them
 // would buy a smaller tree in exchange for a class of subtle runtime breakage.
 import { build } from "esbuild";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(here, "..");
+
+// The Pro module, if this checkout has one. src/index.ts is the presence test
+// rather than the directory: pro/ survives a `git clean` as an empty shell more
+// often than you would think, and an empty directory must read as "no Pro".
+const proSrc = path.join(repoRoot, "pro", "src", "index.ts");
+const proBuild = path.join(repoRoot, "pro", "build.mjs");
+const proBundle = path.join(repoRoot, "pro", "dist", "index.js");
+// Inside bundle/, so the one `files` entry that already ships the server ships
+// this too — see bundlePro() for why it must be exactly here.
+const proPackage = path.join(here, "bundle", "node_modules", "@scibrarian", "pro");
+
+const hasPro = () => fs.existsSync(proSrc);
 
 // Because the bundle leaves npm dependencies external, the packaged app has to
 // carry them — and electron-builder only collects what *this* package declares.
@@ -33,23 +46,62 @@ const repoRoot = path.join(here, "..");
 // the app; see the note in electron-builder.config.cjs.
 function assertDependenciesMirrorServer() {
   const read = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
-  const server = read(path.join(repoRoot, "server", "package.json")).dependencies ?? {};
   const desktop = read(path.join(here, "package.json")).dependencies ?? {};
+  // The Pro bundle leaves its bare imports external for the same reasons the
+  // server's does, and it is loaded by the same process out of the same
+  // node_modules — so on a Pro build its dependencies have to be carried here
+  // as well. express is the only one today and the server already needs it,
+  // which is why this has never had anything to add.
+  const sources = [
+    { of: "server", deps: read(path.join(repoRoot, "server", "package.json")).dependencies ?? {} },
+  ];
+  if (hasPro()) {
+    const deps = read(path.join(repoRoot, "pro", "package.json")).dependencies ?? {};
+    sources.push({ of: "pro", deps });
+  }
 
   const drift = [];
-  for (const [name, range] of Object.entries(server)) {
-    if (!(name in desktop)) drift.push(`missing "${name}": "${range}"`);
-    else if (desktop[name] !== range) drift.push(`"${name}" is ${desktop[name]}, server wants ${range}`);
+  // Each source checked against the manifest on its own, rather than merged
+  // into one list of requirements first. A merge answers a disagreement instead
+  // of reporting it: `{...server, ...pro}` let pro's range win, so express at
+  // ^4.21.2 in the server and ^4.18.0 in pro left one satisfiable requirement,
+  // no complaint, and the server's own range never checked again — an installer
+  // shipping a version the server was not tested against. Compared apart, one
+  // declared range cannot satisfy both and the message names who wants what.
+  for (const { of: source, deps } of sources) {
+    for (const [name, range] of Object.entries(deps)) {
+      if (!(name in desktop)) drift.push(`missing "${name}": "${range}" (${source} needs it)`);
+      else if (desktop[name] !== range) {
+        drift.push(`"${name}" is ${desktop[name]}, ${source} wants ${range}`);
+      }
+    }
   }
-  for (const name of Object.keys(desktop)) {
-    if (!(name in server)) drift.push(`"${name}" is not a server dependency`);
+
+  const wanted = new Set(sources.flatMap((s) => Object.keys(s.deps)));
+  const extra = Object.keys(desktop).filter((name) => !wanted.has(name));
+  if (extra.length > 0) {
+    if (hasPro()) {
+      for (const name of extra) drift.push(`"${name}" is not a dependency of the bundled code`);
+    } else {
+      // Only fatal when the whole picture is here. A free checkout cannot read
+      // pro's manifest, so a dependency that only Pro imports is
+      // indistinguishable from one nothing imports any more — and throwing on
+      // the pair of them made a Pro-only dependency impossible to declare
+      // without breaking every public desktop build, which is the reverse of
+      // what this check is for. Said out loud rather than passed over, and the
+      // Pro build that whoever adds one is running still refuses a stale entry.
+      console.warn(
+        `[desktop] Unverified: ${extra.join(", ")} — declared here, imported by nothing in this ` +
+          "checkout. Either Pro-only or stale; a Pro checkout can tell the difference."
+      );
+    }
   }
 
   if (drift.length > 0) {
     throw new Error(
-      "electron/package.json dependencies have drifted from server/package.json:\n" +
+      "electron/package.json dependencies have drifted from what the bundle imports:\n" +
         drift.map((d) => `  - ${d}`).join("\n") +
-        "\nSync them (then run npm install) so the packaged app ships what the server imports."
+        "\nSync them (then run npm install) so the packaged app ships what the bundle imports."
     );
   }
 }
@@ -71,6 +123,89 @@ function assertClientIsBuilt() {
   }
 }
 
+/**
+ * Put the Pro module where the bundled server can resolve it, on a checkout
+ * that has one. Returns whether this is a Pro build.
+ *
+ * The desktop app is the *spoke* half of shared holdings: it pairs with a
+ * remote master and reads its holdings back down. All of that lives in pro/,
+ * loaded through `loadPro()`'s dynamic `import("@scibrarian/pro")` inside the
+ * server bundle — a bare specifier resolved at runtime, because the specifier
+ * is a variable and no bundler can follow it (see pro-hooks.ts for why it has
+ * to stay one). So the job here is not to bundle the module *into* the server;
+ * it is to leave a resolvable package next to it.
+ *
+ * Exactly here, and not the two places that look equivalent:
+ *
+ *  - Not the `node_modules/@scibrarian/pro` junction that pro/link.mjs makes at
+ *    the repository root. Its `exports` points at src/index.ts, which is
+ *    TypeScript — fine under tsx, which is how `npm run dev -w server` uses it,
+ *    and unloadable by Electron's plain Node. It is also outside everything
+ *    electron-builder collects, so it would go missing from the installer.
+ *  - Not electron/node_modules. electron-builder fills that from `npm list
+ *    --omit dev` against electron/package.json, so a directory no manifest
+ *    declares is simply not collected — and declaring a private, unpublished
+ *    package there is not something `npm install` can satisfy.
+ *
+ * bundle/node_modules is the one location that answers both halves: Node walks
+ * up from bundle/server.mjs and finds it first, ahead of the dev junction, and
+ * `files: ["bundle/**"]` already carries the whole directory into the asar.
+ *
+ * The module is copied in compiled, never as source, and pro/build.mjs is run
+ * rather than reimplemented here — its esbuild settings are load-bearing (no
+ * sourcemap, or the installer would carry the proprietary TypeScript inline)
+ * and must not acquire a second, drifting copy in the public repository.
+ */
+function bundlePro() {
+  // A stale copy from an earlier Pro build is the failure this removal exists
+  // for: park pro/, rebuild, and without it the "free" installer would quietly
+  // ship the proprietary module that was already sitting in bundle/. Only ever
+  // this subtree, which nothing but this function writes.
+  fs.rmSync(path.join(here, "bundle", "node_modules"), { recursive: true, force: true });
+
+  // Absence is not a failure — a free checkout has no pro/ and builds a
+  // complete desktop app without it. Presence that then goes wrong is fatal,
+  // which is the same line loadPro() draws at runtime and for the same reason:
+  // a silent downgrade looks like the product working.
+  if (!hasPro()) return false;
+
+  const built = spawnSync(process.execPath, [proBuild], { stdio: "inherit", cwd: repoRoot });
+  if (built.error) throw new Error(`Could not run ${proBuild}: ${built.error.message}`);
+  // Signal before status, because a child that was killed reports status null
+  // and "failed with exit code null" names nothing. An OOM kill on a small
+  // machine is the likely one, and this is the build path where knowing why
+  // matters: what a swallowed Pro failure produces is a free installer wearing
+  // the Pro build's name.
+  if (built.signal) throw new Error(`${proBuild} was killed by ${built.signal}.`);
+  if (built.status !== 0) throw new Error(`${proBuild} failed with exit code ${built.status}`);
+  if (!fs.existsSync(proBundle)) {
+    throw new Error(`${proBuild} reported success but produced no ${proBundle}.`);
+  }
+
+  fs.mkdirSync(proPackage, { recursive: true });
+  fs.copyFileSync(proBundle, path.join(proPackage, "index.js"));
+  // Written rather than copied, exactly as Dockerfile.pro writes its own: the
+  // repository's manifest points `exports` at src/index.ts to keep local
+  // development untranspiled, and there is no src/ here to point at. No
+  // dependencies either — express resolves from the app's node_modules by the
+  // ordinary upward walk.
+  fs.writeFileSync(
+    path.join(proPackage, "package.json"),
+    JSON.stringify(
+      {
+        name: "@scibrarian/pro",
+        private: true,
+        license: "UNLICENSED",
+        type: "module",
+        exports: { ".": "./index.js" },
+      },
+      null,
+      2
+    ) + "\n"
+  );
+  return true;
+}
+
 assertDependenciesMirrorServer();
 assertClientIsBuilt();
 
@@ -89,3 +224,12 @@ await build({
   sourcemap: true,
   logLevel: "info",
 });
+
+// After the server, so the line below is the last thing on screen: which tier
+// was just built is the one thing about a desktop build you cannot tell by
+// looking at the output directory.
+console.log(
+  bundlePro()
+    ? "[desktop] Pro build: @scibrarian/pro compiled into bundle/node_modules"
+    : "[desktop] Free build: no pro/ in this checkout"
+);
