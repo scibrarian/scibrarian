@@ -13,6 +13,7 @@ import {
 } from "./pubmed-parse.js";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
 import { sourceHasFiles, type PaperSource } from "../../shared/source.js";
+import { SQL_PARAMS_PER_CHUNK } from "../../shared/sqlite.js";
 import type {
   Article,
   BookmarkEntry,
@@ -645,18 +646,22 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
 
 // ---------- articles ----------
 
-// Run an IN (...) query over the PMIDs, chunked to stay well under SQLite's
+// Run an IN (...) query over a list of ids, chunked to stay well under SQLite's
 // bound-parameter limit (an all-time search can hand us thousands of PMIDs in
 // a single call). `sql` receives the placeholder list for each chunk; `extra`
-// params are appended after the chunk's PMIDs.
-function queryByPmids<T>(
-  pmids: string[],
+// params are appended after the chunk's ids.
+//
+// Ids rather than PMIDs, because holdingsByDois runs the same query shape over
+// DOIs. Nothing here reads the values — they are bound, never interpolated — so
+// the only thing the name was ever describing was the caller.
+function queryByIds<T>(
+  ids: string[],
   sql: (placeholders: string) => string,
   extra: (string | number)[] = []
 ): T[] {
   const out: T[] = [];
-  for (let i = 0; i < pmids.length; i += 900) {
-    const batch = pmids.slice(i, i + 900);
+  for (let i = 0; i < ids.length; i += SQL_PARAMS_PER_CHUNK) {
+    const batch = ids.slice(i, i + SQL_PARAMS_PER_CHUNK);
     const placeholders = batch.map(() => "?").join(",");
     out.push(...(db.prepare(sql(placeholders)).all(...batch, ...extra) as T[]));
   }
@@ -664,7 +669,7 @@ function queryByPmids<T>(
 }
 
 export function existingPmids(pmids: string[]): Set<string> {
-  const rows = queryByPmids<{ pmid: string }>(
+  const rows = queryByIds<{ pmid: string }>(
     pmids,
     (ph) => `SELECT pmid FROM articles WHERE pmid IN (${ph})`
   );
@@ -675,7 +680,7 @@ export function existingPmids(pmids: string[]): Set<string> {
 // fetches them on demand, a rendered chunk at a time rather than a card at a
 // time. Unknown pmids are simply absent from the result.
 export function getArticleAbstracts(pmids: string[]): { pmid: string; abstract: string }[] {
-  return queryByPmids<{ pmid: string; abstract: string }>(
+  return queryByIds<{ pmid: string; abstract: string }>(
     pmids,
     (ph) => `SELECT pmid, abstract FROM articles WHERE pmid IN (${ph})`
   );
@@ -754,7 +759,7 @@ function setArticlePubTypes(pmid: string, types: string[]): void {
 // absent from the map, which is the distinction the sentinel exists to preserve.
 export function pubTypesByPmids(pmids: string[]): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  const rows = queryByPmids<{ pmid: string; type: string }>(
+  const rows = queryByIds<{ pmid: string; type: string }>(
     pmids,
     (ph) => `SELECT pmid, type FROM article_pub_types WHERE pmid IN (${ph})`
   );
@@ -1512,24 +1517,20 @@ const HOLDING_SELECT = `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_na
 // Look up stored papers by PMID. Unknown ids are simply absent.
 export function holdingsByPmids(pmids: string[]): HoldingRow[] {
   if (pmids.length === 0) return [];
-  return queryByPmids<HoldingRow>(pmids, (ph) => `${HOLDING_SELECT} WHERE a.pmid IN (${ph})`);
+  return queryByIds<HoldingRow>(pmids, (ph) => `${HOLDING_SELECT} WHERE a.pmid IN (${ph})`);
 }
 
 // The same, keyed by DOI. Compared lowercased on both sides because DOIs are
 // case-insensitive by specification and PubMed's stored casing varies by
 // publisher — a literal match would report a held paper as not held.
 export function holdingsByDois(dois: string[]): HoldingRow[] {
-  const out: HoldingRow[] = [];
-  for (let i = 0; i < dois.length; i += 900) {
-    const batch = dois.slice(i, i + 900).map((d) => d.toLowerCase());
-    const ph = batch.map(() => "?").join(",");
-    out.push(
-      ...(db
-        .prepare(`${HOLDING_SELECT} WHERE a.doi <> '' AND lower(a.doi) IN (${ph})`)
-        .all(...batch) as unknown as HoldingRow[])
-    );
-  }
-  return out;
+  // Lowercased before chunking rather than inside the loop, which is the same
+  // set of values and lets this be the helper's caller instead of its second
+  // copy — the loop here differed from queryByIds by that one map().
+  return queryByIds<HoldingRow>(
+    dois.map((d) => d.toLowerCase()),
+    (ph) => `${HOLDING_SELECT} WHERE a.doi <> '' AND lower(a.doi) IN (${ph})`
+  );
 }
 
 // ---------- citations (for the graph view) ----------
@@ -1575,7 +1576,7 @@ export function graphPapersForSource(
 
 // PMIDs that have no cached citation row, or whose row is older than maxAgeDays.
 export function missingOrStaleCitations(pmids: string[], maxAgeDays = 14): string[] {
-  const rows = queryByPmids<{ pmid: string }>(
+  const rows = queryByIds<{ pmid: string }>(
     pmids,
     (ph) =>
       `SELECT pmid FROM paper_citations
@@ -1587,7 +1588,7 @@ export function missingOrStaleCitations(pmids: string[], maxAgeDays = 14): strin
 }
 
 export function getCitations(pmids: string[]): Map<string, CitationInfo> {
-  const rows = queryByPmids<{ pmid: string; citation_count: number; references_json: string }>(
+  const rows = queryByIds<{ pmid: string; citation_count: number; references_json: string }>(
     pmids,
     (ph) => `SELECT pmid, citation_count, references_json FROM paper_citations WHERE pmid IN (${ph})`
   );
