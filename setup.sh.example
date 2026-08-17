@@ -50,21 +50,36 @@ apt-get install -y ca-certificates curl dnsutils
 # else produces a Caddy that retries ACME forever and a site that never comes
 # up, with nothing in the output pointing at DNS.
 #
-# -4 on purpose. On a dual-stack host an unforced request answers with the box's
+# -4 first. On a dual-stack host an unforced request answers with the box's
 # IPv6 address, which can never equal the IPv4 answer from `dig A` below — so a
 # correctly pointed A record is refused as a mismatch and nothing after this
 # point runs.
-PUBLIC_IP="$(curl -4 -fsS https://ifconfig.me)"
-RESOLVED="$(dig +short "$DOMAIN" A | tail -n1)"
+#
+# Unforced second, rather than letting the forced one fail. An IPv6-only box has
+# no IPv4 address to report, so `-4` on its own aborts here under `set -e` with
+# curl's terse stderr and not a word about DNS — a preflight whose whole job is
+# to name the subject, failing without naming anything. Which family answers
+# also decides which record has to point here.
+PUBLIC_IP="$(curl -4 -fsS https://ifconfig.me || curl -fsS https://ifconfig.me || true)"
+[ -n "$PUBLIC_IP" ] || {
+  echo "Couldn't reach ifconfig.me to find this box's public address."
+  echo "Check outbound networking and re-run."
+  exit 1
+}
+case "$PUBLIC_IP" in
+  *:*) RECORD="AAAA" ;;
+  *)   RECORD="A" ;;
+esac
+RESOLVED="$(dig +short "$DOMAIN" "$RECORD" | tail -n1)"
 if [ -z "$RESOLVED" ]; then
-  echo "$DOMAIN does not resolve yet. Create the A record:"
-  echo "    A    $DOMAIN    ->    $PUBLIC_IP"
-  echo "then wait for it (dig +short $DOMAIN) and re-run."
+  echo "$DOMAIN has no $RECORD record yet. Create it:"
+  echo "    $RECORD    $DOMAIN    ->    $PUBLIC_IP"
+  echo "then wait for it (dig +short $DOMAIN $RECORD) and re-run."
   exit 1
 fi
 if [ "$RESOLVED" != "$PUBLIC_IP" ]; then
   echo "$DOMAIN resolves to $RESOLVED, but this box is $PUBLIC_IP."
-  echo "Point the A record here (or wait for the old one to expire) and re-run."
+  echo "Point the $RECORD record here (or wait for the old one to expire) and re-run."
   exit 1
 fi
 
@@ -95,8 +110,8 @@ fi
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
 
 # Empty on a first install. A re-provision finds the previous run's Caddyfile
-# here, and the Caddy already running is still serving from it — which is what
-# the launch step below has to decide about.
+# here, and the Caddy already running is still serving from it — so the launch
+# step below can tell whether a bounce would change anything.
 CADDY_CONFIG_WAS=""
 if [ -f Caddyfile ]; then
   CADDY_CONFIG_WAS="$(md5sum < Caddyfile)"
@@ -146,14 +161,31 @@ docker compose -f docker-compose.prod.yml up -d
 # previous run's password stays in force while the credentials file confidently
 # reports the new one.
 #
-# Guarded, because on a first install there is nothing to bounce and the bounce
-# is destructive: `up -d` returns as soon as the container starts, Caddy is
-# already mid-HTTP-01 for the name, and a SIGTERM here abandons that order.
-# Let's Encrypt records a failed validation, and five per hostname per hour is
-# the whole budget. On a re-run the certificate is already in the caddy-data
-# volume, so the restart issues nothing and costs a second.
-if [ -n "$CADDY_CONFIG_WAS" ] &&
-   [ "$CADDY_CONFIG_WAS" != "$(md5sum < Caddyfile)" ]; then
+# Guarded, because the bounce is destructive before there is a certificate:
+# `up -d` returns as soon as the container starts, Caddy is already mid-HTTP-01
+# for the name, and a SIGTERM there abandons that order. Let's Encrypt records a
+# failed validation, and five per hostname per hour is the whole budget. Once
+# the certificate is in the caddy-data volume the restart issues nothing and
+# costs a second.
+#
+# Guarded on the certificate itself, and it used to be guarded on "was there a
+# Caddyfile" — the same question asked of the wrong thing. A first install that
+# got as far as writing one and then failed for any other reason (the app never
+# came up, and the wait below exits 1) leaves a Caddyfile behind with no
+# certificate beside it. A fresh bcrypt hash is sed'd in on every run, so the
+# contents always differ too: the re-run an operator makes after fixing the
+# cause bounced a Caddy that was mid-validation. That is the case this guard
+# exists for, reached by the path people actually take to it.
+#
+# Unaskable counts as no. If the exec fails, the config stays stale and the
+# credentials file names a password that isn't in force — annoying, and fixed
+# by another run. Guessing the other way spends validations that can't be got
+# back for an hour.
+have_cert() {
+  docker compose -f docker-compose.prod.yml exec -T caddy \
+    sh -c "ls /data/caddy/certificates/*/${DOMAIN}/${DOMAIN}.crt" >/dev/null 2>&1
+}
+if [ "$CADDY_CONFIG_WAS" != "$(md5sum < Caddyfile)" ] && have_cert; then
   docker compose -f docker-compose.prod.yml restart caddy
 fi
 
