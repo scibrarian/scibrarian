@@ -173,13 +173,9 @@ function tokenMatches(provided: string): boolean {
  * not this — so an inserted one does not shadow ours, it is welded to it as
  * "ours, theirs" and matches nothing. There is no Bearer to fall back to in the
  * deployment where it matters, because behind a basic-auth edge that header is
- * the edge's. Every comma-separated piece is therefore tried as well.
+ * the edge's. Every comma-separated piece that could be ours is therefore
+ * tried as well.
  */
-// Bounded because those pieces are attacker-supplied and each costs two hashes;
-// a header packed with commas would otherwise buy thousands of them. One real
-// token plus one inserted is the case that exists, so four is already slack.
-const MAX_ADMIN_TOKEN_CANDIDATES = 4;
-
 function presentedAdminTokens(req: Request): string[] {
   const found: string[] = [];
   const raw = (req.get("x-admin-token") ?? "").trim();
@@ -188,10 +184,20 @@ function presentedAdminTokens(req: Request): string[] {
   // genuinely contains a comma still matches. The setup scripts generate hex,
   // but nothing stops an operator setting ADMIN_TOKEN by hand, and splitting
   // one would refuse the credential the request presented verbatim.
+  //
+  // Which pieces to try is a question of shape, not of how many. Counting is
+  // what `split(",", n)` does — it caps the array rather than the number of
+  // splits — so a bound of four meant four inserted values pushed the real
+  // token off the end and refused a request carrying the right credential, in
+  // the one deployment this recovery exists for. A piece that is not the length
+  // of ADMIN_TOKEN cannot be it, so the hashing is bounded by something an
+  // inserted header cannot overrun, and Node's 16KB header cap bounds the rest.
+  // The filter tells an attacker nothing: a wrong-length piece and a
+  // wrong-value one are both a 401.
   if (raw.includes(",")) {
-    for (const piece of raw.split(",", MAX_ADMIN_TOKEN_CANDIDATES)) {
+    for (const piece of raw.split(",")) {
       const t = piece.trim();
-      if (t) found.push(t);
+      if (t && t.length === ADMIN_TOKEN.length) found.push(t);
     }
   }
   const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") ?? "");

@@ -194,6 +194,21 @@ describe("a duplicated X-Admin-Token", () => {
     expect(await dup("injected", "alsowrong")).toBe(REFUSED);
   });
 
+  // Four inserted values, which a count-based bound got wrong: `split(",", 4)`
+  // caps the array rather than the number of splits, so ours fell off the end
+  // and the gate refused a request that carried the right credential.
+  it("finds ours behind four inserted values", async () => {
+    expect(await postRaw(["X-Admin-Token: a,b,c,d", `X-Admin-Token: ${TOKEN}`])).toBe(ADMITTED);
+  });
+
+  // There is no count left to overrun. Pieces are filtered by length instead,
+  // so a header packed with commas costs a string compare each and hides
+  // nothing — and Node caps the whole header at 16KB, which bounds the rest.
+  it("finds ours behind a header packed with commas", async () => {
+    const noise = Array.from({ length: 500 }, (_, i) => `junk${i}`).join(",");
+    expect(await postRaw([`X-Admin-Token: ${noise}`, `X-Admin-Token: ${TOKEN}`])).toBe(ADMITTED);
+  });
+
   // The promise the doc comment makes, in the deployment that needs it.
   it("lets a valid Bearer through from behind two wrong X-Admin-Tokens", async () => {
     const status = await postRaw([
