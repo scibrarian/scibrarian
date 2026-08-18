@@ -77,6 +77,7 @@ const stub: ProModule = {
     return new Map(pmids.filter((p) => p === PULLED.pmid).map((p) => [p, ORG]));
   },
   orgCheck: async (): Promise<Map<string, OrgHolding>> => new Map(),
+  syncHint: () => {},
 };
 
 function article(p: { pmid: string; doi: string }) {

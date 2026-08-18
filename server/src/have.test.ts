@@ -107,6 +107,7 @@ const stub: ProModule = {
   // ProModule without a free-tier answer fails to compile in the open repo.
   pulledOrgByPmid: () => new Map<string, PaperProvenance>(),
   receivedNodeByPmid: () => new Map<string, PaperProvenance>(),
+  syncHint: () => {},
 };
 
 const holds = (...pmids: string[]) =>

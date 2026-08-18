@@ -162,12 +162,31 @@ export interface ProPushResult {
    * Files in shared collections that will never be sent, because a person
    * matched them by hand rather than the scanner matching them by evidence.
    *
-   * Optional because a Pro build older than this field simply won't send it,
-   * and "not reported" must not render as a measured zero — the same rule the
-   * node activity counts follow.
+   * Reported by every sweep that counts one, including sweeps with nothing else
+   * to say. The exclusion is deliberate — see matchedFilesIn — but
+   * `match_method` appears nowhere in the UI, so a writer has no other way to
+   * learn that some of what they filed in a shared collection is staying put.
+   * An exclusion nobody can see is the same bug as a false claim: it is
+   * answered confidently and it is wrong about what the writer believes has
+   * happened.
+   *
+   * Optional because "not measured" must not render as a measured zero — the
+   * same rule the node activity counts follow. A Pro build older than this
+   * field won't send it, and a run that returned before building a queue never
+   * counted one.
    */
   held_back?: number;
   error?: string;
+  /**
+   * Set when this run did nothing because another sweep already held the lock.
+   *
+   * Reported alongside `error` rather than instead of it, so an older client
+   * still shows the message it always did. What needs the distinction is the
+   * scheduler: a collision means "ask again shortly", where every other error
+   * means "stop and wait for the interval". Optional for the same reason
+   * `held_back` is — a Pro build older than this field simply won't send it.
+   */
+  busy?: boolean;
 }
 
 export interface ProPullResult {

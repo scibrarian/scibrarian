@@ -358,6 +358,28 @@ describe("what syncs and what is held back", () => {
     expect(storage.matchedFilesIn(id)).toHaveLength(0);
     expect(storage.manualMatchCountIn(id)).toBe(0);
   });
+
+  // `matched` with no PMID: neither half may claim the row. There is no
+  // identity for the other end to file it by, so it is not a candidate — and it
+  // is not being withheld from anyone either, so it is not a held-back count.
+  // Both used to read it off one hydrated row and agree by construction; they
+  // are now two predicates in two queries, which is exactly where they can
+  // drift apart.
+  it("ignores a matched row that carries no PMID", async () => {
+    const id = collection("Matched but nameless");
+    const { hash } = await blob.storeBlobFromTemp(await tmpWith(pdf("no-pmid")));
+    db.addCollectionFiles(id, [{ hash, name: "n.pdf" }]);
+    const row = db.listCollectionFiles(id).find((f) => f.content_hash === hash)!;
+
+    db.setFileMatched(row.id, "", "pmid");
+    expect(storage.matchedFilesIn(id)).toHaveLength(0);
+    expect(storage.manualMatchCountIn(id)).toBe(0);
+
+    // ...and the same when it was a person who said so.
+    db.setFileMatched(row.id, "", "manual");
+    expect(storage.matchedFilesIn(id)).toHaveLength(0);
+    expect(storage.manualMatchCountIn(id)).toBe(0);
+  });
 });
 
 // The push candidates, and the pair that fetches their bytes.
