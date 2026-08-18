@@ -61,9 +61,9 @@ interface Picker {
 // scope because it never varies — this component re-renders on every id, banner
 // and refresh change, and rebuilding a constant each time is waste.
 export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
+  papers: { label: "Library", icon: Library },
   interests: { label: "Interests", icon: Search },
   bookmarks: { label: "Bookmarks", icon: Bookmark },
-  papers: { label: "Library", icon: Library },
 };
 
 // Nav order, which is the literal's own: Object.entries preserves insertion
@@ -71,7 +71,7 @@ export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
 // than repeating the three names in a second list that could fall behind.
 const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
 
-// Two-part navigation: an Interests / Bookmarks / Library mode switch, plus a
+// Two-part navigation: a Library / Interests / Bookmarks mode switch, plus a
 // dropdown that picks the active topic (MeSH search), bookmark folder, or
 // collection within that mode. The dropdown replaces per-item tabs so a long
 // list never clutters the header. Radix DropdownMenu owns the open state and

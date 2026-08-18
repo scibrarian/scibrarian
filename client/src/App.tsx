@@ -59,7 +59,7 @@ export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [folders, setFolders] = useState<BookmarkFolder[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [mode, setMode] = useState<Mode>("interests");
+  const [mode, setMode] = useState<Mode>("papers");
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
@@ -288,17 +288,17 @@ export default function App() {
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
         // Preselect each workspace's first entry, then land in the first one
-        // that actually has something in it (nav order: Interests, Bookmarks,
-        // Library) so switching modes never opens on an empty picker.
+        // that actually has something in it (nav order: Library, Interests,
+        // Bookmarks) so switching modes never opens on an empty picker.
         if (fs.length > 0) setActiveFolderId(fs[0].id);
-        if (cs.length > 0) setActiveCollectionId(cs[0].id);
-        if (ds.length > 0) {
+        if (ds.length > 0) setActiveTopicId(ds[0].id);
+        if (cs.length > 0) {
+          setMode("papers");
+          setActiveCollectionId(cs[0].id);
+        } else if (ds.length > 0) {
           setMode("interests");
-          setActiveTopicId(ds[0].id);
         } else if (fs.length > 0) {
           setMode("bookmarks");
-        } else if (cs.length > 0) {
-          setMode("papers");
         }
         setLoaded(true);
       }
