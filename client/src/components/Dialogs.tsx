@@ -1,9 +1,11 @@
 import { useLayoutEffect, useState, type FormEvent, type ReactNode } from "react";
+import { X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 // Radix-backed replacements for window.prompt/confirm. Radix supplies the
-// behavior a hand-rolled modal misses — focus trap, Escape/overlay dismiss,
-// focus restore, aria wiring — while the existing .modal CSS supplies the look.
+// behavior a hand-rolled modal misses — focus trap, Escape, focus restore, aria
+// wiring — while the existing .modal CSS supplies the look. Its outside-click
+// dismissal is the one piece deliberately turned off; see the Content below.
 // Content nests inside Overlay so the backdrop's flex centering keeps working.
 export function ModalShell({
   open,
@@ -22,7 +24,25 @@ export function ModalShell({
     <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop">
-          <Dialog.Content className={wide ? "modal wide" : "modal"} aria-describedby={undefined}>
+          <Dialog.Content
+            className={wide ? "modal wide" : "modal"}
+            aria-describedby={undefined}
+            // Clicking the backdrop no longer dismisses. Radix offers it by
+            // default and for a menu it is right, but every dialog that reaches
+            // this shell holds something a stray click should not throw away: a
+            // half-typed name, a staged set of journal moves, a reference list
+            // that took a paste and a wait to produce. The gesture is also the
+            // one people make to bring a window forward, so it fires by accident
+            // far more often than it is meant.
+            //
+            // Escape is deliberately still live, and now so is the × — two ways
+            // out that both require aiming at the dialog. Losing the backdrop
+            // without gaining a visible control would have left only a keystroke.
+            onInteractOutside={(e) => e.preventDefault()}
+          >
+            <Dialog.Close className="modal-close" aria-label="Close">
+              <X size={20} aria-hidden />
+            </Dialog.Close>
             <Dialog.Title className="modal-heading">{title}</Dialog.Title>
             {children}
           </Dialog.Content>

@@ -1625,8 +1625,11 @@ code {
 
 /* prompt / confirm dialogs */
 
+/* Leaves room for the × the shell now draws, so a long title never runs under
+   it — the same allowance .modal-head already makes for its meta line. */
 .modal-heading {
   margin: 0 0 12px;
+  padding-right: 24px;
   font-size: 16px;
   font-weight: 700;
   color: var(--text);
