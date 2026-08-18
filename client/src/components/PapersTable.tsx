@@ -1,14 +1,15 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { ChevronUp, ChevronDown, ExternalLink } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ChevronUp, ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Bookmarking } from "../lib/bookmarking";
-import { formatAuthors } from "../lib/format";
+import { errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
+import { ConfirmDialog } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { ProvenanceBadges } from "./ProvenanceBadges";
@@ -30,6 +31,7 @@ export function PapersTable({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
+  onPapersRemoved,
   filters,
   bookmarking,
 }: PaperAccess & {
@@ -37,6 +39,12 @@ export function PapersTable({
   reloadToken: number;
   emptyState?: ReactNode;
   filters: PaperFilterState;
+  /**
+   * Papers were taken out of the collection on screen, so the shell has to
+   * reload the sources that counted them. Absent everywhere the delete control
+   * is absent, which is every source but a single collection.
+   */
+  onPapersRemoved?: () => void;
   bookmarking: Bookmarking | null;
 }) {
   const {
@@ -58,6 +66,18 @@ export function PapersTable({
   // The paper waiting on a new folder, if any — one prompt for the table
   // rather than one per row (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
+  // Papers ticked for removal, by pmid.
+  //
+  // Offered for one collection only. In the all-collections view a paper can be
+  // filed under three engagements and "remove it" has no single meaning — the
+  // view exists to show that reuse, so a control that silently picked one of
+  // them would undo the thing it was opened to reveal. Admin-only because the
+  // server refuses the mutation anyway, and a control that always fails is
+  // worse than none.
+  const removeFrom = isAdmin && "collection" in source ? source.collection : null;
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
     isAdmin,
     tokenRequired,
@@ -96,6 +116,55 @@ export function PapersTable({
     `${fetchKey}|${reloadToken}`
   );
 
+  // A selection only ever means the rows currently on screen. Cleared whenever
+  // the source or the filters change — `fetchKey` is what changes for either —
+  // so a tick made under one filter can't be deleted under the next, where its
+  // row is no longer visible to be reconsidered.
+  useEffect(() => setSelected(new Set()), [fetchKey, reloadToken]);
+
+  // The whole filtered set, not the rows rendered so far: the table lazy-renders
+  // (see useIncrementalList), so selecting "all" from `shown` would silently
+  // mean "all of what you have scrolled past".
+  const allSelected = visible.length > 0 && selected.size === visible.length;
+  function toggleAll(on: boolean) {
+    setSelected(on ? new Set(visible.map((p) => p.pmid)) : new Set());
+  }
+  function toggleOne(pmid: string, on: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(pmid);
+      else next.delete(pmid);
+      return next;
+    });
+  }
+
+  async function removeSelected() {
+    if (removeFrom == null) return;
+    setConfirmingRemove(false);
+    setRemoving(true);
+    setActionError(null);
+    try {
+      // Files removed, not papers asked for. The two differ when the collection
+      // holds two copies of one article, and reporting what was sent instead of
+      // what happened is how "deleted 3" ends up sitting above 4 fewer rows.
+      const { removed } = await api.removeCollectionPapers(removeFrom, [...selected]);
+      const papers = selected.size;
+      setNotice(
+        `Removed ${papers} paper${papers === 1 ? "" : "s"} from this collection` +
+          (removed > papers ? ` (${removed} stored files).` : ".")
+      );
+      setSelected(new Set());
+      // The papers list, the collection's count in the picker and the file list
+      // in the view above are all now stale, and none of them is this
+      // component's to reload.
+      onPapersRemoved?.();
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setRemoving(false);
+    }
+  }
+
   function toggleSort(next: SortKey) {
     if (next === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else {
@@ -123,11 +192,17 @@ export function PapersTable({
   // or folder holds nothing. This is the column that turns "we have it" into
   // "we have it in the Pfizer package", which is what decides reuse.
   const showCollectionsCol = "allCollections" in source;
+  // The tick column, which exists exactly when removal does.
+  const showSelectCol = removeFrom != null;
   // Kept beside the flags that decide the optional columns, so a new column
   // can't be added without this following it — the excerpt row below spans the
   // table by count, and a stale number would silently narrow it.
   const columnCount =
-    6 + (showCollectionsCol ? 1 : 0) + (showBookmarkCol ? 1 : 0) + (showShareCol ? 1 : 0);
+    6 +
+    (showSelectCol ? 1 : 0) +
+    (showCollectionsCol ? 1 : 0) +
+    (showBookmarkCol ? 1 : 0) +
+    (showShareCol ? 1 : 0);
 
   return (
     <div className="papers-table-view">
@@ -140,16 +215,41 @@ export function PapersTable({
         yearBounds={yearBounds}
         loading={loading}
         action={
-          showBookmarkCol && (
-            // The whole filtered list, not the rows currently rendered — the
-            // table lazy-renders, so `shown` would silently save a scroll depth.
-            <SaveAllButton
-              pmids={visible.map((p) => p.pmid)}
-              total={total}
-              bookmarking={bookmarking!}
-              onError={setActionError}
-              onDone={setNotice}
-            />
+          showSelectCol ? (
+            // Sits where the bulk save does in the workspaces that have one.
+            // The two never coexist — bookmarking is null in the Library, which
+            // is the only place removal is offered — so the slot carries
+            // whichever bulk action this source actually has.
+            //
+            // Rendered even with nothing ticked, disabled. Appearing only once
+            // a box is checked means the control is invisible at the moment
+            // someone is looking for it, and the row would change height the
+            // first time one was.
+            <button
+              type="button"
+              className="remove-selected"
+              disabled={selected.size === 0 || removing}
+              onClick={() => setConfirmingRemove(true)}
+            >
+              <Trash2 size={14} className="inline-icon" aria-hidden />
+              {removing
+                ? "Removing…"
+                : selected.size > 0
+                  ? `Remove ${selected.size} selected`
+                  : "Remove selected"}
+            </button>
+          ) : (
+            showBookmarkCol && (
+              // The whole filtered list, not the rows currently rendered — the
+              // table lazy-renders, so `shown` would silently save a scroll depth.
+              <SaveAllButton
+                pmids={visible.map((p) => p.pmid)}
+                total={total}
+                bookmarking={bookmarking!}
+                onError={setActionError}
+                onDone={setNotice}
+              />
+            )
           )
         }
       />
@@ -168,6 +268,7 @@ export function PapersTable({
 
       {loading && visible.length === 0 ? (
         <PapersTableSkeleton
+          select={showSelectCol}
           share={showShareCol}
           bookmark={showBookmarkCol}
           collections={showCollectionsCol}
@@ -186,11 +287,29 @@ export function PapersTable({
             <table className="papers-table">
               <PapersColgroup
                 share={showShareCol}
+                select={showSelectCol}
                 bookmark={showBookmarkCol}
                 collections={showCollectionsCol}
               />
               <thead>
                 <tr>
+                  {showSelectCol && (
+                    <th className="select-col">
+                      {/* Selects the whole filtered set, which is what the
+                          action beside it acts on — not the rows rendered so
+                          far. Indeterminate when some are ticked, so "some" is
+                          distinguishable from "none" at a glance. */}
+                      <input
+                        type="checkbox"
+                        aria-label={allSelected ? "Clear selection" : "Select all papers"}
+                        checked={allSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = selected.size > 0 && !allSelected;
+                        }}
+                        onChange={(e) => toggleAll(e.target.checked)}
+                      />
+                    </th>
+                  )}
                   <th className="sortable" onClick={() => toggleSort("title")}>
                     Title{arrow("title")}
                   </th>
@@ -220,6 +339,19 @@ export function PapersTable({
               {shown.map((p) => (
                 <tbody className="paper-rows" key={p.pmid}>
                   <tr>
+                    {showSelectCol && (
+                      <td className="select-cell">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(p.pmid)}
+                          // Named by the paper rather than "Select row": read
+                          // out of context, a column of identical "Select row"
+                          // is a column of identical nothing.
+                          aria-label={`Select ${p.title || p.pmid}`}
+                          onChange={(e) => toggleOne(p.pmid, e.target.checked)}
+                        />
+                      </td>
+                    )}
                     <td className="paper-title-cell">
                       <button
                         className="paper-open"
@@ -315,6 +447,20 @@ export function PapersTable({
           onClose={() => setNamingFor(null)}
         />
       )}
+
+      {/* Names the collection's side of it and nothing more. The papers
+          themselves are articles rows the whole app shares — a topic feed may
+          have put them there, and another collection may hold its own copy — so
+          "delete this paper" would promise something this does not do. */}
+      <ConfirmDialog
+        open={confirmingRemove}
+        title={`Remove ${selected.size} paper${selected.size === 1 ? "" : "s"}?`}
+        message="Their uploaded PDF copies are removed from the app, unless another collection also has them. Your original files are untouched."
+        confirmLabel="Remove"
+        danger
+        onConfirm={() => void removeSelected()}
+        onCancel={() => setConfirmingRemove(false)}
+      />
     </div>
   );
 }

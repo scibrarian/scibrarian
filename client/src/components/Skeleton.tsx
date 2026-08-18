@@ -162,10 +162,12 @@ export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
 // share-link column, and must match between skeleton and table for the same
 // reason.
 export function PapersColgroup({
+  select = false,
   share = false,
   bookmark = false,
   collections = false,
 }: {
+  select?: boolean;
   share?: boolean;
   bookmark?: boolean;
   collections?: boolean;
@@ -177,8 +179,14 @@ export function PapersColgroup({
   // squeeze. Links is the one that can't: it is white-space: nowrap and needs
   // ~136px for "PubMed ↗ DOI ↗", so it keeps its 15% in both sets. Measured at
   // 1440px wide; taking it to 13% overflowed by 17px.
+  //
+  // The fixed-pixel columns (select, bookmark, share) sit outside that 100%:
+  // table-layout: fixed distributes the percentages over what is left once the
+  // absolute widths are taken, so they narrow the text columns proportionally
+  // rather than pushing the total past the wrapper.
   return (
     <colgroup>
+      {select && <col style={{ width: 36 }} />}
       <col style={{ width: collections ? "25%" : "36%" }} />
       <col style={{ width: collections ? "13%" : "15%" }} />
       <col style={{ width: collections ? "12%" : "15%" }} />
@@ -194,12 +202,14 @@ export function PapersColgroup({
 
 // Mirrors the collection papers table: real headers, shimmering rows.
 export function PapersTableSkeleton({
+  select = false,
   rows = 5,
   share = false,
   bookmark = false,
   collections = false,
 }: {
   rows?: number;
+  select?: boolean;
   share?: boolean;
   bookmark?: boolean;
   collections?: boolean;
@@ -207,9 +217,10 @@ export function PapersTableSkeleton({
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
       <table className="papers-table">
-        <PapersColgroup share={share} bookmark={bookmark} collections={collections} />
+        <PapersColgroup select={select} share={share} bookmark={bookmark} collections={collections} />
         <thead>
           <tr>
+            {select && <th className="select-col" aria-label="Select" />}
             <th>Title</th>
             <th>Authors</th>
             <th>Journal</th>
@@ -224,6 +235,7 @@ export function PapersTableSkeleton({
         <tbody>
           {Array.from({ length: rows }).map((_, i) => (
             <tr key={i}>
+              {select && <td className="select-cell" />}
               <td>
                 <SkeletonBar w={["85%", "62%", "75%", "90%", "68%"][i % 5]} h={14} />
               </td>

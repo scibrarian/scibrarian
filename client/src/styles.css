@@ -2257,6 +2257,65 @@ html {
   text-align: center;
 }
 
+/* "Remove N selected" — the Library's bulk action, in the slot the bulk save
+   occupies in the workspaces that have one. Shares .save-all-btn's box because
+   it lands in the same place and must not change the filter row's height when
+   the workspace changes.
+
+   Its own min-width, narrower than the save button's: the counts here are what
+   fits on a screen and got ticked, not a whole filtered set, so five figures is
+   not a case. Fixed all the same, because the label carries a number and
+   .filter-row wraps. */
+.remove-selected {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--danger);
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 168px;
+}
+
+.remove-selected:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--warn-soft);
+}
+
+/* Dimmed with nothing ticked, which is most of the time. Deliberately still
+   drawn: a control that appears only once a box is checked is invisible at the
+   moment someone is looking for it. */
+.remove-selected:disabled {
+  color: var(--muted);
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* The tick column. Narrow and headerless-looking, like the share and bookmark
+   columns at the other end of the row. */
+.select-col {
+  width: 36px;
+}
+
+.select-cell,
+.select-col {
+  text-align: center;
+  padding-right: 0;
+}
+
+.select-cell input,
+.select-col input {
+  margin: 0;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
 /* On a timeline card the save button sits at the far end of the links row. */
 .card-bookmark {
   margin-left: auto;

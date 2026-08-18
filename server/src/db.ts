@@ -1916,6 +1916,57 @@ export function deleteCollectionFile(fileId: number): void {
   if (row) gcBlobsIfOrphaned([row.content_hash]);
 }
 
+/**
+ * Remove papers from one collection: every file in it matched to any of these
+ * PMIDs, and the blobs that leaves orphaned.
+ *
+ * Keyed on the pmid rather than on a file id, which is what makes this correct
+ * where a loop of deleteCollectionFile is not. `collection_files` is unique on
+ * (collection_id, content_hash), not on (collection_id, pmid), so a collection
+ * may legitimately hold two files for one paper — a preprint and the published
+ * PDF, the same article scanned twice. The paper rows the client selects from
+ * carry MIN(id) of those (see the collection source's file join), so deleting
+ * by file id removes one copy and leaves the paper still listed, pointing at
+ * the other. "Remove this paper from this collection" has to mean all of them.
+ *
+ * Scoped to the one collection on purpose. The same PDF filed under another
+ * engagement is a different collection's holding and is not this caller's to
+ * delete; the blob survives because gcBlobsIfOrphaned counts the rows that
+ * remain.
+ *
+ * Returns files removed, not papers. They differ in exactly the case above, and
+ * the caller reports what it did rather than what it was asked to do.
+ */
+export function removeCollectionPapers(collectionId: number, pmids: string[]): number {
+  if (pmids.length === 0) return 0;
+  // Hashes first, then the delete, then the GC — the same enforced order as
+  // deleteCollectionFile and deleteCollection, because countFilesByHash has to
+  // run against the rows that are actually gone.
+  //
+  // The collection id trails the pmids in both statements because queryByIds
+  // binds the chunk before its `extra`, and the delete below is written the
+  // same way so the two clauses can't drift apart.
+  const hashes = queryByIds<{ content_hash: string }>(
+    pmids,
+    (ph) =>
+      `SELECT DISTINCT content_hash FROM collection_files
+        WHERE pmid IN (${ph}) AND collection_id = ?`,
+    [collectionId]
+  ).map((r) => r.content_hash);
+  let removed = 0;
+  for (let i = 0; i < pmids.length; i += SQL_PARAMS_PER_CHUNK) {
+    const batch = pmids.slice(i, i + SQL_PARAMS_PER_CHUNK);
+    const ph = batch.map(() => "?").join(",");
+    removed += Number(
+      db
+        .prepare(`DELETE FROM collection_files WHERE pmid IN (${ph}) AND collection_id = ?`)
+        .run(...batch, collectionId).changes
+    );
+  }
+  gcBlobsIfOrphaned(hashes);
+  return removed;
+}
+
 // ---------- extracted PDF text (full-text search) ----------
 
 export interface PdfTextInsert {

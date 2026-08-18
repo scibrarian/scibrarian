@@ -20,6 +20,7 @@ import {
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
+  removeCollectionPapers,
   removeTopicWithArticles,
   topicByTerm,
   topicArticleCounts,
@@ -1211,6 +1212,34 @@ api.delete("/collections/files/:fileId", (req, res) => {
   // reference.
   deleteCollectionFile(Number(req.params.fileId));
   res.status(204).end();
+});
+
+// Remove papers from a collection — the table's "Delete selected".
+//
+// A POST rather than a DELETE because it carries a body, and a DELETE with one
+// is legal but routinely stripped in transit; naming the action in the path
+// keeps it working through whatever sits in front of this.
+//
+// PMIDs rather than file ids, and the whole set in one request. Both follow
+// from what the caller is asking: "take these papers out of this collection" is
+// one decision, so it either happens or it doesn't, and a paper the collection
+// holds twice has to go entirely rather than half-way. See
+// removeCollectionPapers for how a file-id loop gets that wrong.
+api.post("/collections/:id/papers/remove", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  const body = req.body as { pmids?: unknown };
+  if (!Array.isArray(body?.pmids)) return res.status(400).json({ error: "'pmids' must be an array." });
+  // Bounded by the same cap as a bulk bookmark save: this is the other route
+  // that takes "everything currently filtered" and it should not be the one
+  // place an unbounded list gets through.
+  if (body.pmids.length > MAX_BULK_BOOKMARK_PMIDS) {
+    return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
+  }
+  const pmids = body.pmids.map((p) => String(p).trim()).filter(Boolean);
+  // Files, not papers — they differ when a collection holds two copies of one
+  // article, and the count is reported rather than assumed.
+  res.json({ removed: removeCollectionPapers(id, pmids) });
 });
 
 // ---------- refresh / status ----------

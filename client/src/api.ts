@@ -286,6 +286,14 @@ export const api = {
     }),
   deleteCollectionFile: (fileId: number) =>
     req<void>(`/api/collections/files/${fileId}`, { method: "DELETE" }),
+  // Take papers out of one collection. Answers with files removed, which is not
+  // the same number as papers sent when a collection holds two copies of one
+  // article — see removeCollectionPapers on the server.
+  removeCollectionPapers: (collectionId: number, pmids: string[]) =>
+    req<{ removed: number }>(`/api/collections/${collectionId}/papers/remove`, {
+      method: "POST",
+      body: JSON.stringify({ pmids }),
+    }),
   refresh: (topicId?: number) => {
     const suffix = topicId ? `?topic=${topicId}` : "";
     return req<RefreshResponse>(`/api/refresh${suffix}`, { method: "POST" });
