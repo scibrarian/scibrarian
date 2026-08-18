@@ -4,7 +4,7 @@ import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { useCachedFetch, type FetchCache } from "../lib/hooks";
 import { Banner } from "./Banner";
-import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { ConfirmDialog, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import type {
   CollectionFile,
   CollectionFilesResponse,
@@ -540,7 +540,7 @@ export function CollectionView({
       <ConfirmDialog
         open={confirmingDelete}
         title="Delete collection?"
-        message="Its uploaded PDF copies are removed from the app (unless another collection also has them); your original files are untouched."
+        message={`Everything filed in it is removed. ${STORED_COPIES_NOTE}`}
         confirmLabel="Delete"
         danger
         onConfirm={remove}

@@ -9,7 +9,7 @@ import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
-import { ConfirmDialog } from "./Dialogs";
+import { ConfirmDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { ProvenanceBadges } from "./ProvenanceBadges";
@@ -455,7 +455,7 @@ export function PapersTable({
       <ConfirmDialog
         open={confirmingRemove}
         title={`Remove ${selected.size} paper${selected.size === 1 ? "" : "s"}?`}
-        message="Their uploaded PDF copies are removed from the app, unless another collection also has them. Your original files are untouched."
+        message={STORED_COPIES_NOTE}
         confirmLabel="Remove"
         danger
         onConfirm={() => void removeSelected()}

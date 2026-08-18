@@ -52,6 +52,26 @@ export function ModalShell({
   );
 }
 
+/**
+ * What is actually destroyed when papers leave a collection — shared by the two
+ * dialogs that ask, because they destroy the same thing at different scales and
+ * had already drifted apart on how they punctuated it.
+ *
+ * It used to end "your original files are untouched", and that came out. Three
+ * things were wrong with it. It answered a question only one of the two dialogs
+ * raises — nobody deleting four rows out of a list fears for their hard drive,
+ * so raising it there invented the worry it then allayed. It implied the app
+ * could reach a local file at all, which it cannot: an upload sends bytes, and
+ * the store renames the server's own temp copy of them. And it wasn't reliably
+ * true, because a paper pulled from an organisation's library was never a file
+ * of this user's to begin with.
+ *
+ * What is left is the fact worth knowing before pressing the button: the stored
+ * copy goes, unless it is shared with another collection.
+ */
+export const STORED_COPIES_NOTE =
+  "Any stored PDF copies are deleted too, unless another collection also holds the same file.";
+
 // Confirmation dialog. Cancel is first in the DOM so it takes initial focus —
 // Enter never destroys anything by default.
 export function ConfirmDialog({
