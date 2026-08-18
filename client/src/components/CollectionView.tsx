@@ -12,7 +12,7 @@ import type {
   ImportStatus,
   ProCollectionStamp,
 } from "../types";
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
+import { MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
 
 // Files per upload request, so a large selection doesn't become one gigantic
 // multipart body. Clamped to the server's per-request cap so raising this for
@@ -532,6 +532,7 @@ export function CollectionView({
         open={renaming}
         title="Rename collection"
         placeholder="New name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Rename"
         onSubmit={rename}
         onCancel={() => setRenaming(false)}

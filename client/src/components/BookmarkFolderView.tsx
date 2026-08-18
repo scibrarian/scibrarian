@@ -3,6 +3,7 @@ import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { MAX_NAME_CHARS } from "../../../shared/limits";
 
 // The bookmark-folder management shell: rename/delete chrome wrapped around
 // whichever analysis module (table or timeline) is active, exactly as
@@ -76,6 +77,7 @@ export function BookmarkFolderView({
         open={renaming}
         title="Rename folder"
         placeholder="New name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Rename"
         onSubmit={rename}
         onCancel={() => setRenaming(false)}

@@ -5,7 +5,7 @@ import { errorMessage } from "../lib/format";
 import type { Bookmarking } from "../lib/bookmarking";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { FolderMenuContent } from "./FolderMenu";
-import { MAX_BULK_BOOKMARK_PMIDS } from "../../../shared/limits";
+import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS } from "../../../shared/limits";
 
 // Where a folder for a bulk save comes from: one that already exists, or one
 // named in the prompt and created on confirm. Held rather than acted on
@@ -135,6 +135,7 @@ export function SaveAllButton({
         open={naming}
         title="New folder"
         placeholder="Folder name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Continue"
         onSubmit={(name) => {
           setNaming(false);

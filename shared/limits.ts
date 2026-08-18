@@ -45,3 +45,15 @@ export const MAX_HAVE_REFS = 300;
 // raised without the parser limit following it would fail every large save at
 // body-parser, which reports payload-too-large and nothing about why.
 export const MAX_BULK_BOOKMARK_BYTES = MAX_BULK_BOOKMARK_PMIDS * 22;
+
+// Longest name a collection or bookmark folder may carry.
+//
+// A display bound rather than a storage one: these names are drawn in the
+// workspace picker's trigger, in the dropdown rows beside a count badge, and in
+// the Pro panel's per-collection list — none of which have room to grow, and
+// all of which turn a long name into a truncation or a wrapped row.
+//
+// Counted in UTF-16 code units, which is what an input's `maxLength` counts. So
+// the two agree exactly: the box stops accepting at the character the server
+// would have refused, rather than taking a name that fails on submit.
+export const MAX_NAME_CHARS = 30;

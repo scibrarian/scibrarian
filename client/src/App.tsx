@@ -33,6 +33,7 @@ import {
   Plus,
   SearchCheck,
 } from "lucide-react";
+import { MAX_NAME_CHARS } from "../../shared/limits";
 
 // The prose below points at the Library workspace by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
@@ -1027,6 +1028,7 @@ export default function App() {
         open={namingFolder}
         title="New folder"
         placeholder="Folder name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Create"
         onSubmit={createFolder}
         onCancel={() => setNamingFolder(false)}
@@ -1036,6 +1038,7 @@ export default function App() {
         open={namingCollection}
         title="New collection"
         placeholder="Collection name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Create"
         // Pre-filled, never a gate. The common case — this really is work for
         // the organization you are paired to — costs nothing, and the exception

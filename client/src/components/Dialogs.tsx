@@ -74,6 +74,7 @@ export function PromptDialog({
   placeholder,
   initialValue = "",
   inputType = "text",
+  maxLength,
   submitLabel,
   option,
   onSubmit,
@@ -84,6 +85,12 @@ export function PromptDialog({
   placeholder?: string;
   initialValue?: string;
   inputType?: "text" | "password";
+  /**
+   * Longest value the box will accept, for the names that have a cap (see
+   * MAX_NAME_CHARS). Omitted where there isn't one — the admin token is
+   * whatever the operator set, and a cap there would silently truncate it.
+   */
+  maxLength?: number;
   submitLabel: string;
   /**
    * An optional pre-filled choice shown beneath the input.
@@ -124,6 +131,7 @@ export function PromptDialog({
           onChange={(e) => setValue(e.target.value)}
           placeholder={placeholder}
           autoFocus
+          maxLength={maxLength}
         />
         {option && (
           <label className="modal-option">

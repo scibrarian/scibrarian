@@ -117,7 +117,7 @@ import type {
   TopicSuggestResponse,
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
-import { MAX_BULK_BOOKMARK_PMIDS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
+import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -746,6 +746,25 @@ api.get(
 
 // ---------- workspace entry names (collections + bookmark folders) ----------
 
+// A name a person typed, checked at both ends before anything looks it up:
+// non-empty once trimmed, and no longer than the picker has room to draw. Sends
+// its own 400 and returns true when the name is unusable, so each route below
+// reads as one line rather than repeating both branches four times.
+//
+// The cap is shared with the client, which sets it as the input's maxLength —
+// this is the backstop for a request that didn't come from that box.
+function badName(res: Response, name: string): boolean {
+  if (!name) {
+    res.status(400).json({ error: "'name' is required." });
+    return true;
+  }
+  if (name.length > MAX_NAME_CHARS) {
+    res.status(400).json({ error: `A name can be at most ${MAX_NAME_CHARS} characters.` });
+    return true;
+  }
+  return false;
+}
+
 // Names within a workspace are unique case-insensitively (see the unique index
 // in db.ts) — two entries with the same name are indistinguishable in the
 // picker. Sends the 409 and returns true when the requested name belongs to a
@@ -783,7 +802,7 @@ api.get("/bookmark-folders", (_req, res) => {
 
 api.post("/bookmark-folders", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (nameTaken(res, "folder", bookmarkFolderByName(name), null)) return;
   try {
     res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 });
@@ -795,7 +814,7 @@ api.post("/bookmark-folders", (req, res) => {
 api.put("/bookmark-folders/:id", (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
   if (nameTaken(res, "folder", bookmarkFolderByName(name), id)) return;
   try {
@@ -910,7 +929,7 @@ api.get("/collections", (_req, res) => {
 
 api.post("/collections", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (nameTaken(res, "collection", collectionByName(name), null)) return;
   try {
     res.status(201).json(createCollection(name));
@@ -922,7 +941,7 @@ api.post("/collections", (req, res) => {
 api.put("/collections/:id", (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
   if (nameTaken(res, "collection", collectionByName(name), id)) return;
   try {
