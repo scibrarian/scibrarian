@@ -72,6 +72,67 @@ module.exports = {
 
   asar: true,
 
+  // The half build.mjs cannot check. It verifies that @scibrarian/pro resolves
+  // from electron/bundle *on disk*; what reaches a user is whatever `files`
+  // collected into the archive, and a glob edit can drop the directory with
+  // nothing failing. The installer would then run as a free build in a paying
+  // customer's hands — loadPro reads an unresolvable specifier as "not
+  // installed", which is the one failure that looks like the product working.
+  //
+  // Asserted against the packed artifact rather than the inputs, because the
+  // gap being closed is precisely between the two.
+  afterPack: async (context) => {
+    const fs = require("fs");
+    const path = require("path");
+
+    // Presence of the staged copy is exactly "this is a Pro build": build.mjs
+    // removes bundle/node_modules before every build and recreates it only on a
+    // checkout that has pro/. A free build must pack without this, and does.
+    const rel = "bundle/node_modules/@scibrarian/pro/index.js";
+    if (!fs.existsSync(path.join(__dirname, ...rel.split("/")))) return;
+
+    const resources =
+      typeof context.packager.getResourcesDir === "function"
+        ? context.packager.getResourcesDir(context.appOutDir)
+        : context.electronPlatformName === "darwin"
+          ? path.join(
+              context.appOutDir,
+              `${context.packager.appInfo.productFilename}.app`,
+              "Contents",
+              "Resources"
+            )
+          : path.join(context.appOutDir, "resources");
+
+    // asar is on above, and this reads the archive rather than assuming it: a
+    // build with asar turned off lays the same tree out under resources/app,
+    // and a check that only knew one of the two would fail on the other for a
+    // reason that has nothing to do with Pro.
+    const archive = path.join(resources, "app.asar");
+    const packed = fs.existsSync(archive)
+      ? require("@electron/asar")
+          .listPackage(archive)
+          // Entries come back separator-joined by the machine that packed and
+          // with a leading separator, so both are normalised away before
+          // comparing. path.sep is that separator: this is listing an archive
+          // written moments ago by this same process.
+          .map((e) => e.split(path.sep).join("/"))
+          .some((e) => (e.startsWith("/") ? e.slice(1) : e) === rel)
+      : fs.existsSync(path.join(resources, "app", ...rel.split("/")));
+
+    if (!packed) {
+      throw new Error(
+        `This is a Pro build, but ${rel} is not in the packaged app at ${resources}. ` +
+          "The installer would run as a free build with nothing reporting a problem. " +
+          "Check the `files` globs above."
+      );
+    }
+
+    // Said out loud, because a silent check is indistinguishable from one that
+    // did not run — which is the state this hook was added to end. The build
+    // already names the tier it produced; this names the tier it verified.
+    console.log(`  • verified in app.asar: ${rel}`);
+  },
+
   win: {
     target: "nsis",
     icon: "build/icon.ico",
