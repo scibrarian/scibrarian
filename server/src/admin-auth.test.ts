@@ -3,6 +3,7 @@ import net, { type AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeTempDb, openTempDb } from "./test-db.js";
+import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Which credentials open the admin gate.
 //
@@ -228,17 +229,23 @@ describe("a duplicated X-Admin-Token", () => {
   });
 });
 
-// api.ts tells our 401 from an edge's by the absence of this header, and drops
-// the stored admin token only for ours — otherwise a re-provisioned site
-// password, which makes Caddy challenge an already-open tab, would read as "the
-// admin token was rejected" and silently discard a good one. RFC 9110 requires
-// WWW-Authenticate on a 401 from something that authenticates, so the two are
-// distinguishable; this pins the half of that contract the server owns.
+// api.ts tells our 401 from an edge's by a field this gate puts in the body,
+// and drops the stored admin token only for ours — otherwise a re-provisioned
+// site password, which makes Caddy challenge an already-open tab, would read as
+// "the admin token was rejected" and silently discard a good one. This pins the
+// half of that contract the server owns; client/src/api.test.ts pins the other.
+//
+// WWW-Authenticate is asserted for a separate reason that still holds: a 401
+// carrying it makes the browser raise its own credential prompt, over an API the
+// user never asked to log in to.
 describe("the 401 the gate sends", () => {
-  it("carries no WWW-Authenticate, and says why in JSON", async () => {
+  it("marks itself as ours, and does not make the browser prompt", async () => {
     const res = await fetch(`${base}/api/no-such-route`, { method: "POST" });
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate")).toBeNull();
-    expect(await res.json()).toEqual({ error: "Admin access required." });
+    expect(await res.json()).toEqual({
+      error: "Admin access required.",
+      code: ADMIN_TOKEN_REJECTED,
+    });
   });
 });

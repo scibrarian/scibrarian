@@ -118,6 +118,7 @@ import type {
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
+import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -228,7 +229,9 @@ export function isAdminRequest(req: Request): boolean {
 api.use((req, res, next) => {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
   if (isAdminRequest(req)) return next();
-  res.status(401).json({ error: "Admin access required." });
+  // `code` rather than the shape of the response: api.ts acts on this to tell
+  // our refusal from an edge's. See ADMIN_TOKEN_REJECTED.
+  res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
 });
 
 // The owner's opt-in that lets viewers download stored PDFs without a share
