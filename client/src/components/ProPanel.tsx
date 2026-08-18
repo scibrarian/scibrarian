@@ -4,6 +4,7 @@ import { ApiError, api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { describeSweep, errorMessage } from "../lib/format";
 import { Banner } from "./Banner";
+import { ProPanelSkeleton } from "./Skeleton";
 import type {
   Collection,
   ProCollectionStamp,
@@ -39,10 +40,20 @@ import type {
 // cannot derive locally is announced instead.
 
 export function ProPanel({
+  ready,
+  onReady,
   desktop,
   onPairingChanged,
   onSharingChanged,
 }: {
+  /**
+   * Whether Settings has decided the whole page may be drawn. False renders
+   * this panel's stand-in, never a hollow version of the real thing — the
+   * unpaired form used to paint on mount and be replaced a request later.
+   */
+  ready: boolean;
+  /** Called once, when the first reload settles either way. See `ready`. */
+  onReady: () => void;
   /**
    * Whether this instance is the desktop app, or null while the setting that
    * says so is still loading. Passed down rather than read here: it comes from
@@ -145,7 +156,11 @@ export function ProPanel({
   }
 
   useEffect(() => {
-    void reload();
+    // Reported on settle, not on success: reload() is built on allSettled and
+    // resolves whatever answered, so a master that 404s still leaves this panel
+    // with everything it is going to get. Waiting for a clean run would hold
+    // the whole Settings page skeletal behind one unreachable endpoint.
+    void reload().then(onReady);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -291,6 +306,10 @@ export function ProPanel({
     if (new Date(n.expires_at) <= new Date()) return "expired";
     return n.confirmed_at == null ? "pending" : "active";
   };
+
+  // After every hook, so the hook order is the same on both paths — and after
+  // the effect above, which is what eventually makes this false.
+  if (!ready) return <ProPanelSkeleton master={desktop === false} />;
 
   return (
     <section className="panel pro-panel">

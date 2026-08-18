@@ -256,3 +256,62 @@ export function PapersTableSkeleton({
     </div>
   );
 }
+
+// Stands in for the Pro panel while its own reload is in flight.
+//
+// Sized to the panel's shortest *certain* state. The spoke half is always
+// drawn, so it is always reserved; the master half is drawn whenever this is
+// not the desktop build, which Settings already knows by the time this renders
+// — so `master` reserves a fact rather than guessing at one.
+//
+// What is deliberately not reserved is anything conditional on the pairing: the
+// collections list, the mint form's minted code, the node rows. Those are
+// growth, and growth is the one direction a stand-in may be wrong in. See the
+// Topics list for what happens when it reserves for a guess and the answer
+// comes back smaller.
+//
+// The real headings rather than bars over them. They never change, so a shimmer
+// there would be standing in for strings this file already knows.
+export function ProPanelSkeleton({ master }: { master: boolean }) {
+  return (
+    <section className="panel pro-panel" aria-busy="true" aria-label="Loading shared holdings">
+      <h3>Shared holdings</h3>
+      <SkeletonBar w="92%" h={12} style={{ marginBottom: 6 }} />
+      <SkeletonBar w="70%" h={12} style={{ marginBottom: 18 }} />
+      <h4>Your organization</h4>
+      <SkeletonBar w="46%" h={12} style={{ marginBottom: 10 }} />
+      {/* The pairing row: a full-width input beside its button, which is what
+          sets the spoke half's height more than anything else in it. */}
+      <ProSkeletonRow button={92} />
+      {master && (
+        <>
+          <h4>People connected to this library</h4>
+          <SkeletonBar w="88%" h={12} style={{ marginBottom: 4 }} />
+          <SkeletonBar w="52%" h={12} style={{ marginBottom: 12 }} />
+          {/* The license line, which is present in every state including the
+              good one — so it is reserved rather than treated as an alert. */}
+          <SkeletonBar w="100%" h={36} style={{ borderRadius: 8, marginBottom: 10 }} />
+          <ProSkeletonRow button={112} />
+          <SkeletonBar w="76%" h={12} style={{ marginBottom: 10 }} />
+          {/* Organization name, then this library's public address. */}
+          <SkeletonBar w="100%" h={38} style={{ borderRadius: 8, marginBottom: 12 }} />
+          <SkeletonBar w="100%" h={38} style={{ borderRadius: 8, marginBottom: 6 }} />
+          <SkeletonBar w="90%" h={12} style={{ marginBottom: 14 }} />
+          <ProSkeletonRow button={104} />
+          <SkeletonBar w="34%" h={12} />
+        </>
+      )}
+    </section>
+  );
+}
+
+// An input with a button beside it — the shape most of the Pro panel is made
+// of. Reproduces .pro-row's own flex so the two measure the same.
+function ProSkeletonRow({ button }: { button: number }) {
+  return (
+    <div className="pro-row">
+      <SkeletonBar w="100%" h={38} style={{ flex: "1 1 220px", borderRadius: 8 }} />
+      <SkeletonBar w={button} h={38} style={{ borderRadius: 8 }} />
+    </div>
+  );
+}
