@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Copy, Check, KeyRound, Link2, TriangleAlert, Unlink } from "lucide-react";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { describeSweep, errorMessage } from "../lib/format";
 import { Banner } from "./Banner";
@@ -65,6 +65,14 @@ export function ProPanel({
   const lastStamps = useRef<ProCollectionStamp[] | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [licenseKey, setLicenseKey] = useState("");
+  // A licence refused for being shorter than the one already saved.
+  //
+  // Held apart from `error` because it is not a failure — it is a question. The
+  // banner reports things that went wrong and clears on the next action; this
+  // has to survive long enough for the operator to answer it, and carries the
+  // answer beside it. Cleared when the box is edited, since a new key makes the
+  // old refusal moot.
+  const [licenseConflict, setLicenseConflict] = useState<string | null>(null);
   // The last sweep's counts, so "Sync now" reports something rather than
   // appearing to do nothing when everything is already up to date.
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -153,6 +161,15 @@ export function ProPanel({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Both ways in — the ordinary save and the deliberate replace — so the
+  // clearing that has to follow a success is written once. Throws on to run(),
+  // which is what puts an ordinary failure in the banner.
+  async function saveLicense(replace: boolean) {
+    await api.proSetLicense(licenseKey.trim(), replace);
+    setLicenseKey("");
+    setLicenseConflict(null);
   }
 
   // The two that change `is_paired`. Minting and revoking don't: they make this
@@ -415,15 +432,27 @@ export function ProPanel({
         onSubmit={(e) => {
           e.preventDefault();
           void run(async () => {
-            await api.proSetLicense(licenseKey.trim());
-            setLicenseKey("");
+            try {
+              await saveLicense(false);
+            } catch (err) {
+              // The one refusal with an answer. Caught rather than thrown on,
+              // so run() leaves the banner alone and the panel asks instead.
+              if (err instanceof ApiError && err.status === 409) {
+                setLicenseConflict(err.message);
+                return;
+              }
+              throw err;
+            }
           });
         }}
       >
         <div className="pro-row">
           <input
             value={licenseKey}
-            onChange={(e) => setLicenseKey(e.target.value)}
+            onChange={(e) => {
+              setLicenseKey(e.target.value);
+              setLicenseConflict(null);
+            }}
             placeholder={license?.verdict === "valid" ? "Replace licence key" : "Licence key"}
             spellCheck={false}
           />
@@ -431,6 +460,22 @@ export function ProPanel({
             Save licence
           </button>
         </div>
+        {licenseConflict && (
+          <p className="pro-license bad">
+            <TriangleAlert size={14} className="inline-icon" aria-hidden />
+            <span>
+              {licenseConflict}{" "}
+              <button
+                type="button"
+                className="pro-license-answer"
+                disabled={busy || !licenseKey.trim()}
+                onClick={() => void run(() => saveLicense(true))}
+              >
+                Replace anyway
+              </button>
+            </span>
+          </p>
+        )}
         <p className="hint">
           Entered once per organization. It is checked on this machine and never sent anywhere.
         </p>

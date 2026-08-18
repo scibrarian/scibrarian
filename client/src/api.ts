@@ -59,6 +59,25 @@ export function setAuthRejectedHandler(fn: () => void): void {
   onAuthRejected = fn;
 }
 
+/**
+ * A failed request, carrying the status alongside the server's message.
+ *
+ * Still an Error, so errorMessage() and every existing `catch` are unaffected —
+ * what the status adds is the ability to tell one refusal from another. Almost
+ * nothing needs that: a banner reads the message and stops. The exception is a
+ * refusal the user can *answer*, where the panel has to know which question it
+ * is being asked before it can offer the reply.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   // FormData bodies must set their own multipart boundary header.
@@ -91,7 +110,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       /* ignore non-JSON error bodies */
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -290,10 +309,14 @@ export const api = {
     req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
   // An empty string clears it. There is no getter: the licence is reported
   // through proNodes(), which never returns the key itself.
-  proSetLicense: (licenseKey: string) =>
+  //
+  // `replace` waves past the one refusal an operator can answer: a key that
+  // expires before the licence already saved. Sent only when they have been
+  // shown what they would be giving up and asked for it again — see ProPanel.
+  proSetLicense: (licenseKey: string, replace = false) =>
     req<{ license: ProLicense }>("/api/pro/license", {
       method: "PUT",
-      body: JSON.stringify({ license_key: licenseKey }),
+      body: JSON.stringify({ license_key: licenseKey, replace }),
     }),
 
   // Unlike the licence above, an empty string is refused rather than treated as

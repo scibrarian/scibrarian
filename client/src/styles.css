@@ -3092,6 +3092,15 @@ html {
   color: #15803d;
 }
 
+/* The answer to a refused licence swap, inline in the sentence that raised it.
+   A detached row read as an unrelated action; this one is only ever the reply
+   to the question immediately before it. */
+.pro-license-answer {
+  font-size: inherit;
+  padding: 1px 8px;
+  vertical-align: baseline;
+}
+
 /* Expired, invalid, or every seat taken — all of them mean "you cannot connect
    anyone new until you act", so they share one treatment. */
 .pro-license.bad {
