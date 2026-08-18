@@ -198,6 +198,27 @@ export async function start(): Promise<{ port: number; url: string }> {
     );
   }
 
+  // A comma is the one character the token cannot contain. Node folds repeated
+  // headers of one name into a single comma-joined value, and
+  // presentedAdminTokens recovers ours by splitting that back apart — which
+  // cannot reassemble a token that has a comma in it. So an inserted
+  // X-Admin-Token would refuse every mutation, with no Bearer to fall back to
+  // behind an edge login, and the client reads that 401 as the token being
+  // rejected and discards it.
+  //
+  // Refused at startup rather than left to fail there, because the failure
+  // needs the injected header to be present: it is intermittent, invisible in
+  // any local test, and indistinguishable from a wrong password when it lands.
+  if (ADMIN_TOKEN.includes(",")) {
+    throw new Error(
+      "Refusing to start: ADMIN_TOKEN contains a comma, which it cannot survive. " +
+        "Repeated headers of one name are folded into a comma-joined value, so an " +
+        "inserted X-Admin-Token would leave this token unrecoverable and refuse every " +
+        "mutation. Set ADMIN_TOKEN in server/.env to a value with no comma in it — the " +
+        "setup scripts generate hex."
+    );
+  }
+
   // Before the bind, so no request can arrive at a half-registered Pro router.
   // A module that fails to load is fatal rather than a silent downgrade to the
   // free tier — see loadPro for why that distinction matters.

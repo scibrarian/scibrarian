@@ -56,6 +56,9 @@ export const HOST_IS_LOOPBACK =
 // use Authorization — behind an edge login that header is already taken.
 // When empty, the app behaves as before: single user, no auth (loopback only).
 // Trimmed so a pasted trailing newline in .env doesn't break every unlock.
+// A comma in it is refused at startup (see index.ts): repeated headers of one
+// name arrive comma-joined, and the split that recovers ours from that cannot
+// reassemble a token containing the separator.
 export const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();
 
 export const DB_PATH = path.isAbsolute(process.env.DB_PATH || "")
