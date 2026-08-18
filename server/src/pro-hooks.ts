@@ -455,6 +455,20 @@ export async function loadPro(ctx: ProContext): Promise<ProModule | null> {
 }
 
 /**
+ * Whether this build has a Pro module, asked without loading it.
+ *
+ * Its own export rather than an inference from `loadPro() === null`, because a
+ * configuration can have to be refused *before* the module is touched. loadPro
+ * awaits init(), which writes Pro's schema into the operator's database and arms
+ * its timers; a refusal after that point has already changed the database for a
+ * configuration the server then declines to run. See the ADMIN_TOKEN guard in
+ * index.ts, which is the caller this exists for.
+ */
+export function proInstalled(): boolean {
+  return installed(PRO_SPECIFIER);
+}
+
+/**
  * Whether the specifier resolves at all — "is Pro installed?", asked on its own
  * rather than inferred from why an import failed.
  *

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb } from "./test-db.js";
 
 // A hosted Pro instance may not run with everyone as the owner.
@@ -13,9 +13,11 @@ import { closeTempDb, openTempDb } from "./test-db.js";
 // routes, with nothing reporting a problem.
 //
 // Asserted through start(), because the failure being prevented is one of
-// placement. A check that ran before loadPro, after the bind, or outside the
-// `if (pro)` branch would satisfy any unit test of the condition itself and
-// still be wrong in a way that matters.
+// placement. A check that ran after loadPro, or after the bind, would satisfy
+// any unit test of the condition itself and still be wrong in a way that
+// matters: loadPro awaits init(), which writes Pro's schema into the operator's
+// database and arms its sweep, so refusing afterwards has already changed the
+// database for a configuration the server then declines to run.
 
 // Both must be unset before config.ts is evaluated — it reads process.env once,
 // at module scope. This is the hosted, tokenless Pro shape.
@@ -26,22 +28,25 @@ process.env.ADMIN_TOKEN = "";
 // 3001 from whatever else is using it.
 process.env.PORT = "0";
 
-// loadPro cannot answer honestly in this runner: it asks import.meta.resolve,
-// which vite does not provide, so the real one reports "no Pro installed" and
-// start() would skip the entire branch under test. Stubbed to the smallest
-// thing that says "this checkout has Pro" — and routes() throws, because the
-// guard is meant to fire before anything is mounted.
+// proInstalled cannot answer honestly in this runner: it asks
+// import.meta.resolve, which vite does not provide, so the real one reports "no
+// Pro installed" and start() would skip the branch under test. Stubbed to the
+// smallest thing that says "this build has Pro" — and loadPro throws rather
+// than returning a module, because reaching it at all is the failure: it is
+// what runs init().
+// Mutable so the free case below can flip it. The env this file sets — no
+// token, not desktop — is the free build's shape too, so the only thing
+// separating the two cases is whether a Pro module is present.
+let proIsInstalled = true;
+
 vi.mock("./pro-hooks.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pro-hooks.js")>();
   return {
     ...actual,
-    loadPro: async () => ({
-      version: "test",
-      init: async () => {},
-      routes: () => {
-        throw new Error("routes() was mounted: the guard did not run before it");
-      },
-    }),
+    proInstalled: () => proIsInstalled,
+    loadPro: async () => {
+      throw new Error("loadPro was called: the guard did not run before it");
+    },
   };
 });
 
@@ -55,6 +60,10 @@ afterAll(() => {
 });
 
 describe("a hosted Pro instance with no ADMIN_TOKEN", () => {
+  beforeEach(() => {
+    proIsInstalled = true;
+  });
+
   it("refuses to start", async () => {
     const { start } = await import("./index.js");
     await expect(start()).rejects.toThrow(/Refusing to start/);
@@ -74,13 +83,41 @@ describe("a hosted Pro instance with no ADMIN_TOKEN", () => {
     // uncovered. A free build has always been allowed to run tokenless on
     // loopback and that is most of the installed base; hoisting this check out
     // of the `if (pro)` branch to "simplify" it would refuse every one of them.
-    expect(err.message).toMatch(/Pro module is loaded/);
+    expect(err.message).toMatch(/Pro build/);
   });
 
-  it("refuses before mounting the Pro routes, not after", async () => {
+  it("refuses before the module is loaded, not after", async () => {
     const { start } = await import("./index.js");
-    // The stub's routes() throws its own message. Getting that one instead
-    // would mean the guard ran too late to have prevented anything.
-    await expect(start()).rejects.not.toThrow(/was mounted/);
+    // The stub's loadPro throws its own message. Getting that one instead would
+    // mean init() had already run — Pro's tables written into the operator's
+    // database, its sweep armed — before the server said no.
+    await expect(start()).rejects.not.toThrow(/was called/);
+  });
+});
+
+// The other half of the condition, which used to be structural and is not any
+// more. While the check lived inside `if (pro)`, a build with no Pro module
+// could not reach it whatever the condition said; asking proInstalled() ahead
+// of loadPro moved that guarantee into a value, so it is asserted rather than
+// assumed. A free build has always been allowed to run tokenless on loopback
+// and that is most of the installed base — refusing them would be the worst
+// regression this file could miss.
+describe("a free build with no ADMIN_TOKEN", () => {
+  beforeEach(() => {
+    proIsInstalled = false;
+  });
+
+  it("is allowed to start tokenless", async () => {
+    const { start } = await import("./index.js");
+    // Getting the stub's own error is the pass: execution ran *past* the guard
+    // and reached loadPro. Asserting on the tripwire rather than on a completed
+    // start() keeps this cheap — a start() that returns goes on to bind a port,
+    // arm the cron schedule and fetch the journal catalog over the network.
+    await expect(start()).rejects.toThrow(/loadPro was called/);
+  });
+
+  it("is not refused for the reason a Pro build would be", async () => {
+    const { start } = await import("./index.js");
+    await expect(start()).rejects.not.toThrow(/Refusing to start/);
   });
 });

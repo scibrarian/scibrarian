@@ -15,7 +15,7 @@ import {
 } from "./config.js";
 import { db, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
 import { api, isAdminRequest } from "./routes.js";
-import { loadPro } from "./pro-hooks.js";
+import { loadPro, proInstalled } from "./pro-hooks.js";
 import {
   collectionExists,
   heldFile,
@@ -219,6 +219,49 @@ export async function start(): Promise<{ port: number; url: string }> {
     );
   }
 
+  // A Pro instance nobody has to authenticate to is not one we will run.
+  // Pro's owner-facing routes mint pairing codes, list who is connected and
+  // rewrite this library's public address; with no ADMIN_TOKEN set,
+  // isAdminRequest answers true for every caller, so all fourteen are gated
+  // on nothing whatsoever.
+  //
+  // The loopback guard above does not reach this. It treats a loopback bind
+  // as "only this machine", which stops being true the moment a reverse proxy
+  // is put in front — and for a master that is the documented shape, not a
+  // mistake: pro/Caddyfile.pro.example exempts /api/pro from the edge login,
+  // because a spoke authenticates with a bearer token and HTTP basic auth
+  // wants the same header. A loopback bind plus that carve-out puts those
+  // routes on the public internet, and nothing anywhere reports a problem —
+  // the library comes up and works perfectly.
+  //
+  // Keyed on the packaging rather than on anything Pro stores. The desktop
+  // app is a Pro build too and is deliberately tokenless (main.mjs sets it
+  // empty), and it is the one place where "single local user" is the truth
+  // rather than an omission; every other Pro instance is hosted, and hosted
+  // means reachable. Master-shaped state — a licence, a public address,
+  // paired nodes — was the other candidate and is worse: a freshly
+  // provisioned master has none of it yet, so the check would pass at exactly
+  // the moment the operator is least likely to look again.
+  //
+  // The cost is that `npm run dev -w server` on a checkout with pro/ linked
+  // now needs a token too, which is why the message names the file to put one
+  // in. Exempting loopback instead would give that back and reopen the hole,
+  // since a loopback bind is what the deployment above already has.
+  //
+  // Asked of the packaging before loadPro, not of the module after it. loadPro
+  // awaits init(), which applies Pro's schema to the operator's database and
+  // arms its sweep; refusing afterwards would leave both behind for a
+  // configuration this server just declined to run.
+  if (!IS_DESKTOP && !ADMIN_TOKEN && proInstalled()) {
+    throw new Error(
+      "Refusing to start: this is a Pro build but ADMIN_TOKEN is not set, so " +
+        "every caller would be treated as the owner — including anyone reaching " +
+        "/api/pro through a reverse proxy, which pro/Caddyfile.pro.example exempts " +
+        "from the edge login by design. Set ADMIN_TOKEN in server/.env (any value " +
+        "will do for local development)."
+    );
+  }
+
   // Before the bind, so no request can arrive at a half-registered Pro router.
   // A module that fails to load is fatal rather than a silent downgrade to the
   // free tier — see loadPro for why that distinction matters.
@@ -238,43 +281,6 @@ export async function start(): Promise<{ port: number; url: string }> {
     storePulledFile,
   });
   if (pro) {
-    // A Pro instance nobody has to authenticate to is not one we will run.
-    // Pro's owner-facing routes mint pairing codes, list who is connected and
-    // rewrite this library's public address; with no ADMIN_TOKEN set,
-    // isAdminRequest answers true for every caller, so all fourteen are gated
-    // on nothing whatsoever.
-    //
-    // The loopback guard above does not reach this. It treats a loopback bind
-    // as "only this machine", which stops being true the moment a reverse proxy
-    // is put in front — and for a master that is the documented shape, not a
-    // mistake: pro/Caddyfile.pro.example exempts /api/pro from the edge login,
-    // because a spoke authenticates with a bearer token and HTTP basic auth
-    // wants the same header. A loopback bind plus that carve-out puts those
-    // routes on the public internet, and nothing anywhere reports a problem —
-    // the library comes up and works perfectly.
-    //
-    // Keyed on the packaging rather than on anything Pro stores. The desktop
-    // app is a Pro build too and is deliberately tokenless (main.mjs sets it
-    // empty), and it is the one place where "single local user" is the truth
-    // rather than an omission; every other Pro instance is hosted, and hosted
-    // means reachable. Master-shaped state — a licence, a public address,
-    // paired nodes — was the other candidate and is worse: a freshly
-    // provisioned master has none of it yet, so the check would pass at exactly
-    // the moment the operator is least likely to look again.
-    //
-    // The cost is that `npm run dev -w server` on a checkout with pro/ linked
-    // now needs a token too, which is why the message names the file to put one
-    // in. Exempting loopback instead would give that back and reopen the hole,
-    // since a loopback bind is what the deployment above already has.
-    if (!IS_DESKTOP && !ADMIN_TOKEN) {
-      throw new Error(
-        "Refusing to start: the Pro module is loaded but ADMIN_TOKEN is not set, so " +
-          "every caller would be treated as the owner — including anyone reaching " +
-          "/api/pro through a reverse proxy, which pro/Caddyfile.pro.example exempts " +
-          "from the edge login by design. Set ADMIN_TOKEN in server/.env (any value " +
-          "will do for local development)."
-      );
-    }
     proRouter.use(pro.routes());
     console.log(`[server] Pro module ${pro.version} loaded`);
   }
