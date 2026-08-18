@@ -1896,7 +1896,16 @@ html {
   gap: 12px;
 }
 
+/* The switch is drawn as two pills with a gap: the Library, then the two
+   workspaces that are about deciding what to keep. The container carries the
+   grouping and the gap; each pill carries the border, the radius and the
+   overflow clip that makes .active fill to its edges. */
 .mode-switch {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.mode-pill {
   display: inline-flex;
   border: 1px solid var(--border);
   border-radius: var(--radius);
