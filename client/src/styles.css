@@ -93,6 +93,29 @@ body {
   color: var(--accent);
 }
 
+/* Reload the page.
+
+   Borderless, where the gear and the padlock are boxed: those sit in a cluster
+   of controls at the far end of the header, and a bordered button up against
+   the wordmark reads as attached to it. Muted until hovered, so it annotates
+   the title rather than competing with it. */
+.reload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  line-height: 1;
+  padding: 4px;
+  cursor: pointer;
+}
+
+.reload-btn:hover {
+  color: var(--text);
+}
+
 /* ---------- icons ---------- */
 
 /* Icons are sized via the `size` prop in JSX; keep them from shrinking inside

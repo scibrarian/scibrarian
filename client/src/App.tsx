@@ -31,6 +31,7 @@ import {
   LockOpen,
   FilePlus,
   Plus,
+  RotateCw,
   SearchCheck,
 } from "lucide-react";
 import { MAX_NAME_CHARS } from "../../shared/limits";
@@ -786,6 +787,27 @@ export default function App() {
           <span className="logo"><Dna aria-hidden /></span>
           <h1>Scibrarian</h1>
           <span className="version">v{__APP_VERSION__}</span>
+          {/* A real page reload, not a refetch. What it is reached for is a view
+              in a state the app's own cache invalidation didn't fix, and asking
+              the same code that produced that state to repair it is the thing
+              that already didn't work.
+
+              In the brand rather than beside the gear for two reasons. The
+              desktop build is a plain BrowserWindow with no address bar, so
+              there is no reload anywhere on screen and the accelerator is the
+              only way out — for a window that looks like an app, not a browser
+              tab, that is not a discoverable one. And the header's controls are
+              stand-ins until the first load resolves, while this has to work
+              during exactly that load: a first paint that never finishes is
+              what it is for. */}
+          <button
+            className="reload-btn"
+            onClick={() => window.location.reload()}
+            aria-label="Reload"
+            title="Reload"
+          >
+            <RotateCw size={15} aria-hidden />
+          </button>
         </div>
         <div className="header-actions">
           {!loaded ? (
