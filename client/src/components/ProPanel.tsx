@@ -284,7 +284,7 @@ export function ProPanel({
   };
 
   return (
-    <section className="panel">
+    <section className="panel pro-panel">
       <h3>Shared holdings</h3>
       <p className="hint">
         Connect this library to your organization&rsquo;s, so a paper someone has already bought

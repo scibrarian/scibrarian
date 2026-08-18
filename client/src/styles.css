@@ -2954,6 +2954,75 @@ html {
   min-width: 0;
 }
 
+/* The panel's buttons.
+
+   Every other control in Settings is styled and these were not: nothing in the
+   stylesheet named them, so Connect, Sync now, Save license, Create code, Copy,
+   Share, Disconnect and Revoke all rendered as raw UA chrome inside a panel
+   sitting directly under "Manage journals…" and "Save settings". The two
+   className="primary" and className="danger" hints already in the markup named
+   variants that existed nowhere.
+
+   Scoped to the panel rather than to .pro-form/.pro-row/.pro-nodes/... A list
+   of five container selectors is a list of five things to remember the next
+   time a button moves, and one of them silently reverting to UA chrome is
+   exactly the failure being fixed.
+
+   Three roles, because the panel needs three: Disconnect and Sync now are
+   ordinary, Connect and Create code commit something, Revoke ends someone's
+   access. The sizes come from .accent-btn one panel up rather than from
+   .modal-actions — what these sit beside is the rest of Settings, not a
+   dialog's footer.
+
+   The border is on every variant, transparent under the fills. .pro-row is
+   align-items: center against a bordered input, so a fill with no border draws
+   2px shorter than the box beside it — and 2px shorter than the outlines it
+   shares a row with. */
+.pro-panel button:not(.pro-license-answer) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pro-panel button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pro-panel button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* Matches the app's other disabled buttons (.refresh-btn, .accent-btn): dimmed,
+   no pointer affordance. Nearly every button here takes it — `busy` disables
+   the lot while a request is in flight. */
+.pro-panel button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Smaller inside the two row-lists, which are lists of facts rather than banks
+   of switches (see .pro-collections). At the full size one button per row makes
+   each row taller than the name it annotates, which turns both lists into
+   toolbars — the reading those lists are shaped to avoid. */
+.pro-nodes li button,
+.pro-collections li button {
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
 /* Shown once and never again, so it reads as something to act on now. */
 .pro-minted {
   margin: 10px 0;
@@ -3094,10 +3163,22 @@ html {
 
 /* The answer to a refused license swap, inline in the sentence that raised it.
    A detached row read as an unrelated action; this one is only ever the reply
-   to the question immediately before it. */
+   to the question immediately before it.
+
+   So it is the one button excluded from .pro-panel button above: at that size
+   and padding it would break the sentence it sits in. It takes the same
+   vocabulary at inline scale instead, drawing its edge from currentColor —
+   which is the warn tone .pro-license.bad sets on the sentence around it. */
 .pro-license-answer {
   font-size: inherit;
   padding: 1px 8px;
+  background: var(--panel);
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
   vertical-align: baseline;
 }
 
