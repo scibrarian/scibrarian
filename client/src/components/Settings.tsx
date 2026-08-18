@@ -406,7 +406,11 @@ export function Settings({
 
       {/* Absent entirely in a free build — `pro` is null there. */}
       {pro && (
-        <ProPanel onPairingChanged={onPairingChanged} onSharingChanged={onSharingChanged} />
+        <ProPanel
+          desktop={settings?.desktop ?? null}
+          onPairingChanged={onPairingChanged}
+          onSharingChanged={onSharingChanged}
+        />
       )}
 
       <section className="panel">

@@ -39,9 +39,18 @@ import type {
 // cannot derive locally is announced instead.
 
 export function ProPanel({
+  desktop,
   onPairingChanged,
   onSharingChanged,
 }: {
+  /**
+   * Whether this instance is the desktop app, or null while the setting that
+   * says so is still loading. Passed down rather than read here: it comes from
+   * /api/settings, which Settings has already fetched, and a second request for
+   * one boolean would answer at its own pace and give this panel a third load
+   * state to be jumpy about.
+   */
+  desktop: boolean | null;
   onPairingChanged: () => void;
   /**
    * Reports the stamps this panel has just reloaded, so the Library's badge and
@@ -416,205 +425,219 @@ export function ProPanel({
         </form>
       )}
 
-      {/* ---- master side: who is connected to this instance ---- */}
-      <h4>People connected to this library</h4>
-      <p className="hint">
-        Run this on the machine that holds your organization&rsquo;s library, then send a pairing
-        code to each writer. Each code is for one person and expires on its own.
-      </p>
+      {/* The master half: minting pairing codes so other people's instances
+          can connect to this one. Absent in the desktop build, which binds to
+          loopback and has no address reachable from outside the machine — every
+          code it minted would point somewhere nobody else can get to, and the
+          address field the mint form is gated on has nothing valid to hold.
 
-      {/* The license. Shown before the mint form because it is what decides
-          whether minting will work — finding that out from a 402 after typing
-          someone's name is the wrong order. */}
-      <LicenseRow license={license} />
-      <form
-        className="pro-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void run(async () => {
-            try {
-              await saveLicense(false);
-            } catch (err) {
-              // The one refusal with an answer. Caught rather than thrown on,
-              // so run() leaves the banner alone and the panel asks instead.
-              if (err instanceof ApiError && err.status === 409) {
-                setLicenseConflict(err.message);
-                return;
-              }
-              throw err;
-            }
-          });
-        }}
-      >
-        <div className="pro-row">
-          <input
-            value={licenseKey}
-            onChange={(e) => {
-              setLicenseKey(e.target.value);
-              setLicenseConflict(null);
+          `desktop === false`, not `!desktop`: the flag arrives with the settings,
+          a request later than this panel's first paint, and null means "not known
+          yet". Showing this and then taking it away is the worse direction —
+          it is a section an operator may already have started reading. */}
+      {desktop === false && (
+        <>
+          {/* ---- master side: who is connected to this instance ---- */}
+          <h4>People connected to this library</h4>
+          <p className="hint">
+            Run this on the machine that holds your organization&rsquo;s library, then send a pairing
+            code to each writer. Each code is for one person and expires on its own.
+          </p>
+
+          {/* The license. Shown before the mint form because it is what decides
+              whether minting will work — finding that out from a 402 after typing
+              someone's name is the wrong order. */}
+          <LicenseRow license={license} />
+          <form
+            className="pro-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void run(async () => {
+                try {
+                  await saveLicense(false);
+                } catch (err) {
+                  // The one refusal with an answer. Caught rather than thrown on,
+                  // so run() leaves the banner alone and the panel asks instead.
+                  if (err instanceof ApiError && err.status === 409) {
+                    setLicenseConflict(err.message);
+                    return;
+                  }
+                  throw err;
+                }
+              });
             }}
-            placeholder={license?.verdict === "valid" ? "Replace license key" : "License key"}
-            spellCheck={false}
-          />
-          <button type="submit" disabled={busy || !licenseKey.trim()}>
-            Save license
-          </button>
-        </div>
-        {licenseConflict && (
-          <p className="pro-license bad">
-            <TriangleAlert size={14} className="inline-icon" aria-hidden />
-            <span>
-              {licenseConflict}{" "}
-              <button
-                type="button"
-                className="pro-license-answer"
-                disabled={busy || !licenseKey.trim()}
-                onClick={() => void run(() => saveLicense(true))}
-              >
-                Replace anyway
-              </button>
-            </span>
-          </p>
-        )}
-        <p className="hint">
-          Entered once per organization. It is checked on this machine and never sent anywhere.
-        </p>
-      </form>
-
-      <div className="pro-row">
-        <input
-          value={orgName}
-          onChange={(e) => setOrgName(e.target.value)}
-          placeholder="Organization name (shown to connected writers)"
-          onBlur={() => void run(() => api.proSetOrgName(orgName))}
-        />
-      </div>
-
-      {/* Entered once. Every pairing code is built from it, so a typo here is a
-          typo in all of them — and it surfaces on someone else's machine, days
-          later, as a code that simply will not connect. */}
-      <div className="pro-row">
-        <input
-          value={publicUrl}
-          onChange={(e) => setPublicUrl(e.target.value)}
-          placeholder="https://library.youragency.com"
-          spellCheck={false}
-          onBlur={() => void savePublicUrlOnBlur()}
-        />
-      </div>
-      <p className="hint">
-        This library&rsquo;s address, as writers reach it from outside your network. Every code
-        you create points here.
-      </p>
-
-      <form className="pro-form" onSubmit={mint}>
-        <div className="pro-row">
-          <input
-            value={newNodeName}
-            onChange={(e) => setNewNodeName(e.target.value)}
-            placeholder="Who is this for? e.g. Dana (freelancer)"
-          />
-          <button
-            type="submit"
-            className="primary"
-            disabled={busy || !newNodeName.trim() || !publicUrl.trim()}
           >
-            Create code
-          </button>
-        </div>
-        {!publicUrl.trim() && (
-          <p className="hint">Set the address above before creating codes.</p>
-        )}
-      </form>
-
-      {minted && (
-        <div className="pro-minted">
-          <p>
-            Pairing code for <strong>{minted.name}</strong> — copy it now, it isn&rsquo;t shown
-            again.
-          </p>
-          <div className="pro-row">
-            <code className="pro-code">{minted.code}</code>
-            <button
-              type="button"
-              onClick={() => {
-                void copyTextToClipboard(minted.code);
-                setCopied(true);
-              }}
-            >
-              {copied ? (
-                <>
-                  <Check size={14} className="inline-icon" aria-hidden /> Copied
-                </>
-              ) : (
-                <>
-                  <Copy size={14} className="inline-icon" aria-hidden /> Copy
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {nodes.length === 0 ? (
-        <p className="hint">Nobody is connected yet.</p>
-      ) : (
-        <ul className="pro-nodes">
-          {nodes.map((n) => {
-            const state = nodeState(n);
-            return (
-              <li key={n.id} className={state === "revoked" || state === "expired" ? "inactive" : ""}>
-                <span className="pro-node-name">{n.name}</span>
-                {/* Taken and given. No gate hangs off this — it is here so the
-                    person who approves purchases can see a writer who pulls a
-                    lot and shares nothing, and ask.
-
-                    Both fields are optional, and absent is not zero: a build
-                    that doesn't record these counters, or a node row predating
-                    them, sends neither. `?? 0` printed "pulled 0 · uploaded 0"
-                    against every writer at once — turning "not measured" into
-                    exactly the accusation this row exists to raise. */}
-                {(n.pulled !== undefined || n.uploaded !== undefined) && (
-                  <span className="hint">
-                    pulled {n.pulled ?? 0} · uploaded {n.uploaded ?? 0}
-                  </span>
-                )}
-                <span className="hint">
-                  {state === "revoked"
-                    ? "revoked"
-                    : state === "expired"
-                      ? "expired"
-                      : state === "pending"
-                        ? "code not used yet"
-                        : `expires ${n.expires_at.slice(0, 10)}`}
-                </span>
-                {!n.revoked_at && (
+            <div className="pro-row">
+              <input
+                value={licenseKey}
+                onChange={(e) => {
+                  setLicenseKey(e.target.value);
+                  setLicenseConflict(null);
+                }}
+                placeholder={license?.verdict === "valid" ? "Replace license key" : "License key"}
+                spellCheck={false}
+              />
+              <button type="submit" disabled={busy || !licenseKey.trim()}>
+                Save license
+              </button>
+            </div>
+            {licenseConflict && (
+              <p className="pro-license bad">
+                <TriangleAlert size={14} className="inline-icon" aria-hidden />
+                <span>
+                  {licenseConflict}{" "}
                   <button
                     type="button"
-                    className="danger"
-                    disabled={busy}
-                    onClick={() => void run(() => api.proRevokeNode(n.id))}
+                    className="pro-license-answer"
+                    disabled={busy || !licenseKey.trim()}
+                    onClick={() => void run(() => saveLicense(true))}
                   >
-                    Revoke
+                    Replace anyway
                   </button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                </span>
+              </p>
+            )}
+            <p className="hint">
+              Entered once per organization. It is checked on this machine and never sent anywhere.
+            </p>
+          </form>
 
-      {/* Shown exactly when a Revoke button is on screen. This used to read
-          pro.node_count — a number from the /auth call made once at page load
-          and never refreshed, while the list beside it reloads after every mint
-          and revoke. On a fresh master, pairing the first writer left this
-          hidden with a live node listed above it; revoking the last one left it
-          showing. The loaded list is the answer already in hand. */}
-      {nodes.some((n) => !n.revoked_at) && (
-        <p className="hint">
-          Revoking stops future lookups and copies. It cannot take back anything already copied
-          to someone&rsquo;s machine.
-        </p>
+          <div className="pro-row">
+            <input
+              value={orgName}
+              onChange={(e) => setOrgName(e.target.value)}
+              placeholder="Organization name (shown to connected writers)"
+              onBlur={() => void run(() => api.proSetOrgName(orgName))}
+            />
+          </div>
+
+          {/* Entered once. Every pairing code is built from it, so a typo here is a
+              typo in all of them — and it surfaces on someone else's machine, days
+              later, as a code that simply will not connect. */}
+          <div className="pro-row">
+            <input
+              value={publicUrl}
+              onChange={(e) => setPublicUrl(e.target.value)}
+              placeholder="https://library.youragency.com"
+              spellCheck={false}
+              onBlur={() => void savePublicUrlOnBlur()}
+            />
+          </div>
+          <p className="hint">
+            This library&rsquo;s address, as writers reach it from outside your network. Every code
+            you create points here.
+          </p>
+
+          <form className="pro-form" onSubmit={mint}>
+            <div className="pro-row">
+              <input
+                value={newNodeName}
+                onChange={(e) => setNewNodeName(e.target.value)}
+                placeholder="Who is this for? e.g. Dana (freelancer)"
+              />
+              <button
+                type="submit"
+                className="primary"
+                disabled={busy || !newNodeName.trim() || !publicUrl.trim()}
+              >
+                Create code
+              </button>
+            </div>
+            {!publicUrl.trim() && (
+              <p className="hint">Set the address above before creating codes.</p>
+            )}
+          </form>
+
+          {minted && (
+            <div className="pro-minted">
+              <p>
+                Pairing code for <strong>{minted.name}</strong> — copy it now, it isn&rsquo;t shown
+                again.
+              </p>
+              <div className="pro-row">
+                <code className="pro-code">{minted.code}</code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copyTextToClipboard(minted.code);
+                    setCopied(true);
+                  }}
+                >
+                  {copied ? (
+                    <>
+                      <Check size={14} className="inline-icon" aria-hidden /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={14} className="inline-icon" aria-hidden /> Copy
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {nodes.length === 0 ? (
+            <p className="hint">Nobody is connected yet.</p>
+          ) : (
+            <ul className="pro-nodes">
+              {nodes.map((n) => {
+                const state = nodeState(n);
+                return (
+                  <li key={n.id} className={state === "revoked" || state === "expired" ? "inactive" : ""}>
+                    <span className="pro-node-name">{n.name}</span>
+                    {/* Taken and given. No gate hangs off this — it is here so the
+                        person who approves purchases can see a writer who pulls a
+                        lot and shares nothing, and ask.
+
+                        Both fields are optional, and absent is not zero: a build
+                        that doesn't record these counters, or a node row predating
+                        them, sends neither. `?? 0` printed "pulled 0 · uploaded 0"
+                        against every writer at once — turning "not measured" into
+                        exactly the accusation this row exists to raise. */}
+                    {(n.pulled !== undefined || n.uploaded !== undefined) && (
+                      <span className="hint">
+                        pulled {n.pulled ?? 0} · uploaded {n.uploaded ?? 0}
+                      </span>
+                    )}
+                    <span className="hint">
+                      {state === "revoked"
+                        ? "revoked"
+                        : state === "expired"
+                          ? "expired"
+                          : state === "pending"
+                            ? "code not used yet"
+                            : `expires ${n.expires_at.slice(0, 10)}`}
+                    </span>
+                    {!n.revoked_at && (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => void run(() => api.proRevokeNode(n.id))}
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {/* Shown exactly when a Revoke button is on screen. This used to read
+              pro.node_count — a number from the /auth call made once at page load
+              and never refreshed, while the list beside it reloads after every mint
+              and revoke. On a fresh master, pairing the first writer left this
+              hidden with a live node listed above it; revoking the last one left it
+              showing. The loaded list is the answer already in hand. */}
+          {nodes.some((n) => !n.revoked_at) && (
+            <p className="hint">
+              Revoking stops future lookups and copies. It cannot take back anything already copied
+              to someone&rsquo;s machine.
+            </p>
+          )}
+        </>
       )}
     </section>
   );
