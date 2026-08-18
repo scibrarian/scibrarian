@@ -12,7 +12,7 @@ import { build } from "esbuild";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(here, "..");
@@ -203,6 +203,50 @@ function bundlePro() {
       2
     ) + "\n"
   );
+  // Written, copied, and *resolvable* are three different claims, and only the
+  // third is the one runtime makes. Everything above proves files are on disk in
+  // a directory this function chose; what loadPro() does is ask Node to resolve a
+  // bare specifier from the server bundle's location, and it reads a failure
+  // there as "no Pro installed" — the silent downgrade this function exists to
+  // prevent, arrived at through the code meant to prevent it. So the resolution
+  // is performed here, for real.
+  //
+  // In a child process with cwd set, rather than import.meta.resolve() from this
+  // file: this file lives in electron/, and from there the dev junction at the
+  // repository root answers first, hiding the exact layout mistake being checked
+  // for. An eval'd module resolves upward from cwd, so cwd is what makes this ask
+  // the question the packaged app will ask.
+  const resolves = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "console.log(import.meta.resolve('@scibrarian/pro'))"],
+    { cwd: path.join(here, "bundle"), encoding: "utf8" }
+  );
+  if (resolves.status !== 0) {
+    throw new Error(
+      "@scibrarian/pro was written to bundle/node_modules but does not resolve from " +
+        "electron/bundle, which is where the bundled server asks for it. A packaged app " +
+        "built from this would run as a free build with nothing reporting a problem.\n" +
+        (resolves.stderr || "").trim()
+    );
+  }
+
+  // Where it resolved *to*, not merely that it resolved. The walk upward from
+  // bundle/ carries on into electron/node_modules and the repository root, and
+  // the root is where pro/link.mjs leaves a junction on any machine that runs
+  // the server from source. Checking only for success would therefore let a
+  // missing bundle/node_modules be answered by a directory the installer does
+  // not carry — passing on precisely the machine doing the packaging, which is
+  // the only machine that ever runs this.
+  const at = (resolves.stdout || "").trim();
+  const want = pathToFileURL(path.join(proPackage, "index.js")).href;
+  if (at !== want) {
+    throw new Error(
+      `@scibrarian/pro resolves to ${at} from electron/bundle, not to the copy just ` +
+        `written at ${want}. The installer carries bundle/ and nothing above it, so the ` +
+        `packaged app would resolve something else or nothing at all.`
+    );
+  }
+
   return true;
 }
 

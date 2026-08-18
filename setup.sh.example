@@ -109,14 +109,6 @@ fi
 # --- Deployment files ------------------------------------------------------
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
 
-# Empty on a first install. A re-provision finds the previous run's Caddyfile
-# here, and the Caddy already running is still serving from it — so the launch
-# step below can tell whether a bounce would change anything.
-CADDY_CONFIG_WAS=""
-if [ -f Caddyfile ]; then
-  CADDY_CONFIG_WAS="$(md5sum < Caddyfile)"
-fi
-
 base=https://raw.githubusercontent.com/scibrarian/scibrarian/master
 curl -fsSLO "$base/docker-compose.prod.yml"
 curl -fsSL "$base/Caddyfile.example" -o Caddyfile
@@ -185,7 +177,7 @@ have_cert() {
   docker compose -f docker-compose.prod.yml exec -T caddy \
     sh -c "ls /data/caddy/certificates/*/${DOMAIN}/${DOMAIN}.crt" >/dev/null 2>&1
 }
-if [ "$CADDY_CONFIG_WAS" != "$(md5sum < Caddyfile)" ] && have_cert; then
+if have_cert; then
   docker compose -f docker-compose.prod.yml restart caddy
 fi
 

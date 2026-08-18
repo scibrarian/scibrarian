@@ -36,6 +36,7 @@ import type {
   UploadResponse,
 } from "./types";
 import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
+import { ADMIN_TOKEN_REJECTED } from "../../shared/auth";
 import { encodeSource } from "../../shared/source";
 
 // The admin token unlocks mutating endpoints; GETs work without one. Kept in
@@ -59,6 +60,25 @@ export function setAuthRejectedHandler(fn: () => void): void {
   onAuthRejected = fn;
 }
 
+/**
+ * A failed request, carrying the status alongside the server's message.
+ *
+ * Still an Error, so errorMessage() and every existing `catch` are unaffected —
+ * what the status adds is the ability to tell one refusal from another. Almost
+ * nothing needs that: a banner reads the message and stops. The exception is a
+ * refusal the user can *answer*, where the panel has to know which question it
+ * is being asked before it can offer the reply.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   // FormData bodies must set their own multipart boundary header.
@@ -70,28 +90,30 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   // the owner unlocked. See isAdminRequest for why that loop had no exit.
   if (token) headers["X-Admin-Token"] = token;
   const res = await fetch(url, { ...init, headers });
-  // A 401 that challenges is not ours. RFC 9110 requires WWW-Authenticate on
-  // every 401, and the admin gate sends none — it answers plain JSON — so the
-  // header means an edge in front of us refused, not that this token was
-  // rejected. Re-running a setup script rotates the site password, which stops
-  // an already-open tab's cached basic-auth credentials from matching; treating
-  // Caddy's challenge as a verdict on the admin token silently discarded a
-  // perfectly good one for a reason that had nothing to do with it.
-  if (res.status === 401 && !res.headers.get("WWW-Authenticate")) {
-    // The stored token is no longer valid; drop it and lock the UI. The error
-    // thrown below still surfaces "Admin access required." to the caller.
-    setAdminToken(null);
-    onAuthRejected();
-  }
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
+    let code: unknown;
     try {
       const body = await res.json();
       if (body?.error) message = body.error;
+      code = body?.code;
     } catch {
       /* ignore non-JSON error bodies */
     }
-    throw new Error(message);
+    // Ours, because the gate said so rather than because the response looks a
+    // certain way. An edge in front of us refuses with its own body: re-running
+    // a setup script rotates the site password, which makes Caddy challenge an
+    // already-open tab, and treating that as a verdict on the admin token
+    // silently discarded a good one for a reason that had nothing to do with
+    // it. See ADMIN_TOKEN_REJECTED for why this is a field the server sends
+    // rather than something inferred from a header it does not control.
+    if (res.status === 401 && code === ADMIN_TOKEN_REJECTED) {
+      // The stored token is no longer valid; drop it and lock the UI. The error
+      // thrown below still surfaces "Admin access required." to the caller.
+      setAdminToken(null);
+      onAuthRejected();
+    }
+    throw new ApiError(message, res.status);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -290,10 +312,14 @@ export const api = {
     req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
   // An empty string clears it. There is no getter: the licence is reported
   // through proNodes(), which never returns the key itself.
-  proSetLicense: (licenseKey: string) =>
+  //
+  // `replace` waves past the one refusal an operator can answer: a key that
+  // expires before the licence already saved. Sent only when they have been
+  // shown what they would be giving up and asked for it again — see ProPanel.
+  proSetLicense: (licenseKey: string, replace = false) =>
     req<{ license: ProLicense }>("/api/pro/license", {
       method: "PUT",
-      body: JSON.stringify({ license_key: licenseKey }),
+      body: JSON.stringify({ license_key: licenseKey, replace }),
     }),
 
   // Unlike the licence above, an empty string is refused rather than treated as

@@ -3,6 +3,7 @@ import net, { type AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeTempDb, openTempDb } from "./test-db.js";
+import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Which credentials open the admin gate.
 //
@@ -194,6 +195,21 @@ describe("a duplicated X-Admin-Token", () => {
     expect(await dup("injected", "alsowrong")).toBe(REFUSED);
   });
 
+  // Four inserted values, which a count-based bound got wrong: `split(",", 4)`
+  // caps the array rather than the number of splits, so ours fell off the end
+  // and the gate refused a request that carried the right credential.
+  it("finds ours behind four inserted values", async () => {
+    expect(await postRaw(["X-Admin-Token: a,b,c,d", `X-Admin-Token: ${TOKEN}`])).toBe(ADMITTED);
+  });
+
+  // There is no count left to overrun. Pieces are filtered by length instead,
+  // so a header packed with commas costs a string compare each and hides
+  // nothing — and Node caps the whole header at 16KB, which bounds the rest.
+  it("finds ours behind a header packed with commas", async () => {
+    const noise = Array.from({ length: 500 }, (_, i) => `junk${i}`).join(",");
+    expect(await postRaw([`X-Admin-Token: ${noise}`, `X-Admin-Token: ${TOKEN}`])).toBe(ADMITTED);
+  });
+
   // The promise the doc comment makes, in the deployment that needs it.
   it("lets a valid Bearer through from behind two wrong X-Admin-Tokens", async () => {
     const status = await postRaw([
@@ -213,17 +229,23 @@ describe("a duplicated X-Admin-Token", () => {
   });
 });
 
-// api.ts tells our 401 from an edge's by the absence of this header, and drops
-// the stored admin token only for ours — otherwise a re-provisioned site
-// password, which makes Caddy challenge an already-open tab, would read as "the
-// admin token was rejected" and silently discard a good one. RFC 9110 requires
-// WWW-Authenticate on a 401 from something that authenticates, so the two are
-// distinguishable; this pins the half of that contract the server owns.
+// api.ts tells our 401 from an edge's by a field this gate puts in the body,
+// and drops the stored admin token only for ours — otherwise a re-provisioned
+// site password, which makes Caddy challenge an already-open tab, would read as
+// "the admin token was rejected" and silently discard a good one. This pins the
+// half of that contract the server owns; client/src/api.test.ts pins the other.
+//
+// WWW-Authenticate is asserted for a separate reason that still holds: a 401
+// carrying it makes the browser raise its own credential prompt, over an API the
+// user never asked to log in to.
 describe("the 401 the gate sends", () => {
-  it("carries no WWW-Authenticate, and says why in JSON", async () => {
+  it("marks itself as ours, and does not make the browser prompt", async () => {
     const res = await fetch(`${base}/api/no-such-route`, { method: "POST" });
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate")).toBeNull();
-    expect(await res.json()).toEqual({ error: "Admin access required." });
+    expect(await res.json()).toEqual({
+      error: "Admin access required.",
+      code: ADMIN_TOKEN_REJECTED,
+    });
   });
 });

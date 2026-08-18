@@ -47,6 +47,37 @@ describe("describeSweep", () => {
     expect(describeSweep({ sent: 0, skipped: 0, remaining: 0, busy: true, held_back: 6 })).toBe("");
   });
 
+  // The count that must never be folded into "already there". That sentence
+  // says the organisation holds the paper; for these nobody does, and a writer
+  // who reads it stops looking for a file that never arrived.
+  it("says a file could not be read rather than that it is already there", () => {
+    expect(describeSweep({ sent: 2, skipped: 0, remaining: 1, unreadable: 1 })).toBe(
+      "Copied 2 up, 1 still to go. 1 couldn't be sent — its stored PDF is missing."
+    );
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 3, unreadable: 3 })).toBe(
+      "Nothing copied yet — 3 still to go. 3 couldn't be sent — their stored PDFs are missing."
+    );
+  });
+
+  it("stays quiet about a run that read everything it wanted", () => {
+    // 0 is a measured answer worth saying nothing about; absent is a run that
+    // never counted, and must not become a claim either way.
+    expect(describeSweep({ sent: 1, skipped: 0, remaining: 0, unreadable: 0 })).toBe("Copied 1 up.");
+    expect(describeSweep({ sent: 1, skipped: 0, remaining: 0 })).toBe("Copied 1 up.");
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 0, busy: true, unreadable: 4 })).toBe("");
+  });
+
+  it("puts the unreadable files ahead of the ones held back by design", () => {
+    // Both can be true at once. The lost files come first: those are staying
+    // put on purpose, these are a library that has lost PDFs.
+    expect(
+      describeSweep({ sent: 0, skipped: 0, remaining: 2, unreadable: 2, held_back: 1 })
+    ).toBe(
+      "Nothing copied yet — 2 still to go. 2 couldn't be sent — their stored PDFs are missing. " +
+        "1 paper isn't shared — matched by hand, so it can't be verified."
+    );
+  });
+
   it("names each count that happened, and none that didn't", () => {
     expect(describeSweep({ sent: 3, skipped: 2, remaining: 0 })).toBe(
       "Copied 3 up, 2 already there."

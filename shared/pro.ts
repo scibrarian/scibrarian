@@ -176,6 +176,31 @@ export interface ProPushResult {
    * counted one.
    */
   held_back?: number;
+  /**
+   * Files in scope whose stored PDF could not be read, so nothing was sent.
+   *
+   * Deliberately not folded into `skipped`. That count means "the organisation
+   * already has it", which the panel renders as "already there" — and for these
+   * the opposite is true: nobody has the paper, and saying otherwise is the one
+   * kind of wrong answer this whole report exists to avoid. They are not
+   * `sent`, and they are not a run-ending `error` either, because the rest of
+   * the batch is fine and should go.
+   *
+   * These stay outstanding rather than being written off, so `remaining`
+   * includes them and a later sweep retries. That matters most in the case
+   * nobody plans for: a blobs directory that resolves somewhere wrong — an
+   * unmounted volume, a database restored without its files — makes *every*
+   * read fail at once, and a sweep that recorded those as done would discard a
+   * whole library's backlog in seconds and report success.
+   *
+   * The scheduler must never count this as progress. See nextSweepIn: a queue
+   * that reports work outstanding while moving nothing would otherwise redrain
+   * every two seconds forever.
+   *
+   * Optional for the same reason as held_back: "not measured" must not render
+   * as a measured zero.
+   */
+  unreadable?: number;
   error?: string;
   /**
    * Set when this run did nothing because another sweep already held the lock.
