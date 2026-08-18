@@ -21,7 +21,7 @@ export function describeSweep(r: ProPushResult): string {
   // caller shows `error` beside this, so a sync being under way is already on
   // screen; what would be new here is only the false half.
   if (r.busy) return "";
-  return [describeMoved(r), describeHeldBack(r)].filter(Boolean).join(" ");
+  return [describeMoved(r), describeUnreadable(r), describeHeldBack(r)].filter(Boolean).join(" ");
 }
 
 function describeMoved(r: ProPushResult): string {
@@ -41,6 +41,27 @@ function describeMoved(r: ProPushResult): string {
   ].filter(Boolean);
   const s = parts.join(", ");
   return `${s[0].toUpperCase()}${s.slice(1)}.`;
+}
+
+/**
+ * The files that could not be read, and so did not go.
+ *
+ * Ahead of the held-back line because it is the more urgent of the two: those
+ * are staying put by design, these are a library that has lost files. And it
+ * sits beside `remaining` rather than replacing it — they are still outstanding
+ * and a later sweep will retry them, so "3 still to go" and "3 can't be read"
+ * are both true and the pair is what makes the second actionable.
+ *
+ * Never merged into "already there". That sentence says the organisation holds
+ * the paper; for these nobody does, and a writer reading it would stop looking
+ * for a file that never arrived.
+ */
+function describeUnreadable(r: ProPushResult): string {
+  if (!r.unreadable) return "";
+  const n = r.unreadable;
+  return n === 1
+    ? "1 couldn't be sent — its stored PDF is missing."
+    : `${n} couldn't be sent — their stored PDFs are missing.`;
 }
 
 /**
