@@ -179,6 +179,23 @@ export interface ProModule {
    * rejection as "no answer" rather than "not held" — see orgCheck below.
    */
   orgCheck(pmids: string[]): Promise<Map<string, OrgHolding>>;
+  /**
+   * Tell the module that something may have created work for the copy-up sweep.
+   *
+   * A hint, and deliberately nothing more. It carries no collection, no file
+   * ids, and no promise that anything is outstanding — the sweep re-derives its
+   * whole queue from the database, which is the property the design rests on.
+   * Naming a collection here would invite a module to trust it and push on a
+   * caller's say-so, which is the push-on-upload hook this seam exists to avoid.
+   *
+   * `reason` is for the module's own log, so a sweep in a support transcript
+   * says what woke it.
+   *
+   * Advisory, so it returns void and is allowed to do nothing: the module's
+   * interval still covers every case this accelerates. A caller must never wait
+   * on it or care whether it fired.
+   */
+  syncHint(reason: string): void;
 }
 
 let mod: ProModule | null = null;
@@ -370,13 +387,43 @@ export async function orgCheck(pmids: string[]): Promise<Map<string, OrgHolding>
       }),
     ]);
   } catch (err) {
-    console.warn(`[pro] org check unavailable: ${(err as Error).message}`);
+    console.warn(`[pro] org check unavailable: ${errMessage(err)}`);
     return null;
   } finally {
     // The losing side of a race is never awaited, so an uncleared timer holds
     // an event-loop handle for its full duration after every successful check
     // — which in a test run is a process that will not exit.
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Tell Pro that something may have created work to copy up. Does nothing in a
+ * free build, which is why callers read as one line rather than a feature check.
+ *
+ * **Nothing here may reach the caller.** This is called from the tail of work
+ * the user actually asked for — an import job that has already finished and
+ * already written its rows — and a hint is only ever an optimisation over the
+ * module's own interval. A throw escaping into that would fail an import that
+ * fully succeeded, to speed up a sweep that was going to happen anyway.
+ *
+ * The missing-method case is separate from the throwing case for the reason
+ * askProvenance spells out: a Pro image older than this interface is a real
+ * deployment, not a hypothetical, and the type system cannot know what is on
+ * disk. That one is logged once per hint and otherwise ignored — such a build
+ * still sweeps on its interval, so the feature degrades to exactly what it was
+ * before this hook existed.
+ */
+export function hintProSync(reason: string): void {
+  if (!mod) return;
+  if (typeof mod.syncHint !== "function") {
+    console.warn("[pro] sync hint: this module has no syncHint()");
+    return;
+  }
+  try {
+    mod.syncHint(reason);
+  } catch (err) {
+    console.warn(`[pro] sync hint failed: ${errMessage(err)}`);
   }
 }
 

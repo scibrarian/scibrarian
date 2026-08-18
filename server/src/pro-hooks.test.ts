@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
 import type { PaperProvenance } from "../../shared/types.js";
-import { paperProvenance, proStatus, registerPro, type ProModule } from "./pro-hooks.js";
+import { hintProSync, paperProvenance, proStatus, registerPro, type ProModule } from "./pro-hooks.js";
 
 // What the seam does when the Pro module misbehaves.
 //
@@ -34,6 +34,7 @@ function moduleThat(over: Partial<ProModule>): ProModule {
     pulledOrgByPmid: () => new Map<string, PaperProvenance>(),
     receivedNodeByPmid: () => new Map<string, PaperProvenance>(),
     orgCheck: async (): Promise<Map<string, OrgHolding>> => new Map(),
+    syncHint: () => {},
     ...over,
   };
 }
@@ -234,5 +235,47 @@ describe("proStatus", () => {
 
   it("is null in a free build", () => {
     expect(proStatus()).toBe(null);
+  });
+});
+
+// The one hook called from the *tail* of work the user asked for, rather than
+// from a response being assembled. An import that has already matched its files
+// and written its rows is finished; the hint only decides how soon a sweep
+// notices. So the containment rule here is the strictest in the file — nothing
+// this hook does may reach the caller — and these cases are what say so.
+describe("hintProSync", () => {
+  it("passes the reason through to the module", () => {
+    const reasons: string[] = [];
+    registerPro(moduleThat({ syncHint: (r) => reasons.push(r) }));
+    hintProSync("import finished");
+    expect(reasons).toEqual(["import finished"]);
+  });
+
+  it("does nothing in a free build", () => {
+    expect(() => hintProSync("import finished")).not.toThrow();
+  });
+
+  // A Pro image older than this interface is a real deployment. It still sweeps
+  // on its own interval, so the feature degrades to exactly what it was before
+  // the hook existed rather than to a broken import.
+  it("survives a module older than the hook", () => {
+    const older = moduleThat({});
+    delete (older as Partial<ProModule>).syncHint;
+    registerPro(older);
+
+    expect(() => hintProSync("import finished")).not.toThrow();
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it("contains a throw rather than failing the import that called it", () => {
+    registerPro(
+      moduleThat({
+        syncHint: () => {
+          throw new Error("database is locked");
+        },
+      })
+    );
+    expect(() => hintProSync("import finished")).not.toThrow();
+    expect(String(warn.mock.calls[0][0])).toContain("database is locked");
   });
 });

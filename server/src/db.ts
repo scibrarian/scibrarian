@@ -1825,6 +1825,41 @@ export function listCollectionFiles(collectionId: number): CollectionFile[] {
     .all(collectionId) as unknown as CollectionFile[];
 }
 
+// The two halves of "matched": by evidence the scanner found, or by a person
+// saying so. A Pro sweep asks for both on every run, and a drain runs one every
+// couple of seconds — so each is asked as its own query rather than by reading
+// the collection whole and filtering in JS twice over. On a 10,000-file shelf
+// that is the difference between hydrating every row per sweep and touching the
+// rows that answer.
+//
+// The predicates are deliberately complementary: same match_status and pmid
+// tests, opposite match_method. A file counted by one must never be listed by
+// the other — see matchedFilesIn in pro-storage.ts for why that separation is
+// the point rather than an implementation detail.
+const MATCHED_WITH_PMID = "match_status = 'matched' AND pmid IS NOT NULL AND pmid != ''";
+
+export function collectionFilesMatchedByEvidence(
+  collectionId: number
+): { id: number; pmid: string; file_name: string }[] {
+  return db
+    .prepare(
+      `SELECT id, pmid, file_name FROM collection_files
+       WHERE collection_id = ? AND ${MATCHED_WITH_PMID} AND match_method != 'manual'
+       ORDER BY file_name ASC`
+    )
+    .all(collectionId) as unknown as { id: number; pmid: string; file_name: string }[];
+}
+
+export function collectionManualMatchCount(collectionId: number): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM collection_files
+       WHERE collection_id = ? AND ${MATCHED_WITH_PMID} AND match_method = 'manual'`
+    )
+    .get(collectionId) as { n: number };
+  return row.n;
+}
+
 // One file by its content, for a writer that needs the row it just inserted.
 // UNIQUE(collection_id, content_hash) makes this an index lookup, where a
 // listCollectionFiles(...).find() would select and hydrate every file in the

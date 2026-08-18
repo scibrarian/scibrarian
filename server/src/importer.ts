@@ -11,6 +11,7 @@ import {
 import { blobPath } from "./blobstore.js";
 import { extractPdf, type PdfExtract } from "./pdf-text.js";
 import { findDois, findPmid } from "./pdf-match.js";
+import { hintProSync } from "./pro-hooks.js";
 import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
 import type { CollectionFile, ImportJob } from "./types.js";
@@ -133,6 +134,15 @@ async function runImport(
       // 2) Resolve the batch against PubMed and warm citations for new matches.
       const newlyMatched = await resolveCandidates(candidates, job);
       await warmCitations(newlyMatched, label);
+
+      // Per batch, not only when the whole job ends. Resolution is one throttled
+      // esearch per candidate DOI, so a few thousand files is a job measured in
+      // tens of minutes — while the files matched in its first round are
+      // copyable seconds after they are matched. Hinting only at the end makes
+      // those wait out the whole run, which is the delay this hint exists to
+      // remove. The extra calls are free: requestSweep debounces, so batches
+      // that land close together still cost one sweep.
+      if (newlyMatched.length > 0) hintProSync("import batch matched");
     }
     job.state = "done";
   } catch (err) {
@@ -144,6 +154,19 @@ async function runImport(
   } finally {
     job.currentFile = null;
     job.finishedAt = new Date().toISOString();
+    // Matching is what makes a file copyable — a PMID is the only identity the
+    // other end can file by — so this is the moment new work can exist, not the
+    // upload that preceded it. Pro sweeps on its own interval regardless; the
+    // hint just saves the writer waiting out a tick they have no way to see.
+    //
+    // The batches above hint as they go; this one is the backstop for the batch
+    // that matched files and then threw before reaching its own hint. In the
+    // `finally` rather than after the `done` state for that reason: a job that
+    // failed part way still matched everything up to the failure, and those
+    // files are as eligible as any other. Gated on matched > 0 because a run
+    // that matched nothing created no candidate, and the hint would only wake a
+    // sweep to re-derive the same empty queue.
+    if (job.matched > 0) hintProSync("import finished");
   }
 }
 

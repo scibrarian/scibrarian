@@ -22,6 +22,31 @@ describe("describeSweep", () => {
     );
   });
 
+  // The drain makes a collision with "Sync now" routine rather than rare, and a
+  // busy run reports zeros it never measured. Read as an outcome that is
+  // "everything is already with your organization" while the sweep holding the
+  // lock still has hundreds of papers to go.
+  it("says nothing about a run that collided with another sweep", () => {
+    expect(
+      describeSweep({
+        sent: 0,
+        skipped: 0,
+        remaining: 0,
+        error: "A sync is already running.",
+        busy: true,
+      })
+    ).toBe("");
+  });
+
+  // The other half of the same defect: held_back is absent on that path, not
+  // zero, and a zero would have silently dropped the warning instead.
+  it("does not report held-back files from a run that counted none", () => {
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 0, held_back: 6 })).toBe(
+      "Everything shared is already with your organization. 6 papers aren't shared — matched by hand, so they can't be verified."
+    );
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 0, busy: true, held_back: 6 })).toBe("");
+  });
+
   it("names each count that happened, and none that didn't", () => {
     expect(describeSweep({ sent: 3, skipped: 2, remaining: 0 })).toBe(
       "Copied 3 up, 2 already there."

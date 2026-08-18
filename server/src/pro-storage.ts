@@ -6,12 +6,13 @@ import { blobExists, blobPath, isPdfFile, safeFileName, storeBlobFromTemp } from
 import {
   addCollectionFiles,
   collectionFileByHash,
+  collectionFilesMatchedByEvidence,
+  collectionManualMatchCount,
   createCollection,
   existingPmids,
   getCollection,
   getCollectionFile,
   holdingsByPmids,
-  listCollectionFiles,
   setFileMatched,
   upsertArticles,
 } from "./db.js";
@@ -80,18 +81,12 @@ export function heldFile(pmid: string): { path: string; fileName: string } | nul
 export function matchedFilesIn(
   collectionId: number
 ): { id: number; collection_id: number; pmid: string; file_name: string }[] {
-  return listCollectionFiles(collectionId).flatMap((f) =>
-    f.match_status === "matched" && f.pmid && f.match_method !== "manual"
-      ? [
-          {
-            id: f.id,
-            collection_id: collectionId,
-            pmid: f.pmid,
-            file_name: safeFileName(f.file_name, `${f.pmid}.pdf`),
-          },
-        ]
-      : []
-  );
+  return collectionFilesMatchedByEvidence(collectionId).map((f) => ({
+    id: f.id,
+    collection_id: collectionId,
+    pmid: f.pmid,
+    file_name: safeFileName(f.file_name, `${f.pmid}.pdf`),
+  }));
 }
 
 /**
@@ -109,9 +104,7 @@ export function matchedFilesIn(
  * would accuse people who had in fact contributed.
  */
 export function manualMatchCountIn(collectionId: number): number {
-  return listCollectionFiles(collectionId).filter(
-    (f) => f.match_status === "matched" && f.pmid && f.match_method === "manual"
-  ).length;
+  return collectionManualMatchCount(collectionId);
 }
 
 /**

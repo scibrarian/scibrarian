@@ -14,6 +14,13 @@ import type { ProPushResult } from "../types";
  * read as permission to stop worrying about whether the agency has the paper.
  */
 export function describeSweep(r: ProPushResult): string {
+  // A collision is not an outcome, and this function only reports outcomes. A
+  // busy run returned before it looked at anything, so its zeros are defaults
+  // rather than measurements — and {sent: 0, skipped: 0, remaining: 0} is
+  // exactly what describeMoved reads as "everything is already there". The
+  // caller shows `error` beside this, so a sync being under way is already on
+  // screen; what would be new here is only the false half.
+  if (r.busy) return "";
   return [describeMoved(r), describeHeldBack(r)].filter(Boolean).join(" ");
 }
 
@@ -46,8 +53,9 @@ function describeMoved(r: ProPushResult): string {
  * Said out loud because it is otherwise undiscoverable — `match_method` appears
  * nowhere else in the UI, so a writer would see their files sitting in a shared
  * collection, never arriving, with nothing to explain it. `0` is a measured
- * answer worth staying quiet about; `undefined` is a Pro build that doesn't
- * report this at all, and inventing a "none held back" for it would be a claim
+ * answer worth staying quiet about; `undefined` is a run that never counted —
+ * a Pro build that doesn't report this at all, or a sweep that returned before
+ * it built a queue — and inventing a "none held back" for it would be a claim
  * nothing checked.
  */
 function describeHeldBack(r: ProPushResult): string {
