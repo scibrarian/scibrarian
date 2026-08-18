@@ -279,7 +279,13 @@ export function Settings({
 
         <ul className="list">
           {!loaded ? (
-            [0, 1].map((i) => <ListRowSkeleton key={i} w={["55%", "40%"][i]} />)
+            // One row, which is the shortest this list ever is: "No topics yet."
+            // is a single li, so a two-row stand-in shrinks the panel by a row
+            // on the handoff and drags everything below it up. A list with
+            // topics in it grows instead, which is the direction that has to
+            // stay — there is no way to know the count before the answer lands,
+            // and reserving for a guess is what produced the shrink.
+            <ListRowSkeleton w="55%" />
           ) : (
             <>
               {topics.map((d) => (
