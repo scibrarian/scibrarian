@@ -803,8 +803,8 @@ export default function App() {
           <button
             className="reload-btn"
             onClick={() => window.location.reload()}
-            aria-label="Reload"
-            title="Reload"
+            aria-label="Refresh"
+            title="Refresh"
           >
             <RotateCw size={15} aria-hidden />
           </button>
