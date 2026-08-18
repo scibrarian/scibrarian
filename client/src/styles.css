@@ -3039,9 +3039,13 @@ html {
 /* Smaller inside the two row-lists, which are lists of facts rather than banks
    of switches (see .pro-collections). At the full size one button per row makes
    each row taller than the name it annotates, which turns both lists into
-   toolbars — the reading those lists are shaped to avoid. */
-.pro-nodes li button,
-.pro-collections li button {
+   toolbars — the reading those lists are shaped to avoid.
+
+   Both halves carry .pro-panel so this outweighs the base rule above. Without
+   it these are (0,1,2) against its (0,2,1) — the base wins, and the rows draw
+   at the form size regardless of what is written here. */
+.pro-panel .pro-nodes li button,
+.pro-panel .pro-collections li button {
   padding: 5px 12px;
   font-size: 13px;
 }
