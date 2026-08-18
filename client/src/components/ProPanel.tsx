@@ -65,7 +65,7 @@ export function ProPanel({
   const lastStamps = useRef<ProCollectionStamp[] | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [licenseKey, setLicenseKey] = useState("");
-  // A licence refused for being shorter than the one already saved.
+  // A license refused for being shorter than the one already saved.
   //
   // Held apart from `error` because it is not a failure — it is a question. The
   // banner reports things that went wrong and clears on the next action; this
@@ -101,7 +101,7 @@ export function ProPanel({
   // branch alone, so on a master-only instance — or against a Pro module built
   // before /api/pro/sync existed — that request 404s while /api/pro/nodes
   // answers perfectly well. Under Promise.all the first rejection discarded the
-  // other three, and the licence, the node list and the mint form all rendered
+  // other three, and the license, the node list and the mint form all rendered
   // empty behind one banner. Whatever arrived is shown; what didn't is reported.
   async function reload() {
     const [n, m, sy, cs] = await Promise.allSettled([
@@ -423,7 +423,7 @@ export function ProPanel({
         code to each writer. Each code is for one person and expires on its own.
       </p>
 
-      {/* The licence. Shown before the mint form because it is what decides
+      {/* The license. Shown before the mint form because it is what decides
           whether minting will work — finding that out from a 402 after typing
           someone's name is the wrong order. */}
       <LicenseRow license={license} />
@@ -453,11 +453,11 @@ export function ProPanel({
               setLicenseKey(e.target.value);
               setLicenseConflict(null);
             }}
-            placeholder={license?.verdict === "valid" ? "Replace licence key" : "Licence key"}
+            placeholder={license?.verdict === "valid" ? "Replace license key" : "License key"}
             spellCheck={false}
           />
           <button type="submit" disabled={busy || !licenseKey.trim()}>
-            Save licence
+            Save license
           </button>
         </div>
         {licenseConflict && (
@@ -620,10 +620,10 @@ export function ProPanel({
   );
 }
 
-// The licence, as a single line an operator can act on.
+// The license, as a single line an operator can act on.
 //
 // Every state names what to do next rather than only what is wrong: an expired
-// licence says existing connections keep working, because the first question a
+// license says existing connections keep working, because the first question a
 // Scientific Director asks on seeing "expired" is whether their writers just
 // lost access. They didn't — the gate only refuses *new* pairings — and saying
 // so here is cheaper than fielding the call.
@@ -634,7 +634,7 @@ function LicenseRow({ license }: { license: ProLicense | null }) {
     return (
       <p className="pro-license absent">
         <KeyRound size={14} className="inline-icon" aria-hidden />
-        No licence yet. Writers can&rsquo;t be connected until one is added.
+        No license yet. Writers can&rsquo;t be connected until one is added.
       </p>
     );
   }
@@ -643,12 +643,12 @@ function LicenseRow({ license }: { license: ProLicense | null }) {
     return (
       <p className="pro-license bad">
         <TriangleAlert size={14} className="inline-icon" aria-hidden />
-        This licence key isn&rsquo;t valid. Check it was pasted in full, or ask for a new one.
+        This license key isn&rsquo;t valid. Check it was pasted in full, or ask for a new one.
       </p>
     );
   }
 
-  // Null for a perpetual or site licence — "ISO date, or null when nothing
+  // Null for a perpetual or site license — "ISO date, or null when nothing
   // verified". Both branches below drop the date clause rather than
   // interpolating an empty string into it, which read as "expired on ." and
   // "seats in use, until .".
@@ -659,7 +659,7 @@ function LicenseRow({ license }: { license: ProLicense | null }) {
       <p className="pro-license bad">
         <TriangleAlert size={14} className="inline-icon" aria-hidden />
         <span>
-          Licence for <strong>{license.org}</strong> {on ? `expired on ${on}` : "has expired"}.
+          License for <strong>{license.org}</strong> {on ? `expired on ${on}` : "has expired"}.
           Existing connections keep working — renew to connect anyone new.
         </span>
       </p>

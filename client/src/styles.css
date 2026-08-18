@@ -3066,7 +3066,7 @@ html {
   }
 }
 
-/* The licence line. Sits above the mint form and carries the answer to "can I
+/* The license line. Sits above the mint form and carries the answer to "can I
    connect another writer", so it reads as a status line rather than as a
    warning banner — it is present in every state, including the good one. */
 .pro-license {
@@ -3092,7 +3092,7 @@ html {
   color: #15803d;
 }
 
-/* The answer to a refused licence swap, inline in the sentence that raised it.
+/* The answer to a refused license swap, inline in the sentence that raised it.
    A detached row read as an unrelated action; this one is only ever the reply
    to the question immediately before it. */
 .pro-license-answer {

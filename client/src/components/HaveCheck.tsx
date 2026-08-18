@@ -378,7 +378,7 @@ function AnswerRow({
 
       {/* The org line sits above the free-copy one because it changes the
           decision more: a copy the agency already bought costs nothing and
-          needs no licence argument. The server suppresses the free-copy lookup
+          needs no license argument. The server suppresses the free-copy lookup
           for these rows for the same reason. */}
       {!held && org && (
         <p className="have-org">
