@@ -22,6 +22,28 @@
   box-sizing: border-box;
 }
 
+/* Reserve the scrollbar's width whether or not there is one to draw.
+
+   .app is max-width with `margin: 0 auto`, so its position depends on the
+   viewport's width, and a scrollbar takes 15px of that on Windows and any
+   platform not using overlay scrollbars. The first paint is skeletons, which
+   are taller than what replaces them often enough to cross the threshold: the
+   page scrolls, the viewport narrows, and the whole layout sits 7.5px left
+   until the load resolves and it snaps back. Measured at 1440x800 — 897px of
+   skeleton against an 800px viewport.
+
+   The same fix .scroll-list already uses for the same reason one panel down.
+   The cost is a permanently reserved gutter on a page short enough not to
+   scroll, which is the trade: an empty 15px that never moves, against every
+   element on the page shifting when content crosses the fold.
+
+   Not `overflow-y: scroll`, which reserves the space by painting a dead
+   scrollbar track. Browsers without scrollbar-gutter simply keep today's
+   behaviour rather than gaining a permanent grey stripe. */
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
