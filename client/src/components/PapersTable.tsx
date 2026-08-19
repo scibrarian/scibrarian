@@ -5,7 +5,7 @@ import type { Bookmarking } from "../lib/bookmarking";
 import { errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { usePapers, type PaperFilterState } from "../lib/papers";
+import { selectionOnScreen, usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
@@ -116,16 +116,23 @@ export function PapersTable({
     `${fetchKey}|${reloadToken}`
   );
 
-  // A selection only ever means the rows currently on screen. Cleared whenever
-  // the source or the filters change — `fetchKey` is what changes for either —
-  // so a tick made under one filter can't be deleted under the next, where its
-  // row is no longer visible to be reconsidered.
+  // Dropped outright when the source or a server-side filter changes, which is
+  // what `fetchKey` covers. This is about identity rather than visibility: a
+  // tick is a pmid, and the same pmid in the next source is a different row's
+  // tick. The client-side filters never reach this — they don't refetch — and
+  // are handled below instead.
   useEffect(() => setSelected(new Set()), [fetchKey, reloadToken]);
+
+  // The ticks that are actually actionable. Every read of the selection goes
+  // through this rather than through `selected`, so a row the filters have
+  // hidden cannot be counted, drawn as select-all, or deleted — whichever
+  // filter hid it, and whether or not this component knows that filter exists.
+  const onScreen = useMemo(() => selectionOnScreen(selected, visible), [selected, visible]);
 
   // The whole filtered set, not the rows rendered so far: the table lazy-renders
   // (see useIncrementalList), so selecting "all" from `shown` would silently
   // mean "all of what you have scrolled past".
-  const allSelected = visible.length > 0 && selected.size === visible.length;
+  const allSelected = visible.length > 0 && onScreen.size === visible.length;
   function toggleAll(on: boolean) {
     setSelected(on ? new Set(visible.map((p) => p.pmid)) : new Set());
   }
@@ -147,8 +154,8 @@ export function PapersTable({
       // Files removed, not papers asked for. The two differ when the collection
       // holds two copies of one article, and reporting what was sent instead of
       // what happened is how "deleted 3" ends up sitting above 4 fewer rows.
-      const { removed } = await api.removeCollectionPapers(removeFrom, [...selected]);
-      const papers = selected.size;
+      const { removed } = await api.removeCollectionPapers(removeFrom, [...onScreen]);
+      const papers = onScreen.size;
       setNotice(
         `Removed ${papers} paper${papers === 1 ? "" : "s"} from this collection` +
           (removed > papers ? ` (${removed} stored files).` : ".")
@@ -228,14 +235,14 @@ export function PapersTable({
             <button
               type="button"
               className="remove-selected"
-              disabled={selected.size === 0 || removing}
+              disabled={onScreen.size === 0 || removing}
               onClick={() => setConfirmingRemove(true)}
             >
               <Trash2 size={14} className="inline-icon" aria-hidden />
               {removing
                 ? "Removing…"
-                : selected.size > 0
-                  ? `Remove ${selected.size} selected`
+                : onScreen.size > 0
+                  ? `Remove ${onScreen.size} selected`
                   : "Remove selected"}
             </button>
           ) : (
@@ -304,7 +311,7 @@ export function PapersTable({
                         aria-label={allSelected ? "Clear selection" : "Select all papers"}
                         checked={allSelected}
                         ref={(el) => {
-                          if (el) el.indeterminate = selected.size > 0 && !allSelected;
+                          if (el) el.indeterminate = onScreen.size > 0 && !allSelected;
                         }}
                         onChange={(e) => toggleAll(e.target.checked)}
                       />
@@ -343,7 +350,7 @@ export function PapersTable({
                       <td className="select-cell">
                         <input
                           type="checkbox"
-                          checked={selected.has(p.pmid)}
+                          checked={onScreen.has(p.pmid)}
                           // Named by the paper rather than "Select row": read
                           // out of context, a column of identical "Select row"
                           // is a column of identical nothing.
@@ -454,7 +461,7 @@ export function PapersTable({
           "delete this paper" would promise something this does not do. */}
       <ConfirmDialog
         open={confirmingRemove}
-        title={`Remove ${selected.size} paper${selected.size === 1 ? "" : "s"}?`}
+        title={`Remove ${onScreen.size} paper${onScreen.size === 1 ? "" : "s"}?`}
         message={STORED_COPIES_NOTE}
         confirmLabel="Remove"
         danger
