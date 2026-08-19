@@ -96,6 +96,15 @@ export function ProPanel({
   // The last sweep's counts, so "Sync now" reports something rather than
   // appearing to do nothing when everything is already up to date.
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  // Whether the sweep specifically is in flight, which `busy` cannot say — that
+  // is set by every action here, and only this one has progress to report.
+  //
+  // Load-bearing for the layout as much as for the label. run() clears syncMsg
+  // on the way in, so the result line used to vanish on click and come back
+  // when the sweep landed: a 32px shrink and re-grow, measured, with the rest
+  // of Settings moving under it both times. This keeps one line on screen
+  // throughout by putting "Syncing…" in the same element the answer will fill.
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // The pairing code, held only until the operator navigates away. It is
@@ -213,19 +222,32 @@ export function ProPanel({
   }
 
   async function syncNow() {
-    await run(async () => {
-      const r = await api.proRunSync();
-      // Counts first, and always. A sweep that stopped part way still moved
-      // files, and "3 of 12 went, then the master refused" is a different
-      // situation from "nothing went" — the old code showed the error text
-      // alone and threw the progress away.
-      setSyncMsg(describeSweep(r));
-      // The endpoint reports trouble in a field rather than by rejecting, so
-      // this is set here rather than left to run()'s catch. It goes to the
-      // banner because it is a failure: rendered as a .hint it was styled
-      // identically to the success line directly above it.
-      if (r.error) setError(r.error);
-    });
+    // Set before run(), which is what makes the swap seamless: both this and
+    // run()'s setSyncMsg(null) happen in one synchronous block, so React
+    // batches them into a single render and the line goes straight from the
+    // last result to "Syncing…" without a blank frame in between.
+    //
+    // Cleared in a finally, after run() has already settled and written the new
+    // message — so the line changes from "Syncing…" to the answer, never to
+    // nothing and back.
+    setSyncing(true);
+    try {
+      await run(async () => {
+        const r = await api.proRunSync();
+        // Counts first, and always. A sweep that stopped part way still moved
+        // files, and "3 of 12 went, then the master refused" is a different
+        // situation from "nothing went" — the old code showed the error text
+        // alone and threw the progress away.
+        setSyncMsg(describeSweep(r));
+        // The endpoint reports trouble in a field rather than by rejecting, so
+        // this is set here rather than left to run()'s catch. It goes to the
+        // banner because it is a failure: rendered as a .hint it was styled
+        // identically to the success line directly above it.
+        if (r.error) setError(r.error);
+      });
+    } finally {
+      setSyncing(false);
+    }
   }
 
   // The address. Reports whether it actually wrote, and throws like the call it
@@ -413,11 +435,27 @@ export function ProPanel({
             </ul>
           )}
           <div className="pro-row">
+            {/* Spinner and label both, the way .refresh-btn does it. `busy`
+                alone only reached `disabled`, so a sweep over a slow link was
+                a button that had stopped responding and nothing else — the
+                work was invisible until the counts landed. */}
             <button type="button" disabled={busy || ended} onClick={() => void syncNow()}>
-              Sync now
+              {syncing && <span className="btn-spinner" aria-hidden="true" />}
+              {syncing ? "Syncing…" : "Sync now"}
             </button>
           </div>
-          {syncMsg && <p className="hint">{syncMsg}</p>}
+          {/* One line either way: the progress and the answer share an element,
+              so the panel keeps its height across the whole sweep rather than
+              losing a row on click and regaining it on completion.
+
+              role="status" is worth having only because of that — a live region
+              announces a *change* to content it was already showing, and this
+              one is now on screen before the result replaces "Syncing…". */}
+          {(syncing || syncMsg) && (
+            <p className="hint" role="status">
+              {syncing ? "Syncing…" : syncMsg}
+            </p>
+          )}
           <p className="hint">
             {ended
               ? `Sharing can't be changed while ${master.name} has this connection ended — reconnect with a new pairing code first. Papers already sent to them stay there.`

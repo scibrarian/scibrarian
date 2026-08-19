@@ -70,7 +70,7 @@ export function ModalShell({
  * copy goes, unless it is shared with another collection.
  */
 export const STORED_COPIES_NOTE =
-  "Any stored PDF copies are deleted too, unless another collection also holds the same file.";
+  "Any stored PDF copies are deleted, unless another collection also holds the same file.";
 
 // Confirmation dialog. Cancel is first in the DOM so it takes initial focus —
 // Enter never destroys anything by default.
