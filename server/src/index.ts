@@ -32,7 +32,11 @@ import { backfillArticleMesh } from "./mesh-index.js";
 import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
 import { MAX_BULK_BOOKMARK_BYTES } from "../../shared/limits.js";
 
-const app = express();
+// Exported for the tests that assert on middleware whose mount path and
+// position in the stack *are* the behaviour — a body-parser limit is invisible
+// to every unit test and to tsc, and shows up only as a status code on a large
+// request. Nothing in the app imports this; start() below is what runs it.
+export const app = express();
 
 // Content-Security-Policy. The prod build is a single same-origin bundle +
 // stylesheet with no inline <script>, so script-src stays 'self' — no
@@ -109,15 +113,28 @@ app.use("/api", (req, res, next) => {
   res.status(403).json({ error: "Cross-site requests are not allowed." });
 });
 
-// The bulk bookmark save posts one PMID per paper in the filtered set, which is
-// thousands of them by design — past body-parser's 100kb default at around nine
-// thousand. It gets its own parser rather than a raised global limit, so no
-// other endpoint starts accepting megabyte bodies. This has to be mounted
-// *before* the general parser: the first parser to run marks the body as read
-// and the other then skips it, so ordering these the other way round would
-// leave the big saves being rejected by the 100kb one before ever reaching the
-// route. The count is capped in the handler, which is what reports it.
-app.use("/api/bookmark-folders/:id/papers", express.json({ limit: MAX_BULK_BOOKMARK_BYTES }));
+// The routes that take "everything currently filtered" and post one PMID per
+// paper: the bulk bookmark save, and removing the selected papers from a
+// collection. Both are thousands of ids by design — past body-parser's 100kb
+// default at around nine thousand — and both bound the count themselves at
+// MAX_BULK_BOOKMARK_PMIDS.
+//
+// A handler's cap is only reachable if the parser in front of it will take the
+// bytes. Under the 100kb default the removal's own message was dead code: a
+// large request failed as body-parser's "request entity too large", which
+// names no limit the caller can act on and reads as a bug rather than a bound.
+// So the two lists have to stay in step, and this is the other half of the one
+// in routes.ts.
+//
+// Named individually rather than by raising the global limit, so no other
+// endpoint starts accepting megabyte bodies. And mounted *before* the general
+// parser: the first parser to run marks the body as read and the other then
+// skips it, so ordering these the other way round would leave the big requests
+// being rejected by the 100kb one before ever reaching the route.
+app.use(
+  ["/api/bookmark-folders/:id/papers", "/api/collections/:id/papers/remove"],
+  express.json({ limit: MAX_BULK_BOOKMARK_BYTES })
+);
 app.use(express.json());
 
 // Pro-tier routes, mounted ahead of /api and deliberately *outside* the api
