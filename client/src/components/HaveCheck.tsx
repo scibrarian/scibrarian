@@ -3,7 +3,7 @@ import { Check, ExternalLink, FileText, Minus, TriangleAlert, Users } from "luci
 import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { MAX_HAVE_REFS } from "../../../shared/limits";
+import { MAX_HAVE_REFS, MAX_NAME_CHARS } from "../../../shared/limits";
 import type { Collection, HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
@@ -578,6 +578,7 @@ function DestinationPicker({
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="New collection"
+          maxLength={MAX_NAME_CHARS}
           spellCheck={false}
           // This sits outside the check form above it, so Enter would otherwise
           // do nothing at all here. create() carries the same `creating` guard
