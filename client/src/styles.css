@@ -1703,7 +1703,24 @@ code {
   margin-top: 18px;
 }
 
-.modal-actions button {
+/* The destination picker shares this rather than styling its own, because it
+   is a dialog's actions too — it just sits in an inset panel instead of the
+   footer. It had no button rule of any kind, so Create, Cancel, Copy and Try
+   again all fell through to the UA default: a light grey box, which in dark
+   mode is a bright slab in the middle of a dark panel. Nothing in this
+   stylesheet styles a bare `button`, so an unclaimed one is always that.
+
+   Sized at 14px like the input beside them, not at the picker's 12.5px labels:
+   .have-dest-new is a flex row of a button against that input, and the two are
+   read as a pair. The last few pixels of that come from .have-dest-new below,
+   since equal padding still leaves the button shorter than a bordered input.
+
+   `:not(.banner-close)` because .have-dest renders a Banner on a failed create,
+   and a container-wide `button` selector otherwise claims the × that belongs to
+   it — (0,2,1) against .banner-close's (0,1,0), the same collision the Pro panel
+   had. */
+.modal-actions button,
+.have-dest button:not(.banner-close) {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -1714,7 +1731,8 @@ code {
   cursor: pointer;
 }
 
-.modal-actions button.primary {
+.modal-actions button.primary,
+.have-dest button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -1726,7 +1744,8 @@ code {
   color: #fff;
 }
 
-.modal-actions button:disabled {
+.modal-actions button:disabled,
+.have-dest button:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -3004,14 +3023,36 @@ html {
 
 /* The action on an org-held row. Sized like the free-copy link beside it
    rather than like a form button: it sits inside a list of answers, and a
-   full-height primary button per row would turn the results into a toolbar. */
+   full-height primary button per row would turn the results into a toolbar.
+
+   It took .have-free's measurements but not its appearance, and only an <a>
+   starts from nothing — a <button> carries the UA's own chrome until something
+   removes it. So this drew a grey slab where a link was meant, which dark mode
+   turns into the brightest thing in the row. The reset is the rest of what
+   .have-free gets for free: no fill, no border, the accent colour, and the
+   padding dropped so .have-org's gap does the spacing exactly as it does for
+   the link. */
 .have-pull {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 10px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: inherit;
   font-size: 12.5px;
   font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.have-pull:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.have-pull:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Choosing where a copy lands. Indented under its own row rather than floated
@@ -3056,6 +3097,14 @@ html {
 .have-dest-new input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Take the row's height from the input rather than from the button's own
+   padding, which lands 5px short of it — enough to read as a misaligned pair
+   at this size. Stretch rather than a hand-tuned padding so the two can't
+   drift apart again if either one's metrics change. */
+.have-dest-new button {
+  align-self: stretch;
 }
 
 .have-dest-actions {
