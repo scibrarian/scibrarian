@@ -31,8 +31,10 @@ import {
   LockOpen,
   FilePlus,
   Plus,
+  RotateCw,
   SearchCheck,
 } from "lucide-react";
+import { MAX_NAME_CHARS } from "../../shared/limits";
 
 // The prose below points at the Library workspace by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
@@ -57,7 +59,7 @@ export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [folders, setFolders] = useState<BookmarkFolder[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [mode, setMode] = useState<Mode>("interests");
+  const [mode, setMode] = useState<Mode>("papers");
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
@@ -286,17 +288,17 @@ export default function App() {
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
         // Preselect each workspace's first entry, then land in the first one
-        // that actually has something in it (nav order: Interests, Bookmarks,
-        // Library) so switching modes never opens on an empty picker.
+        // that actually has something in it (nav order: Library, Interests,
+        // Bookmarks) so switching modes never opens on an empty picker.
         if (fs.length > 0) setActiveFolderId(fs[0].id);
-        if (cs.length > 0) setActiveCollectionId(cs[0].id);
-        if (ds.length > 0) {
+        if (ds.length > 0) setActiveTopicId(ds[0].id);
+        if (cs.length > 0) {
+          setMode("papers");
+          setActiveCollectionId(cs[0].id);
+        } else if (ds.length > 0) {
           setMode("interests");
-          setActiveTopicId(ds[0].id);
         } else if (fs.length > 0) {
           setMode("bookmarks");
-        } else if (cs.length > 0) {
-          setMode("papers");
         }
         setLoaded(true);
       }
@@ -492,13 +494,20 @@ export default function App() {
   }
 
   async function handleCollectionChanged() {
-    await loadCollections();
-    // Both, not just whichever is on screen: the all-collections view aggregates
-    // every collection, so a change to any one of them makes it stale too, and
-    // bumping only the active source would leave a switch to All Collections
-    // painting from a cache that predates the change.
+    // Bumped before the await, not after it. These two are independent — the
+    // papers fetch doesn't read the collection list — and sequencing them cost
+    // a whole round trip of staleness: the papers on screen were the ones just
+    // removed, and they stayed that way until loadCollections had been and
+    // come back. Measured on a local server, that alone was ~260ms of the
+    // delay between a removal being reported and the rows leaving.
+    //
+    // Both sources, not just whichever is on screen: the all-collections view
+    // aggregates every collection, so a change to any one of them makes it
+    // stale too, and bumping only the active source would leave a switch to
+    // All Collections painting from a cache that predates the change.
     reloadSource({ allCollections: true });
     if (typeof activeCollectionId === "number") reloadSource({ collection: activeCollectionId });
+    await loadCollections();
   }
 
   // Try a pasted admin token: store it, then let the server judge it.
@@ -775,6 +784,9 @@ export default function App() {
       emptyState={emptyState}
       access={access}
       bookmarking={bookmarking}
+      // The same handler the collection chrome uses: removing papers changes
+      // the collection's counts and its file list exactly as an upload does.
+      onCollectionChanged={handleCollectionChanged}
     />
   );
 
@@ -785,6 +797,27 @@ export default function App() {
           <span className="logo"><Dna aria-hidden /></span>
           <h1>Scibrarian</h1>
           <span className="version">v{__APP_VERSION__}</span>
+          {/* A real page reload, not a refetch. What it is reached for is a view
+              in a state the app's own cache invalidation didn't fix, and asking
+              the same code that produced that state to repair it is the thing
+              that already didn't work.
+
+              In the brand rather than beside the gear for two reasons. The
+              desktop build is a plain BrowserWindow with no address bar, so
+              there is no reload anywhere on screen and the accelerator is the
+              only way out — for a window that looks like an app, not a browser
+              tab, that is not a discoverable one. And the header's controls are
+              stand-ins until the first load resolves, while this has to work
+              during exactly that load: a first paint that never finishes is
+              what it is for. */}
+          <button
+            className="reload-btn"
+            onClick={() => window.location.reload()}
+            aria-label="Refresh"
+            title="Refresh"
+          >
+            <RotateCw size={15} aria-hidden />
+          </button>
         </div>
         <div className="header-actions">
           {!loaded ? (
@@ -1027,6 +1060,7 @@ export default function App() {
         open={namingFolder}
         title="New folder"
         placeholder="Folder name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Create"
         onSubmit={createFolder}
         onCancel={() => setNamingFolder(false)}
@@ -1036,6 +1070,7 @@ export default function App() {
         open={namingCollection}
         title="New collection"
         placeholder="Collection name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Create"
         // Pre-filled, never a gate. The common case — this really is work for
         // the organization you are paired to — costs nothing, and the exception

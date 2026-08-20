@@ -162,10 +162,12 @@ export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
 // share-link column, and must match between skeleton and table for the same
 // reason.
 export function PapersColgroup({
+  select = false,
   share = false,
   bookmark = false,
   collections = false,
 }: {
+  select?: boolean;
   share?: boolean;
   bookmark?: boolean;
   collections?: boolean;
@@ -177,8 +179,14 @@ export function PapersColgroup({
   // squeeze. Links is the one that can't: it is white-space: nowrap and needs
   // ~136px for "PubMed ↗ DOI ↗", so it keeps its 15% in both sets. Measured at
   // 1440px wide; taking it to 13% overflowed by 17px.
+  //
+  // The fixed-pixel columns (select, bookmark, share) sit outside that 100%:
+  // table-layout: fixed distributes the percentages over what is left once the
+  // absolute widths are taken, so they narrow the text columns proportionally
+  // rather than pushing the total past the wrapper.
   return (
     <colgroup>
+      {select && <col style={{ width: 36 }} />}
       <col style={{ width: collections ? "25%" : "36%" }} />
       <col style={{ width: collections ? "13%" : "15%" }} />
       <col style={{ width: collections ? "12%" : "15%" }} />
@@ -194,12 +202,14 @@ export function PapersColgroup({
 
 // Mirrors the collection papers table: real headers, shimmering rows.
 export function PapersTableSkeleton({
+  select = false,
   rows = 5,
   share = false,
   bookmark = false,
   collections = false,
 }: {
   rows?: number;
+  select?: boolean;
   share?: boolean;
   bookmark?: boolean;
   collections?: boolean;
@@ -207,9 +217,10 @@ export function PapersTableSkeleton({
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
       <table className="papers-table">
-        <PapersColgroup share={share} bookmark={bookmark} collections={collections} />
+        <PapersColgroup select={select} share={share} bookmark={bookmark} collections={collections} />
         <thead>
           <tr>
+            {select && <th className="select-col" aria-label="Select" />}
             <th>Title</th>
             <th>Authors</th>
             <th>Journal</th>
@@ -224,6 +235,7 @@ export function PapersTableSkeleton({
         <tbody>
           {Array.from({ length: rows }).map((_, i) => (
             <tr key={i}>
+              {select && <td className="select-cell" />}
               <td>
                 <SkeletonBar w={["85%", "62%", "75%", "90%", "68%"][i % 5]} h={14} />
               </td>
@@ -253,6 +265,65 @@ export function PapersTableSkeleton({
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Stands in for the Pro panel while its own reload is in flight.
+//
+// Sized to the panel's shortest *certain* state. The spoke half is always
+// drawn, so it is always reserved; the master half is drawn whenever this is
+// not the desktop build, which Settings already knows by the time this renders
+// — so `master` reserves a fact rather than guessing at one.
+//
+// What is deliberately not reserved is anything conditional on the pairing: the
+// collections list, the mint form's minted code, the node rows. Those are
+// growth, and growth is the one direction a stand-in may be wrong in. See the
+// Topics list for what happens when it reserves for a guess and the answer
+// comes back smaller.
+//
+// The real headings rather than bars over them. They never change, so a shimmer
+// there would be standing in for strings this file already knows.
+export function ProPanelSkeleton({ master }: { master: boolean }) {
+  return (
+    <section className="panel pro-panel" aria-busy="true" aria-label="Loading shared holdings">
+      <h3>Shared holdings</h3>
+      <SkeletonBar w="92%" h={12} style={{ marginBottom: 6 }} />
+      <SkeletonBar w="70%" h={12} style={{ marginBottom: 18 }} />
+      <h4>Your organization</h4>
+      <SkeletonBar w="46%" h={12} style={{ marginBottom: 10 }} />
+      {/* The pairing row: a full-width input beside its button, which is what
+          sets the spoke half's height more than anything else in it. */}
+      <ProSkeletonRow button={92} />
+      {master && (
+        <>
+          <h4>People connected to this library</h4>
+          <SkeletonBar w="88%" h={12} style={{ marginBottom: 4 }} />
+          <SkeletonBar w="52%" h={12} style={{ marginBottom: 12 }} />
+          {/* The license line, which is present in every state including the
+              good one — so it is reserved rather than treated as an alert. */}
+          <SkeletonBar w="100%" h={36} style={{ borderRadius: 8, marginBottom: 10 }} />
+          <ProSkeletonRow button={112} />
+          <SkeletonBar w="76%" h={12} style={{ marginBottom: 10 }} />
+          {/* Organization name, then this library's public address. */}
+          <SkeletonBar w="100%" h={38} style={{ borderRadius: 8, marginBottom: 12 }} />
+          <SkeletonBar w="100%" h={38} style={{ borderRadius: 8, marginBottom: 6 }} />
+          <SkeletonBar w="90%" h={12} style={{ marginBottom: 14 }} />
+          <ProSkeletonRow button={104} />
+          <SkeletonBar w="34%" h={12} />
+        </>
+      )}
+    </section>
+  );
+}
+
+// An input with a button beside it — the shape most of the Pro panel is made
+// of. Reproduces .pro-row's own flex so the two measure the same.
+function ProSkeletonRow({ button }: { button: number }) {
+  return (
+    <div className="pro-row">
+      <SkeletonBar w="100%" h={38} style={{ flex: "1 1 220px", borderRadius: 8 }} />
+      <SkeletonBar w={button} h={38} style={{ borderRadius: 8 }} />
     </div>
   );
 }

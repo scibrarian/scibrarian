@@ -20,6 +20,7 @@ import {
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
+  removeCollectionPapers,
   removeTopicWithArticles,
   topicByTerm,
   topicArticleCounts,
@@ -117,7 +118,7 @@ import type {
   TopicSuggestResponse,
 } from "./types.js";
 import { errMessage, round1 } from "./util.js";
-import { MAX_BULK_BOOKMARK_PMIDS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
+import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -746,6 +747,25 @@ api.get(
 
 // ---------- workspace entry names (collections + bookmark folders) ----------
 
+// A name a person typed, checked at both ends before anything looks it up:
+// non-empty once trimmed, and no longer than the picker has room to draw. Sends
+// its own 400 and returns true when the name is unusable, so each route below
+// reads as one line rather than repeating both branches four times.
+//
+// The cap is shared with the client, which sets it as the input's maxLength —
+// this is the backstop for a request that didn't come from that box.
+function badName(res: Response, name: string): boolean {
+  if (!name) {
+    res.status(400).json({ error: "'name' is required." });
+    return true;
+  }
+  if (name.length > MAX_NAME_CHARS) {
+    res.status(400).json({ error: `A name can be at most ${MAX_NAME_CHARS} characters.` });
+    return true;
+  }
+  return false;
+}
+
 // Names within a workspace are unique case-insensitively (see the unique index
 // in db.ts) — two entries with the same name are indistinguishable in the
 // picker. Sends the 409 and returns true when the requested name belongs to a
@@ -783,7 +803,7 @@ api.get("/bookmark-folders", (_req, res) => {
 
 api.post("/bookmark-folders", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (nameTaken(res, "folder", bookmarkFolderByName(name), null)) return;
   try {
     res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 });
@@ -795,7 +815,7 @@ api.post("/bookmark-folders", (req, res) => {
 api.put("/bookmark-folders/:id", (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
   if (nameTaken(res, "folder", bookmarkFolderByName(name), id)) return;
   try {
@@ -910,7 +930,7 @@ api.get("/collections", (_req, res) => {
 
 api.post("/collections", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (nameTaken(res, "collection", collectionByName(name), null)) return;
   try {
     res.status(201).json(createCollection(name));
@@ -922,7 +942,7 @@ api.post("/collections", (req, res) => {
 api.put("/collections/:id", (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "'name' is required." });
+  if (badName(res, name)) return;
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
   if (nameTaken(res, "collection", collectionByName(name), id)) return;
   try {
@@ -1192,6 +1212,36 @@ api.delete("/collections/files/:fileId", (req, res) => {
   // reference.
   deleteCollectionFile(Number(req.params.fileId));
   res.status(204).end();
+});
+
+// Remove papers from a collection — the table's "Delete selected".
+//
+// A POST rather than a DELETE because it carries a body, and a DELETE with one
+// is legal but routinely stripped in transit; naming the action in the path
+// keeps it working through whatever sits in front of this.
+//
+// PMIDs rather than file ids, and the whole set in one request. Both follow
+// from what the caller is asking: "take these papers out of this collection" is
+// one decision, so it either happens or it doesn't, and a paper the collection
+// holds twice has to go entirely rather than half-way. See
+// removeCollectionPapers for how a file-id loop gets that wrong.
+api.post("/collections/:id/papers/remove", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+  const body = req.body as { pmids?: unknown };
+  if (!Array.isArray(body?.pmids)) return res.status(400).json({ error: "'pmids' must be an array." });
+  // Bounded by the same cap as a bulk bookmark save: this is the other route
+  // that takes "everything currently filtered" and it should not be the one
+  // place an unbounded list gets through.
+  if (body.pmids.length > MAX_BULK_BOOKMARK_PMIDS) {
+    return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
+  }
+  const pmids = body.pmids.map((p) => String(p).trim()).filter(Boolean);
+  // Both counts, because they differ in both directions — a doubled article
+  // removes more files than papers, and a paper something else already took
+  // removes fewer papers than were asked for. The notice reports what happened,
+  // which needs the pair; see removeCollectionPapers.
+  res.json(removeCollectionPapers(id, pmids));
 });
 
 // ---------- refresh / status ----------

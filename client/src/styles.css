@@ -22,6 +22,55 @@
   box-sizing: border-box;
 }
 
+/* Reserve the scrollbar's width whether or not there is one to draw.
+
+   .app is max-width with `margin: 0 auto`, so its position depends on the
+   viewport's width, and a scrollbar takes 15px of that on Windows and any
+   platform not using overlay scrollbars. The first paint is skeletons, which
+   are taller than what replaces them often enough to cross the threshold: the
+   page scrolls, the viewport narrows, and the whole layout sits 7.5px left
+   until the load resolves and it snaps back. Measured at 1440x800 — 897px of
+   skeleton against an 800px viewport.
+
+   The same fix .scroll-list already uses for the same reason one panel down.
+   The cost is a permanently reserved gutter on a page short enough not to
+   scroll, which is the trade: an empty 15px that never moves, against every
+   element on the page shifting when content crosses the fold.
+
+   Not `overflow-y: scroll`, which reserves the space by painting a dead
+   scrollbar track. Browsers without scrollbar-gutter simply keep today's
+   behaviour rather than gaining a permanent grey stripe. */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* ...and the scroll lock must not compensate for a gutter that never left.
+   Radix locks the page behind every dialog through react-remove-scroll, which
+   measures `innerWidth - documentElement.clientWidth` and re-adds that many
+   pixels as `margin-right` on the body, so content doesn't jump sideways when
+   the scrollbar it removed stops taking up space.
+
+   With a stable gutter the scrollbar never was taking up space to begin with:
+   the gutter is reserved whether or not the page scrolls, and it stays reserved
+   under the lock's `overflow: hidden`. The compensation lands on top of it and
+   removes 30px where 15 are missing. .app is `margin: 0 auto`, so half of the
+   surplus comes off each side and the whole page slides 7.5px left on open and
+   back on close — measured at 1280x900: .app at 140.5px, 133px while a dialog
+   is up, 140.5px again after. Which is the same 7.5px the rule above exists to
+   remove, reintroduced on every dialog instead of on every load.
+
+   The gutter holds the space, so nothing has to be given back.
+
+   `html body[...]`, not `body[...]`, and the extra element is load-bearing.
+   react-remove-scroll writes the identical selector with its own !important
+   into a <style> it injects at lock time — so same specificity, and its tag
+   lands in <head> after this stylesheet, which means source order hands it the
+   win. (0,1,2) against (0,1,1) settles it without depending on who was
+   appended last. */
+html body[data-scroll-locked] {
+  margin-right: 0 !important;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
@@ -91,6 +140,29 @@ body {
   display: inline-flex;
   align-items: center;
   color: var(--accent);
+}
+
+/* Reload the page.
+
+   Borderless, where the gear and the padlock are boxed: those sit in a cluster
+   of controls at the far end of the header, and a bordered button up against
+   the wordmark reads as attached to it. Muted until hovered, so it annotates
+   the title rather than competing with it. */
+.reload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  line-height: 1;
+  padding: 4px;
+  cursor: pointer;
+}
+
+.reload-btn:hover {
+  color: var(--text);
 }
 
 /* ---------- icons ---------- */
@@ -1602,8 +1674,11 @@ code {
 
 /* prompt / confirm dialogs */
 
+/* Leaves room for the × the shell now draws, so a long title never runs under
+   it — the same allowance .modal-head already makes for its meta line. */
 .modal-heading {
   margin: 0 0 12px;
+  padding-right: 24px;
   font-size: 16px;
   font-weight: 700;
   color: var(--text);
@@ -1628,7 +1703,24 @@ code {
   margin-top: 18px;
 }
 
-.modal-actions button {
+/* The destination picker shares this rather than styling its own, because it
+   is a dialog's actions too — it just sits in an inset panel instead of the
+   footer. It had no button rule of any kind, so Create, Cancel, Copy and Try
+   again all fell through to the UA default: a light grey box, which in dark
+   mode is a bright slab in the middle of a dark panel. Nothing in this
+   stylesheet styles a bare `button`, so an unclaimed one is always that.
+
+   Sized at 14px like the input beside them, not at the picker's 12.5px labels:
+   .have-dest-new is a flex row of a button against that input, and the two are
+   read as a pair. The last few pixels of that come from .have-dest-new below,
+   since equal padding still leaves the button shorter than a bordered input.
+
+   `:not(.banner-close)` because .have-dest renders a Banner on a failed create,
+   and a container-wide `button` selector otherwise claims the × that belongs to
+   it — (0,2,1) against .banner-close's (0,1,0), the same collision the Pro panel
+   had. */
+.modal-actions button,
+.have-dest button:not(.banner-close) {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -1639,7 +1731,8 @@ code {
   cursor: pointer;
 }
 
-.modal-actions button.primary {
+.modal-actions button.primary,
+.have-dest button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -1651,7 +1744,8 @@ code {
   color: #fff;
 }
 
-.modal-actions button:disabled {
+.modal-actions button:disabled,
+.have-dest button:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -1870,7 +1964,16 @@ html {
   gap: 12px;
 }
 
+/* The switch is drawn as two pills with a gap: the Library, then the two
+   workspaces that are about deciding what to keep. The container carries the
+   grouping and the gap; each pill carries the border, the radius and the
+   overflow clip that makes .active fill to its edges. */
 .mode-switch {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.mode-pill {
   display: inline-flex;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2220,6 +2323,65 @@ html {
 
 .bookmark-cell {
   text-align: center;
+}
+
+/* "Remove N selected" — the Library's bulk action, in the slot the bulk save
+   occupies in the workspaces that have one. Shares .save-all-btn's box because
+   it lands in the same place and must not change the filter row's height when
+   the workspace changes.
+
+   Its own min-width, narrower than the save button's: the counts here are what
+   fits on a screen and got ticked, not a whole filtered set, so five figures is
+   not a case. Fixed all the same, because the label carries a number and
+   .filter-row wraps. */
+.remove-selected {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--danger);
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 168px;
+}
+
+.remove-selected:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--warn-soft);
+}
+
+/* Dimmed with nothing ticked, which is most of the time. Deliberately still
+   drawn: a control that appears only once a box is checked is invisible at the
+   moment someone is looking for it. */
+.remove-selected:disabled {
+  color: var(--muted);
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* The tick column. Narrow and headerless-looking, like the share and bookmark
+   columns at the other end of the row. */
+.select-col {
+  width: 36px;
+}
+
+.select-cell,
+.select-col {
+  text-align: center;
+  padding-right: 0;
+}
+
+.select-cell input,
+.select-col input {
+  margin: 0;
+  cursor: pointer;
+  vertical-align: middle;
 }
 
 /* On a timeline card the save button sits at the far end of the links row. */
@@ -2859,16 +3021,44 @@ html {
   color: #1d4ed8;
 }
 
-/* The action on an org-held row. Sized like the free-copy link beside it
-   rather than like a form button: it sits inside a list of answers, and a
-   full-height primary button per row would turn the results into a toolbar. */
+/* The action on an org-held row: a button, and drawn as one.
+
+   It used to carry only sizing — padding, font, gap — and no chrome at all, on
+   the reasoning that it should read like the free-copy link beside it. But only
+   an <a> starts from nothing; a <button> keeps the UA's own until something
+   replaces it, so what it actually drew was a grey slab, which dark mode turns
+   into the brightest thing in the row. Styling it as the link it was described
+   as is the other way to make that consistent, and it isn't the right one:
+   this is the row's action, and the one thing on it that does something.
+
+   So it takes .have-btn's treatment — panel fill, hairline border, accent on
+   hover — at a smaller scale. The scale is what the old comment was really
+   protecting: a full-height form button on every row would turn a list of
+   answers into a toolbar. A compact one sits inside the line instead. */
 .have-pull {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 10px;
+  padding: 3px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: inherit;
   font-size: 12.5px;
   font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* The same hover .have-btn uses, so the two read as one control at two sizes. */
+.have-pull:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.have-pull:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Choosing where a copy lands. Indented under its own row rather than floated
@@ -2915,6 +3105,14 @@ html {
   min-width: 0;
 }
 
+/* Take the row's height from the input rather than from the button's own
+   padding, which lands 5px short of it — enough to read as a misaligned pair
+   at this size. Stretch rather than a hand-tuned padding so the two can't
+   drift apart again if either one's metrics change. */
+.have-dest-new button {
+  align-self: stretch;
+}
+
 .have-dest-actions {
   display: flex;
   justify-content: flex-end;
@@ -2952,6 +3150,89 @@ html {
 .pro-row input {
   flex: 1 1 220px;
   min-width: 0;
+}
+
+/* The panel's buttons.
+
+   Every other control in Settings is styled and these were not: nothing in the
+   stylesheet named them, so Connect, Sync now, Save license, Create code, Copy,
+   Share, Disconnect and Revoke all rendered as raw UA chrome inside a panel
+   sitting directly under "Manage journals…" and "Save settings". The two
+   className="primary" and className="danger" hints already in the markup named
+   variants that existed nowhere.
+
+   Scoped to the panel rather than to .pro-form/.pro-row/.pro-nodes/... A list
+   of five container selectors is a list of five things to remember the next
+   time a button moves, and one of them silently reverting to UA chrome is
+   exactly the failure being fixed.
+
+   Three roles, because the panel needs three: Disconnect and Sync now are
+   ordinary, Connect and Create code commit something, Revoke ends someone's
+   access. The sizes come from .accent-btn one panel up rather than from
+   .modal-actions — what these sit beside is the rest of Settings, not a
+   dialog's footer.
+
+   The border is on every variant, transparent under the fills. .pro-row is
+   align-items: center against a bordered input, so a fill with no border draws
+   2px shorter than the box beside it — and 2px shorter than the outlines it
+   shares a row with.
+
+   Two exclusions, not one. Scoping to the panel rather than to a container
+   class is still right — it is what stops a new action here rendering unstyled
+   — but it reaches every button the panel *contains*, including ones that
+   belong to something else. .banner-close is the Banner's ×, and this panel
+   renders a Banner on any failure: `:not()` carries its argument's specificity,
+   so this selector is (0,2,1) against .banner-close's (0,1,0) and won a glyph
+   it was never about. Measured before the exclusion — a 52x38px bordered box
+   in --panel and --text where a bare × belongs, wrecking the banner's layout
+   and losing its red. */
+.pro-panel button:not(.pro-license-answer):not(.banner-close) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pro-panel button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pro-panel button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* Matches the app's other disabled buttons (.refresh-btn, .accent-btn): dimmed,
+   no pointer affordance. Nearly every button here takes it — `busy` disables
+   the lot while a request is in flight. */
+.pro-panel button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Smaller inside the two row-lists, which are lists of facts rather than banks
+   of switches (see .pro-collections). At the full size one button per row makes
+   each row taller than the name it annotates, which turns both lists into
+   toolbars — the reading those lists are shaped to avoid.
+
+   Both halves carry .pro-panel so this outweighs the base rule above. Without
+   it these are (0,1,2) against its (0,2,1) — the base wins, and the rows draw
+   at the form size regardless of what is written here. */
+.pro-panel .pro-nodes li button,
+.pro-panel .pro-collections li button {
+  padding: 5px 12px;
+  font-size: 13px;
 }
 
 /* Shown once and never again, so it reads as something to act on now. */
@@ -3066,7 +3347,7 @@ html {
   }
 }
 
-/* The licence line. Sits above the mint form and carries the answer to "can I
+/* The license line. Sits above the mint form and carries the answer to "can I
    connect another writer", so it reads as a status line rather than as a
    warning banner — it is present in every state, including the good one. */
 .pro-license {
@@ -3092,12 +3373,24 @@ html {
   color: #15803d;
 }
 
-/* The answer to a refused licence swap, inline in the sentence that raised it.
+/* The answer to a refused license swap, inline in the sentence that raised it.
    A detached row read as an unrelated action; this one is only ever the reply
-   to the question immediately before it. */
+   to the question immediately before it.
+
+   So it is the one button excluded from .pro-panel button above: at that size
+   and padding it would break the sentence it sits in. It takes the same
+   vocabulary at inline scale instead, drawing its edge from currentColor —
+   which is the warn tone .pro-license.bad sets on the sentence around it. */
 .pro-license-answer {
   font-size: inherit;
   padding: 1px 8px;
+  background: var(--panel);
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
   vertical-align: baseline;
 }
 

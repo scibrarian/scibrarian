@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { MeshDescriptorRef, PaperQuery, PaperSource, PapersResponse } from "../types";
+import type { MeshDescriptorRef, Paper, PaperQuery, PaperSource, PapersResponse } from "../types";
 import { sourceHasFiles, sourceKey } from "../../../shared/source";
 import { useCachedFetch, type FetchCache } from "./hooks";
 
@@ -165,6 +165,57 @@ export function bounds(years: (number | null)[]): { min: number; max: number } |
   return min === Infinity ? null : { min, max };
 }
 
+// The filters that narrow a list the server has already returned. The search
+// and subject filters are deliberately absent: those refetch, so by the time a
+// list reaches here it is already narrowed by them.
+export interface PaperNarrowing {
+  deselected: ReadonlySet<string>;
+  minCitations: number;
+  yearFrom: number | null;
+  yearTo: number | null;
+}
+
+// Apply them. Pure and exported rather than left inline in usePapers, because
+// what these leave on screen is also what bounds a bulk action, and the two
+// have to be one rule rather than two that agree by inspection.
+export function narrowPapers(papers: Paper[], narrowing: PaperNarrowing): Paper[] {
+  const { deselected, minCitations, yearFrom, yearTo } = narrowing;
+  let all = papers;
+  if (deselected.size > 0) all = all.filter((p) => !deselected.has(p.journal_name));
+  if (minCitations > 0) all = all.filter((p) => p.citation_count >= minCitations);
+  if (yearFrom != null || yearTo != null) {
+    all = all.filter((p) => inYearRange(paperYear(p.pub_date), yearFrom, yearTo));
+  }
+  return all;
+}
+
+/**
+ * The ticked pmids still on screen, which is the only set a bulk action may act
+ * on.
+ *
+ * A tick is stored by pmid and outlives the filter it was made under. Every
+ * filter in PaperNarrowing runs client-side, so changing one re-derives the
+ * visible list with no refetch — and therefore with no change to `fetchKey`,
+ * which is all a clearing effect has to key on. Ticking forty papers and then
+ * dragging the citation slider left used to leave all forty in the set, and
+ * "Remove 40 selected" on the button, so confirming deleted rows that were no
+ * longer on screen to be reconsidered.
+ *
+ * Intersecting at the point of use rather than clearing on change is what makes
+ * that unrepresentable: a filter this rule has never heard of still cannot
+ * widen the payload, because the payload is built from the rows on screen. It
+ * also costs nothing to use, since narrowing and widening again leaves the
+ * ticks that survived rather than emptying the set.
+ */
+export function selectionOnScreen(
+  selected: ReadonlySet<string>,
+  visible: readonly { pmid: string }[]
+): Set<string> {
+  const onScreen = new Set<string>();
+  for (const p of visible) if (selected.has(p.pmid)) onScreen.add(p.pmid);
+  return onScreen;
+}
+
 export type PaperFilterState = ReturnType<typeof usePaperFilters>;
 
 // Record that a source holds no papers, without asking the server.
@@ -214,15 +265,10 @@ export function usePapers(
   const shown = data ?? kept;
 
   const journals = shown?.journals ?? [];
-  const visible = useMemo(() => {
-    let all = shown?.papers ?? [];
-    if (deselected.size > 0) all = all.filter((p) => !deselected.has(p.journal_name));
-    if (minCitations > 0) all = all.filter((p) => p.citation_count >= minCitations);
-    if (yearFrom != null || yearTo != null) {
-      all = all.filter((p) => inYearRange(paperYear(p.pub_date), yearFrom, yearTo));
-    }
-    return all;
-  }, [shown, deselected, minCitations, yearFrom, yearTo]);
+  const visible = useMemo(
+    () => narrowPapers(shown?.papers ?? [], { deselected, minCitations, yearFrom, yearTo }),
+    [shown, deselected, minCitations, yearFrom, yearTo]
+  );
 
   // The citation threshold's upper bound, so the slider spans this source's
   // actual range. Taken from the unfiltered list, or the threshold itself while

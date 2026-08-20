@@ -58,6 +58,9 @@ export function Settings({
   // instead of misleading "No journals yet." empty states and a form that pops
   // in. Later reloads (after mutations) keep showing the current data.
   const [loaded, setLoaded] = useState(false);
+  // The same, for the Pro panel, which fetches on its own and used to arrive
+  // whenever it arrived. See `ready` below.
+  const [proReady, setProReady] = useState(false);
 
   const [topicQuery, setTopicQuery] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -86,7 +89,13 @@ export function Settings({
         setBaseline(s);
         setSuggested(sug);
       })
-      .catch((e) => setError(e.message))
+      // errorMessage rather than `e.message`: a rejection reason need not be an
+      // Error, and reading .message off one that isn't puts an empty banner on
+      // screen — or, for a null reason, throws inside the handler that exists to
+      // report the failure. The .finally saves the page either way, which is
+      // what makes this the smaller cousin of the ProPanel bug and not the
+      // same one.
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoaded(true));
   }
 
@@ -205,6 +214,23 @@ export function Settings({
       settings.poll_enabled !== baseline.poll_enabled ||
       apiKey.trim() !== "");
 
+  // Every panel waits for the slowest of them.
+  //
+  // These load from two independent places — one Promise.all here for the
+  // journals, topics, settings and suggestions, and the Pro panel's own reload
+  // — and each used to reveal itself the moment its own data landed. The result
+  // was a column that resettled two or three times: the Pro panel would paint
+  // its unpaired form, then Sharing would arrive underneath and shove it, and
+  // anything the eye had already started reading moved out from under it.
+  //
+  // One flag rather than each panel keeping its own is the whole point: a
+  // second source of truth is how they got out of step to begin with.
+  //
+  // The Pro half is only waited on when there is a Pro panel. `pro` is null in
+  // a free build, where nothing ever sets proReady, and reading it
+  // unconditionally would leave the whole page skeletal forever.
+  const ready = loaded && (pro == null || proReady);
+
   return (
     <div className="settings">
       {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
@@ -244,7 +270,7 @@ export function Settings({
             topics that put those papers there. Ranked by how many held papers
             each heading is a *main* subject of; the count shown is how many
             carry it at all. */}
-        {loaded && suggested.results.length > 0 && (
+        {ready && suggested.results.length > 0 && (
           <div className="topic-suggest">
             <span className="hint">
               From your Library ({suggested.heldPapers} filed paper
@@ -269,7 +295,7 @@ export function Settings({
         )}
         {/* The one case worth explaining rather than leaving blank: there are
             held papers, but their headings haven't been fetched yet. */}
-        {loaded && suggested.results.length === 0 && suggested.unchecked > 0 && (
+        {ready && suggested.results.length === 0 && suggested.unchecked > 0 && (
           <p className="hint">
             Still reading MeSH headings for {suggested.unchecked} paper
             {suggested.unchecked === 1 ? "" : "s"} in your Library — suggestions will appear
@@ -278,8 +304,14 @@ export function Settings({
         )}
 
         <ul className="list">
-          {!loaded ? (
-            [0, 1].map((i) => <ListRowSkeleton key={i} w={["55%", "40%"][i]} />)
+          {!ready ? (
+            // One row, which is the shortest this list ever is: "No topics yet."
+            // is a single li, so a two-row stand-in shrinks the panel by a row
+            // on the handoff and drags everything below it up. A list with
+            // topics in it grows instead, which is the direction that has to
+            // stay — there is no way to know the count before the answer lands,
+            // and reserving for a guess is what produced the shrink.
+            <ListRowSkeleton w="55%" />
           ) : (
             <>
               {topics.map((d) => (
@@ -309,7 +341,7 @@ export function Settings({
           Manage journals…
         </button>
         <ul className="list scroll-list">
-          {!loaded ? (
+          {!ready ? (
             // Six rows to match the fixed height, so the panel doesn't resize on load.
             ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
               <ListRowSkeleton key={i} w={w} pill />
@@ -343,8 +375,8 @@ export function Settings({
       <section className="panel">
         <h2>Polling & NCBI</h2>
         {savedMsg && <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />}
-        {!loaded && <StackedFormSkeleton />}
-        {loaded && settings && (
+        {!ready && <StackedFormSkeleton />}
+        {ready && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
             <label>
               Scheduled polling
@@ -404,20 +436,31 @@ export function Settings({
         )}
       </section>
 
-      {/* Absent entirely in a free build — `pro` is null there. */}
+      {/* Absent entirely in a free build — `pro` is null there.
+
+          Mounted from the first render, skeleton or not: its reload runs on
+          mount, and withholding it until `ready` would be a deadlock — `ready`
+          waits on the answer that mounting is what asks for. So it draws its
+          own stand-in, gated on the same flag as everything above it. */}
       {pro && (
-        <ProPanel onPairingChanged={onPairingChanged} onSharingChanged={onSharingChanged} />
+        <ProPanel
+          ready={ready}
+          onReady={() => setProReady(true)}
+          desktop={settings?.desktop ?? null}
+          onPairingChanged={onPairingChanged}
+          onSharingChanged={onSharingChanged}
+        />
       )}
 
       <section className="panel">
         <h2>Sharing</h2>
-        {!loaded && (
+        {!ready && (
           <p className="hint" aria-busy="true" aria-label="Loading sharing info">
             <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
             <SkeletonBar w="60%" h={12} />
           </p>
         )}
-        {loaded && settings &&
+        {ready && settings &&
           (settings.desktop ? (
             // The desktop app binds to loopback with no admin token and no
             // server/.env, so there is nothing to configure here — pointing at

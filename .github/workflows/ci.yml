@@ -68,7 +68,7 @@ jobs:
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
           # `image.source` is what links the package to this repo, so it shows
-          # under the repo's Packages sidebar and inherits its README/licence.
+          # under the repo's Packages sidebar and inherits its README/license.
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.pkg.outputs.version }}

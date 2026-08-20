@@ -30,17 +30,17 @@ export interface ProStatus {
 }
 
 /**
- * What the API reports about the licence — deliberately never the key itself.
+ * What the API reports about the license — deliberately never the key itself.
  *
- * A licence key is a credential. A Settings page that echoes it back is how one
+ * A license key is a credential. A Settings page that echoes it back is how one
  * gets copied to a second install, so the API answers with what an operator
  * needs to *see* and nothing they could re-enter elsewhere.
  */
 export interface ProLicense {
   verdict: "valid" | "expired" | "invalid" | "absent";
-  /** Customer name from the licence, so an operator can tell which one is loaded. */
+  /** Customer name from the license, so an operator can tell which one is loaded. */
   org: string;
-  /** Seats the licence permits. 0 when there is no readable licence. */
+  /** Seats the license permits. 0 when there is no readable license. */
   seats: number;
   /** ISO date, or null when nothing verified. */
   expires_at: string | null;

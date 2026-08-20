@@ -646,26 +646,61 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
 
 // ---------- articles ----------
 
-// Run an IN (...) query over a list of ids, chunked to stay well under SQLite's
-// bound-parameter limit (an all-time search can hand us thousands of PMIDs in
-// a single call). `sql` receives the placeholder list for each chunk; `extra`
-// params are appended after the chunk's ids.
+// Chunk a list of ids to stay well under SQLite's bound-parameter limit (an
+// all-time search can hand us thousands of PMIDs in a single call), handing
+// each chunk to `fn` as a placeholder list and the params to bind against it:
+// the chunk's ids, then `extra`.
 //
 // Ids rather than PMIDs, because holdingsByDois runs the same query shape over
 // DOIs. Nothing here reads the values — they are bound, never interpolated — so
 // the only thing the name was ever describing was the caller.
+//
+// The chunk size and that bind order live here and nowhere else. A statement
+// written against the opposite order returns nothing rather than failing, so a
+// second copy of the rule to keep in step is a second place for that to happen
+// silently.
+function eachIdChunk(
+  ids: string[],
+  extra: (string | number)[],
+  fn: (placeholders: string, params: (string | number)[]) => void
+): void {
+  for (let i = 0; i < ids.length; i += SQL_PARAMS_PER_CHUNK) {
+    const batch = ids.slice(i, i + SQL_PARAMS_PER_CHUNK);
+    fn(batch.map(() => "?").join(","), [...batch, ...extra]);
+  }
+}
+
+// An IN (...) query over the chunks, with the rows concatenated.
 function queryByIds<T>(
   ids: string[],
   sql: (placeholders: string) => string,
   extra: (string | number)[] = []
 ): T[] {
   const out: T[] = [];
-  for (let i = 0; i < ids.length; i += SQL_PARAMS_PER_CHUNK) {
-    const batch = ids.slice(i, i + SQL_PARAMS_PER_CHUNK);
-    const placeholders = batch.map(() => "?").join(",");
-    out.push(...(db.prepare(sql(placeholders)).all(...batch, ...extra) as T[]));
-  }
+  eachIdChunk(ids, extra, (placeholders, params) => {
+    out.push(...(db.prepare(sql(placeholders)).all(...params) as T[]));
+  });
   return out;
+}
+
+// The same over a statement that changes rows rather than returning them,
+// summing `changes` across the chunks. A sibling rather than a flag on
+// queryByIds because .all() and .run() return different things, and one
+// function covering both would be two functions sharing a name.
+//
+// Chunking a write is only safe under a transaction — several statements where
+// the caller asked for one — so every caller belongs inside one. See
+// deleteCollectionPaperRows.
+function runByIds(
+  ids: string[],
+  sql: (placeholders: string) => string,
+  extra: (string | number)[] = []
+): number {
+  let changed = 0;
+  eachIdChunk(ids, extra, (placeholders, params) => {
+    changed += Number(db.prepare(sql(placeholders)).run(...params).changes);
+  });
+  return changed;
 }
 
 export function existingPmids(pmids: string[]): Set<string> {
@@ -1914,6 +1949,92 @@ export function deleteCollectionFile(fileId: number): void {
     .get(fileId) as { content_hash: string } | undefined;
   db.prepare("DELETE FROM collection_files WHERE id = ?").run(fileId);
   if (row) gcBlobsIfOrphaned([row.content_hash]);
+}
+
+// The row deletion alone, atomic, returning the blobs it may have orphaned.
+//
+// Past SQL_PARAMS_PER_CHUNK pmids this is several DELETEs, and "take these
+// papers out of this collection" is one decision the caller made once. Unwrapped,
+// a throw between chunks left the collection half emptied and skipped the GC
+// entirely, stranding every blob and pdf_text row belonging to the files that
+// did go — the one state nothing here would ever clean up, since the rows that
+// named those hashes were the rows that had just been deleted.
+//
+// Hashes first, then the delete: the same enforced order as deleteCollection
+// and deleteCollectionFile, and now under one transaction, so the two
+// statements read one snapshot rather than two.
+//
+// The collection id trails the pmids in both because eachIdChunk binds the
+// chunk before its `extra`, and both are written that way so the two clauses
+// can't drift apart.
+const deleteCollectionPaperRows = transaction(
+  (
+    collectionId: number,
+    pmids: string[]
+  ): { removed: number; papers: number; hashes: string[] } => {
+    // The pmid comes back beside the hash so the count of papers actually
+    // removed is read off the same rows as the blobs, in the same snapshot,
+    // rather than inferred afterwards from a file count that can't tell one
+    // doubled paper from two single ones.
+    const matched = queryByIds<{ content_hash: string; pmid: string }>(
+      pmids,
+      (ph) =>
+        `SELECT DISTINCT content_hash, pmid FROM collection_files
+          WHERE pmid IN (${ph}) AND collection_id = ?`,
+      [collectionId]
+    );
+    const hashes = matched.map((r) => r.content_hash);
+    const papers = new Set(matched.map((r) => r.pmid)).size;
+    const removed = runByIds(
+      pmids,
+      (ph) => `DELETE FROM collection_files WHERE pmid IN (${ph}) AND collection_id = ?`,
+      [collectionId]
+    );
+    return { removed, papers, hashes };
+  }
+);
+
+/**
+ * Remove papers from one collection: every file in it matched to any of these
+ * PMIDs, and the blobs that leaves orphaned.
+ *
+ * Keyed on the pmid rather than on a file id, which is what makes this correct
+ * where a loop of deleteCollectionFile is not. `collection_files` is unique on
+ * (collection_id, content_hash), not on (collection_id, pmid), so a collection
+ * may legitimately hold two files for one paper — a preprint and the published
+ * PDF, the same article scanned twice. The paper rows the client selects from
+ * carry MIN(id) of those (see the collection source's file join), so deleting
+ * by file id removes one copy and leaves the paper still listed, pointing at
+ * the other. "Remove this paper from this collection" has to mean all of them.
+ *
+ * Scoped to the one collection on purpose. The same PDF filed under another
+ * engagement is a different collection's holding and is not this caller's to
+ * delete; the blob survives because gcBlobsIfOrphaned counts the rows that
+ * remain.
+ *
+ * Returns both counts, because neither one alone describes what happened.
+ * `removed` is files and exceeds `papers` in exactly the case above; `papers`
+ * is how many of the requested pmids this collection actually held, and falls
+ * short of what was asked whenever something else got there first — another
+ * tab, an import cleanup, a second window. The caller reports what it did
+ * rather than what it was asked to do, and that needs both numbers: a file
+ * count can't be turned back into a paper count, and the request's own length
+ * is the one number that is never a fact about the database.
+ */
+export function removeCollectionPapers(
+  collectionId: number,
+  pmids: string[]
+): { removed: number; papers: number } {
+  if (pmids.length === 0) return { removed: 0, papers: 0 };
+  const { removed, papers, hashes } = deleteCollectionPaperRows(collectionId, pmids);
+  // Outside the transaction, and after it. gcBlobsIfOrphaned unlinks files, and
+  // no ROLLBACK undoes an unlink: rolling the rows back once the bytes had gone
+  // would restore a collection whose files no longer exist, which is a worse
+  // outcome than the half-emptied one the transaction is there to prevent. It
+  // also has to see the rows actually gone, since countFilesByHash is what
+  // decides orphanhood — and after COMMIT they are.
+  gcBlobsIfOrphaned(hashes);
+  return { removed, papers };
 }
 
 // ---------- extracted PDF text (full-text search) ----------

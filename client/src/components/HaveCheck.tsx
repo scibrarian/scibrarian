@@ -3,7 +3,7 @@ import { Check, ExternalLink, FileText, Minus, TriangleAlert, Users } from "luci
 import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { MAX_HAVE_REFS } from "../../../shared/limits";
+import { MAX_HAVE_REFS, MAX_NAME_CHARS } from "../../../shared/limits";
 import type { Collection, HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
@@ -378,7 +378,7 @@ function AnswerRow({
 
       {/* The org line sits above the free-copy one because it changes the
           decision more: a copy the agency already bought costs nothing and
-          needs no licence argument. The server suppresses the free-copy lookup
+          needs no license argument. The server suppresses the free-copy lookup
           for these rows for the same reason. */}
       {!held && org && (
         <p className="have-org">
@@ -578,6 +578,7 @@ function DestinationPicker({
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="New collection"
+          maxLength={MAX_NAME_CHARS}
           spellCheck={false}
           // This sits outside the check form above it, so Enter would otherwise
           // do nothing at all here. create() carries the same `creating` guard

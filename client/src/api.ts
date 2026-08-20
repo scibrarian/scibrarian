@@ -286,6 +286,16 @@ export const api = {
     }),
   deleteCollectionFile: (fileId: number) =>
     req<void>(`/api/collections/files/${fileId}`, { method: "DELETE" }),
+  // Take papers out of one collection. Answers with both counts: `removed` is
+  // stored files, which exceeds `papers` when the collection holds two copies
+  // of one article, and `papers` is how many of the pmids sent were still there
+  // to remove — see removeCollectionPapers on the server. Neither is the length
+  // of what was sent, and reporting that instead is what this pair is for.
+  removeCollectionPapers: (collectionId: number, pmids: string[]) =>
+    req<{ removed: number; papers: number }>(`/api/collections/${collectionId}/papers/remove`, {
+      method: "POST",
+      body: JSON.stringify({ pmids }),
+    }),
   refresh: (topicId?: number) => {
     const suffix = topicId ? `?topic=${topicId}` : "";
     return req<RefreshResponse>(`/api/refresh${suffix}`, { method: "POST" });
@@ -310,11 +320,11 @@ export const api = {
     }),
   proRevokeNode: (id: number) =>
     req<{ revoked: boolean }>(`/api/pro/nodes/${id}`, { method: "DELETE" }),
-  // An empty string clears it. There is no getter: the licence is reported
+  // An empty string clears it. There is no getter: the license is reported
   // through proNodes(), which never returns the key itself.
   //
   // `replace` waves past the one refusal an operator can answer: a key that
-  // expires before the licence already saved. Sent only when they have been
+  // expires before the license already saved. Sent only when they have been
   // shown what they would be giving up and asked for it again — see ProPanel.
   proSetLicense: (licenseKey: string, replace = false) =>
     req<{ license: ProLicense }>("/api/pro/license", {
@@ -322,7 +332,7 @@ export const api = {
       body: JSON.stringify({ license_key: licenseKey, replace }),
     }),
 
-  // Unlike the licence above, an empty string is refused rather than treated as
+  // Unlike the license above, an empty string is refused rather than treated as
   // a clear: every pairing code is built from this, and nothing is gained by
   // holding none. The panel saves on blur, so "empty" is a state the form
   // passes through rather than an instruction.

@@ -61,9 +61,9 @@ interface Picker {
 // scope because it never varies — this component re-renders on every id, banner
 // and refresh change, and rebuilding a constant each time is waste.
 export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
+  papers: { label: "Library", icon: Library },
   interests: { label: "Interests", icon: Search },
   bookmarks: { label: "Bookmarks", icon: Bookmark },
-  papers: { label: "Library", icon: Library },
 };
 
 // Nav order, which is the literal's own: Object.entries preserves insertion
@@ -71,7 +71,19 @@ export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
 // than repeating the three names in a second list that could fall behind.
 const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
 
-// Two-part navigation: an Interests / Bookmarks / Library mode switch, plus a
+// Where the switch breaks into two pills. The Library stands alone; Interests
+// and Bookmarks are both about deciding what is worth keeping, so they read as
+// one thing, and the gap between the groups is what says so.
+//
+// A split point in MODE_ORDER rather than a second list of names, for the same
+// reason MODE_ORDER itself is derived: a hand-written grouping is a place the
+// nav can silently lose a workspace that was added to MODES and forgotten here.
+// A fourth one joins the second group, which is a visible default rather than a
+// disappearance.
+const GROUPED_AFTER = 1;
+const MODE_GROUPS = [MODE_ORDER.slice(0, GROUPED_AFTER), MODE_ORDER.slice(GROUPED_AFTER)];
+
+// Two-part navigation: a Library / Interests / Bookmarks mode switch, plus a
 // dropdown that picks the active topic (MeSH search), bookmark folder, or
 // collection within that mode. The dropdown replaces per-item tabs so a long
 // list never clutters the header. Radix DropdownMenu owns the open state and
@@ -218,31 +230,42 @@ export function WorkspaceNav({
             empty one, and a live control sitting among skeletons reads as the
             one part of the bar that's ready when it is the least ready of them.
             The real labels go inside the bars (see SkeletonBar) so each is
-            exactly the width it replaces and the picker doesn't slide. */}
-        {!loaded
-          ? // Real buttons, disabled: they pick up `.mode-switch button` and the
-            // UA's own button font, so the box and the text metrics are the ones
-            // being stood in for rather than a span's approximation of them.
-            MODE_ORDER.map(([value, m]) => (
-              <button key={value} disabled>
-                <SkeletonBar w={16} h={16} />
-                <SkeletonBar h={14}>{m.label}</SkeletonBar>
-              </button>
-            ))
-          : /* aria-pressed, not just the class: which workspace you're in is
-               state, and drawn on its own it reaches only the people who can see
-               the fill. Same condition as the class so the two can't disagree —
-               under Settings none of them is pressed, because none is current. */
-            MODE_ORDER.map(([value, m]) => (
-              <button
-                key={value}
-                className={mode === value && !settingsActive ? "active" : ""}
-                aria-pressed={mode === value && !settingsActive}
-                onClick={() => onModeChange(value)}
-              >
-                <m.icon size={16} aria-hidden /> {m.label}
-              </button>
-            ))}
+            exactly the width it replaces and the picker doesn't slide.
+
+            One pill per group, and the branch is per button inside them — so the
+            grouping is written once rather than duplicated across a loaded arm
+            and a loading one, where the two could drift into different shapes
+            and move the bar on the handoff. */}
+        {MODE_GROUPS.map((group) => (
+          <div className="mode-pill" key={group[0][0]}>
+            {group.map(([value, m]) =>
+              !loaded ? (
+                // Real buttons, disabled: they pick up `.mode-switch button` and
+                // the UA's own button font, so the box and the text metrics are
+                // the ones being stood in for rather than a span's approximation
+                // of them.
+                <button key={value} disabled>
+                  <SkeletonBar w={16} h={16} />
+                  <SkeletonBar h={14}>{m.label}</SkeletonBar>
+                </button>
+              ) : (
+                /* aria-pressed, not just the class: which workspace you're in is
+                   state, and drawn on its own it reaches only the people who can
+                   see the fill. Same condition as the class so the two can't
+                   disagree — under Settings none of them is pressed, because none
+                   is current. */
+                <button
+                  key={value}
+                  className={mode === value && !settingsActive ? "active" : ""}
+                  aria-pressed={mode === value && !settingsActive}
+                  onClick={() => onModeChange(value)}
+                >
+                  <m.icon size={16} aria-hidden /> {m.label}
+                </button>
+              )
+            )}
+          </div>
+        ))}
       </div>
 
       <div className="ws-picker">

@@ -4,7 +4,7 @@ import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import { useCachedFetch, type FetchCache } from "../lib/hooks";
 import { Banner } from "./Banner";
-import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { ConfirmDialog, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import type {
   CollectionFile,
   CollectionFilesResponse,
@@ -12,7 +12,7 @@ import type {
   ImportStatus,
   ProCollectionStamp,
 } from "../types";
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
+import { MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
 
 // Files per upload request, so a large selection doesn't become one gigantic
 // multipart body. Clamped to the server's per-request cap so raising this for
@@ -532,6 +532,7 @@ export function CollectionView({
         open={renaming}
         title="Rename collection"
         placeholder="New name"
+        maxLength={MAX_NAME_CHARS}
         submitLabel="Rename"
         onSubmit={rename}
         onCancel={() => setRenaming(false)}
@@ -539,7 +540,7 @@ export function CollectionView({
       <ConfirmDialog
         open={confirmingDelete}
         title="Delete collection?"
-        message="Its uploaded PDF copies are removed from the app (unless another collection also has them); your original files are untouched."
+        message={`Everything filed in it is removed. ${STORED_COPIES_NOTE}`}
         confirmLabel="Delete"
         danger
         onConfirm={remove}

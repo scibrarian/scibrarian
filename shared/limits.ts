@@ -24,6 +24,11 @@ export const MAX_UPLOAD_FILES = 50;
 // trade both away for a limit the database doesn't have. This bounds the
 // request instead — well past any plausible filtered set, since the button's
 // whole point is sets too large to eyeball.
+//
+// Removing the selected papers from a collection is bounded by the same number,
+// being the other route that takes everything currently filtered. Both are
+// enforced in their handlers, and both therefore depend on the byte limit below
+// reaching them.
 export const MAX_BULK_BOOKMARK_PMIDS = 50_000;
 
 // References one "do I already have this?" request may carry.
@@ -44,4 +49,21 @@ export const MAX_HAVE_REFS = 300;
 // the JSON around them. Derived rather than written out separately: a cap
 // raised without the parser limit following it would fail every large save at
 // body-parser, which reports payload-too-large and nothing about why.
+//
+// Deriving it is only half the guarantee. This limit is mounted per route (see
+// index.ts), so a *route* that adopts the cap without being added to that mount
+// fails in exactly the same way, with its own message unreachable behind the
+// 100kb default. The removal did, for one release.
 export const MAX_BULK_BOOKMARK_BYTES = MAX_BULK_BOOKMARK_PMIDS * 22;
+
+// Longest name a collection or bookmark folder may carry.
+//
+// A display bound rather than a storage one: these names are drawn in the
+// workspace picker's trigger, in the dropdown rows beside a count badge, and in
+// the Pro panel's per-collection list — none of which have room to grow, and
+// all of which turn a long name into a truncation or a wrapped row.
+//
+// Counted in UTF-16 code units, which is what an input's `maxLength` counts. So
+// the two agree exactly: the box stops accepting at the character the server
+// would have refused, rather than taking a name that fails on submit.
+export const MAX_NAME_CHARS = 30;

@@ -5,6 +5,7 @@ import { errorMessage } from "../lib/format";
 import type { Bookmarking } from "../lib/bookmarking";
 import type { BookmarkFolder } from "../types";
 import { PromptDialog } from "./Dialogs";
+import { MAX_NAME_CHARS } from "../../../shared/limits";
 
 // The dropdown body both bookmark controls open: the list of folders, the
 // empty state, and the row that starts a new one.
@@ -64,6 +65,7 @@ export function NewFolderDialog({
       open={pmid != null}
       title="New folder"
       placeholder="Folder name"
+      maxLength={MAX_NAME_CHARS}
       submitLabel="Create & save"
       onSubmit={(name) => {
         onClose();

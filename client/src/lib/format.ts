@@ -87,6 +87,38 @@ function describeHeldBack(r: ProPushResult): string {
   } can't be verified.`;
 }
 
+/**
+ * One removal's counts, as a sentence.
+ *
+ * Three numbers, none of which can stand for the others. `asked` is what the
+ * user ticked and is the only one that isn't a fact about the database — it is
+ * what the request carried, not what became of it. `papers` is how many of
+ * those the collection actually still held. `removed` is stored files, which
+ * exceeds `papers` when the collection holds two copies of one article.
+ *
+ * They disagree in both directions and the message has to survive both. The
+ * doubled-file case was already handled; the shortfall was not, so a tick set
+ * of five that another tab had already emptied down to two still reported
+ * "Removed 5 papers" — the one direction a user could have acted on, since it
+ * says work happened that didn't.
+ */
+export function describeRemoval(asked: number, removed: number, papers: number): string {
+  if (papers === 0) {
+    return asked === 1
+      ? "Nothing was removed — that paper had already left this collection."
+      : "Nothing was removed — those papers had already left this collection.";
+  }
+  // Files only when they outnumber papers. Saying "(3 stored files)" beside
+  // "3 papers" is noise about an implementation detail; saying it beside
+  // "2 papers" is the answer to why three rows went.
+  const files = removed > papers ? ` (${removed} stored files)` : "";
+  const gone = asked - papers;
+  return (
+    `Removed ${papers} paper${papers === 1 ? "" : "s"} from this collection${files}.` +
+    (gone > 0 ? ` ${gone} had already left.` : "")
+  );
+}
+
 // "A, B, C, et al." once the list exceeds `max` names.
 export function formatAuthors(authors: string[], max: number): string {
   if (authors.length === 0) return "—";
