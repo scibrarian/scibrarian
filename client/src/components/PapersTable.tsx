@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronUp, ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Bookmarking } from "../lib/bookmarking";
-import { errorMessage, formatAuthors } from "../lib/format";
+import { describeRemoval, errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { selectionOnScreen, usePapers, type PaperFilterState } from "../lib/papers";
@@ -31,7 +31,7 @@ export function PapersTable({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
-  onPapersRemoved,
+  onCollectionChanged,
   filters,
   bookmarking,
 }: PaperAccess & {
@@ -43,8 +43,16 @@ export function PapersTable({
    * Papers were taken out of the collection on screen, so the shell has to
    * reload the sources that counted them. Absent everywhere the delete control
    * is absent, which is every source but a single collection.
+   *
+   * Named for the collection rather than for the papers because Settings has an
+   * `onPapersRemoved` of its own, with a different signature and a different
+   * meaning — papers dropped by a journal or topic removal, reported by count.
+   * Both are wired from App, so one name across the two left a reader tracing
+   * either of them having to work out which component it landed on. This is the
+   * same event CollectionView reports through `onChanged`, and App answers both
+   * with handleCollectionChanged.
    */
-  onPapersRemoved?: () => void;
+  onCollectionChanged?: () => void;
   bookmarking: Bookmarking | null;
 }) {
   const {
@@ -151,20 +159,18 @@ export function PapersTable({
     setRemoving(true);
     setActionError(null);
     try {
-      // Files removed, not papers asked for. The two differ when the collection
-      // holds two copies of one article, and reporting what was sent instead of
-      // what happened is how "deleted 3" ends up sitting above 4 fewer rows.
-      const { removed } = await api.removeCollectionPapers(removeFrom, [...onScreen]);
-      const papers = onScreen.size;
-      setNotice(
-        `Removed ${papers} paper${papers === 1 ? "" : "s"} from this collection` +
-          (removed > papers ? ` (${removed} stored files).` : ".")
-      );
+      // What happened, from the server, rather than the length of what was
+      // sent. The two disagree in both directions — a collection holding two
+      // copies of one article removes more files than papers, and anything that
+      // got there first (another tab, a second window, an import cleanup)
+      // removes fewer papers than were ticked. See describeRemoval.
+      const { removed, papers } = await api.removeCollectionPapers(removeFrom, [...onScreen]);
+      setNotice(describeRemoval(onScreen.size, removed, papers));
       setSelected(new Set());
       // The papers list, the collection's count in the picker and the file list
       // in the view above are all now stale, and none of them is this
       // component's to reload.
-      onPapersRemoved?.();
+      onCollectionChanged?.();
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {

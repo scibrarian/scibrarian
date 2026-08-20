@@ -1968,20 +1968,29 @@ export function deleteCollectionFile(fileId: number): void {
 // chunk before its `extra`, and both are written that way so the two clauses
 // can't drift apart.
 const deleteCollectionPaperRows = transaction(
-  (collectionId: number, pmids: string[]): { removed: number; hashes: string[] } => {
-    const hashes = queryByIds<{ content_hash: string }>(
+  (
+    collectionId: number,
+    pmids: string[]
+  ): { removed: number; papers: number; hashes: string[] } => {
+    // The pmid comes back beside the hash so the count of papers actually
+    // removed is read off the same rows as the blobs, in the same snapshot,
+    // rather than inferred afterwards from a file count that can't tell one
+    // doubled paper from two single ones.
+    const matched = queryByIds<{ content_hash: string; pmid: string }>(
       pmids,
       (ph) =>
-        `SELECT DISTINCT content_hash FROM collection_files
+        `SELECT DISTINCT content_hash, pmid FROM collection_files
           WHERE pmid IN (${ph}) AND collection_id = ?`,
       [collectionId]
-    ).map((r) => r.content_hash);
+    );
+    const hashes = matched.map((r) => r.content_hash);
+    const papers = new Set(matched.map((r) => r.pmid)).size;
     const removed = runByIds(
       pmids,
       (ph) => `DELETE FROM collection_files WHERE pmid IN (${ph}) AND collection_id = ?`,
       [collectionId]
     );
-    return { removed, hashes };
+    return { removed, papers, hashes };
   }
 );
 
@@ -2003,12 +2012,21 @@ const deleteCollectionPaperRows = transaction(
  * delete; the blob survives because gcBlobsIfOrphaned counts the rows that
  * remain.
  *
- * Returns files removed, not papers. They differ in exactly the case above, and
- * the caller reports what it did rather than what it was asked to do.
+ * Returns both counts, because neither one alone describes what happened.
+ * `removed` is files and exceeds `papers` in exactly the case above; `papers`
+ * is how many of the requested pmids this collection actually held, and falls
+ * short of what was asked whenever something else got there first — another
+ * tab, an import cleanup, a second window. The caller reports what it did
+ * rather than what it was asked to do, and that needs both numbers: a file
+ * count can't be turned back into a paper count, and the request's own length
+ * is the one number that is never a fact about the database.
  */
-export function removeCollectionPapers(collectionId: number, pmids: string[]): number {
-  if (pmids.length === 0) return 0;
-  const { removed, hashes } = deleteCollectionPaperRows(collectionId, pmids);
+export function removeCollectionPapers(
+  collectionId: number,
+  pmids: string[]
+): { removed: number; papers: number } {
+  if (pmids.length === 0) return { removed: 0, papers: 0 };
+  const { removed, papers, hashes } = deleteCollectionPaperRows(collectionId, pmids);
   // Outside the transaction, and after it. gcBlobsIfOrphaned unlinks files, and
   // no ROLLBACK undoes an unlink: rolling the rows back once the bytes had gone
   // would restore a collection whose files no longer exist, which is a worse
@@ -2016,7 +2034,7 @@ export function removeCollectionPapers(collectionId: number, pmids: string[]): n
   // also has to see the rows actually gone, since countFilesByHash is what
   // decides orphanhood — and after COMMIT they are.
   gcBlobsIfOrphaned(hashes);
-  return removed;
+  return { removed, papers };
 }
 
 // ---------- extracted PDF text (full-text search) ----------

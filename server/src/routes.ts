@@ -1237,9 +1237,11 @@ api.post("/collections/:id/papers/remove", (req, res) => {
     return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
   }
   const pmids = body.pmids.map((p) => String(p).trim()).filter(Boolean);
-  // Files, not papers — they differ when a collection holds two copies of one
-  // article, and the count is reported rather than assumed.
-  res.json({ removed: removeCollectionPapers(id, pmids) });
+  // Both counts, because they differ in both directions — a doubled article
+  // removes more files than papers, and a paper something else already took
+  // removes fewer papers than were asked for. The notice reports what happened,
+  // which needs the pair; see removeCollectionPapers.
+  res.json(removeCollectionPapers(id, pmids));
 });
 
 // ---------- refresh / status ----------

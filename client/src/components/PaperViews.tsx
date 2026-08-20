@@ -33,7 +33,7 @@ export function PaperViews({
   emptyState,
   access,
   bookmarking,
-  onPapersRemoved,
+  onCollectionChanged,
 }: {
   source: PaperSource;
   viewMode: ViewMode;
@@ -43,8 +43,9 @@ export function PaperViews({
   // null in a workspace that doesn't bookmark (the Library) — see Bookmarking.
   bookmarking: Bookmarking | null;
   // Papers left the collection on screen (see PapersTable). Only the table
-  // offers it, so only the table is handed it.
-  onPapersRemoved?: () => void;
+  // offers it, so only the table is handed it. Named for the collection because
+  // Settings' onPapersRemoved is a different event with a different signature.
+  onCollectionChanged?: () => void;
 }) {
   const filters = usePaperFilters(source);
   const common = { source, reloadToken, filters, bookmarking, ...access };
@@ -61,5 +62,7 @@ export function PaperViews({
     );
   }
   if (viewMode === "timeline") return <Timeline {...common} emptyState={emptyState} />;
-  return <PapersTable {...common} emptyState={emptyState} onPapersRemoved={onPapersRemoved} />;
+  return (
+    <PapersTable {...common} emptyState={emptyState} onCollectionChanged={onCollectionChanged} />
+  );
 }

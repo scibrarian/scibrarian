@@ -76,7 +76,7 @@ describe("a bulk body reaches the route that expects it", () => {
     // these pmids is in the collection, so nothing is removed — what is being
     // pinned is that the body arrived, not what it did.
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ removed: 0 });
+    expect(await res.json()).toEqual({ removed: 0, papers: 0 });
   });
 
   it("takes a large bookmark save", async () => {

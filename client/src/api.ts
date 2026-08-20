@@ -286,11 +286,13 @@ export const api = {
     }),
   deleteCollectionFile: (fileId: number) =>
     req<void>(`/api/collections/files/${fileId}`, { method: "DELETE" }),
-  // Take papers out of one collection. Answers with files removed, which is not
-  // the same number as papers sent when a collection holds two copies of one
-  // article — see removeCollectionPapers on the server.
+  // Take papers out of one collection. Answers with both counts: `removed` is
+  // stored files, which exceeds `papers` when the collection holds two copies
+  // of one article, and `papers` is how many of the pmids sent were still there
+  // to remove — see removeCollectionPapers on the server. Neither is the length
+  // of what was sent, and reporting that instead is what this pair is for.
   removeCollectionPapers: (collectionId: number, pmids: string[]) =>
-    req<{ removed: number }>(`/api/collections/${collectionId}/papers/remove`, {
+    req<{ removed: number; papers: number }>(`/api/collections/${collectionId}/papers/remove`, {
       method: "POST",
       body: JSON.stringify({ pmids }),
     }),

@@ -779,7 +779,7 @@ export default function App() {
       bookmarking={bookmarking}
       // The same handler the collection chrome uses: removing papers changes
       // the collection's counts and its file list exactly as an upload does.
-      onPapersRemoved={handleCollectionChanged}
+      onCollectionChanged={handleCollectionChanged}
     />
   );
 

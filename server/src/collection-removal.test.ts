@@ -61,15 +61,17 @@ describe("removing papers from a collection", () => {
   it("ignores an empty list without touching anything", () => {
     // The client can send one: ticking a box and un-ticking it leaves an empty
     // selection, and the button is disabled but the route is not the button.
-    expect(db.removeCollectionPapers(pfizer, [])).toBe(0);
+    expect(db.removeCollectionPapers(pfizer, [])).toEqual({ removed: 0, papers: 0 });
     expect(names(pfizer)).toHaveLength(4);
   });
 
   it("takes every copy of a doubled paper, not just the lowest-id one", () => {
-    // Two files removed for one paper asked for — which is why the count that
-    // comes back is files, and why the caller reports it rather than echoing
-    // what it sent.
-    expect(db.removeCollectionPapers(pfizer, ["11111111"])).toBe(2);
+    // Two files removed for the one paper asked for — which is why both counts
+    // come back, and why the caller reports them rather than echoing what it
+    // sent. A notice built from the request's own length would say "1 paper"
+    // over two vanished rows; one built from `removed` alone would say "2
+    // papers" over one.
+    expect(db.removeCollectionPapers(pfizer, ["11111111"])).toEqual({ removed: 2, papers: 1 });
     expect(names(pfizer)).toEqual(["other.pdf", "unmatched.pdf"]);
   });
 
@@ -96,12 +98,17 @@ describe("removing papers from a collection", () => {
   });
 
   it("ignores a pmid this collection doesn't hold", () => {
-    expect(db.removeCollectionPapers(pfizer, ["99999999"])).toBe(0);
+    expect(db.removeCollectionPapers(pfizer, ["99999999"])).toEqual({ removed: 0, papers: 0 });
     expect(names(pfizer)).toHaveLength(2);
   });
 
   it("removes several papers in one call", () => {
-    expect(db.removeCollectionPapers(novartis, ["11111111", "22222222"])).toBe(1);
+    // Two asked for, one held — the shortfall the notice has to report rather
+    // than claim two papers left.
+    expect(db.removeCollectionPapers(novartis, ["11111111", "22222222"])).toEqual({
+      removed: 1,
+      papers: 1,
+    });
     expect(names(novartis)).toEqual([]);
   });
 });
@@ -178,7 +185,7 @@ describe("a removal that spans several chunks", () => {
       ).c;
     expect(textRows()).toBe(1);
 
-    expect(db.removeCollectionPapers(big, [pmidAt(0)])).toBe(1);
+    expect(db.removeCollectionPapers(big, [pmidAt(0)])).toEqual({ removed: 1, papers: 1 });
     expect(textRows()).toBe(0);
   });
 
@@ -190,7 +197,10 @@ describe("a removal that spans several chunks", () => {
     // One fewer than COUNT: the case above already took pmidAt(0), and passing
     // it again is the "pmid this collection doesn't hold" case at scale.
     const everything = Array.from({ length: COUNT }, (_, i) => pmidAt(i));
-    expect(db.removeCollectionPapers(big, everything)).toBe(COUNT - 1);
+    expect(db.removeCollectionPapers(big, everything)).toEqual({
+      removed: COUNT - 1,
+      papers: COUNT - 1,
+    });
     expect(fileCount()).toBe(0);
     // And the chunking still didn't reach past this collection, which is the
     // bind-order bug a chunked DELETE fails at silently: `extra` params go
