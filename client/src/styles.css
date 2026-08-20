@@ -44,6 +44,33 @@ html {
   scrollbar-gutter: stable;
 }
 
+/* ...and the scroll lock must not compensate for a gutter that never left.
+   Radix locks the page behind every dialog through react-remove-scroll, which
+   measures `innerWidth - documentElement.clientWidth` and re-adds that many
+   pixels as `margin-right` on the body, so content doesn't jump sideways when
+   the scrollbar it removed stops taking up space.
+
+   With a stable gutter the scrollbar never was taking up space to begin with:
+   the gutter is reserved whether or not the page scrolls, and it stays reserved
+   under the lock's `overflow: hidden`. The compensation lands on top of it and
+   removes 30px where 15 are missing. .app is `margin: 0 auto`, so half of the
+   surplus comes off each side and the whole page slides 7.5px left on open and
+   back on close — measured at 1280x900: .app at 140.5px, 133px while a dialog
+   is up, 140.5px again after. Which is the same 7.5px the rule above exists to
+   remove, reintroduced on every dialog instead of on every load.
+
+   The gutter holds the space, so nothing has to be given back.
+
+   `html body[...]`, not `body[...]`, and the extra element is load-bearing.
+   react-remove-scroll writes the identical selector with its own !important
+   into a <style> it injects at lock time — so same specificity, and its tag
+   lands in <head> after this stylesheet, which means source order hands it the
+   win. (0,1,2) against (0,1,1) settles it without depending on who was
+   appended last. */
+html body[data-scroll-locked] {
+  margin-right: 0 !important;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
@@ -3093,8 +3120,18 @@ html {
    The border is on every variant, transparent under the fills. .pro-row is
    align-items: center against a bordered input, so a fill with no border draws
    2px shorter than the box beside it — and 2px shorter than the outlines it
-   shares a row with. */
-.pro-panel button:not(.pro-license-answer) {
+   shares a row with.
+
+   Two exclusions, not one. Scoping to the panel rather than to a container
+   class is still right — it is what stops a new action here rendering unstyled
+   — but it reaches every button the panel *contains*, including ones that
+   belong to something else. .banner-close is the Banner's ×, and this panel
+   renders a Banner on any failure: `:not()` carries its argument's specificity,
+   so this selector is (0,2,1) against .banner-close's (0,1,0) and won a glyph
+   it was never about. Measured before the exclusion — a 52x38px bordered box
+   in --panel and --text where a bare × belongs, wrecking the banner's layout
+   and losing its red. */
+.pro-panel button:not(.pro-license-answer):not(.banner-close) {
   display: inline-flex;
   align-items: center;
   gap: 6px;

@@ -347,7 +347,29 @@ export function ProPanel({
 
   // After every hook, so the hook order is the same on both paths — and after
   // the effect above, which is what eventually makes this false.
-  if (!ready) return <ProPanelSkeleton master={desktop === false} />;
+  //
+  // `desktop !== true` here, where the real panel below uses `desktop ===
+  // false`. The two differ only while the flag is null, and that difference is
+  // the whole point: for the panel, null means "don't show a section you may
+  // have to take away again"; for a stand-in, null means "reserve the space you
+  // will probably need".
+  //
+  // Sharing the panel's expression made the stand-in grow a whole section
+  // mid-load. `desktop` arrives with Settings' own fetch, which resolves before
+  // this panel's on a hosted instance — /api/pro/sync can be a round trip to
+  // the master — so the sequence was: skeleton without the master half,
+  // settings land, skeleton *with* it and ~200px taller, then the real panel.
+  // Everything below the Pro panel was shoved down by a stand-in, which is the
+  // one thing a stand-in exists not to do.
+  //
+  // The trade is a desktop build, where this over-reserves until the flag says
+  // so and the stand-in then shrinks. That direction is both rarer and cheaper:
+  // rarer because the desktop build's Pro calls are all loopback and usually
+  // settle before Settings' do, so the stand-in is generally gone before the
+  // flag matters; cheaper because any height left over at that point is
+  // absorbed into the single coordinated reveal `ready` already performs,
+  // rather than landing as a lone jump with nothing else moving.
+  if (!ready) return <ProPanelSkeleton master={desktop !== true} />;
 
   return (
     <section className="panel pro-panel">
