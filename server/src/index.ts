@@ -255,7 +255,7 @@ export async function start(): Promise<{ port: number; url: string }> {
   // app is a Pro build too and is deliberately tokenless (main.mjs sets it
   // empty), and it is the one place where "single local user" is the truth
   // rather than an omission; every other Pro instance is hosted, and hosted
-  // means reachable. Master-shaped state — a licence, a public address,
+  // means reachable. Master-shaped state — a license, a public address,
   // paired nodes — was the other candidate and is worse: a freshly
   // provisioned master has none of it yet, so the check would pass at exactly
   // the moment the operator is least likely to look again.
