@@ -71,6 +71,19 @@ export function PapersTable({
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // A removal's message, held back until the rows it is about have gone.
+  //
+  // The two used to land separately and the page moved twice for one action:
+  // the banner appeared the moment the request answered, pushing the table
+  // down ~55px while it still showed every row that had just been deleted, and
+  // the rows left when the refetch behind it landed — 584ms later on a local
+  // server, measured. Two shifts in opposite directions, half a second apart,
+  // for something the user did once.
+  //
+  // Waiting is the same answer Settings' `ready` gate gives: one coordinated
+  // change beats two that settle independently. The button holds its "Removing…"
+  // label throughout, so the wait is accounted for rather than silent.
+  const [pendingNotice, setPendingNotice] = useState<{ text: string; pmids: string[] } | null>(null);
   // The paper waiting on a new folder, if any — one prompt for the table
   // rather than one per row (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
@@ -131,11 +144,36 @@ export function PapersTable({
   // are handled below instead.
   useEffect(() => setSelected(new Set()), [fetchKey, reloadToken]);
 
+  // A held message belongs to the source it was measured against, so a switch
+  // away discards it rather than letting it surface over a different set of
+  // papers. Keyed on `fetchKey` alone and deliberately *not* on `reloadToken`:
+  // the removal that holds the message is what bumps that token, so including
+  // it here would throw every message away one render after it was set.
+  useEffect(() => setPendingNotice(null), [fetchKey]);
+
   // The ticks that are actually actionable. Every read of the selection goes
   // through this rather than through `selected`, so a row the filters have
   // hidden cannot be counted, drawn as select-all, or deleted — whichever
   // filter hid it, and whether or not this component knows that filter exists.
   const onScreen = useMemo(() => selectionOnScreen(selected, visible), [selected, visible]);
+
+  // Publish the held message once none of the removed rows are on screen — the
+  // same intersection the selection uses, asked of the list instead of the
+  // ticks. Reusing it is deliberate: "gone from the list" has to mean exactly
+  // what "still actionable" meant, or the banner can report a removal over rows
+  // still sitting under it.
+  //
+  // A filter that hides them counts as gone, which is correct: the shift this
+  // exists to avoid is the table moving, and a hidden row moves it just as a
+  // deleted one does. A refetch that fails never satisfies this, and that is
+  // also correct — usePapers puts its own error in this same slot, and claiming
+  // a success above rows that are still there is the thing being fixed.
+  useEffect(() => {
+    if (!pendingNotice) return;
+    if (selectionOnScreen(new Set(pendingNotice.pmids), visible).size > 0) return;
+    setNotice(pendingNotice.text);
+    setPendingNotice(null);
+  }, [pendingNotice, visible]);
 
   // The whole filtered set, not the rows rendered so far: the table lazy-renders
   // (see useIncrementalList), so selecting "all" from `shown` would silently
@@ -165,7 +203,7 @@ export function PapersTable({
       // got there first (another tab, a second window, an import cleanup)
       // removes fewer papers than were ticked. See describeRemoval.
       const { removed, papers } = await api.removeCollectionPapers(removeFrom, [...onScreen]);
-      setNotice(describeRemoval(onScreen.size, removed, papers));
+      setPendingNotice({ text: describeRemoval(onScreen.size, removed, papers), pmids: [...onScreen] });
       setSelected(new Set());
       // The papers list, the collection's count in the picker and the file list
       // in the view above are all now stale, and none of them is this
