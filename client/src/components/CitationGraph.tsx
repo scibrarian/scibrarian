@@ -19,6 +19,7 @@ import {
 } from "../lib/paths";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
+import { ModalFrame } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
@@ -700,107 +701,104 @@ export function CitationGraph({
         )}
       </div>
 
+      {/* The same frame every other dialog uses. This built its own
+          Dialog.Content until now, which is how it became the one dialog a
+          backdrop click still dismissed — the rule turning that off lives on
+          the frame, and this never went through it. It takes the frame rather
+          than ModalShell because its heading is a button that opens the PDF,
+          with a metadata line above it. */}
       {selected && (
-        <Dialog.Root open onOpenChange={(o) => !o && setSelected(null)}>
-          <Dialog.Portal>
-            <Dialog.Overlay className="modal-backdrop">
-              <Dialog.Content className="modal" aria-describedby={undefined}>
-                <Dialog.Close className="modal-close" aria-label="Close">
-                  <X size={20} aria-hidden />
-                </Dialog.Close>
-                <div className="modal-head">
-                  {/* Marks a node whose title opens the stored PDF rather than
-                      PubMed — the click target is otherwise identical. */}
-                  {opensStoredPdf(selected) && (
-                    <span
-                      className="modal-file-icon"
-                      aria-label="Opens the stored PDF"
-                      title={`Opens ${selected.file_name}`}
-                    >
-                      <FileText size={15} aria-hidden />
-                    </span>
-                  )}
-                  <p className="modal-meta">
-                    {/* Spelled out on hover because the chain counts below sit
-                        inches away and measure something else entirely. */}
-                    <span title="Direct citations across all of PubMed (NIH iCite), not only papers in this collection">
-                      {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
-                    </span>
-                    {selected.year != null && ` · ${selected.year}`}
-                  </p>
-                </div>
-                <Dialog.Title asChild>
-                  <button
-                    className="modal-title"
-                    onClick={() => openPaper(selected)}
-                    title={openTitle(selected, opensStoredPdf)}
-                  >
-                    {selected.title || "(untitled)"}
-                  </button>
-                </Dialog.Title>
-                {selected.file_id != null && !selected.file_exists && (
-                  <p className="modal-file-name">
-                    <span className="file-missing" title="The stored PDF is missing">
-                      file missing
-                    </span>
-                  </p>
-                )}
-                {selectedCluster && (
-                  <button
-                    type="button"
-                    className="modal-cluster"
-                    onClick={() => isolateCluster(selectedCluster.community)}
-                    title="Show only this cluster"
-                  >
-                    <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
-                    <span className="cluster-label">{selectedCluster.label}</span>
-                  </button>
-                )}
-                {/* Kept visible but disabled for an unconnected paper: the label
-                    explains the absence, where a missing button would just look
-                    inconsistent between papers. */}
-                <button
-                  type="button"
-                  className="modal-paths"
-                  onClick={() => selectedPaths && showPaths(selected.pmid, selectedPaths)}
-                  disabled={!selectedPaths || selectedPaths.nodes.size <= 1}
-                  title={
-                    selectedPaths && selectedPaths.nodes.size > 1
-                      ? `Show only the ${selectedPaths.nodes.size} papers in this collection on a citation path through this one: ${selectedPaths.citedBy} in its citation chain, ${selectedPaths.cites} in its reference chain`
-                      : undefined
-                  }
-                >
-                  {/* Deliberately a paper count, not a citation count: the
-                      figure above is iCite's global tally of direct citations,
-                      and these chains are transitive but collection-only, so
-                      showing them in the same shape would invite comparison
-                      between numbers that aren't comparable. */}
-                  {selectedPaths && selectedPaths.nodes.size > 1
-                    ? `Show citation paths (${selectedPaths.nodes.size} papers)`
-                    : "No citation paths"}
-                </button>
-                {/* The title can now lead to the PDF, so PubMed gets its own
-                    link rather than being the only thing the modal opens. The
-                    dialog is the graph's only per-paper surface — nodes are
-                    canvas-drawn dots with nowhere to hang an icon — so it's
-                    also where saving lives. */}
-                <p className="modal-links">
-                  <a href={selected.url} target="_blank" rel="noreferrer">
-                    PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
-                  </a>
-                  {bookmarking && (
-                    <BookmarkMenu
-                      pmid={selected.pmid}
-                      bookmarking={bookmarking}
-                      onError={setActionError}
-                      onNewFolder={() => setNamingFor(selected.pmid)}
-                    />
-                  )}
-                </p>
-              </Dialog.Content>
-            </Dialog.Overlay>
-          </Dialog.Portal>
-        </Dialog.Root>
+        <ModalFrame open onClose={() => setSelected(null)}>
+          <div className="modal-head">
+            {/* Marks a node whose title opens the stored PDF rather than
+                PubMed — the click target is otherwise identical. */}
+            {opensStoredPdf(selected) && (
+              <span
+                className="modal-file-icon"
+                aria-label="Opens the stored PDF"
+                title={`Opens ${selected.file_name}`}
+              >
+                <FileText size={15} aria-hidden />
+              </span>
+            )}
+            <p className="modal-meta">
+              {/* Spelled out on hover because the chain counts below sit
+                  inches away and measure something else entirely. */}
+              <span title="Direct citations across all of PubMed (NIH iCite), not only papers in this collection">
+                {selected.citationCount} citation{selected.citationCount === 1 ? "" : "s"}
+              </span>
+              {selected.year != null && ` · ${selected.year}`}
+            </p>
+          </div>
+          <Dialog.Title asChild>
+            <button
+              className="modal-title"
+              onClick={() => openPaper(selected)}
+              title={openTitle(selected, opensStoredPdf)}
+            >
+              {selected.title || "(untitled)"}
+            </button>
+          </Dialog.Title>
+          {selected.file_id != null && !selected.file_exists && (
+            <p className="modal-file-name">
+              <span className="file-missing" title="The stored PDF is missing">
+                file missing
+              </span>
+            </p>
+          )}
+          {selectedCluster && (
+            <button
+              type="button"
+              className="modal-cluster"
+              onClick={() => isolateCluster(selectedCluster.community)}
+              title="Show only this cluster"
+            >
+              <span className="swatch" style={{ backgroundColor: clusterColor(selectedCluster.color) }} />
+              <span className="cluster-label">{selectedCluster.label}</span>
+            </button>
+          )}
+          {/* Kept visible but disabled for an unconnected paper: the label
+              explains the absence, where a missing button would just look
+              inconsistent between papers. */}
+          <button
+            type="button"
+            className="modal-paths"
+            onClick={() => selectedPaths && showPaths(selected.pmid, selectedPaths)}
+            disabled={!selectedPaths || selectedPaths.nodes.size <= 1}
+            title={
+              selectedPaths && selectedPaths.nodes.size > 1
+                ? `Show only the ${selectedPaths.nodes.size} papers in this collection on a citation path through this one: ${selectedPaths.citedBy} in its citation chain, ${selectedPaths.cites} in its reference chain`
+                : undefined
+            }
+          >
+            {/* Deliberately a paper count, not a citation count: the
+                figure above is iCite's global tally of direct citations,
+                and these chains are transitive but collection-only, so
+                showing them in the same shape would invite comparison
+                between numbers that aren't comparable. */}
+            {selectedPaths && selectedPaths.nodes.size > 1
+              ? `Show citation paths (${selectedPaths.nodes.size} papers)`
+              : "No citation paths"}
+          </button>
+          {/* The title can now lead to the PDF, so PubMed gets its own
+              link rather than being the only thing the modal opens. The
+              dialog is the graph's only per-paper surface — nodes are
+              canvas-drawn dots with nowhere to hang an icon — so it's
+              also where saving lives. */}
+          <p className="modal-links">
+            <a href={selected.url} target="_blank" rel="noreferrer">
+              PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
+            </a>
+            {bookmarking && (
+              <BookmarkMenu
+                pmid={selected.pmid}
+                bookmarking={bookmarking}
+                onError={setActionError}
+                onNewFolder={() => setNamingFor(selected.pmid)}
+              />
+            )}
+          </p>
+        </ModalFrame>
       )}
 
       {tip && (
