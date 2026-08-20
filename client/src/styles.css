@@ -3021,33 +3021,39 @@ html {
   color: #1d4ed8;
 }
 
-/* The action on an org-held row. Sized like the free-copy link beside it
-   rather than like a form button: it sits inside a list of answers, and a
-   full-height primary button per row would turn the results into a toolbar.
+/* The action on an org-held row: a button, and drawn as one.
 
-   It took .have-free's measurements but not its appearance, and only an <a>
-   starts from nothing — a <button> carries the UA's own chrome until something
-   removes it. So this drew a grey slab where a link was meant, which dark mode
-   turns into the brightest thing in the row. The reset is the rest of what
-   .have-free gets for free: no fill, no border, the accent colour, and the
-   padding dropped so .have-org's gap does the spacing exactly as it does for
-   the link. */
+   It used to carry only sizing — padding, font, gap — and no chrome at all, on
+   the reasoning that it should read like the free-copy link beside it. But only
+   an <a> starts from nothing; a <button> keeps the UA's own until something
+   replaces it, so what it actually drew was a grey slab, which dark mode turns
+   into the brightest thing in the row. Styling it as the link it was described
+   as is the other way to make that consistent, and it isn't the right one:
+   this is the row's action, and the one thing on it that does something.
+
+   So it takes .have-btn's treatment — panel fill, hairline border, accent on
+   hover — at a smaller scale. The scale is what the old comment was really
+   protecting: a full-height form button on every row would turn a list of
+   answers into a toolbar. A compact one sits inside the line instead. */
 .have-pull {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 0;
-  background: none;
-  border: none;
+  padding: 3px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   font-family: inherit;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--text);
   cursor: pointer;
 }
 
+/* The same hover .have-btn uses, so the two read as one control at two sizes. */
 .have-pull:hover:not(:disabled) {
-  text-decoration: underline;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .have-pull:disabled {
