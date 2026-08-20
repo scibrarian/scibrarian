@@ -89,7 +89,13 @@ export function Settings({
         setBaseline(s);
         setSuggested(sug);
       })
-      .catch((e) => setError(e.message))
+      // errorMessage rather than `e.message`: a rejection reason need not be an
+      // Error, and reading .message off one that isn't puts an empty banner on
+      // screen — or, for a null reason, throws inside the handler that exists to
+      // report the failure. The .finally saves the page either way, which is
+      // what makes this the smaller cousin of the ProPanel bug and not the
+      // same one.
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoaded(true));
   }
 

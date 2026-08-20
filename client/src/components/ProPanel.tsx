@@ -169,7 +169,23 @@ export function ProPanel({
     // resolves whatever answered, so a master that 404s still leaves this panel
     // with everything it is going to get. Waiting for a clean run would hold
     // the whole Settings page skeletal behind one unreachable endpoint.
-    void reload().then(onReady);
+    //
+    // On throw as well, which is what `.finally` is doing here rather than
+    // `.then`. allSettled never rejects, but everything after it can: reload()
+    // reads `n.value.nodes` and three more fields off a shape nothing has
+    // checked, and calls errorMessage over a rejection reason that need not be
+    // an Error. Settings gates *every* panel on this one callback — see `ready`
+    // there — so a throw anywhere in that tail left Topics, Journals, Polling &
+    // NCBI and Sharing as skeletons for the rest of the session, with nothing
+    // on screen to say why. Settings' own loader uses .finally for exactly this
+    // reason; this one was the half that didn't.
+    //
+    // The catch is ahead of it so the failure is still reported rather than
+    // just survived. A panel that came up empty and silent is the second-worst
+    // outcome after one that never came up at all.
+    void reload()
+      .catch((err) => setError(errorMessage(err)))
+      .finally(onReady);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
