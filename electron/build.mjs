@@ -44,6 +44,18 @@ const hasPro = () => fs.existsSync(proSrc);
 // before the next build, hence the reminder in the error below. Deriving it at
 // config time via extraMetadata only rewrites the package.json written *into*
 // the app; see the note in electron-builder.config.cjs.
+// Dependencies main.mjs imports itself, rather than the bundled server. They
+// carry the same requirement as the server's — declared in package.json here or
+// missing from the installer — but they have no manifest to be compared against,
+// so there is no range to agree with and presence is the whole check.
+//
+// Named by hand rather than read out of main.mjs's imports. The point of the
+// check below is that "declared here, imported by nothing" is a shipping bug,
+// and a rule that derived the list from the imports would let any stale entry
+// launder itself into the manifest by being in the list. Both directions are
+// checked against main.mjs instead.
+const MAIN_PROCESS_ONLY = ["electron-updater"];
+
 function assertDependenciesMirrorServer() {
   const read = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
   const desktop = read(path.join(here, "package.json")).dependencies ?? {};
@@ -77,7 +89,33 @@ function assertDependenciesMirrorServer() {
     }
   }
 
-  const wanted = new Set(sources.flatMap((s) => Object.keys(s.deps)));
+  const mainSource = fs.readFileSync(path.join(here, "main.mjs"), "utf8");
+  // Specifiers of real import statements, not every mention of the name. The
+  // comment above main.mjs's electron-updater import quotes the specifier while
+  // explaining why the named form of it fails, and a substring match reads that
+  // as proof — so deleting the import and keeping the comment passed a module
+  // nothing imports any more. Comment lines start with `//`, so anchoring to
+  // `import` at the start of a line steps around them.
+  //
+  // Either quote character, and the trailing semicolon optional, because the
+  // only thing this is meant to detect is whether the import is there. A style
+  // change failing the build with `main.mjs does not import it` would point at
+  // the one thing that was not wrong. `[^;]` spans newlines, so a specifier
+  // wrapped across lines is already covered; the backreference is what keeps
+  // the two quotes the same one.
+  const imported = new Set(
+    [...mainSource.matchAll(/^import\s[^;]*?from\s+(["'])([^"']+)\1/gm)].map((m) => m[2])
+  );
+  for (const name of MAIN_PROCESS_ONLY) {
+    if (!(name in desktop)) drift.push(`missing "${name}": main.mjs imports it`);
+    // The other direction: an entry that outlived the import it was added for
+    // would silently exempt itself from the "imported by nothing" check below.
+    if (!imported.has(name)) {
+      drift.push(`"${name}" is listed as main-process-only, but main.mjs does not import it`);
+    }
+  }
+
+  const wanted = new Set([...sources.flatMap((s) => Object.keys(s.deps)), ...MAIN_PROCESS_ONLY]);
   const extra = Object.keys(desktop).filter((name) => !wanted.has(name));
   if (extra.length > 0) {
     if (hasPro()) {

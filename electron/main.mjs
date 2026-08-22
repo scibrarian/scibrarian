@@ -13,6 +13,14 @@ import { app, BrowserWindow, dialog, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+// CommonJS, and with no named exports Node's lexer can detect — so the obvious
+// `import { autoUpdater } from "electron-updater"` fails at link time with
+// `Named export 'autoUpdater' not found`, before a line of this file runs and
+// reading like a broken install rather than an interop rule. Take the default
+// export and destructure it. Same family of trap as ELECTRON_RUN_AS_NODE.
+import electronUpdater from "electron-updater";
+
+const { autoUpdater } = electronUpdater;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -170,6 +178,49 @@ function focusOrCreateWindow() {
   });
 }
 
+/**
+ * Check for a new version, download it in the background, and install it the
+ * next time the app quits.
+ *
+ * Switched off wherever there is no feed to check, which would throw rather than
+ * no-op if it ran anyway: an unpackaged checkout (`npm run desktop`) has no
+ * app-update.yml, and neither has a `--dir` pack on macOS or Windows — the
+ * system listener that writes the file returns early unless a dmg/zip or an
+ * NSIS target is in the build (PublishManager's onAfterPack). Linux is not
+ * guarded there, so a `--dir` pack on Linux does carry the file and does reach
+ * the check below — and nothing follows from that: AppImageUpdater overrides
+ * isUpdaterActive, finds no APPIMAGE in the environment, warns once and returns
+ * false, so checkForUpdates resolves null before any request is made. No guard
+ * of ours is needed for it.
+ *
+ * That file is the packaged form of the `publish` config — electron-builder
+ * writes it into resources only when a publish target exists — so its presence
+ * is the honest answer to "does this installer have anywhere to update from",
+ * and its contents are what decide which tier's releases this copy follows.
+ * Reading the file rather than keeping a tier flag here means there is only one
+ * such fact; electron-builder.config.cjs asserts at pack time that it names the
+ * right one, since a Pro copy following the free feed would replace itself with
+ * the free build and lose pairing without reporting anything.
+ */
+function startUpdateChecks() {
+  if (!app.isPackaged) return;
+  if (!fs.existsSync(path.join(process.resourcesPath, "app-update.yml"))) return;
+
+  // Attached before the check and not optional: AppUpdater is an EventEmitter,
+  // and emitting "error" with no listener throws out of whatever is running. A
+  // laptop that is offline at launch is the ordinary case here, not a fault, so
+  // this stays a log line and never reaches a dialog.
+  autoUpdater.on("error", (err) => console.error("[updates]", err?.stack || err));
+
+  // ...AndNotify rather than a bare check: it downloads in the background and
+  // shows an OS notification once the update is staged, which then applies on
+  // the next quit. Nothing interrupts a reading session and the renderer needs
+  // no UI for it.
+  autoUpdater
+    .checkForUpdatesAndNotify()
+    .catch((err) => console.error("[updates]", err?.stack || err));
+}
+
 async function main() {
   await app.whenReady();
   configureServer();
@@ -197,6 +248,10 @@ async function main() {
 
   appOrigin = origin;
   await createWindow();
+
+  // After the window, not before: this reaches the network, and nothing about
+  // it should sit between launch and the app being usable.
+  startUpdateChecks();
 }
 
 app.on("second-instance", focusOrCreateWindow);

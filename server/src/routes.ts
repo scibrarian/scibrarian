@@ -133,12 +133,17 @@ export const api = Router();
 
 // ---------- admin gate ----------
 
+// Hashed once, not per candidate. ADMIN_TOKEN is read from the environment at
+// module load and never changes after it, while presentedAdminTokens below can
+// hand this several candidates from a single request — so re-digesting the
+// constant side was doing that work over again for every one of them.
+const ADMIN_TOKEN_HASH = crypto.createHash("sha256").update(ADMIN_TOKEN).digest();
+
 // Constant-time token check. Hashing both sides first equalizes buffer lengths
 // (timingSafeEqual throws on mismatched lengths, which would itself leak).
 function tokenMatches(provided: string): boolean {
   const a = crypto.createHash("sha256").update(provided).digest();
-  const b = crypto.createHash("sha256").update(ADMIN_TOKEN).digest();
-  return crypto.timingSafeEqual(a, b);
+  return crypto.timingSafeEqual(a, ADMIN_TOKEN_HASH);
 }
 
 /**
