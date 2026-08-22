@@ -61,7 +61,7 @@ Tests live next to the code they cover (`*.test.ts`) and focus on pure logic —
 share-link signing, PubMed response parsing, PDF identifier matching, journal
 ranking, formatting, and citation-graph clustering. `npx vitest` starts the
 watcher during development. On every pull request CI runs the suite, typechecks
-the server, and builds the client; on `master` it also publishes the Docker
+the server, and builds the client; on `main` it also publishes the Docker
 image.
 
 ## Configuration
@@ -106,7 +106,7 @@ and something other people can install — see **[DESKTOP.md](DESKTOP.md)**.
 
 For running this on a server rather than your laptop, see **[DEPLOY.md](DEPLOY.md)**.
 CI publishes a multi-arch image to `ghcr.io/scibrarian/scibrarian` on every green
-`master` commit, so a host needs Docker and nothing else:
+`main` commit, so a host needs Docker and nothing else:
 
 ```bash
 docker run -d --name scibrarian --restart unless-stopped --init \

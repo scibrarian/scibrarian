@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   workflow_dispatch:      # republish the image without a new commit
 
@@ -34,9 +34,9 @@ jobs:
 
   publish:
     # Ships the runnable image to GHCR so deployments pull it instead of
-    # building on the server (see DEPLOY.md). Master only, tests first.
+    # building on the server (see DEPLOY.md). Main only, tests first.
     needs: test
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,7 +60,7 @@ jobs:
           # Drop arm64 if the emulated client build gets too slow.
           platforms: linux/amd64,linux/arm64
           push: true
-          # The version tag is re-pushed on every master commit — the version in
+          # The version tag is re-pushed on every main commit — the version in
           # package.json marks the release, not each individual change. `sha-…`
           # is the immutable handle to roll back to.
           tags: |

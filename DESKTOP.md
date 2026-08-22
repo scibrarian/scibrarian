@@ -306,7 +306,7 @@ launching once before anyone else gets them. Re-running the workflow uploads
 into that draft. Once the release is published the workflow refuses to touch it
 and fails instead — a manual run takes its tag from `package.json`, which still
 reads the last released version until the next bump, so without that guard a
-dispatch from `master` would replace shipped installers with a fresh build under
+dispatch from `main` would replace shipped installers with a fresh build under
 an unchanged version number.
 
 ### Checking the result

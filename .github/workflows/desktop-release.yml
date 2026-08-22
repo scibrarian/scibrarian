@@ -211,7 +211,7 @@ jobs:
       #
       # Only into a *draft*, though. On a manual run the tag is derived from
       # package.json, which still reads the last released version until the next
-      # release bumps it — so a dispatch from master resolves to a tag that has
+      # release bumps it — so a dispatch from main resolves to a tag that has
       # already shipped, and `--clobber` would replace installers people have
       # downloaded with a fresh build from unmerged commits, under an unchanged
       # version number. Nothing upstream catches it: the tag-vs-package.json

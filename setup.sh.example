@@ -109,7 +109,7 @@ fi
 # --- Deployment files ------------------------------------------------------
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
 
-base=https://raw.githubusercontent.com/scibrarian/scibrarian/master
+base=https://raw.githubusercontent.com/scibrarian/scibrarian/main
 curl -fsSLO "$base/docker-compose.prod.yml"
 curl -fsSL "$base/Caddyfile.example" -o Caddyfile
 

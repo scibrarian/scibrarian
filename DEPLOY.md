@@ -17,11 +17,11 @@ no source checkout, no toolchain, no build. Tags:
 
 | Tag | Points at |
 |-----|-----------|
-| `latest` | the newest commit on `master` |
+| `latest` | the newest commit on `main` |
 | `0.5.0` | the current release — re-pushed as fixes land within that version |
 | `sha-<commit>` | one exact build; never moves, so it's what you pin or roll back to |
 
-CI builds and pushes these on every green `master` commit (`linux/amd64` and
+CI builds and pushes these on every green `main` commit (`linux/amd64` and
 `linux/arm64`).
 
 > **One-time, after the first publish:** GHCR packages start **private**. Open
@@ -89,7 +89,7 @@ Caddy can't get a certificate until the name points here.
 No clone needed — the stack is one compose file plus two config templates:
 ```bash
 mkdir -p ~/scibrarian && cd ~/scibrarian
-base=https://raw.githubusercontent.com/scibrarian/scibrarian/master
+base=https://raw.githubusercontent.com/scibrarian/scibrarian/main
 curl -fsSLO "$base/docker-compose.prod.yml"
 curl -fsSL "$base/.env.prod.example" -o .env
 curl -fsSL "$base/Caddyfile.example" -o Caddyfile
