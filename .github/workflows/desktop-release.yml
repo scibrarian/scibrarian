@@ -55,8 +55,8 @@ jobs:
           cache: npm
 
       # electron-builder names every artifact from the root package.json, not
-      # from the tag. Catching the mismatch here beats finding `Scibrarian Setup
-      # 0.5.0.exe` attached to a release called v0.6.0.
+      # from the tag. Catching the mismatch here beats finding
+      # `Scibrarian-Setup-0.5.0.exe` attached to a release called v0.6.0.
       - name: Check the tag matches package.json
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -98,9 +98,19 @@ jobs:
       # Three build steps rather than one with everything in scope: each
       # platform sees only its own credentials, so a half-configured Azure
       # account can't fail the macOS job.
+      #
+      # `--publish never` on all three, and not optional now that the packaging
+      # config has a `publish` target. With it unset, electron-builder infers a
+      # policy: a tag push makes it "onTag" and it uploads to the release itself,
+      # in parallel with the release job below and around that job's refusal to
+      # overwrite a published release. `never` suppresses only the upload — the
+      # latest*.yml files auto-update needs are written either way, since they
+      # are generated from the publish *config* rather than the publish action.
+      #
+      # Both `--` are load-bearing, per DESKTOP.md § Architecture.
       - name: Build (Windows)
         if: runner.os == 'Windows'
-        run: npm run desktop:dist
+        run: npm run desktop:dist -- -- --publish never
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -121,7 +131,7 @@ jobs:
       # load-bearing — see DESKTOP.md § Architecture.
       - name: Build (macOS)
         if: runner.os == 'macOS'
-        run: npm run desktop:dist -- -- --universal
+        run: npm run desktop:dist -- -- --universal --publish never
         env:
           # An unset secret arrives here as "", not as nothing, and
           # electron-builder's macOS path would treat that empty string as a
@@ -148,16 +158,22 @@ jobs:
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
-        run: npm run desktop:dist
+        run: npm run desktop:dist -- -- --publish never
 
       - uses: actions/upload-artifact@v4
         with:
           name: scibrarian-${{ matrix.name }}
           # electron-builder writes unpacked directories here too; only the
           # installable outputs are worth carrying.
+          #
+          # The .zip is the macOS *update* artifact, not a second download: the
+          # dmg is what a person installs from, Squirrel.Mac cannot apply one,
+          # and latest-mac.yml names the zip. Leave it out and macOS updates
+          # resolve to a file that was never attached to the release.
           path: |
             electron/dist/*.exe
             electron/dist/*.dmg
+            electron/dist/*.zip
             electron/dist/*.AppImage
             electron/dist/*.blockmap
             electron/dist/latest*.yml

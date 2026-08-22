@@ -44,8 +44,24 @@ directory, not into the installation folder:
 | macOS | `~/Library/Application Support/Scibrarian` |
 | Linux | `~/.config/Scibrarian` |
 
-Uninstalling does not remove it. That directory is the thing to back up, and
-deleting it resets the app to a first run.
+That directory is the thing to back up, and deleting it resets the app to a
+first run.
+
+Only Windows has an uninstaller, so it is the only platform where uninstalling
+can offer to take the library with it — `electron/build/installer.nsh` asks,
+defaulting to keeping the data. Two cases deliberately never ask: an in-place
+upgrade, where the installer runs the old uninstaller with `--updated`, and a
+silent uninstall (`/S`), which keeps the data unless you also pass
+`--delete-app-data`.
+
+A dmg is drag-to-Applications and an AppImage is a single file, so on macOS and
+Linux there is no uninstall step to hook — trashing the app or deleting the
+AppImage leaves the directory behind. Remove it by hand:
+
+```bash
+rm -rf ~/Library/Application\ Support/Scibrarian   # macOS
+rm -rf ~/.config/Scibrarian                        # Linux
+```
 
 ### Scheduled polling on a machine that sleeps
 
@@ -80,15 +96,22 @@ this if you skip it.
 
 | Platform | Target | Artifact |
 |---|---|---|
-| Windows | NSIS | `Scibrarian Setup <version>.exe` |
-| macOS | dmg | `Scibrarian-<version>.dmg` (non-x64 adds the arch: `-arm64`, `-universal`) |
+| Windows | NSIS | `Scibrarian-Setup-<version>.exe` |
+| macOS | dmg, zip | `Scibrarian-<version>.dmg` and `Scibrarian-<version>-mac.zip` (non-x64 adds the arch before both suffixes: `-arm64`, `-universal`) |
 | Linux | AppImage | `Scibrarian-<version>.AppImage` |
+
+**The macOS `.zip` is not a second download — do not prune it from a release.**
+Squirrel.Mac cannot apply a `.dmg`, so the dmg is what a person installs from and
+the zip is what `electron-updater` fetches; `latest-mac.yml` names the zip. Leave
+it off the release and macOS updates resolve to a file that was never attached,
+which nothing on the publishing side reports.
 
 Note the macOS suffix if you are scripting a download URL against a release:
 every dmg CI publishes is built `--universal` (see [Releasing from CI](#releasing-from-ci)),
-so the released name is always `Scibrarian-<version>-universal.dmg`. The bare
-`Scibrarian-<version>.dmg` is what a plain local build gives you on an Intel Mac,
-and it is not what ends up attached to a release.
+so the released names are always `Scibrarian-<version>-universal.dmg` and
+`Scibrarian-<version>-universal-mac.zip`. The bare `Scibrarian-<version>.dmg` is
+what a plain local build gives you on an Intel Mac, and it is not what ends up
+attached to a release.
 
 **You can only build for the platform you are on.** electron-builder can cross-
 compile some targets, but macOS signing and notarization require macOS. Use a
@@ -312,10 +335,65 @@ then produces a binary `Get-AuthenticodeSignature` reports as `NotSigned`.
 
 ## Auto-update
 
-Not currently wired up. Adding it means `electron-updater` plus a publish target
-(GitHub Releases is the usual choice), and it raises the stakes on signing:
-unsigned updates are refused on macOS. It also needs a `zip` target alongside
-`dmg` on macOS — electron-updater cannot apply an update from a `.dmg` alone.
+Wired up, and on in both tiers — each following a feed of its own.
+
+`electron/main.mjs` checks once at startup (`startUpdateChecks`), downloads a new
+version in the background if there is one, and shows an OS notification when it
+is staged; the update applies on the next quit. Nothing interrupts a session and
+the renderer has no UI for it.
+
+The feed is GitHub Releases on this repository, declared as `publish` in
+`electron-builder.config.cjs`. That declaration is also what makes
+electron-builder emit `latest*.yml` beside the installers and write
+`app-update.yml` into the packaged resources — with no `publish` key at all,
+neither file exists and `autoUpdater` has nothing to read.
+
+"This repository" is meant literally: in CI the account and repository name come
+from `$GITHUB_REPOSITORY`, which is where `desktop-release.yml` uploads. A fork's
+installers therefore follow the fork's own releases rather than this project's.
+Outside CI the variable is unset and the names fall back to `scibrarian`.
+
+**Pro builds follow a feed of their own**, `scibrarian/scibrarian-desktop-releases`
+— a public repository holding installers and no source. It has to be a separate
+one, because the public repository cannot produce a Pro installer: `pro/` is
+gitignored there, so a Pro build pointed at the feed above would update itself
+into the free build, `loadPro()` would read the result as "Pro isn't installed",
+and the freelancer would lose pairing while the version number went up with
+nothing reporting a problem. Public so the provider needs no token — only
+compiled installers are published there, never `pro/src`.
+
+Crossing the two feeds is the failure worth catching before an installer exists,
+so `afterPack` reads the `app-update.yml` that was actually packed and refuses a
+build whose feed does not match its tier. Every build names both:
+
+```
+[updates] pro build: github scibrarian/scibrarian-desktop-releases
+  • verified update feed: scibrarian/scibrarian-desktop-releases
+  • verified in app.asar: bundle/node_modules/@scibrarian/pro/index.js
+```
+
+Pro installers are built and published from the private repo, by
+`pro/.github/workflows/publish-pro-desktop.yml` — it assembles the two halves
+the same way the image workflow does, because this repository's CI structurally
+cannot.
+
+**macOS needs the signing above to be real.** Gatekeeper refuses an unsigned
+update outright, so an unsigned mac build does not auto-update — though it is
+also a build you cannot distribute, so this costs nothing extra. The `mac`
+target is `["dmg", "zip"]` because Squirrel.Mac cannot apply a `.dmg`: the dmg is
+what a person installs from, the zip is what the updater fetches, and
+`latest-mac.yml` names the zip.
+
+**Nothing reaches users until you publish the draft.** The GitHub provider
+cannot see draft releases, so the draft `desktop-release.yml` creates is
+invisible to every installed copy until you publish it. That is the release
+step, and it is the same button that was already worth pressing deliberately.
+
+CI passes `--publish never` to all three builds. Without it electron-builder
+infers a policy from the tag and uploads the artifacts itself, alongside the
+release job and around that job's refusal to overwrite a published release. The
+`latest*.yml` files are written either way — they come from the publish *config*,
+not from the publish action.
 
 ## Gotchas
 
@@ -327,6 +405,12 @@ plain Node". The failure is deeply misleading: Node loads `main.mjs`, resolves
 module interop bug and is nothing of the sort. `electron/start.mjs` strips the
 variable before launching, so `npm run desktop` is immune; a bare `electron .`
 from an editor terminal is not.
+
+**`electron-updater` has no named exports.** It is CommonJS, and Node's lexer
+cannot detect its exports through it, so `import { autoUpdater } from
+"electron-updater"` fails at link time with `Named export 'autoUpdater' not
+found` — before a line of `main.mjs` runs, and reading like a broken install
+rather than an interop rule. Import the default and destructure it.
 
 **The Electron version must be pinned exactly.** `"electron": "43.2.0"`, not
 `"^43.2.0"`. electron-builder downloads binaries for one specific release and
