@@ -136,7 +136,20 @@ describe("a removal that spans several chunks", () => {
       Array.from({ length: COUNT }, (_, i) => ({ hash: hashAt(i), name: `paper-${i}.pdf` }))
     );
     const files = db.listCollectionFiles(big);
-    for (let i = 0; i < COUNT; i++) db.setFileMatched(files[i].id, pmidAt(i), "pmid");
+    // One commit rather than COUNT of them. setFileMatched is a bare UPDATE, so
+    // in autocommit this fixture is ~2,700 WAL fsyncs before a single assertion
+    // runs — which overruns the 10s hook timeout on any machine whose disk is
+    // busy with something ordinary, a backup or a shared CI runner. The rows it
+    // writes are identical either way; only the number of commits changes.
+    //
+    // Wrapped here rather than inside setFileMatched, which is right as it is:
+    // its production callers match one file at a time as results arrive, and a
+    // transaction per call would buy them nothing. And placed after
+    // addCollectionFiles rather than around it, because transaction() is not
+    // reentrant and that function is already wrapped.
+    db.transaction(() => {
+      for (let i = 0; i < COUNT; i++) db.setFileMatched(files[i].id, pmidAt(i), "pmid");
+    })();
   });
 
   // A BEFORE DELETE trigger that aborts on one row is the only way to fail
