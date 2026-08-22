@@ -83,7 +83,14 @@ export function PapersTable({
   // Waiting is the same answer Settings' `ready` gate gives: one coordinated
   // change beats two that settle independently. The button holds its "Removing…"
   // label throughout, so the wait is accounted for rather than silent.
-  const [pendingNotice, setPendingNotice] = useState<{ text: string; pmids: string[] } | null>(null);
+  //
+  // `token` is what reloadToken read when the removal answered, so the message
+  // can tell its own refresh from a later one and not outlive it.
+  const [pendingNotice, setPendingNotice] = useState<{
+    text: string;
+    pmids: string[];
+    token: number;
+  } | null>(null);
   // The paper waiting on a new folder, if any — one prompt for the table
   // rather than one per row (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
@@ -168,12 +175,25 @@ export function PapersTable({
   // deleted one does. A refetch that fails never satisfies this, and that is
   // also correct — usePapers puts its own error in this same slot, and claiming
   // a success above rows that are still there is the thing being fixed.
+  //
+  // What a failed refetch must not do is leave the message waiting. It is held
+  // for exactly one refresh: the one the removal itself started, which is the
+  // token it recorded plus the single bump handleCollectionChanged makes to
+  // this source's key (bumpSource and bumpAll each move tokenFor by one). Past
+  // that, some later thing refreshed the list, and publishing then put
+  // "Removed 5 papers from this collection." over a table the user had not
+  // touched in minutes. Better to drop a confirmation the error banner has
+  // already contradicted than to attach it to an action that never happened.
   useEffect(() => {
     if (!pendingNotice) return;
+    if (reloadToken > pendingNotice.token + 1) {
+      setPendingNotice(null);
+      return;
+    }
     if (selectionOnScreen(new Set(pendingNotice.pmids), visible).size > 0) return;
     setNotice(pendingNotice.text);
     setPendingNotice(null);
-  }, [pendingNotice, visible]);
+  }, [pendingNotice, visible, reloadToken]);
 
   // The whole filtered set, not the rows rendered so far: the table lazy-renders
   // (see useIncrementalList), so selecting "all" from `shown` would silently
@@ -203,7 +223,13 @@ export function PapersTable({
       // got there first (another tab, a second window, an import cleanup)
       // removes fewer papers than were ticked. See describeRemoval.
       const { removed, papers } = await api.removeCollectionPapers(removeFrom, [...onScreen]);
-      setPendingNotice({ text: describeRemoval(onScreen.size, removed, papers), pmids: [...onScreen] });
+      setPendingNotice({
+        text: describeRemoval(onScreen.size, removed, papers),
+        pmids: [...onScreen],
+        // Read before onCollectionChanged below bumps it, which is the point:
+        // the refresh this message waits for is the next one, not this one.
+        token: reloadToken,
+      });
       setSelected(new Set());
       // The papers list, the collection's count in the picker and the file list
       // in the view above are all now stale, and none of them is this
