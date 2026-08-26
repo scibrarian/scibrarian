@@ -199,6 +199,26 @@ export interface PulledFile {
   failed: { collectionId: number; error: string }[];
 }
 
+// In-flight transfers into this library — pushes arriving from paired nodes
+// and pulls coming down from a master, which are the same write here.
+//
+// A count rather than a flag: two nodes can be pushing at once, and a flag
+// cleared by whichever finished first would report the library as idle while
+// the other was still mid-write.
+let transfersInFlight = 0;
+
+/**
+ * Whether a copy into this library is part-written right now.
+ *
+ * Read by the reset route, which refuses rather than deleting underneath one.
+ * Nothing else should branch on this: it answers "is this a safe instant to
+ * destroy everything", not "is the library busy" — it is false again the moment
+ * the last transfer settles, which is far too sharp an edge to drive a UI from.
+ */
+export function anyTransferInFlight(): boolean {
+  return transfersInFlight > 0;
+}
+
 /**
  * File bytes pulled from a master as a genuinely held paper, onto one or more
  * shelves.
@@ -240,33 +260,49 @@ export async function storePulledFile(o: {
   pmid: string;
   collectionIds: number[];
 }): Promise<PulledFile | null> {
-  if (!(await ensureArticle(o.pmid))) return null;
+  // Counted across the whole call, because the whole call is the window. Both
+  // awaits below sit between this function's checks and its writes, and a
+  // whole-library reset landing in either one leaves a blob with no row
+  // referencing it or an articles row surviving a wipe that reported deleting
+  // everything. The reset route refuses while this is non-zero rather than
+  // racing it — see anyTransferInFlight, and the refusal in routes.ts.
+  //
+  // Here rather than at the two call sites over in pro/, because this is the
+  // one function both of them go through: a push arriving from a paired node
+  // and a pull coming down from the master are the same write from the free
+  // tier's side, and counting them apart would be two ways to get it wrong.
+  transfersInFlight++;
+  try {
+    if (!(await ensureArticle(o.pmid))) return null;
 
-  const hash = await storePulledBlob(o.bytes);
-  if (hash === null) return null;
+    const hash = await storePulledBlob(o.bytes);
+    if (hash === null) return null;
 
-  // Sanitised here, at the boundary, not upstream. pullFromMaster does strip a
-  // path off the Content-Disposition it parses, and that is not the same thing:
-  // this function is a ProContext method, so the name reaching it is whatever
-  // *some* build of the Pro module chose to pass. The rule the seam rests on is
-  // that the open repo owns the invariants the free tier depends on, and
-  // "nothing with a path separator in it is ever written to file_name" is one of
-  // them — see safeFileName for what the archive route does with this column.
-  const name = safeFileName(o.fileName, `${o.pmid}.pdf`);
+    // Sanitised here, at the boundary, not upstream. pullFromMaster does strip a
+    // path off the Content-Disposition it parses, and that is not the same thing:
+    // this function is a ProContext method, so the name reaching it is whatever
+    // *some* build of the Pro module chose to pass. The rule the seam rests on is
+    // that the open repo owns the invariants the free tier depends on, and
+    // "nothing with a path separator in it is ever written to file_name" is one of
+    // them — see safeFileName for what the archive route does with this column.
+    const name = safeFileName(o.fileName, `${o.pmid}.pdf`);
 
-  const filed: FiledCopy[] = [];
-  const failed: PulledFile["failed"] = [];
-  // De-duplicated: the same shelf named twice is one shelf, and filing it twice
-  // would report two copies of a row that UNIQUE(collection_id, content_hash)
-  // only ever allows one of.
-  for (const collectionId of new Set(o.collectionIds)) {
-    try {
-      filed.push({ collectionId, ...fileOnShelf(collectionId, hash, name, o.pmid) });
-    } catch (err) {
-      failed.push({ collectionId, error: errMessage(err) });
+    const filed: FiledCopy[] = [];
+    const failed: PulledFile["failed"] = [];
+    // De-duplicated: the same shelf named twice is one shelf, and filing it twice
+    // would report two copies of a row that UNIQUE(collection_id, content_hash)
+    // only ever allows one of.
+    for (const collectionId of new Set(o.collectionIds)) {
+      try {
+        filed.push({ collectionId, ...fileOnShelf(collectionId, hash, name, o.pmid) });
+      } catch (err) {
+        failed.push({ collectionId, error: errMessage(err) });
+      }
     }
+    return { hash, filed, failed };
+  } finally {
+    transfersInFlight--;
   }
-  return { hash, filed, failed };
 }
 
 /**

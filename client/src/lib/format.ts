@@ -1,6 +1,6 @@
 // Small formatting helpers shared across components.
 
-import type { ProPushResult } from "../types";
+import type { LibraryStats, ProPushResult } from "../types";
 
 /**
  * One copy-up sweep's counts, as a sentence.
@@ -111,12 +111,74 @@ export function describeRemoval(asked: number, removed: number, papers: number):
   // Files only when they outnumber papers. Saying "(3 stored files)" beside
   // "3 papers" is noise about an implementation detail; saying it beside
   // "2 papers" is the answer to why three rows went.
-  const files = removed > papers ? ` (${removed} stored files)` : "";
+  const files = removed > papers ? ` (${plural(removed, "stored file")})` : "";
   const gone = asked - papers;
   return (
-    `Removed ${papers} paper${papers === 1 ? "" : "s"} from this collection${files}.` +
-    (gone > 0 ? ` ${gone} had already left.` : "")
+    `Removed ${plural(papers, "paper")} from this collection${files}.` +
+    (gone > 0 ? ` ${gone.toLocaleString()} had already left.` : "")
   );
+}
+
+/**
+ * What a whole-library reset destroyed, as a sentence.
+ *
+ * Afterwards, and only afterwards. The confirmation beforehand says the same
+ * fixed thing every time (see RESET_WARNING in Settings) — what it is asking
+ * about is which workspaces empty, which is a fact about the app rather than
+ * about this library. Once it has happened, the counts are the report: they are
+ * the only thing that says the button did what it claimed, and how much.
+ */
+export function describeResetDone(s: LibraryStats): string {
+  const contents = listContents(s);
+  return contents === "" ? "This library was already empty." : `Deleted ${contents}.`;
+}
+
+/**
+ * The contents themselves, as a list, or "" for an empty library.
+ *
+ * Zero counts are dropped rather than printed. "0 collections" spends a clause
+ * on the absence of something, and with six kinds of thing the list is long
+ * enough already — while a library that is empty in every one of them is better
+ * served by a sentence saying so than by six zeroes.
+ *
+ * Stored files sit inside the collections entry instead of joining the list,
+ * because they are not a sixth kind of thing: they are what is in the fifth,
+ * and the only count here that names bytes on a disk. A collection can hold
+ * none, so the clause is conditional on its own count and not on its parent's.
+ */
+function listContents(s: LibraryStats): string {
+  const parts = [
+    countOf(s.papers, "paper"),
+    countOf(s.topics, "topic"),
+    countOf(s.journals, "journal"),
+    countOf(s.folders, "saved folder"),
+    s.collections > 0
+      ? countOf(s.collections, "collection") +
+        (s.files > 0 ? ` holding ${countOf(s.files, "stored file")}` : "")
+      : "",
+  ].filter(Boolean);
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+// "3 papers", "1 topic", "1,204 papers" — the pluralisation rule, spelled once.
+//
+// Separated thousands because every caller is reporting a quantity to a person
+// rather than printing an id, and a library large enough to make the separator
+// matter is exactly the one where the number is worth reading carefully. It is
+// here rather than at the call sites so two messages about the same rows cannot
+// disagree about how to write them — which is what "1,204 papers" from a reset
+// beside "1204 papers" from a collection removal was.
+function plural(n: number, noun: string): string {
+  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+// The same, and "" for none — the empty string is what drops the entry from the
+// list above. Only listContents wants that; everywhere else a zero is a number
+// worth printing.
+function countOf(n: number, noun: string): string {
+  return n === 0 ? "" : plural(n, noun);
 }
 
 // "A, B, C, et al." once the list exceeds `max` names.

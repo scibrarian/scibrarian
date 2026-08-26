@@ -19,6 +19,7 @@ export type {
   ImportJob,
   Journal,
   JournalRemovalResult,
+  LibraryStats,
   MeshFacet,
   MeshFiling,
   MeshHeading,

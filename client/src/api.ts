@@ -17,6 +17,7 @@ import type {
   JournalRemovalResult,
   JournalSearchResponse,
   JournalSuggestResponse,
+  LibraryStats,
   MeshHeadingsResponse,
   MeshSearchResponse,
   PaperQuery,
@@ -304,6 +305,9 @@ export const api = {
   getSettings: () => req<AppSettings>("/api/settings"),
   updateSettings: (s: Partial<AppSettings> & { ncbi_api_key?: string }) =>
     req<AppSettings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+
+  // Irreversible. Answers with what it deleted.
+  resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),
 
   // ---------- Pro: shared holdings ----------
   //

@@ -332,7 +332,7 @@ export async function start(): Promise<{ port: number; url: string }> {
   startScheduler();
   void refreshCatalogIfStale(); // warm (or refresh a stale) journal catalog in the background
   void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
-  void backfillArticleMesh(); // file stored papers under their MeSH headings
+  void backfillArticleMesh(); // files stored papers under their MeSH headings, under the poll lock
   return { port, url };
 }
 

@@ -1016,6 +1016,54 @@ input:focus {
   cursor: default;
 }
 
+/* "Delete all data", at the foot of Settings.
+
+   .accent-btn's shape in --danger rather than --accent, because it is a peer of
+   "Manage journals…" and "Save settings" and should sit at the same size and
+   weight as them — the red is the whole of what differs, and making it also
+   bigger or louder would be saying the same thing twice.
+
+   The border is transparent under the fill for the reason the Pro panel's
+   buttons carry one: nothing else in this panel is a bordered box for it to
+   line up against today, but every one of those started that way too.
+
+   inline-flex and the gap are for the icon and the spinner it swaps for — the
+   two are the same size, so the label doesn't shift when the request starts.
+   The gap matches .pro-panel button's rather than sitting a pixel off it: both
+   danger buttons are on this page at once on a Pro build, and the difference
+   was visible between them and deliberate in neither. */
+.danger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--danger);
+  color: #fff;
+  border: 1px solid var(--danger);
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.danger-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* The reset's own report, which follows the button instead of preceding the
+   panel's content — see the note at the markup for why it goes last.
+
+   The margins swap because of where it sits: .banner carries a bottom margin
+   for the stack of content it normally heads, and here there is nothing under
+   it but the panel's own padding, which would read as a banner that missed its
+   edge. The top margin it never needed is what it needs now. */
+.danger-btn + .banner {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
 .list {
   list-style: none;
   margin: 0;
