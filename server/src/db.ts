@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { deleteBlobs } from "./blobstore.js";
+import { deleteBlobs, existingBlobHashes } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
 import { toFtsQuery } from "./fts-query.js";
 import { searchIdentifiers } from "./identifiers.js";
@@ -14,6 +14,7 @@ import {
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
 import { sourceHasFiles, type PaperSource } from "../../shared/source.js";
 import { SQL_PARAMS_PER_CHUNK } from "../../shared/sqlite.js";
+import { errMessage } from "./util.js";
 import type {
   Article,
   BookmarkEntry,
@@ -24,6 +25,7 @@ import type {
   TopicRemovalResult,
   Journal,
   JournalRemovalResult,
+  LibraryStats,
   MeshFacet,
   MeshFiling,
   MeshHeading,
@@ -2249,4 +2251,150 @@ export function findMeshByName(name: string): MeshDescriptor | undefined {
   return db
     .prepare("SELECT ui, name FROM mesh_descriptors WHERE name = ? COLLATE NOCASE LIMIT 1")
     .get(name) as MeshDescriptor | undefined;
+}
+
+// ---------- whole-library reset ----------
+
+/**
+ * How much of the user's own material this database holds — the numbers a reset
+ * reports having destroyed.
+ *
+ * Not exported: the confirmation that used to read this ahead of time now says
+ * the same fixed thing every time, and a count with no caller is a read for a
+ * later one to reach for by mistake. resetLibrary's result is the only way out.
+ *
+ * Papers are `articles` rows rather than feed memberships. A paper filed under
+ * three topics is one stored record and one thing to lose, and the number in a
+ * dialog that says "permanently" has to be the second of those.
+ *
+ * Files are `collection_files` rows rather than distinct blobs, for the mirror
+ * of that reason: the same PDF on two shelves is one blob but two copies as far
+ * as anyone reading their library is concerned, and the count is there to be
+ * recognised against what the Library view shows.
+ */
+function libraryStats(): LibraryStats {
+  // Every argument below is a literal from this file; nothing here takes a
+  // table name from a caller.
+  const count = (table: string): number =>
+    (db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+  return {
+    topics: count("topics"),
+    journals: count("journals"),
+    papers: count("articles"),
+    folders: count("bookmark_folders"),
+    collections: count("collections"),
+    files: count("collection_files"),
+  };
+}
+
+// The tables a reset empties. Deleting a parent is enough for everything that
+// hangs off it — foreign_keys is ON and the schema's cascades do the rest — so
+// article_mesh, article_pub_types, article_topics, bookmarks and
+// collection_files are absent from this list because they are already covered,
+// not because they survive.
+//
+// paper_citations and pdf_text are here because nothing cascades to them:
+// neither carries a foreign key (both are keyed by something they only softly
+// reference — a PMID and a content hash), which is exactly what lets them
+// outlive the row that caused them, and exactly why a wipe has to name them.
+//
+// What is *not* here is not here on purpose:
+//
+//   settings           the owner's NCBI key, contact email, schedule and the
+//                      open-library switch. Configuration, not contents — a
+//                      reset that made someone go and find their API key again
+//                      would be destroying something they never filed here.
+//   journal_catalog    NLM's J_Medline.txt and desc<year>.xml: downloaded, not
+//   mesh_descriptors   entered. Clearing them buys the deletion of nothing the
+//   mesh_entry_terms   user ever put here, and costs a multi-minute re-download
+//                      on the next start with both typeaheads dead until it
+//                      lands — including the one you would use to add the first
+//                      topic back.
+//   sqlite_sequence    left alone so ids are never handed out twice. The client
+//                      caches papers per source id and Pro's tables reference
+//                      collections and files by id; restarting the counter is
+//                      how a new collection inherits a dead one's cache entries
+//                      and a dead one's provenance.
+const RESET_TABLES = [
+  // Parents before the rows that cascade from them. Not load-bearing — the
+  // cascades fire whichever order these run in — but a DELETE placed after the
+  // parent that takes its rows is a statement doing no work.
+  "bookmark_folders",
+  "collections",
+  "topics",
+  "journals",
+  "articles",
+  "paper_citations",
+  "pdf_text",
+];
+
+const clearLibraryTables = transaction((): LibraryStats => {
+  // Counted inside the transaction, so the numbers reported are the ones that
+  // were actually destroyed rather than a reading taken before it.
+  const stats = libraryStats();
+  for (const table of RESET_TABLES) db.exec(`DELETE FROM ${table}`);
+  return stats;
+});
+
+/**
+ * Empty the library: every paper, topic, journal, folder, collection and stored
+ * file, and the extracted text and citation data behind them. Reports what went.
+ *
+ * The one operation in here with no narrower predicate — every other deletion
+ * spares papers that a bookmark or a collection file points at, because those
+ * are the ones the user made theirs. Here there is nothing left to spare them
+ * for.
+ *
+ * Pro's own tables are not touched from this side of the seam; see
+ * resetProContent in pro-hooks.ts for the half that owns them.
+ */
+export function resetLibrary(): LibraryStats {
+  const stats = clearLibraryTables();
+  const deletedSomething = Object.values(stats).some((n) => n > 0);
+  // Every blob is orphaned now, which is what lets this skip gcBlobsIfOrphaned's
+  // per-hash reference count: with collection_files empty there is nothing left
+  // for a hash to be referenced by. One directory read rather than a query per
+  // stored file. The pdf_text rows that would normally go with them were
+  // deleted above, by the same reasoning.
+  //
+  // Outside the transaction and after it, for the reason removeCollectionPapers
+  // gives at length: no ROLLBACK undoes an unlink.
+  //
+  // Allowed to fail, like the VACUUM below and for the same reason: the delete
+  // has committed and no ROLLBACK reaches it, so a blobs directory that has been
+  // moved, remounted or locked must not report a wipe that happened as one that
+  // did not — the caller still has to clear the import jobs and tell Pro, and the
+  // natural response to a failed "delete everything" is to press it again.
+  //
+  // Ungated, unlike the VACUUM, because this is the only path that collects blobs
+  // an earlier press left behind: gating it on stats would make exactly that retry
+  // skip exactly those orphans. An empty directory costs one readdir.
+  try {
+    deleteBlobs(existingBlobHashes());
+  } catch (err) {
+    console.warn(`[db] blob cleanup after reset failed: ${errMessage(err)}`);
+  }
+  // An emptied database does not shrink on its own — SQLite keeps the freed
+  // pages for reuse — so without this the file still occupies whatever it grew
+  // to, which is the one thing someone who just reset a database will look at.
+  //
+  // Skipped when nothing went, because there are no freed pages to reclaim and
+  // this is not cheap: VACUUM rebuilds the whole file, the reference data a reset
+  // deliberately keeps included — mesh_entry_terms alone runs to hundreds of
+  // thousands of rows — on a synchronous handle, so nothing else is served until
+  // it lands. A second press, and a first one on a new install, should cost
+  // nothing.
+  //
+  // Outside the transaction because VACUUM cannot run in one, and allowed to
+  // fail because the deletion has already committed: a database that is merely
+  // larger than it needs to be is not a reason to report the reset as
+  // unsuccessful.
+  if (deletedSomething) {
+    try {
+      db.exec("VACUUM");
+    } catch (err) {
+      console.warn(`[db] VACUUM after reset failed: ${errMessage(err)}`);
+    }
+  }
+  return stats;
 }

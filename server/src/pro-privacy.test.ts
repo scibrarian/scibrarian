@@ -78,6 +78,7 @@ const stub: ProModule = {
   },
   orgCheck: async (): Promise<Map<string, OrgHolding>> => new Map(),
   syncHint: () => {},
+  resetContent: () => {},
 };
 
 function article(p: { pmid: string; doi: string }) {

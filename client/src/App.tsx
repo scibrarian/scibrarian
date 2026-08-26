@@ -967,6 +967,35 @@ export default function App() {
               // topics at once, so nothing narrower than everything is safe.
               reloadEverything();
             }}
+            onLibraryReset={async () => {
+              // No notice from here. What was deleted is reported in the panel
+              // the button is in — this runs with the reader scrolled to the
+              // foot of Settings, and a banner above the workspace bar is the
+              // one place they are certainly not looking.
+              //
+              // Every selection at once, and before the reloads rather than
+              // after: two of the three loaders below deliberately don't
+              // re-validate what is selected (see loadCollections), so an id
+              // left pointing at a deleted folder or collection would survive
+              // the wipe and render its view over an empty library. loadTopics
+              // does re-validate and would land on null anyway; clearing it
+              // here costs nothing and keeps the three reading alike.
+              setActiveTopicId(null);
+              setActiveFolderId(null);
+              setActiveCollectionId(null);
+              // Bookmarks with the folders: the map of what is saved drives the
+              // filled icon on every paper, and left standing it would claim
+              // papers are in folders that no longer exist.
+              await Promise.all([
+                loadTopics(),
+                loadFolders(),
+                loadCollections(),
+                loadBookmarks(),
+              ]);
+              // Nothing narrower would do: every source is gone, and SQLite may
+              // hand a dead id to the next one created.
+              reloadEverything();
+            }}
           />
         ) : !source ? (
           <div className="empty">{noSourceState}</div>

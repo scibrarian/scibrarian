@@ -375,6 +375,30 @@ export interface JournalRemovalResult {
   removedFromInterests: number; // distinct papers unlinked from the topic feeds
 }
 
+// Everything a whole-library reset destroys, counted. Read once, inside the
+// transaction that does the deleting, so these are the rows that were actually
+// destroyed rather than a reading taken before it.
+//
+// Once and not twice: the confirmation ahead of the button used to read this
+// too, and now says the same fixed thing every time — it names what will go in
+// the words the UI already uses rather than counting it. libraryStats is
+// deliberately unexported to keep it that way; the note on it in db.ts gives
+// the reason.
+//
+// Deliberately only the things a person put there. The MeSH vocabulary and the
+// NLM journal catalog are downloads, not contents — a reset keeps them, so
+// counting them here would put a number in the report that the button did not
+// act on. The same goes for the settings row and, on a Pro instance, the
+// pairing.
+export interface LibraryStats {
+  topics: number;
+  journals: number;
+  papers: number;
+  folders: number;
+  collections: number;
+  files: number; // rows in collection_files, not distinct blobs
+}
+
 export interface GraphNode {
   pmid: string;
   title: string;

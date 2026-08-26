@@ -1,4 +1,5 @@
 import { articlesMissingMesh, meshBacklogCount, saveArticleMesh } from "./db.js";
+import { withPollLock } from "./poller.js";
 import { MESH_STATUS_UNAVAILABLE } from "./pubmed-parse.js";
 import { fetchArticleXml } from "./pubmed.js";
 import { errMessage } from "./util.js";
@@ -25,12 +26,30 @@ import { errMessage } from "./util.js";
 // It needs no breather between batches because every request already goes
 // through pubmed.ts's shared throttle, which is also what keeps it from
 // crowding out a poll or an import running at the same time.
+//
+// That throttle is about NCBI traffic and nothing else, and must not be read
+// as making this safe to run beside anything. It writes article_mesh rows
+// keyed to articles(pmid) across an awaited efetch, so a whole-library reset
+// committing inside that window leaves the insert violating a foreign key.
+// **So it takes the poll lock itself**, which is what the reset refuses
+// against. Inside rather than at its two call sites, because a guarantee a
+// caller has to remember is one a third caller will not: the `running` flag
+// below guards against a second *backfill*, and nothing about a deletion.
+//
+// Skipped, not queued, when the lock is held — withPollLock returns null. That
+// is the right answer here by construction: this is a "come back to it later"
+// pass, and the 05:30 reference refresh is staggered ahead of the default 06:00
+// poll precisely so the two rarely meet.
 
 const BATCH = 100; // PMIDs per efetch — the poller's batch size
 
 let running = false;
 
 export async function backfillArticleMesh(): Promise<void> {
+  await withPollLock(fileArticleMesh);
+}
+
+async function fileArticleMesh(): Promise<void> {
   if (running) return; // one at a time; the next trigger finds whatever is left
   const pending = meshBacklogCount();
   if (pending === 0) return;

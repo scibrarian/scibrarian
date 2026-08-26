@@ -196,6 +196,25 @@ export interface ProModule {
    * on it or care whether it fired.
    */
   syncHint(reason: string): void;
+  /**
+   * Forget everything this module recorded *about library contents*, because
+   * the library they described has just been deleted.
+   *
+   * Contents, and the boundary is the whole of it. What goes is the five
+   * tables that soft-reference a collection or a file — which organisation a
+   * shelf belongs to, what was pulled down, what was pushed up, what was
+   * received, and the served-file log. What stays is the pairing and the
+   * licence: those are how this instance is provisioned, not something a person
+   * filed, and an owner who empties their library has not asked to be
+   * disconnected from their organisation or to go and find their licence key.
+   *
+   * Called after the open half has already committed its own deletion, so this
+   * cannot veto it and must not try. A failure leaves rows pointing at ids that
+   * no longer resolve, which is survivable by construction — every reader here
+   * intersects against live collections, and sqlite_sequence is deliberately
+   * left alone by the reset so an id is never handed out a second time.
+   */
+  resetContent(): void;
 }
 
 let mod: ProModule | null = null;
@@ -424,6 +443,34 @@ export function hintProSync(reason: string): void {
     mod.syncHint(reason);
   } catch (err) {
     console.warn(`[pro] sync hint failed: ${errMessage(err)}`);
+  }
+}
+
+/**
+ * Tell Pro that the library it has been recording facts about is gone.
+ *
+ * Same containment as hintProSync, for a stronger reason. This runs after
+ * resetLibrary has committed and unlinked every blob, so there is nothing left
+ * to roll back: a throw escaping here would report a completed, irreversible
+ * deletion as a failure, and the natural next thing a person does with a failed
+ * "delete everything" is press it again.
+ *
+ * The missing-method case is the version skew askProvenance describes — a Pro
+ * image older than this interface — and degrades the same way: the free tier's
+ * half of the reset has already happened in full, and what is left behind is
+ * rows nothing resolves. Logged rather than surfaced, because the user asked
+ * about their library and their library is empty.
+ */
+export function resetProContent(): void {
+  if (!mod) return;
+  if (typeof mod.resetContent !== "function") {
+    console.warn("[pro] reset: this module has no resetContent(); its rows are left behind");
+    return;
+  }
+  try {
+    mod.resetContent();
+  } catch (err) {
+    console.warn(`[pro] reset failed: ${errMessage(err)}`);
   }
 }
 

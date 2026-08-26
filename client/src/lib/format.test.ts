@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   describeRemoval,
+  describeResetDone,
   describeSweep,
   formatAuthors,
   errorMessage,
@@ -189,6 +190,28 @@ describe("describeRemoval", () => {
     expect(describeRemoval(5, 3, 2)).toBe(
       "Removed 2 papers from this collection (3 stored files). 3 had already left."
     );
+  });
+
+  // The rule these two have to agree on. They report the same rows from
+  // opposite ends of the app — a reset says what it destroyed, a removal says
+  // what it took off one shelf — and they disagreed about how to write a
+  // four-digit number for as long as each spelled the pluralisation out for
+  // itself. Asserted across both, because either alone goes green on its own
+  // spelling.
+  it("writes a large count the way the reset report writes it", () => {
+    expect(describeRemoval(1204, 1204, 1204)).toBe(
+      "Removed 1,204 papers from this collection."
+    );
+    expect(
+      describeResetDone({
+        topics: 0,
+        journals: 0,
+        papers: 1204,
+        folders: 0,
+        collections: 0,
+        files: 0,
+      })
+    ).toBe("Deleted 1,204 papers.");
   });
 
   it("never claims a removal when nothing was there", () => {

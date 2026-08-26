@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Search, Share2, Check, Plus } from "lucide-react";
+import { Search, Share2, Check, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { errorMessage, round1 } from "../lib/format";
+import { describeResetDone, errorMessage, round1 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
@@ -22,12 +22,26 @@ import type {
 // What the library's own filing suggests watching, when it has anything to say.
 const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
 
+// What "Delete all data" is asking about, in the terms the app is navigated in.
+//
+// Fixed text rather than counts. The three workspaces are what someone actually
+// holds a picture of — the Library, Interests and Bookmarks in the header — so
+// naming them says what will be missing afterwards in the words the UI already
+// uses, which a row of totals does not. It is also the same sentence every
+// time, which is what makes it possible to have read it once and know what the
+// button does.
+const RESET_WARNING =
+  "All papers saved to library, interests, and bookmarks will be deleted. " +
+  "All library collections, interest topics, bookmark folders, and journals will also be deleted. " +
+  "This cannot be undone.";
+
 export function Settings({
   pro,
   onDataChanged,
   onPairingChanged,
   onSharingChanged,
   onPapersRemoved,
+  onLibraryReset,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
   // panel — there is no separate feature flag to keep in step with it.
@@ -45,6 +59,16 @@ export function Settings({
   // Papers left the Interests feeds (journal removal): the app refreshes the
   // paper views and reports the count.
   onPapersRemoved: (count: number) => void;
+  // The library was deleted outright. Separate from onPapersRemoved, which the
+  // panel could otherwise have reused: that one describes papers leaving the
+  // topic feeds, and the shell answers it by reloading them. Here every source
+  // is gone — folders and collections included — so the selections pointing at
+  // them have to be dropped too, and only the shell can do that.
+  //
+  // Carries nothing, because the shell has nothing to say: what was destroyed is
+  // reported in the panel the button is in, beside the button, rather than in a
+  // notice at the top of a page the reader has scrolled to the bottom of.
+  onLibraryReset: () => void;
 }) {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -72,6 +96,26 @@ export function Settings({
   // The topic warning depends on an article count fetched *before* the dialog
   // opens, so the pending removal carries its message along.
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
+  // Unlike topicToRemove above, this carries nothing: the reset confirmation
+  // says the same thing every time, so there is no reading to travel with it.
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  // Bumped after a reset, to send ProPanel back for its own data. It loads
+  // once on mount and Settings' reload() does not reach it, so everything it
+  // draws — the per-node totals, the org stamps, the list of shared shelves —
+  // outlives the rows it was counted over, down to Share buttons carrying
+  // collection ids that no longer resolve.
+  const [proReloadToken, setProReloadToken] = useState(0);
+  // What the reset did, or why it didn't — reported in its own panel rather
+  // than through `error` and the shell's notice, which both draw at the top of
+  // a page this button sits at the bottom of. The failure is the half that
+  // makes this worth the extra state: an error the reader never scrolls up to
+  // see reads as nothing having happened, and the natural response to a
+  // "delete everything" that appears to have done nothing is to press it again.
+  const [resetResult, setResetResult] = useState<{
+    kind: "info" | "error";
+    message: string;
+  } | null>(null);
 
   function reload() {
     Promise.all([
@@ -145,6 +189,29 @@ export function Settings({
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
+    }
+  }
+
+  async function resetEverything() {
+    setConfirmingReset(false);
+    setError(null);
+    setSavedMsg(null);
+    setResetResult(null);
+    setResetting(true);
+    try {
+      const deleted = await api.resetLibrary();
+      setResetResult({ kind: "info", message: describeResetDone(deleted) });
+      // This panel's own lists first — the topics and journals it is still
+      // showing are gone — then ProPanel, which is counting over collections
+      // that went with them, then the shell, which owns every other view of all
+      // of it.
+      reload();
+      setProReloadToken((n) => n + 1);
+      onLibraryReset();
+    } catch (err) {
+      setResetResult({ kind: "error", message: errorMessage(err) });
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -449,6 +516,7 @@ export function Settings({
           desktop={settings?.desktop ?? null}
           onPairingChanged={onPairingChanged}
           onSharingChanged={onSharingChanged}
+          reloadToken={proReloadToken}
         />
       )}
 
@@ -521,6 +589,51 @@ export function Settings({
           ))}
       </section>
 
+      {/* Last, and deliberately so: the one control here that destroys
+          everything sits below every control that builds it, so nothing above
+          can be reached past it by accident. Its own panel rather than a row in
+          Sharing, because it belongs to no other setting — and the red is on
+          the button alone, not the panel, so the section doesn't read as an
+          alarm about the settings above it. */}
+      <section className="panel">
+        <h2>Delete all data</h2>
+        <p className="hint">
+          Permanently deletes everything in this library: every paper, topic, journal, saved
+          folder, collection, and every stored PDF. Your polling and NCBI settings are kept,
+          and so are the MeSH and journal reference lists — so the pickers still work when you
+          start again.
+          {pro && " Your organization pairing and license are kept too."} This cannot be
+          undone.
+        </p>
+        <button
+          type="button"
+          className="danger-btn"
+          onClick={() => setConfirmingReset(true)}
+          disabled={!ready || resetting}
+        >
+          {resetting ? (
+            <span className="btn-spinner" aria-hidden="true" />
+          ) : (
+            <Trash2 size={12} aria-hidden />
+          )}
+          {resetting ? "Deleting…" : "Delete all data"}
+        </button>
+        {/* Below the button, where the panels above this one put their banners
+            under the heading instead.
+            Deliberate, and the reason is the button rather than the banner: a
+            message inserted above the hint pushes the control down by its own
+            height, out from under the pointer that just pressed it — which for
+            the failure case is the pointer about to press it again. Last in the
+            panel, it displaces nothing. */}
+        {resetResult && (
+          <Banner
+            kind={resetResult.kind}
+            message={resetResult.message}
+            onDismiss={() => setResetResult(null)}
+          />
+        )}
+      </section>
+
       <JournalManager
         open={managingJournals}
         onClose={() => setManagingJournals(false)}
@@ -538,6 +651,23 @@ export function Settings({
         danger
         onConfirm={removeTopic}
         onCancel={() => setTopicToRemove(null)}
+      />
+      {/* No typed confirmation behind this one, deliberately — see PromptDialog's
+          `option`, which makes the argument at length: a forced extra step gets
+          pattern-matched and performed within a week, leaving the same mistake
+          possible plus a ritual everyone resents. What guards this instead is
+          what ConfirmDialog already does — Cancel takes initial focus, so Enter
+          on a dialog that appeared unexpectedly cancels — and a message that
+          names what goes, in the words the UI already uses for it. See
+          RESET_WARNING, which argues that over a row of totals. */}
+      <ConfirmDialog
+        open={confirmingReset}
+        title="Delete all data?"
+        message={RESET_WARNING}
+        confirmLabel="Delete everything"
+        danger
+        onConfirm={resetEverything}
+        onCancel={() => setConfirmingReset(false)}
       />
     </div>
   );

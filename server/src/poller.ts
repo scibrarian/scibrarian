@@ -195,6 +195,9 @@ export function startScheduler(): void {
     // Papers PubMed hadn't finished MeSH-indexing when we stored them come back
     // around here: on a long-running process that's the only thing that ever
     // files them, since nothing else re-reads a paper already stored.
+    // It takes the poll lock itself — deliberately not wrapped here, since a
+    // second withPollLock around it would find the flag already set and skip
+    // the whole pass.
     void backfillArticleMesh();
   });
   scheduleLaunchCatchUp();

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrgHolding, ProStatus } from "../../shared/pro.js";
 import type { PaperProvenance } from "../../shared/types.js";
-import { hintProSync, paperProvenance, proStatus, registerPro, type ProModule } from "./pro-hooks.js";
+import {
+  hintProSync,
+  paperProvenance,
+  proStatus,
+  registerPro,
+  resetProContent,
+  type ProModule,
+} from "./pro-hooks.js";
 
 // What the seam does when the Pro module misbehaves.
 //
@@ -35,6 +42,7 @@ function moduleThat(over: Partial<ProModule>): ProModule {
     receivedNodeByPmid: () => new Map<string, PaperProvenance>(),
     orgCheck: async (): Promise<Map<string, OrgHolding>> => new Map(),
     syncHint: () => {},
+    resetContent: () => {},
     ...over,
   };
 }
@@ -276,6 +284,54 @@ describe("hintProSync", () => {
       })
     );
     expect(() => hintProSync("import finished")).not.toThrow();
+    expect(String(warn.mock.calls[0][0])).toContain("database is locked");
+  });
+});
+
+// Containment again, and for the strongest reason on the seam: this one is
+// called *after* the free half has committed a deletion nothing can undo. Every
+// branch here has to end with the caller still able to report that it happened.
+describe("resetProContent", () => {
+  it("does nothing in a free build", () => {
+    expect(() => resetProContent()).not.toThrow();
+  });
+
+  it("forwards to a module that has the hook", () => {
+    const called: string[] = [];
+    registerPro(moduleThat({ resetContent: () => called.push("reset") }));
+
+    resetProContent();
+
+    expect(called).toEqual(["reset"]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // A Pro image older than this interface. Its rows are left behind pointing at
+  // ids that no longer resolve, which is survivable — every reader over there
+  // intersects against live collections — so this degrades to a log rather than
+  // to a wipe that reports itself as failed.
+  it("survives a module older than the hook", () => {
+    const older = moduleThat({});
+    delete (older as Partial<ProModule>).resetContent;
+    registerPro(older);
+
+    expect(() => resetProContent()).not.toThrow();
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it("contains a throw rather than failing the reset that called it", () => {
+    registerPro(
+      moduleThat({
+        resetContent: () => {
+          throw new Error("database is locked");
+        },
+      })
+    );
+
+    // The library is already gone by the time this runs. A throw escaping here
+    // reports a completed, irreversible deletion as a failure — and the next
+    // thing a person does with a failed "delete everything" is press it again.
+    expect(() => resetProContent()).not.toThrow();
     expect(String(warn.mock.calls[0][0])).toContain("database is locked");
   });
 });

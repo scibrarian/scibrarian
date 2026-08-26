@@ -33,6 +33,31 @@ export function isImportRunning(collectionId: number): boolean {
   return jobs.get(collectionId)?.state === "running";
 }
 
+// The same question asked about every shelf at once, for the one caller that
+// cannot name a collection: a whole-library reset.
+//
+// An import is the only work in this process that writes rows on a timer of its
+// own making — it matches, calls setFileMatched, and stores extracted text long
+// after the request that started it returned 200. Run it across a wipe and each
+// of those lands against something that no longer exists: matches on file ids
+// that are gone, and pdf_text rows (indexed, and therefore searchable) keyed by
+// the hash of a blob the reset just unlinked. Nothing later cleans those up,
+// because the collection they belonged to is not there to be deleted again.
+export function anyImportRunning(): boolean {
+  for (const job of jobs.values()) {
+    if (job.state === "running") return true;
+  }
+  return false;
+}
+
+// Forget every finished job. Called after a reset, which is the only thing that
+// invalidates the whole map at once: entries are keyed by collection id and
+// deliberately outlive the import so the client can read the final tallies, and
+// after a wipe those tallies describe collections that no longer exist.
+export function clearImportJobs(): void {
+  jobs.clear();
+}
+
 // Files per NCBI resolution round: extraction is local and fast, so batching
 // only exists to amortize eutils calls and keep progress moving visibly.
 const RESOLVE_BATCH = 50;

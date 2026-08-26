@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
-import { paperProvenance, proStatus } from "./pro-hooks.js";
+import { paperProvenance, proStatus, resetProContent } from "./pro-hooks.js";
 import {
   addBookmarks,
   addCollectionFiles,
@@ -52,6 +52,7 @@ import {
   removeJournalWithArticles,
   renameBookmarkFolder,
   renameCollection,
+  resetLibrary,
   searchCatalog,
   searchMesh,
   setFileMatched,
@@ -82,10 +83,17 @@ import {
 } from "./config.js";
 import { splitRefs } from "./citation-ref.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
-import { getImportStatus, isImportRunning, startImport } from "./importer.js";
+import {
+  anyImportRunning,
+  clearImportJobs,
+  getImportStatus,
+  isImportRunning,
+  startImport,
+} from "./importer.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
+import { anyTransferInFlight } from "./pro-storage.js";
 import { fetchArticles, isMedlineIndexed, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
@@ -1370,3 +1378,62 @@ api.put("/settings", (req, res) => {
   rescheduleFromSettings();
   res.json(settingsResponse());
 });
+
+// ---------- delete everything ----------
+
+// Delete the whole library. Irreversible, and the only route here that is.
+//
+// Held against the same lock a manual refresh takes, rather than merely
+// checking a flag: a poll that overlapped this would be inserting papers into
+// topics as they are deleted — articles saved against a topic_id the
+// transaction is removing, which the foreign key refuses, and a poller that
+// then reports a failure for a topic the user meant to be gone.
+//
+// Imports are a separate question and answered separately, because they are not
+// what the poll lock covers. They also cannot be waited for: an import is a
+// background job with no lock to take and no bound on how long it runs, so the
+// honest answer is to refuse and let the owner press the button again once it
+// finishes.
+//
+// Transfers are the third, and the one easiest to forget, because on a Pro
+// instance the writer is not this instance at all. A paired node pushing up and
+// a master being pulled from both land in storePulledFile, which is mounted
+// outside this router, is not a job in `jobs`, and takes no lock — so the poll
+// lock below says nothing about it. The refusals are ordered cheapest first and
+// all three ahead of the lock, so a refused reset never takes one.
+api.post(
+  "/data/reset",
+  asyncHandler(async (req, res) => {
+    if (anyImportRunning()) {
+      return res.status(409).json({
+        error: "A collection is still importing files. Wait for it to finish, then try again.",
+      });
+    }
+    // The same answer for the same reason, to a writer nobody here can see. A
+    // push arriving from a paired node and a pull coming down from a master both
+    // write article rows and blobs across awaits, and neither is a job in `jobs`
+    // or a holder of the poll lock — so without this the wipe lands between a
+    // transfer's checks and its writes, leaving a blob nothing references or an
+    // articles row that outlived "delete everything".
+    //
+    // Refused rather than waited for, like the import above: the transfer is not
+    // this instance's to hurry, and the window is a network round trip wide.
+    if (anyTransferInFlight()) {
+      return res.status(409).json({
+        error: "Files are being copied into this library right now. Wait for it to finish, then try again.",
+      });
+    }
+    const stats = await withPollLock(async () => resetLibrary());
+    if (stats === null) {
+      return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
+    }
+    // After the deletion, never before it: each of these is tidying up around a
+    // wipe that has already happened, and neither is allowed to prevent one.
+    clearImportJobs();
+    resetProContent();
+    // The schedule survives (poll_cron and poll_enabled are settings, not
+    // contents), and with no topics left there is nothing for it to poll — but
+    // it is still armed, so nothing needs rescheduling here.
+    res.json(stats);
+  })
+);

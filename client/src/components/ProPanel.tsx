@@ -45,6 +45,7 @@ export function ProPanel({
   desktop,
   onPairingChanged,
   onSharingChanged,
+  reloadToken,
 }: {
   /**
    * Whether Settings has decided the whole page may be drawn. False renders
@@ -52,7 +53,11 @@ export function ProPanel({
    * unpaired form used to paint on mount and be replaced a request later.
    */
   ready: boolean;
-  /** Called once, when the first reload settles either way. See `ready`. */
+  /**
+   * Called when a reload settles either way. The first one is what `ready`
+   * waits on; a later reloadToken bump calls it again, which Settings' handler
+   * absorbs. See `ready`.
+   */
   onReady: () => void;
   /**
    * Whether this instance is the desktop app, or null while the setting that
@@ -70,6 +75,14 @@ export function ProPanel({
    * and ask for itself.
    */
   onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
+  /**
+   * Bumped by Settings when something outside this panel invalidated what it
+   * is showing — today, a library reset, which deletes every collection the
+   * stamps and the supplied/pulled totals are counted over. Nothing here can
+   * derive that: the button is in another panel and empties tables this one
+   * only reads.
+   */
+  reloadToken: number;
 }) {
   const [nodes, setNodes] = useState<ProNode[]>([]);
   const [orgName, setOrgName] = useState("");
@@ -187,7 +200,7 @@ export function ProPanel({
       .catch((err) => setError(errorMessage(err)))
       .finally(onReady);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [reloadToken]);
 
   // Returns whether the action itself succeeded, for the two callers that have
   // to tell the rest of the app. A failed reload() afterwards doesn't make it

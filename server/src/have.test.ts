@@ -108,6 +108,7 @@ const stub: ProModule = {
   pulledOrgByPmid: () => new Map<string, PaperProvenance>(),
   receivedNodeByPmid: () => new Map<string, PaperProvenance>(),
   syncHint: () => {},
+  resetContent: () => {},
 };
 
 const holds = (...pmids: string[]) =>
