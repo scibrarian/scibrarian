@@ -458,8 +458,8 @@ export function JournalManager({
           when you press Apply. The number is OpenAlex 2-yr citations per article — an open
           stand-in for impact factor.
         </p>
-        {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
-        {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
+        <Banner kind="error" message={error} onDismiss={() => setError(null)} />
+        <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
         <div className="jm-auto">
           <button
             type="button"

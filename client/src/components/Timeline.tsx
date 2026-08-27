@@ -97,21 +97,19 @@ export function Timeline({
         }
       />
 
-      {(error ?? actionError ?? opener.openError) && (
-        <Banner
-          kind="error"
-          message={(error ?? actionError ?? opener.openError)!}
-          onDismiss={
-            actionError || opener.openError
-              ? () => {
-                  setActionError(null);
-                  opener.clearOpenError();
-                }
-              : undefined
-          }
-        />
-      )}
-      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
+      <Banner
+        kind="error"
+        message={error ?? actionError ?? opener.openError}
+        onDismiss={
+          actionError || opener.openError
+            ? () => {
+                setActionError(null);
+                opener.clearOpenError();
+              }
+            : undefined
+        }
+      />
+      <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
       {loading ? (
         <TimelineSkeleton />

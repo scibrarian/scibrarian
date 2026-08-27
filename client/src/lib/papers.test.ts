@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { narrowPapers, selectionOnScreen, type PaperNarrowing } from "./papers";
+import {
+  narrowPapers,
+  selectionOnScreen,
+  settleRemovalNotice,
+  type PaperNarrowing,
+} from "./papers";
 import type { Paper } from "../types";
 
 // Only four fields matter to anything under test — pmid, journal_name,
@@ -212,6 +217,88 @@ it("never sends a pmid the filters have taken off screen", () => {
           }
           // And nothing quietly dropped: what survives both is what goes.
           expect(sent).toEqual([...new Set(ticked)].filter((p) => onScreen.has(p)).sort());
+        }
+      }
+    }
+  }
+});
+
+// The rows a removal dimmed are released on the same answer that decides its
+// confirmation, so a rule that can sit on "wait" forever is a rule that strands
+// them faded. These cover the three answers, and then that the wait ends.
+describe("settleRemovalNotice", () => {
+  const held = { pmids: ["1", "2", "3"], token: 7 };
+  const rows = (...pmids: string[]) => pmids.map((pmid) => ({ pmid }));
+  // The reload the removal itself started: one token on, landed, no error, and
+  // the removed rows gone from the list.
+  const landed = { token: 8, loading: false, error: null, visible: rows("9") };
+
+  it("publishes once the reload has landed and the rows are gone", () => {
+    expect(settleRemovalNotice(held, landed)).toBe("publish");
+  });
+
+  it("waits while that reload is still in flight", () => {
+    expect(settleRemovalNotice(held, { ...landed, loading: true })).toBe("wait");
+  });
+
+  it("waits until the token has actually moved", () => {
+    expect(settleRemovalNotice(held, { ...landed, token: 7 })).toBe("wait");
+  });
+
+  it("drops a message a later refresh has overtaken", () => {
+    // Publishing here would put "Removed 3 papers" over a table the user hasn't
+    // touched since some unrelated reload redrew it.
+    expect(settleRemovalNotice(held, { ...landed, token: 9 })).toBe("drop");
+  });
+
+  it("drops rather than claim a success the reload couldn't confirm", () => {
+    // usePapers holds the last good list on screen and puts its error in the
+    // same banner slot, so the rows are still there and already contradicted.
+    const failed = { ...landed, error: "Couldn't load papers.", visible: rows("1", "2", "3") };
+    expect(settleRemovalNotice(held, failed)).toBe("drop");
+  });
+
+  it("drops when the reload came back with the rows still in it", () => {
+    // The server answered "removed 0" — nothing to confirm, and nothing that
+    // should stay dimmed either.
+    expect(settleRemovalNotice(held, { ...landed, visible: rows("1", "2", "3") })).toBe("drop");
+  });
+
+  it("drops when only some of the rows went", () => {
+    expect(settleRemovalNotice(held, { ...landed, visible: rows("3") })).toBe("drop");
+  });
+
+  it("counts rows a filter has hidden as gone", () => {
+    // The shift being avoided is the table moving, and a hidden row moves it
+    // just as a deleted one does.
+    expect(settleRemovalNotice(held, { ...landed, visible: [] })).toBe("publish");
+  });
+});
+
+it("never leaves a removal's message waiting once its reload has landed", () => {
+  const held = { pmids: ["1", "2", "3"], token: 7 };
+  const lists = [
+    [],
+    [{ pmid: "9" }],
+    [{ pmid: "1" }],
+    [{ pmid: "1" }, { pmid: "2" }, { pmid: "3" }],
+    [{ pmid: "1" }, { pmid: "9" }],
+  ];
+  for (const token of [6, 7, 8, 9, 10]) {
+    for (const loading of [true, false]) {
+      for (const error of [null, "Couldn't load papers."]) {
+        for (const visible of lists) {
+          const outcome = settleRemovalNotice(held, { token, loading, error, visible });
+          expect(["wait", "publish", "drop"]).toContain(outcome);
+          // Landed means: this is the reload it was held for, and it is done.
+          // From there the answer is never "wait" — there is nothing further
+          // coming that could change it, so anything still held is stranded.
+          const landed = token === held.token + 1 && !loading;
+          if (landed) expect(outcome).not.toBe("wait");
+          // And the mirror: it only ever waits on a reload that hasn't landed.
+          if (outcome === "wait") expect(landed).toBe(false);
+          // A success is only ever claimed over a list that came back clean.
+          if (outcome === "publish") expect(error).toBeNull();
         }
       }
     }

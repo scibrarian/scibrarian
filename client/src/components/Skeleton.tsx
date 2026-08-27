@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
+import { SEARCH_PLACEHOLDER_FULL_TEXT } from "../lib/papers";
 import { ALL_JOURNALS_LABEL } from "./JournalFilter";
 
 // Shimmering placeholder bar — the building block for the skeleton screens.
@@ -41,29 +42,51 @@ export function SkeletonBar({
   );
 }
 
+// The toolbar <PaperFilters> renders, one paint early.
+//
+// It used to live inside TimelineSkeleton behind a `withToolbar` flag, for the
+// App-level pre-load stand-in. It is out here now because it is the one part of
+// a source view that does not depend on which view is about to mount: Timeline
+// and PapersTable both open with the same <PaperFilters>, and `searchable`
+// defaults on for both, so this is what the toolbar looks like either way.
+//
+// That is what makes it safe for a stand-in rendered before the workspace is
+// known. Neither .timeline-wrap nor .papers-table-view carries any CSS of its
+// own, so this lands in the same place whichever one ends up around it.
+export function ToolbarSkeleton() {
+  return (
+    <div className="toolbar" aria-hidden="true">
+      <input
+        className="search"
+        type="search"
+        // The full-text wording, which is a guess: this draws before the
+        // bootstrap has said which workspace it landed in. It is the right
+        // guess, because the bootstrap prefers the Library whenever a
+        // collection exists (see App), and collections are exactly the sources
+        // that carry PDFs. Being wrong costs only the sentence — .search is
+        // width: 100%, so unlike FilterSkeleton's label this placeholder sizes
+        // nothing and a mismatch slides no neighbour sideways on the handoff.
+        //
+        // Read from lib rather than written out again here, which is the rule
+        // FilterSkeleton's `label` prop exists for: one sentence with two
+        // readers drifts, and the stand-in is the copy nobody re-reads.
+        placeholder={SEARCH_PLACEHOLDER_FULL_TEXT}
+        readOnly
+        aria-hidden="true"
+        tabIndex={-1}
+      />
+      <div className="filter-row">
+        <FilterSkeleton label={ALL_JOURNALS_LABEL} />
+      </div>
+    </div>
+  );
+}
+
 // Mirrors the timeline layout (month label + dotted rows of article cards) so
-// the page doesn't jump when real content arrives. `withToolbar` also renders
-// the search bar the way <Timeline> does — needed for the App-level pre-load
-// skeleton, which sits where <Timeline> (toolbar included) will render, so the
-// search bar doesn't pop in and shove the cards down on that handoff.
-export function TimelineSkeleton({ withToolbar = false }: { withToolbar?: boolean }) {
+// the page doesn't jump when real content arrives.
+export function TimelineSkeleton() {
   return (
     <div className="timeline-wrap" aria-busy="true" aria-label="Loading papers">
-      {withToolbar && (
-        <div className="toolbar">
-          <input
-            className="search"
-            type="search"
-            placeholder="Search titles, abstracts & authors…"
-            readOnly
-            aria-hidden="true"
-            tabIndex={-1}
-          />
-          <div className="filter-row">
-            <FilterSkeleton label={ALL_JOURNALS_LABEL} />
-          </div>
-        </div>
-      )}
       <div className="timeline">
         <section className="month-group">
           <h2 className="month-label">

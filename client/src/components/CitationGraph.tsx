@@ -486,21 +486,19 @@ export function CitationGraph({
         )}
       </PaperFilters>
 
-      {(error ?? actionError ?? openError) && (
-        <Banner
-          kind="error"
-          message={(error ?? actionError ?? openError)!}
-          onDismiss={
-            actionError || openError
-              ? () => {
-                  setActionError(null);
-                  clearOpenError();
-                }
-              : undefined
-          }
-        />
-      )}
-      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
+      <Banner
+        kind="error"
+        message={error ?? actionError ?? openError}
+        onDismiss={
+          actionError || openError
+            ? () => {
+                setActionError(null);
+                clearOpenError();
+              }
+            : undefined
+        }
+      />
+      <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
       {/* Names the pinned state, so a sparse canvas is never a mystery, and
           carries the only obvious way out (Escape works too). Keyed on `focus`

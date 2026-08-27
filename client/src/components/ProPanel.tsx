@@ -393,7 +393,7 @@ export function ProPanel({
         sent anywhere else.
       </p>
 
-      {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
+      <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
       {/* ---- spoke side: who this instance is connected to ---- */}
       <h4>Your organization</h4>

@@ -1,5 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { sourceHasFiles, type PaperFilterState } from "../lib/papers";
+import {
+  SEARCH_PLACEHOLDER,
+  SEARCH_PLACEHOLDER_FULL_TEXT,
+  sourceHasFiles,
+  type PaperFilterState,
+} from "../lib/papers";
 import type { PaperSource } from "../types";
 import { ALL_JOURNALS_LABEL, JournalFilter } from "./JournalFilter";
 import { ALL_SUBJECTS_LABEL, MeshFilter, useMeshFacets } from "./MeshFilter";
@@ -149,11 +154,7 @@ export function PaperFilters({
         <input
           className="search"
           type="search"
-          placeholder={
-            fullText
-              ? "Search titles, abstracts, authors & PDF text…"
-              : "Search titles, abstracts & authors…"
-          }
+          placeholder={fullText ? SEARCH_PLACEHOLDER_FULL_TEXT : SEARCH_PLACEHOLDER}
           // Almost nothing typed here is a dictionary word — drug names, genes,
           // MeSH headings, author surnames — so the squiggles mark correct input
           // as wrong and never mark anything that is.

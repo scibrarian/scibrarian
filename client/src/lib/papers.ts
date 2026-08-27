@@ -10,6 +10,16 @@ import { useCachedFetch, type FetchCache } from "./hooks";
 // sourceKey itself.
 export { sourceHasFiles, sourceKey };
 
+// The search box's two placeholders. Here rather than inline because the
+// toolbar is drawn twice — once by PaperFilters, which knows its source, and a
+// paint earlier by ToolbarSkeleton, which does not — so the sentence has two
+// readers and a rename reaching only one of them leaves the other promising
+// something different. sourceHasFiles, just above, is what picks between them:
+// collections search the body text of the PDFs they hold, topics and bookmark
+// folders have no files behind their papers.
+export const SEARCH_PLACEHOLDER = "Search titles, abstracts & authors…";
+export const SEARCH_PLACEHOLDER_FULL_TEXT = "Search titles, abstracts, authors & PDF text…";
+
 // Cache the last successful fetch per (source, search). Remounting a view —
 // flipping between Papers/Timeline, or clicking back into a workspace — then
 // paints from cache instead of refetching. The Table and Timeline modules share
@@ -216,6 +226,62 @@ export function selectionOnScreen(
   return onScreen;
 }
 
+/** What a removal's held confirmation should do, now that a reload has been asked for. */
+export type RemovalNoticeOutcome = "wait" | "publish" | "drop";
+
+/**
+ * Decide the fate of a removal's held confirmation.
+ *
+ * `wait` leaves it held; `publish` shows it; `drop` throws it away. Both of the
+ * last two also mean "release the dimmed rows", which is why this answers with
+ * an outcome rather than a boolean — the caller must not be able to publish
+ * without releasing, or to release without having decided.
+ *
+ * Pure and exported for the same reason selectionOnScreen is: what it decides is
+ * when a table stops looking mid-action, and that has to be one rule rather than
+ * two that agree by inspection. A rule that can fail to terminate leaves rows
+ * faded at 0.4 opacity with nothing left to clear them.
+ *
+ * The wait is bounded by the reload rather than by the rows leaving, and that is
+ * the whole of it. Waiting on the rows alone hung whenever they didn't go — a
+ * reload that failed, where usePapers keeps the last good list on screen, or a
+ * server that answered "removed 0" over rows that are still there. Neither moves
+ * the token past `token + 1`, so neither reached the escape for a later refresh,
+ * and the wait had no other way out.
+ *
+ * Held for exactly one reload: the one the removal itself started, which is the
+ * token it recorded plus the single bump handleCollectionChanged makes to this
+ * source's key (bumpSource and bumpAll each move tokenFor by one). Past that,
+ * something else refreshed the list, and publishing then put "Removed 5 papers
+ * from this collection." over a table the user had not touched in minutes.
+ *
+ * An error publishes nothing — usePapers puts its own message in the same banner
+ * slot, and claiming a success above rows that are still there is the thing this
+ * exists to prevent — but it does end the wait.
+ *
+ * A filter that hides the rows counts as gone, which is correct: the shift being
+ * avoided is the table moving, and a hidden row moves it just as a deleted one
+ * does.
+ */
+export function settleRemovalNotice(
+  held: { pmids: readonly string[]; token: number },
+  reload: {
+    token: number;
+    loading: boolean;
+    error: string | null;
+    visible: readonly { pmid: string }[];
+  }
+): RemovalNoticeOutcome {
+  if (reload.token > held.token + 1) return "drop";
+  // `loading` goes true the moment the token moves and stays there until this
+  // token's own data lands, which is what makes `visible` below safe to read:
+  // until then it is the pre-removal list, held over by usePapers so a refetch
+  // doesn't flash a skeleton.
+  if (reload.token !== held.token + 1 || reload.loading) return "wait";
+  if (reload.error) return "drop";
+  return selectionOnScreen(new Set(held.pmids), reload.visible).size === 0 ? "publish" : "drop";
+}
+
 export type PaperFilterState = ReturnType<typeof usePaperFilters>;
 
 // Record that a source holds no papers, without asking the server.
@@ -300,6 +366,13 @@ export function usePapers(
     maxCitations,
     yearBounds,
     loading: showLoading,
+    // The same question the skeleton flag above deliberately stops asking:
+    // whether the list on screen is this reloadToken's answer yet. `loading`
+    // says "there is nothing to show", which is false for the whole of a reload
+    // that has a previous list to hold over — so anything that has to decide
+    // something once, at the moment a reload lands, has to read this instead.
+    // settleRemovalNotice is the caller that does.
+    reloading: loading,
     error,
     allDeselected,
     // Whether an empty `visible` means "filters matched nothing" vs "no papers".

@@ -484,10 +484,8 @@ export function CollectionView({
         )}
       </div>
 
-      {(error ?? filesError) && (
-        <Banner kind="error" message={error ?? filesError!} onDismiss={() => setError(null)} />
-      )}
-      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
+      <Banner kind="error" message={error ?? filesError} onDismiss={() => setError(null)} />
+      <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
       {/* The two phases of adding files, drawn as one bar that fills twice.
           Sending the bytes and scanning them are separate jobs with separate

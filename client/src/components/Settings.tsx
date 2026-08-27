@@ -300,7 +300,7 @@ export function Settings({
 
   return (
     <div className="settings">
-      {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
+      <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
       <section className="panel">
         <h2>Topics</h2>
@@ -441,7 +441,7 @@ export function Settings({
 
       <section className="panel">
         <h2>Polling & NCBI</h2>
-        {savedMsg && <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />}
+        <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />
         {!ready && <StackedFormSkeleton />}
         {ready && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
@@ -625,13 +625,14 @@ export function Settings({
             height, out from under the pointer that just pressed it — which for
             the failure case is the pointer about to press it again. Last in the
             panel, it displaces nothing. */}
-        {resetResult && (
-          <Banner
-            kind={resetResult.kind}
-            message={resetResult.message}
-            onDismiss={() => setResetResult(null)}
-          />
-        )}
+        {/* The kind is snapshotted alongside the message (see Banner), so the
+            fallback here is only ever read on a render where there is nothing
+            to draw — it is never the kind of a banner anyone sees. */}
+        <Banner
+          kind={resetResult?.kind ?? "info"}
+          message={resetResult?.message ?? null}
+          onDismiss={() => setResetResult(null)}
+        />
       </section>
 
       <JournalManager

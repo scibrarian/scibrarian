@@ -5,7 +5,12 @@ import type { Bookmarking } from "../lib/bookmarking";
 import { describeRemoval, errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import { selectionOnScreen, usePapers, type PaperFilterState } from "../lib/papers";
+import {
+  selectionOnScreen,
+  settleRemovalNotice,
+  usePapers,
+  type PaperFilterState,
+} from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
@@ -62,6 +67,7 @@ export function PapersTable({
     maxCitations,
     yearBounds,
     loading,
+    reloading,
     error,
     allDeselected,
     filtered,
@@ -106,6 +112,15 @@ export function PapersTable({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  // Papers the removal request is out for, by pmid. Their rows dim while it is
+  // in flight (see .paper-rows.leaving) — the only feedback the click has other
+  // than the button's own label, and the thing that stops the rows vanishing
+  // out of a table that looked untouched a moment earlier.
+  //
+  // A set of ids rather than a flag on the request because it has to be
+  // reversible: a removal that fails leaves the papers exactly where they were,
+  // and the rows have to come back to full strength to say so.
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());
   const { openPaper, opensStoredPdf, openError, clearOpenError } = usePaperOpener({
     isAdmin,
     tokenRequired,
@@ -156,7 +171,12 @@ export function PapersTable({
   // papers. Keyed on `fetchKey` alone and deliberately *not* on `reloadToken`:
   // the removal that holds the message is what bumps that token, so including
   // it here would throw every message away one render after it was set.
-  useEffect(() => setPendingNotice(null), [fetchKey]);
+  // The dimmed rows go with it, and for the same reason: a pmid held over from
+  // the last source would dim whichever paper happens to share it here.
+  useEffect(() => {
+    setPendingNotice(null);
+    setLeaving(new Set());
+  }, [fetchKey]);
 
   // The ticks that are actually actionable. Every read of the selection goes
   // through this rather than through `selected`, so a row the filters have
@@ -164,36 +184,28 @@ export function PapersTable({
   // filter hid it, and whether or not this component knows that filter exists.
   const onScreen = useMemo(() => selectionOnScreen(selected, visible), [selected, visible]);
 
-  // Publish the held message once none of the removed rows are on screen — the
-  // same intersection the selection uses, asked of the list instead of the
-  // ticks. Reusing it is deliberate: "gone from the list" has to mean exactly
-  // what "still actionable" meant, or the banner can report a removal over rows
-  // still sitting under it.
+  // Act on the held message once settleRemovalNotice has an answer for it. The
+  // rule itself lives beside the intersection it is built from — see there for
+  // why the wait is bounded by the reload rather than by the rows leaving.
   //
-  // A filter that hides them counts as gone, which is correct: the shift this
-  // exists to avoid is the table moving, and a hidden row moves it just as a
-  // deleted one does. A refetch that fails never satisfies this, and that is
-  // also correct — usePapers puts its own error in this same slot, and claiming
-  // a success above rows that are still there is the thing being fixed.
-  //
-  // What a failed refetch must not do is leave the message waiting. It is held
-  // for exactly one refresh: the one the removal itself started, which is the
-  // token it recorded plus the single bump handleCollectionChanged makes to
-  // this source's key (bumpSource and bumpAll each move tokenFor by one). Past
-  // that, some later thing refreshed the list, and publishing then put
-  // "Removed 5 papers from this collection." over a table the user had not
-  // touched in minutes. Better to drop a confirmation the error banner has
-  // already contradicted than to attach it to an action that never happened.
+  // Only the two things that belong to this component are here: which message
+  // gets published, and the dimmed rows going with it. They are released on
+  // every way out that isn't "wait", so nothing un-dims a moment before it
+  // disappears, and a paper filed back into the collection later doesn't arrive
+  // still faded.
   useEffect(() => {
     if (!pendingNotice) return;
-    if (reloadToken > pendingNotice.token + 1) {
-      setPendingNotice(null);
-      return;
-    }
-    if (selectionOnScreen(new Set(pendingNotice.pmids), visible).size > 0) return;
-    setNotice(pendingNotice.text);
+    const outcome = settleRemovalNotice(pendingNotice, {
+      token: reloadToken,
+      loading: reloading,
+      error,
+      visible,
+    });
+    if (outcome === "wait") return;
+    if (outcome === "publish") setNotice(pendingNotice.text);
     setPendingNotice(null);
-  }, [pendingNotice, visible, reloadToken]);
+    setLeaving(new Set());
+  }, [pendingNotice, visible, reloadToken, reloading, error]);
 
   // The whole filtered set, not the rows rendered so far: the table lazy-renders
   // (see useIncrementalList), so selecting "all" from `shown` would silently
@@ -216,16 +228,32 @@ export function PapersTable({
     setConfirmingRemove(false);
     setRemoving(true);
     setActionError(null);
+    // What this call is answerable for, read once. `onScreen` is derived from
+    // the ticks and the list, and both move underneath a request that is still
+    // out — the success path clears the ticks, and the refetch rewrites the
+    // list — so every later step here works from this rather than re-reading it.
+    const batch = [...onScreen];
+    // Dim them now, on the click, rather than when the server answers. The fade
+    // is feedback for the action, and at --dur-slow it has long settled before
+    // the refetch that actually drops the rows lands.
+    //
+    // Merged into whatever is already dimmed rather than replacing it. The
+    // button comes back the moment the server answers, roughly half a second
+    // before the refetch drops the rows, so a second removal can start while the
+    // first one's rows are still sitting there waiting to go. Replacing the set
+    // snapped those back to full strength and then took them away with no
+    // warning — the one thing the dim exists to prevent.
+    setLeaving((prev) => new Set([...prev, ...batch]));
     try {
       // What happened, from the server, rather than the length of what was
       // sent. The two disagree in both directions — a collection holding two
       // copies of one article removes more files than papers, and anything that
       // got there first (another tab, a second window, an import cleanup)
       // removes fewer papers than were ticked. See describeRemoval.
-      const { removed, papers } = await api.removeCollectionPapers(removeFrom, [...onScreen]);
+      const { removed, papers } = await api.removeCollectionPapers(removeFrom, batch);
       setPendingNotice({
-        text: describeRemoval(onScreen.size, removed, papers),
-        pmids: [...onScreen],
+        text: describeRemoval(batch.length, removed, papers),
+        pmids: batch,
         // Read before onCollectionChanged below bumps it, which is the point:
         // the refresh this message waits for is the next one, not this one.
         token: reloadToken,
@@ -237,6 +265,15 @@ export function PapersTable({
       onCollectionChanged?.();
     } catch (err) {
       setActionError(errorMessage(err));
+      // Nothing left the collection, so nothing should still look like it is
+      // about to — but only these ids. An earlier removal still waiting on its
+      // refetch keeps its own rows dimmed, and they are still going. The ticks
+      // stay put, so the same removal can be retried.
+      setLeaving((prev) => {
+        const next = new Set(prev);
+        for (const pmid of batch) next.delete(pmid);
+        return next;
+      });
     } finally {
       setRemoving(false);
     }
@@ -331,17 +368,15 @@ export function PapersTable({
         }
       />
 
-      {(error ?? actionError ?? openError) && (
-        <Banner
-          kind="error"
-          message={(error ?? actionError ?? openError)!}
-          onDismiss={() => {
-            setActionError(null);
-            clearOpenError();
-          }}
-        />
-      )}
-      {notice && <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />}
+      <Banner
+        kind="error"
+        message={error ?? actionError ?? openError}
+        onDismiss={() => {
+          setActionError(null);
+          clearOpenError();
+        }}
+      />
+      <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
       {loading && visible.length === 0 ? (
         <PapersTableSkeleton
@@ -414,7 +449,10 @@ export function PapersTable({
                   row divider treat them as the single record they are.
                   Several tbodies in one table is valid HTML. */}
               {shown.map((p) => (
-                <tbody className="paper-rows" key={p.pmid}>
+                <tbody
+                  className={leaving.has(p.pmid) ? "paper-rows leaving" : "paper-rows"}
+                  key={p.pmid}
+                >
                   <tr>
                     {showSelectCol && (
                       <td className="select-cell">

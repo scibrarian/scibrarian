@@ -69,7 +69,7 @@ export function BookmarkFolderView({
         )}
       </div>
 
-      {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
+      <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
       {children}
 
