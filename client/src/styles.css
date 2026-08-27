@@ -23,9 +23,12 @@
 
      Curves follow the usual asymmetry: something entering decelerates into
      place (--ease-out), something moving between two on-screen positions eases
-     at both ends (--ease). There is deliberately no --ease-in: nothing here
-     leaves the screen under a transition, and the exits that do exist are
-     keyframed on the Radix surfaces below.
+     at both ends (--ease). There is still no --ease-in, though no longer
+     because nothing leaves under a transition — .banner does, collapsing to
+     nothing when it is dismissed. It reverses its own entrance rather than
+     easing into an exit, so it wants that same --ease-out run backwards, and
+     the Radix surfaces keyframe theirs. Add --ease-in when something needs to
+     accelerate away, not before.
 
      Everything is expressed against these tokens rather than a literal
      duration, which is what makes the reduced-motion block below a three-line
@@ -37,8 +40,12 @@
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
   /* Lets `height: auto` be a transition endpoint — used by .banner, which has
      no fixed height to animate to and no wrapper to run the 0fr/1fr grid trick
-     against. Progressive: without support the banner appears at full height,
-     which is exactly today's behaviour. Safe to set globally because the only
+     against. Chromium-only so far, and progressive in both directions: without
+     it the banner appears at full height, and its collapse snaps the height
+     while the padding, margins and opacity still travel. Nothing waits on the
+     height in particular — Banner.tsx gives the caller its state back on the
+     click, not at the end of the animation — so the fallback is a blunter
+     exit, not a slower one. Safe to set globally because the only
      other size transition in the file (.progress-fill's width) interpolates
      percentages, not keywords, and is unaffected. */
   interpolate-size: allow-keywords;
@@ -60,8 +67,14 @@
    are switched off with `animation: none` at the end of this file rather than
    shortened, so Radix sees no animation at all and unmounts immediately.
 
-   Transitions carry no such risk — nothing in the client listens for
-   `transitionend` — so zeroing them here is the whole of it. */
+   Transitions need no such care, but not because nothing depends on them
+   finishing. Banner.tsx waits out its own collapse before it drops the
+   element, reading what is running off the element with getAnimations()
+   rather than listening for `transitionend`. That is exactly what makes
+   zeroing safe here: at 0ms no transition starts, the list comes back empty,
+   and the close lands in the same tick instead of waiting on an event that
+   would never fire. Worth knowing before setting a duration to 0 by some
+   other route. */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-fast: 0ms;
@@ -375,9 +388,11 @@ body {
    which Banner.tsx puts on while it waits for the close to finish. That covers
    dismissal by the ×, which is the exit anyone watches. A banner the caller
    clears for its own reasons (an error banner going away because the retry
-   worked) still vanishes at once: React has removed it before any class could
-   apply, and holding it would mean a presence wrapper at all ten call sites to
-   soften an exit nobody is looking at. */
+   worked) still vanishes at once, and that is the component's decision now
+   rather than the call site's: Banner holds its own copy of the message and
+   drops it the moment the caller lets go, unless it is itself the one running
+   the collapse. Which is also why there is no presence wrapper anywhere —
+   presence is the banner's, and the call sites just hand it nullable text. */
 .banner {
   padding: 10px 14px;
   border-radius: var(--radius);
@@ -1797,6 +1812,13 @@ code {
   animation: overlay-in var(--dur-base) var(--ease-out);
 }
 
+/* The two exits below are timed together on purpose. ModalFrame renders
+   Dialog.Content inside Dialog.Overlay, so each runs its own Radix Presence and
+   each waits on its own animationend; whichever fires first wins, and when it
+   is the overlay's React unmounts the subtree with a still-animating dialog
+   inside it. Both are --dur-base, so the race is a tie and nothing is visibly
+   cut short — but that is the whole of what protects it. If these ever need to
+   differ, the overlay's is the one that has to be longer. */
 .modal-backdrop[data-state="closed"] {
   animation: overlay-out var(--dur-base) var(--ease-out);
 }

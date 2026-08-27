@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
+import { SEARCH_PLACEHOLDER_FULL_TEXT } from "../lib/papers";
 import { ALL_JOURNALS_LABEL } from "./JournalFilter";
 
 // Shimmering placeholder bar — the building block for the skeleton screens.
@@ -58,7 +59,18 @@ export function ToolbarSkeleton() {
       <input
         className="search"
         type="search"
-        placeholder="Search titles, abstracts & authors…"
+        // The full-text wording, which is a guess: this draws before the
+        // bootstrap has said which workspace it landed in. It is the right
+        // guess, because the bootstrap prefers the Library whenever a
+        // collection exists (see App), and collections are exactly the sources
+        // that carry PDFs. Being wrong costs only the sentence — .search is
+        // width: 100%, so unlike FilterSkeleton's label this placeholder sizes
+        // nothing and a mismatch slides no neighbour sideways on the handoff.
+        //
+        // Read from lib rather than written out again here, which is the rule
+        // FilterSkeleton's `label` prop exists for: one sentence with two
+        // readers drifts, and the stand-in is the copy nobody re-reads.
+        placeholder={SEARCH_PLACEHOLDER_FULL_TEXT}
         readOnly
         aria-hidden="true"
         tabIndex={-1}

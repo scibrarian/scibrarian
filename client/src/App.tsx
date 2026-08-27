@@ -949,11 +949,19 @@ export default function App() {
         {!loaded ? (
           // Reserve what is certain here, and nothing else.
           //
-          // The action row, because every workspace draws one and .source-head
-          // holds a fixed height whatever goes in it — so the papers don't jump
-          // down a row's height when this is replaced (mirrors the header). And
-          // the toolbar, because both paper views open with the same
-          // <PaperFilters> (see ToolbarSkeleton).
+          // The action row, because every workspace that draws papers draws one
+          // too and .source-head holds a fixed height whatever goes in it — so
+          // the papers don't jump down a row's height when this is replaced
+          // (mirrors the header). And the toolbar, because both paper views
+          // open with the same <PaperFilters> (see ToolbarSkeleton).
+          //
+          // A first run with nothing filed is the exception, and is left as
+          // one. No source means no action row and no toolbar, so what lands is
+          // the centred empty state and this stand-in reserved a row and a
+          // toolbar it does not use. Over-reserving on the single load where
+          // there is nothing below to be shifted is the cheap direction to be
+          // wrong in, and the alternative is guessing whether the library is
+          // empty before the bootstrap has said.
           //
           // The body is deliberately absent. This used to reserve a whole
           // TimelineSkeleton, which was a guess it had no way to make: the
