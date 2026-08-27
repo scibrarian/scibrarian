@@ -19,7 +19,7 @@ import { PaperViews } from "./components/PaperViews";
 import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
 import { Settings } from "./components/Settings";
-import { SkeletonBar, TimelineSkeleton } from "./components/Skeleton";
+import { SkeletonBar, ToolbarSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
@@ -943,17 +943,37 @@ export default function App() {
         />
       </div>
 
-      {status && <Banner kind="info" message={status} onDismiss={() => setStatus(null)} />}
+      <Banner kind="info" message={status} onDismiss={() => setStatus(null)} />
 
       <main className="app-main">
         {!loaded ? (
-          // Reserve the action row too, so the papers don't jump down a row's
-          // height the moment the skeleton is replaced (mirrors the header).
-          <div className="source-view">
+          // Reserve what is certain here, and nothing else.
+          //
+          // The action row, because every workspace draws one and .source-head
+          // holds a fixed height whatever goes in it — so the papers don't jump
+          // down a row's height when this is replaced (mirrors the header). And
+          // the toolbar, because both paper views open with the same
+          // <PaperFilters> (see ToolbarSkeleton).
+          //
+          // The body is deliberately absent. This used to reserve a whole
+          // TimelineSkeleton, which was a guess it had no way to make: the
+          // workspace this lands in is not settled until the bootstrap resolves
+          // — the effect above sets `mode` in the same batch as `loaded` — and
+          // it guessed timeline while the initial `viewMode` says table. With a
+          // collection present it reserved 708px of timeline and the answer came
+          // back as 400px of table: a 308px collapse, ~170ms in, measured at
+          // 1440x900.
+          //
+          // ProPanelSkeleton states the rule that broke — growth is the one
+          // direction a stand-in may be wrong in, so reserve what is certain and
+          // let the rest arrive. The view that knows its own shape draws its own
+          // skeleton a moment later, and that one is pixel-matched to what
+          // replaces it.
+          <div className="source-view" aria-busy="true" aria-label="Loading papers">
             <div className="source-head" aria-hidden="true">
               <SkeletonBar w={190} h={33} style={{ borderRadius: "var(--radius)" }} />
             </div>
-            <TimelineSkeleton withToolbar />
+            <ToolbarSkeleton />
           </div>
         ) : showSettings ? (
           <Settings

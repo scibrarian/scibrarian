@@ -217,8 +217,8 @@ export function HaveCheck({
         </div>
       </form>
 
-      {error && <Banner kind="error" message={error} onDismiss={() => setError(null)} />}
-      {openError && <Banner kind="error" message={openError} onDismiss={clearOpenError} />}
+      <Banner kind="error" message={error} onDismiss={() => setError(null)} />
+      <Banner kind="error" message={openError} onDismiss={clearOpenError} />
 
       {response && (
         <div className="have-results">
@@ -595,7 +595,7 @@ function DestinationPicker({
           {creating ? "Creating…" : "Create"}
         </button>
       </div>
-      {createError && <Banner kind="error" message={createError} onDismiss={() => setCreateError(null)} />}
+      <Banner kind="error" message={createError} onDismiss={() => setCreateError(null)} />
 
       <div className="have-dest-actions">
         <button type="button" onClick={onCancel}>

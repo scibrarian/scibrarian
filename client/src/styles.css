@@ -13,9 +13,61 @@
   --warn-soft: #fef3c7;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+  /* Motion. Three durations and three curves, so a transition added anywhere
+     picks its speed from what it is doing rather than from a fresh guess:
+
+       fast — colour only, where the change is a reaction to the pointer and
+              anything slower feels like lag (hover, focus, press).
+       base — a state flip or something arriving (menus, fades, the banner).
+       slow — the few things that travel far enough for the eye to follow.
+
+     Curves follow the usual asymmetry: something entering decelerates into
+     place (--ease-out), something moving between two on-screen positions eases
+     at both ends (--ease). There is deliberately no --ease-in: nothing here
+     leaves the screen under a transition, and the exits that do exist are
+     keyframed on the Radix surfaces below.
+
+     Everything is expressed against these tokens rather than a literal
+     duration, which is what makes the reduced-motion block below a three-line
+     change instead of an audit. */
+  --dur-fast: 90ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  /* Lets `height: auto` be a transition endpoint — used by .banner, which has
+     no fixed height to animate to and no wrapper to run the 0fr/1fr grid trick
+     against. Progressive: without support the banner appears at full height,
+     which is exactly today's behaviour. Safe to set globally because the only
+     other size transition in the file (.progress-fill's width) interpolates
+     percentages, not keywords, and is unaffected. */
+  interpolate-size: allow-keywords;
   /* Let native controls (inputs, scrollbars, slider, checkbox) follow the theme. */
   color-scheme: light dark;
   accent-color: var(--accent);
+}
+
+/* Reduced motion, for everything built on the tokens above: zero the durations
+   and every transition in the file becomes an instant state change, with no
+   rule needing to know it happened.
+
+   Deliberately NOT the usual `*, *::before, *::after { animation-duration:
+   0.01ms !important }` sledgehammer, which would break two things already
+   here. The toast removes itself on `animationend` and so must keep running a
+   real (motionless) animation to the end — see .toast below, which handles its
+   own reduced-motion case and is left alone by this. Radix's Presence waits on
+   `animationend` the same way to hold a closing dialog or menu mounted; those
+   are switched off with `animation: none` at the end of this file rather than
+   shortened, so Radix sees no animation at all and unmounts immediately.
+
+   Transitions carry no such risk — nothing in the client listens for
+   `transitionend` — so zeroing them here is the whole of it. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
 }
 
 * {
@@ -159,6 +211,7 @@ body {
   line-height: 1;
   padding: 4px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .reload-btn:hover {
@@ -269,6 +322,9 @@ body {
   border-radius: var(--radius);
   font-weight: 600;
   cursor: pointer;
+  /* For the :disabled dim below — this button spends the whole of a refresh
+     disabled, so the state it flips into is the one worth easing. */
+  transition: opacity var(--dur-base) var(--ease);
 }
 
 /* Inline "still working" spinner for the refresh button. Rides on currentColor
@@ -300,11 +356,90 @@ body {
 
 /* ---------- banners ---------- */
 
+/* Opens to its own height rather than appearing at full size and shoving the
+   page down in one frame. A banner arriving is the largest movement in the
+   app — it pushes everything below it — and it is the tail of an action the
+   user just took (a refresh landing, a removal confirming), so it is worth the
+   travel.
+
+   `height: auto` is a transition endpoint here, which needs
+   `interpolate-size: allow-keywords` from :root. Where that is unsupported the
+   height simply snaps as it does today and the opacity fade still runs, so
+   this degrades to slightly-better-than-current rather than to broken.
+
+   The padding and margin have to travel with the height or the box would still
+   claim 34px of vertical space at `height: 0`; overflow hides the text while
+   there is not yet room for it.
+
+   Closing reuses the same transition in reverse — see .banner.leaving below,
+   which Banner.tsx puts on while it waits for the close to finish. That covers
+   dismissal by the ×, which is the exit anyone watches. A banner the caller
+   clears for its own reasons (an error banner going away because the retry
+   worked) still vanishes at once: React has removed it before any class could
+   apply, and holding it would mean a presence wrapper at all ten call sites to
+   soften an exit nobody is looking at. */
 .banner {
   padding: 10px 14px;
   border-radius: var(--radius);
   margin-bottom: 14px;
   font-size: 14px;
+  height: auto;
+  overflow: hidden;
+  transition:
+    height var(--dur-base) var(--ease-out),
+    padding-top var(--dur-base) var(--ease-out),
+    padding-bottom var(--dur-base) var(--ease-out),
+    margin-top var(--dur-base) var(--ease-out),
+    margin-bottom var(--dur-base) var(--ease-out),
+    opacity var(--dur-base) var(--ease-out);
+}
+
+@starting-style {
+  .banner {
+    height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
+    opacity: 0;
+  }
+}
+
+/* The same endpoints as the starting style above, so closing is the opening
+   played backwards and needs no keyframes of its own. */
+.banner.leaving {
+  height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-bottom: 0;
+  opacity: 0;
+}
+
+/* The one parent that spaces its children with a flex `gap` rather than with
+   their own margins (.source-view, 16px) — the collection and folder views,
+   whose error and notice banners are the ones most often dismissed.
+
+   A gap belongs to the container, so nothing the banner collapses can reach it:
+   height, padding and margin-bottom all arrive at 0 with 16px still held either
+   side, and that row goes in a single frame on unmount — the jump the collapse
+   exists to remove. Pulling the box up by exactly one gap closes it. While the
+   banner is there its two neighbours are separated by `16 + margin-top + height
+   + margin-bottom + 16`; at the end of the collapse that reads `16 - 16 + 0 + 0
+   + 16`, which is the one 16px gap they will have once it is gone. The starting
+   style mirrors it, so the entrance pushes the page down by the same total the
+   exit later gives back.
+
+   Scoped to this parent deliberately. Every other banner sits in ordinary block
+   flow — .app-main, .papers-table-view and .timeline-wrap carry no layout of
+   their own — where its own margins are the whole of its spacing and the same
+   -16px would over-collapse and snap back. */
+.source-view > .banner.leaving {
+  margin-top: -16px;
+}
+
+@starting-style {
+  .source-view > .banner {
+    margin-top: -16px;
+  }
 }
 
 .banner.info {
@@ -331,6 +466,7 @@ body {
   opacity: 0.7;
   padding: 0 2px;
   flex-shrink: 0;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 
 .banner-close:hover {
@@ -391,6 +527,7 @@ body {
   font-weight: 600;
   color: var(--text);
   cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
 }
 
 .filter-trigger:hover:not(:disabled) {
@@ -415,6 +552,7 @@ body {
   box-shadow: 0 10px 30px rgba(16, 24, 40, 0.2);
   padding: 6px;
   z-index: 40;
+  animation: menu-in var(--dur-fast) var(--ease-out);
 }
 
 .filter-actions {
@@ -439,6 +577,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 /* data-highlighted is Radix's hover/arrow-key state; style it like :hover. */
@@ -736,11 +875,30 @@ body {
   color: var(--danger);
 }
 
+/* Faded in, unlike the table and timeline it replaces.
+
+   The asymmetry is deliberate. A skeleton is pixel-matched to the thing it
+   stands in for (see components/Skeleton.tsx), so the handoff from skeleton to
+   content is already invisible and fading it would make it worse, not better:
+   the skeleton unmounts in the same commit the content mounts, so a content
+   fade starting at zero paints one frame of an empty box before ramping up —
+   a dip where today there is a clean swap.
+
+   Nothing stands in for this one. It arrives where rows were, or on a filter
+   that matched nothing, with no placeholder to hand over from, so there is no
+   dip to introduce and the fade is all upside. */
 .empty {
   text-align: center;
   color: var(--muted);
   padding: 60px 20px;
   font-size: 15px;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+
+@starting-style {
+  .empty {
+    opacity: 0;
+  }
 }
 
 /* ---------- settings ---------- */
@@ -825,6 +983,9 @@ body {
   text-align: left;
   font: inherit;
   font-weight: 400;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .typeahead-list li:last-child .typeahead-item {
@@ -936,7 +1097,7 @@ input.switch {
   position: relative;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.15s ease;
+  transition: background-color var(--dur-base) var(--ease);
 }
 
 input.switch::before {
@@ -949,7 +1110,7 @@ input.switch::before {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 0.15s ease;
+  transition: transform var(--dur-base) var(--ease);
 }
 
 input.switch:checked {
@@ -1064,6 +1225,15 @@ input:focus {
   margin-bottom: 0;
 }
 
+/* And it has to give that 14px back on the way out, which .banner.leaving
+   cannot do on its own: `.danger-btn + .banner` and `.banner.leaving` are both
+   two classes, so the tie goes to source order and the rule above — later in
+   the file than the collapse — keeps its margin. Without this the report
+   collapses to a 14px empty gap that drops in one frame on unmount. */
+.danger-btn + .banner.leaving {
+  margin-top: 0;
+}
+
 .list {
   list-style: none;
   margin: 0;
@@ -1145,6 +1315,11 @@ input:focus {
   font-size: 13px;
   color: var(--text);
   cursor: pointer;
+  /* border-style dashed→solid is discrete and jumps either way; the colours
+     either side of it are what carry the change. */
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .suggest-chip:hover {
@@ -1157,6 +1332,7 @@ input:focus {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .suggest-chip:hover .suggest-count {
@@ -1358,6 +1534,10 @@ code {
   align-items: center;
   gap: 4px;
   border-radius: 6px;
+  /* opacity for the .hidden state below, which is a toggle rather than a hover. */
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    opacity var(--dur-base) var(--ease);
 }
 
 .cluster-row:hover {
@@ -1405,6 +1585,8 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 13px;
+  /* Lit by a hover on .modal-cluster, its parent, rather than on itself. */
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .cluster-size {
@@ -1526,6 +1708,9 @@ code {
   background: none;
   color: var(--muted);
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .path-focus-exit:hover,
@@ -1546,6 +1731,9 @@ code {
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .modal-paths:hover:not(:disabled),
@@ -1585,6 +1773,18 @@ code {
 
 /* ---------- modal / popup ---------- */
 
+/* Opening and closing are both animated, and both are pure CSS — Radix stamps
+   data-state="open"/"closed" on Overlay and Content, and its Presence keeps a
+   closing element mounted for as long as an animation is running on it. So
+   every dialog in the app (they all come through ModalFrame) fades in and out
+   without a line of JS.
+
+   Keyframes rather than transitions for exactly that reason: Presence detects
+   the close by watching for an animation, and a transition would not hold the
+   element. See the reduced-motion block beside the skeleton rules, which turns
+   these off with `animation: none` rather than a zero duration, so Radix sees
+   no animation at all and unmounts immediately instead of waiting on an event
+   that may never come. */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1594,6 +1794,11 @@ code {
   justify-content: center;
   padding: 20px;
   z-index: 50;
+  animation: overlay-in var(--dur-base) var(--ease-out);
+}
+
+.modal-backdrop[data-state="closed"] {
+  animation: overlay-out var(--dur-base) var(--ease-out);
 }
 
 .modal {
@@ -1604,6 +1809,75 @@ code {
   padding: 22px 24px;
   max-width: 520px;
   width: 100%;
+  animation: modal-in var(--dur-base) var(--ease-out);
+}
+
+.modal[data-state="closed"] {
+  animation: modal-out var(--dur-base) var(--ease-out);
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* 8px, and up rather than down: the dialog settles into place from the
+   direction the page is already sitting, so the movement reads as the sheet
+   arriving rather than as the page dropping away behind it. */
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes modal-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* The dropdown menus — journals, MeSH (which is .filter-menu with a modifier),
+   the workspace picker and the bookmark menu. Faster than the dialogs, at
+   --dur-fast: a menu is a direct answer to the click that opened it and any
+   perceptible delay reads as the app hesitating.
+
+   The scale is anchored to whichever corner Radix decided to open from, so the
+   menu grows out of its own trigger rather than out of its centre. Radix
+   publishes that as a custom property on the content element; the fallback
+   matters only if Radix ever stops setting it. */
+.filter-menu,
+.ws-menu,
+.bookmark-menu {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin, center);
+}
+
+.filter-menu[data-state="closed"],
+.ws-menu[data-state="closed"],
+.bookmark-menu[data-state="closed"] {
+  animation: menu-out var(--dur-fast) var(--ease-out);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes menu-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
 }
 
 .modal-close {
@@ -1662,6 +1936,7 @@ code {
   line-height: 1.35;
   margin-bottom: 10px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .modal-title:hover {
@@ -1958,6 +2233,7 @@ code {
   line-height: 1;
   padding: 7px 10px;
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .gear-btn:hover:not(:disabled) {
@@ -2040,6 +2316,7 @@ html {
   font-weight: 600;
   color: var(--muted);
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .mode-switch button:hover:not(:disabled) {
@@ -2076,6 +2353,7 @@ html {
   color: var(--text);
   cursor: pointer;
   max-width: 320px;
+  transition: border-color var(--dur-fast) var(--ease);
 }
 
 .ws-trigger:hover {
@@ -2134,6 +2412,7 @@ html {
   box-shadow: 0 10px 30px rgba(16, 24, 40, 0.2);
   padding: 6px;
   z-index: 40;
+  animation: menu-in var(--dur-fast) var(--ease-out);
 }
 
 .ws-option {
@@ -2151,6 +2430,7 @@ html {
   color: var(--text);
   cursor: pointer;
   text-align: left;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 .ws-option:hover,
@@ -2201,6 +2481,7 @@ html {
   font-weight: 600;
   color: var(--accent);
   cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 .ws-add:hover,
@@ -2223,6 +2504,9 @@ html {
   color: var(--muted);
   cursor: pointer;
   border-radius: 6px;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .bookmark-btn:hover,
@@ -2253,6 +2537,7 @@ html {
   box-shadow: 0 10px 30px rgba(16, 24, 40, 0.2);
   padding: 4px;
   z-index: 60;
+  animation: menu-in var(--dur-fast) var(--ease-out);
 }
 
 .bookmark-option,
@@ -2268,6 +2553,7 @@ html {
   cursor: pointer;
   user-select: none;
   outline: none;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 .bookmark-option:hover,
@@ -2334,6 +2620,9 @@ html {
      up and down behind it. Wide enough for five-figure counts; past that it
      grows, which only moves its own left edge (it is margin-left: auto). */
   min-width: 190px;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .save-all-btn:hover:not(:disabled),
@@ -2397,6 +2686,9 @@ html {
   cursor: pointer;
   white-space: nowrap;
   min-width: 168px;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
 }
 
 .remove-selected:hover:not(:disabled) {
@@ -2527,7 +2819,7 @@ html {
   height: 100%;
   background: var(--accent);
   border-radius: 999px;
-  transition: width 0.3s ease;
+  transition: width var(--dur-slow) var(--ease);
 }
 
 .progress-label {
@@ -2586,6 +2878,7 @@ html {
 .papers-table th.sortable {
   cursor: pointer;
   user-select: none;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .papers-table th.sortable:hover {
@@ -2619,6 +2912,9 @@ html {
    tbody of many rows, doesn't light up entirely on hover. */
 .papers-table tbody.paper-rows td {
   border-bottom: none;
+  /* The row hover paints here rather than on the <tr> (see .paper-rows:hover
+     below), so this is where it has to ease. */
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 .papers-table tbody.paper-rows tr:last-child td {
@@ -2631,6 +2927,30 @@ html {
 
 .papers-table tbody.paper-rows:hover td {
   background: var(--accent-soft);
+}
+
+/* Ticked for removal, request in flight.
+
+   Dimmed rather than faded to nothing, and that is the whole design. The rows
+   do not actually leave until the refetch lands — ~584ms after the click, see
+   PapersTable — so a fade to zero would empty them in 240ms and then hold a
+   blank stripe of table open for the third of a second in between. Dimming
+   says the true thing instead: these are on their way out and not gone yet.
+   It also means the moment they do unmount is a step from 0.4 to nothing
+   rather than from full strength, which is a far smaller change to notice.
+
+   Deliberately not a height collapse. A <tr> does not animate its height in
+   any way worth relying on, and faking it through cell padding and line-height
+   is a lot of fragile CSS to buy an effect this already gets most of.
+
+   Reverted if the request fails — which is why the rows carry a class the
+   component can take back, rather than a one-shot animation. */
+.papers-table tbody.paper-rows {
+  transition: opacity var(--dur-slow) var(--ease);
+}
+
+.papers-table tbody.paper-rows.leaving {
+  opacity: 0.4;
 }
 
 /* The excerpt row sits under its title row, so it repeats neither the cell's
@@ -2658,6 +2978,7 @@ html {
   color: var(--text);
   cursor: pointer;
   line-height: 1.35;
+  transition: color var(--dur-fast) var(--ease);
 }
 
 .paper-open:hover {
@@ -2700,6 +3021,9 @@ html {
   padding: 4px 6px;
   border-radius: 6px;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .share-btn:hover {
@@ -2921,6 +3245,35 @@ html {
   .btn-spinner {
     display: none;
   }
+  /* `animation: none`, not a zero duration, and the difference is load-bearing.
+     Radix holds a closing dialog or menu mounted for as long as an animation is
+     running on it, and finds out that it finished by listening for
+     `animationend`. Shortening these to 0ms would leave that arrangement in
+     place and bet the element's removal on an event firing for an animation
+     with no duration. Removing the animation outright means Radix sees none,
+     takes the synchronous path, and unmounts immediately — which is exactly
+     what reduced motion should mean here.
+
+     The opening halves go with them: an entrance that plays while the exit does
+     not is worse than neither.
+
+     The exits are named twice over, once bare and once with the attribute,
+     because the rules that set them are `[data-state="closed"]` — two
+     components against a bare class's one, so the class alone loses here
+     however late in the file it comes, and the closing halves would keep the
+     very animation this block exists to take off them. */
+  .modal-backdrop,
+  .modal,
+  .filter-menu,
+  .ws-menu,
+  .bookmark-menu,
+  .modal-backdrop[data-state="closed"],
+  .modal[data-state="closed"],
+  .filter-menu[data-state="closed"],
+  .ws-menu[data-state="closed"],
+  .bookmark-menu[data-state="closed"] {
+    animation: none;
+  }
 }
 
 /* ---------- dark mode (follows the OS setting) ---------- */
@@ -2944,6 +3297,9 @@ html {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 .have-btn:hover:not(:disabled),
@@ -3096,6 +3452,9 @@ html {
   font-weight: 600;
   color: var(--text);
   cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
 /* The same hover .have-btn uses, so the two read as one control at two sizes. */
