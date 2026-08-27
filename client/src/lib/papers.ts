@@ -366,6 +366,13 @@ export function usePapers(
     maxCitations,
     yearBounds,
     loading: showLoading,
+    // The same question the skeleton flag above deliberately stops asking:
+    // whether the list on screen is this reloadToken's answer yet. `loading`
+    // says "there is nothing to show", which is false for the whole of a reload
+    // that has a previous list to hold over — so anything that has to decide
+    // something once, at the moment a reload lands, has to read this instead.
+    // settleRemovalNotice is the caller that does.
+    reloading: loading,
     error,
     allDeselected,
     // Whether an empty `visible` means "filters matched nothing" vs "no papers".

@@ -67,6 +67,7 @@ export function PapersTable({
     maxCitations,
     yearBounds,
     loading,
+    reloading,
     error,
     allDeselected,
     filtered,
@@ -196,7 +197,7 @@ export function PapersTable({
     if (!pendingNotice) return;
     const outcome = settleRemovalNotice(pendingNotice, {
       token: reloadToken,
-      loading,
+      loading: reloading,
       error,
       visible,
     });
@@ -204,7 +205,7 @@ export function PapersTable({
     if (outcome === "publish") setNotice(pendingNotice.text);
     setPendingNotice(null);
     setLeaving(new Set());
-  }, [pendingNotice, visible, reloadToken, loading, error]);
+  }, [pendingNotice, visible, reloadToken, reloading, error]);
 
   // The whole filtered set, not the rows rendered so far: the table lazy-renders
   // (see useIncrementalList), so selecting "all" from `shown` would silently

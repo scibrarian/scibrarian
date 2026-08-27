@@ -105,8 +105,11 @@ export function useCachedFetch<T>(
     return hit && hit.token === token ? hit.data : undefined;
   };
   // Fetch results land in `entry` (a bare cache.set wouldn't re-render); it
-  // also keeps the current key's data alive if the LRU evicts it mid-view.
-  const [entry, setEntry] = useState<{ key: string; data: T } | null>(null);
+  // also keeps the current key's data alive if the LRU evicts it mid-view. The
+  // token rides along for `loading` below rather than for `data`: a bumped
+  // token deliberately keeps the previous answer on screen, so `data` still
+  // matches on the key alone.
+  const [entry, setEntry] = useState<{ key: string; token: number; data: T } | null>(null);
   // Errors are keyed by (key, token) so a stale one can't leak across a
   // source switch, and bumping the token to retry clears it implicitly.
   const [err, setErr] = useState<{ id: string; message: string } | null>(null);
@@ -114,13 +117,22 @@ export function useCachedFetch<T>(
   const hit = lookup();
   const data = entry && entry.key === key ? entry.data : hit !== undefined ? hit : null;
   const error = err && err.id === `${key}:${token}` ? err.message : null;
-  const loading = hit === undefined && error == null;
+  // Which token produced what is on screen — not the same question as whether
+  // the cache holds anything for this one. cacheTouch writes to a plain Map
+  // synchronously and setEntry only commits a render later, so in between `hit`
+  // is already the new answer while `data` is still the old one. Reading
+  // `loading` off `hit` alone reported "landed" over the previous token's
+  // contents, and a caller that decides something once on that edge decided it
+  // against stale rows (see settleRemovalNotice, which drops a removal's
+  // confirmation when the reload comes back with the removed rows still in it).
+  const shownToken = entry && entry.key === key ? entry.token : hit !== undefined ? token : null;
+  const loading = shownToken !== token && error == null;
 
   useEffect(() => {
     const hit = lookup();
     if (hit !== undefined) {
       cacheTouch(cache, key, { token, data: hit }); // mark most-recently-used
-      setEntry({ key, data: hit });
+      setEntry({ key, token, data: hit });
       return;
     }
 
@@ -129,7 +141,7 @@ export function useCachedFetch<T>(
       .then((res) => {
         if (cancelled) return;
         cacheTouch(cache, key, { token, data: res });
-        setEntry({ key, data: res });
+        setEntry({ key, token, data: res });
       })
       .catch((e) => !cancelled && setErr({ id: `${key}:${token}`, message: errorMessage(e) }));
     return () => {

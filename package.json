@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "jsdom": "^30.0.1",
     "vitest": "^3.2.7"
   }
 }
