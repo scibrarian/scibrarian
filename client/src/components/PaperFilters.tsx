@@ -70,6 +70,7 @@ export function PaperFilters({
   maxCitations,
   yearBounds,
   loading = false,
+  knownEmpty = false,
   children,
   action,
 }: {
@@ -81,6 +82,15 @@ export function PaperFilters({
   maxCitations?: number;
   yearBounds?: { min: number; max: number } | null;
   loading?: boolean;
+  /**
+   * The source was counted at zero before its papers were asked for, so no
+   * control is coming and neither slot below reserves space for one. Distinct
+   * from `loading` because the subject slot waits on useMeshFacets, a fetch
+   * this component starts itself — a caller cannot reach it by lying about
+   * `loading`. Absent on the graph, which has a loading state of its own (see
+   * PaperViews).
+   */
+  knownEmpty?: boolean;
   children?: ReactNode;
   action?: ReactNode;
 }) {
@@ -130,23 +140,32 @@ export function PaperFilters({
 
   // The journal slot holds its space during the first load (skeleton) so the
   // row doesn't grow a line once journals arrive; an empty source shows none.
-  const showJournals = journals != null && (journals.length > 0 || loading);
+  //
+  // Not while knownEmpty, though. A source counted at zero has no journals to
+  // arrive, so the slot would shimmer and then be removed — reserving a line
+  // against nothing, which is the one thing the stand-in is not for.
+  const showJournals = journals != null && (journals.length > 0 || (loading && !knownEmpty));
   const showCitations = maxCitations != null && maxCitations > 0;
   // A single-year source has no range to pick, so the control would be inert.
   const showYears = yearBounds != null && yearBounds.min < yearBounds.max;
-  // The action counts: a source with nothing to filter by still needs the row
-  // if there's something to do with the result. Tested for truthiness, not for
-  // null: a caller writing `action={cond && <Button/>}` passes `false` when the
-  // button is suppressed, and a row rendered for that is an empty one — its
-  // gap, with nothing in it.
-  const hasRow =
+  // Whether anything *narrows*, which is now a question in its own right: the
+  // controls that do go in their own wrapping box, and the action sits outside
+  // it (see .filter-row). Rendering that box empty would cost the row a gap
+  // with nothing in it, the same way `hasRow` guards the row itself.
+  const hasControls =
     showJournals ||
     facets.available ||
     facets.loading ||
     showCitations ||
     showYears ||
-    Boolean(children) ||
-    Boolean(action);
+    Boolean(children);
+
+  // The action counts: a source with nothing to filter by still needs the row
+  // if there's something to do with the result. Tested for truthiness, not for
+  // null: a caller writing `action={cond && <Button/>}` passes `false` when the
+  // button is suppressed, and a row rendered for that is an empty one — its
+  // gap, with nothing in it.
+  const hasRow = hasControls || Boolean(action);
 
   return (
     <div className="toolbar">
@@ -166,76 +185,85 @@ export function PaperFilters({
 
       {hasRow && (
         <div className="filter-row">
-          {showJournals &&
-            (journals.length > 0 ? (
-              <JournalFilter
-                journals={journals}
-                deselected={filters.deselected}
-                onChange={filters.setDeselected}
-              />
-            ) : (
-              <FilterSkeleton label={ALL_JOURNALS_LABEL} />
-            ))}
+          {/* Everything that narrows, in its own wrapping box. The action is
+              deliberately outside it: .filter-row is now two slots rather than
+              one long wrap, so how many lines these take can no longer move the
+              button at the end of the row. */}
+          {hasControls && (
+            <div className="filter-controls">
+              {showJournals &&
+                (journals.length > 0 ? (
+                  <JournalFilter
+                    journals={journals}
+                    deselected={filters.deselected}
+                    onChange={filters.setDeselected}
+                  />
+                ) : (
+                  <FilterSkeleton label={ALL_JOURNALS_LABEL} />
+                ))}
 
-          {/* Same handoff as the journal slot beside it: hold the space during
-              the first load so the row doesn't grow a control once the facets
-              arrive. A source with nothing filed still drops the slot — the
-              skeleton says "a control may land here", not "one will". */}
-          {facets.available ? (
-            <MeshFilter
-              facets={facets}
-              selected={filters.subjects}
-              onChange={filters.setSubjects}
-              majorOnly={filters.majorOnly}
-              onMajorOnlyChange={filters.setMajorOnly}
-            />
-          ) : (
-            facets.loading && <FilterSkeleton label={ALL_SUBJECTS_LABEL} />
-          )}
+              {/* Same handoff as the journal slot beside it: hold the space during
+                  the first load so the row doesn't grow a control once the facets
+                  arrive. A source with nothing filed still drops the slot — the
+                  skeleton says "a control may land here", not "one will", and
+                  under knownEmpty the answer to that is already no. */}
+              {facets.available ? (
+                <MeshFilter
+                  facets={facets}
+                  selected={filters.subjects}
+                  onChange={filters.setSubjects}
+                  majorOnly={filters.majorOnly}
+                  onMajorOnlyChange={filters.setMajorOnly}
+                />
+              ) : (
+                facets.loading && !knownEmpty && <FilterSkeleton label={ALL_SUBJECTS_LABEL} />
+              )}
 
-          {showCitations && (
-            <div className="citation-filter">
-              <span>Min citations:</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                className="min-input"
-                value={minText}
-                onChange={(e) => handleMinText(e.target.value)}
-                onBlur={() => minText === "" && setMinText("0")}
-                aria-label="Minimum citations"
-              />
-              <input
-                type="range"
-                min={0}
-                max={sliderMax}
-                value={minCitations}
-                onChange={(e) => setBothMin(clampMin(e.target.value))}
-                aria-label="Minimum citations"
-              />
+              {showCitations && (
+                <div className="citation-filter">
+                  <span>Min citations:</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="min-input"
+                    value={minText}
+                    onChange={(e) => handleMinText(e.target.value)}
+                    onBlur={() => minText === "" && setMinText("0")}
+                    aria-label="Minimum citations"
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={sliderMax}
+                    value={minCitations}
+                    onChange={(e) => setBothMin(clampMin(e.target.value))}
+                    aria-label="Minimum citations"
+                  />
+                </div>
+              )}
+
+              {showYears && (
+                <div className="year-filter">
+                  <span>Years:</span>
+                  <YearBox
+                    value={filters.yearFrom}
+                    placeholder={yearBounds.min}
+                    label="From year"
+                    onCommit={(raw) => commitYear(raw, filters.setYearFrom)}
+                  />
+                  <span className="year-dash">–</span>
+                  <YearBox
+                    value={filters.yearTo}
+                    placeholder={yearBounds.max}
+                    label="To year"
+                    onCommit={(raw) => commitYear(raw, filters.setYearTo)}
+                  />
+                </div>
+              )}
+
+              {children}
             </div>
           )}
-
-          {showYears && (
-            <div className="year-filter">
-              <span>Years:</span>
-              <YearBox
-                value={filters.yearFrom}
-                placeholder={yearBounds.min}
-                label="From year"
-                onCommit={(raw) => commitYear(raw, filters.setYearFrom)}
-              />
-              <span className="year-dash">–</span>
-              <YearBox
-                value={filters.yearTo}
-                placeholder={yearBounds.max}
-                label="To year"
-                onCommit={(raw) => commitYear(raw, filters.setYearTo)}
-              />
-            </div>
-          )}
-
-          {children}
 
           {action && <div className="filter-action">{action}</div>}
         </div>

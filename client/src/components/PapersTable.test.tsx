@@ -68,13 +68,14 @@ function deferred<T>() {
 
 // A shell that owns the reload token, the way App does: the table asks for a
 // reload through onCollectionChanged and the token moves by exactly one.
-function Host({ source }: { source: PaperSource }) {
+function Host({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolean }) {
   const [token, setToken] = useState(0);
   const filters = usePaperFilters(source);
   return (
     <PapersTable
       source={source}
       reloadToken={token}
+      knownEmpty={knownEmpty}
       isAdmin
       tokenRequired={false}
       libraryOpen
@@ -172,5 +173,93 @@ describe("removing papers from a collection", () => {
     // about to — and the ticks stay put so the same removal can be retried.
     await waitFor(() => expect(dimmed(container)).toBe(0));
     expect(screen.getByText(/Remove 2 selected/)).toBeTruthy();
+  });
+});
+
+describe("a source the picker has already counted at zero", () => {
+  // A load nothing lands, so the whole of what the skeleton is for — the gap
+  // between mounting and the answer — is a state the test can stop in.
+  const inFlight = () => {
+    const load = deferred<typeof THREE>();
+    api.getPapers.mockReturnValue(load.promise);
+    return load;
+  };
+  const skeleton = () => screen.queryByLabelText("Loading papers");
+  const filterSlots = (c: HTMLElement) =>
+    c.querySelectorAll(".filter-picker[aria-hidden='true']").length;
+
+  // mockReturnValue outlives vi.clearAllMocks, which is mockClear: it forgets
+  // the calls and keeps the implementation. Left alone, the promise above stays
+  // getPapers' answer for every test declared after this block, and one of those
+  // hangs on its first findBy instead of failing on an assertion. The block that
+  // installs a load nothing lands is the block that has to take it back.
+  afterEach(() => {
+    api.getPapers.mockReset();
+  });
+
+  it("opens on the empty state instead of the skeleton", async () => {
+    const load = inFlight();
+    render(<Host source={source} knownEmpty />);
+
+    // Mid-fetch, and nothing is standing in for rows that aren't coming.
+    expect(skeleton()).toBeNull();
+    expect(screen.getByText("No papers yet.")).toBeTruthy();
+
+    await load.land({ ok: true, value: { papers: [], journals: [] } });
+
+    // The answer agrees, so the frame already on screen is the one it keeps.
+    expect(skeleton()).toBeNull();
+    expect(screen.getByText("No papers yet.")).toBeTruthy();
+  });
+
+  // The other half of the same frame. The body is the visible one, but the
+  // toolbar reserves slots too, and on a source counted at zero neither is
+  // waiting for anything: no journals arrive with the papers, and the facet
+  // fetch answers with nothing filed. A stand-in there shimmers and is then
+  // removed, having held a line for a control that was never coming.
+  it("reserves no filter slots either", async () => {
+    const load = inFlight();
+    const { container } = render(<Host source={source} knownEmpty />);
+
+    expect(filterSlots(container)).toBe(0);
+
+    await load.land({ ok: true, value: { papers: [], journals: [] } });
+    expect(filterSlots(container)).toBe(0);
+  });
+
+  it("still reserves them when the count isn't known", async () => {
+    // The control case, so the assertion above is about knownEmpty rather than
+    // about a toolbar that draws no stand-ins here under any conditions.
+    const load = inFlight();
+    const { container } = render(<Host source={source} />);
+
+    expect(filterSlots(container)).toBeGreaterThan(0);
+    await load.land({ ok: true, value: { papers: [], journals: [] } });
+  });
+
+  it("is a hint, not an assertion: papers still win", async () => {
+    // The stale-count case. Claiming emptiness must not survive an answer that
+    // disagrees — this is the whole reason it isn't seeded into the cache.
+    const load = inFlight();
+    render(<Host source={source} knownEmpty />);
+    expect(screen.getByText("No papers yet.")).toBeTruthy();
+
+    await load.land({ ok: true, value: THREE });
+
+    expect(await screen.findByText("Paper 1")).toBeTruthy();
+    expect(screen.queryByText("No papers yet.")).toBeNull();
+  });
+
+  it("still skeletons when the count isn't known", async () => {
+    const load = inFlight();
+    render(<Host source={source} />);
+
+    expect(skeleton()).toBeTruthy();
+    expect(screen.queryByText("No papers yet.")).toBeNull();
+
+    await load.land({ ok: true, value: { papers: [], journals: [] } });
+
+    expect(skeleton()).toBeNull();
+    expect(screen.getByText("No papers yet.")).toBeTruthy();
   });
 });

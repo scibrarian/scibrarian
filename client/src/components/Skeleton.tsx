@@ -75,8 +75,13 @@ export function ToolbarSkeleton() {
         aria-hidden="true"
         tabIndex={-1}
       />
+      {/* Both boxes, not just the picker: .filter-row is two slots now (the
+          controls that narrow, and the action on their result), and the
+          stand-in has to be the same shape as the row it holds the space for. */}
       <div className="filter-row">
-        <FilterSkeleton label={ALL_JOURNALS_LABEL} />
+        <div className="filter-controls">
+          <FilterSkeleton label={ALL_JOURNALS_LABEL} />
+        </div>
       </div>
     </div>
   );
@@ -119,9 +124,9 @@ export function TimelineSkeleton() {
 // The real control has no width — .filter-trigger is whatever its label, its
 // padding, its border and its 16px caret add up to, in the button's own font
 // rather than the body's. A bar guessed at that (this was 160x32) lands beside
-// it, not on it, and .filter-row is a flex row, so the miss slides every control
-// after it the moment the real one arrives. Same element, same classes, same
-// label text is the only thing that measures the same.
+// it, not on it, and .filter-controls is a flex row, so the miss slides every
+// control after it the moment the real one arrives. Same element, same classes,
+// same label text is the only thing that measures the same.
 //
 // `label` is the trigger's unfiltered text, which is what a first load always
 // resolves to — passed from the filter that owns it so a rename can't leave the

@@ -31,6 +31,7 @@ export function PaperViews({
   viewMode,
   reloadToken,
   emptyState,
+  knownEmpty,
   access,
   bookmarking,
   onCollectionChanged,
@@ -39,6 +40,17 @@ export function PaperViews({
   viewMode: ViewMode;
   reloadToken: number;
   emptyState?: ReactNode;
+  /**
+   * This source was counted at zero before its papers were asked for, so the
+   * list views open on `emptyState` rather than a skeleton (see App, which
+   * derives it from the picker badges).
+   *
+   * A statement about the first paint only. The fetch still runs and still
+   * decides what is shown; being wrong costs an empty frame, not a wrong view.
+   * Travels with `emptyState` because it is about the same frame — the graph
+   * takes neither, having a loading state of its own.
+   */
+  knownEmpty?: boolean;
   access: PaperAccess;
   // null in a workspace that doesn't bookmark (the Library) — see Bookmarking.
   bookmarking: Bookmarking | null;
@@ -61,8 +73,14 @@ export function PaperViews({
       </ErrorBoundary>
     );
   }
-  if (viewMode === "timeline") return <Timeline {...common} emptyState={emptyState} />;
+  if (viewMode === "timeline")
+    return <Timeline {...common} emptyState={emptyState} knownEmpty={knownEmpty} />;
   return (
-    <PapersTable {...common} emptyState={emptyState} onCollectionChanged={onCollectionChanged} />
+    <PapersTable
+      {...common}
+      emptyState={emptyState}
+      knownEmpty={knownEmpty}
+      onCollectionChanged={onCollectionChanged}
+    />
   );
 }

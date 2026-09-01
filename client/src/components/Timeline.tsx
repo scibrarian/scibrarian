@@ -24,6 +24,7 @@ export function Timeline({
   source,
   reloadToken,
   emptyState,
+  knownEmpty,
   isAdmin,
   tokenRequired,
   libraryOpen,
@@ -34,6 +35,12 @@ export function Timeline({
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
+  /**
+   * The first paint goes straight to the empty state instead of a skeleton
+   * standing in for rows that aren't coming. See PaperViews, which owns the
+   * prop and the reasoning; App's knownEmpty is where it comes from.
+   */
+  knownEmpty?: boolean;
   filters: PaperFilterState;
   bookmarking: Bookmarking | null;
 }) {
@@ -83,6 +90,7 @@ export function Timeline({
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
+        knownEmpty={knownEmpty}
         action={
           bookmarking && (
             // The full filtered list; the timeline renders it a chunk at a time.
@@ -111,7 +119,7 @@ export function Timeline({
       />
       <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
-      {loading ? (
+      {loading && !knownEmpty ? (
         <TimelineSkeleton />
       ) : visible.length === 0 ? (
         <div className="empty">

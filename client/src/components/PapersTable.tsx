@@ -32,6 +32,7 @@ export function PapersTable({
   source,
   reloadToken,
   emptyState,
+  knownEmpty,
   isAdmin,
   tokenRequired,
   libraryOpen,
@@ -43,6 +44,12 @@ export function PapersTable({
   source: PaperSource;
   reloadToken: number;
   emptyState?: ReactNode;
+  /**
+   * The first paint goes straight to the empty state instead of a skeleton
+   * standing in for rows that aren't coming. See PaperViews, which owns the
+   * prop and the reasoning; App's knownEmpty is where it comes from.
+   */
+  knownEmpty?: boolean;
   filters: PaperFilterState;
   /**
    * Papers were taken out of the collection on screen, so the shell has to
@@ -328,6 +335,7 @@ export function PapersTable({
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
+        knownEmpty={knownEmpty}
         action={
           showSelectCol ? (
             // Sits where the bulk save does in the workspaces that have one.
@@ -378,7 +386,7 @@ export function PapersTable({
       />
       <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
-      {loading && visible.length === 0 ? (
+      {loading && !knownEmpty && visible.length === 0 ? (
         <PapersTableSkeleton
           select={showSelectCol}
           share={showShareCol}
