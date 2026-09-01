@@ -252,11 +252,27 @@ body {
 
 /* A transient, self-dismissing confirmation (e.g. "Copied link to clipboard").
    Inverting bg/text against the theme tokens gives the usual dark-on-light /
-   light-on-dark toast look for free. The single animation fades in, holds, then
-   fades out inside its mount window (see TOAST_MS in ShareLinkButton). */
+   light-on-dark toast look for free.
+
+   Pinned to the top because that is where the reader already is: the controls
+   that raise one live in the bar up there, so a message answering a click lands
+   beside the thing clicked rather than a screen away from it.
+
+   The cost, measured rather than assumed: a centred pill lands across
+   .view-toggle and hides Papers and Timeline for as long as it shows. Nothing
+   is blocked by that — this is pointer-events: none, and .toast-dismiss below
+   is the only part that takes a click — but the switcher is covered, so the
+   placement is a trade and not a free win.
+
+   Five seconds rather than the two it used to run. What reaches it can carry a
+   number the reader has no other way to learn ("Removed 340 papers"), and a
+   toast cannot be re-read — so the whole message has to be legible in one pass,
+   including for someone who looked away as the request landed. The single
+   animation fades in, holds and fades out; lib/toast.ts removes the element on
+   animationend, so this duration is the only place it is written down. */
 .toast {
   position: fixed;
-  bottom: 24px;
+  top: 24px;
   left: 50%;
   display: inline-flex;
   align-items: center;
@@ -270,25 +286,28 @@ body {
   box-shadow: 0 10px 30px rgba(16, 24, 40, 0.25);
   z-index: 200;
   pointer-events: none;
-  animation: toast-inout 2.2s ease forwards;
+  animation: toast-inout 5s ease forwards;
 }
 
+/* Enters downward and leaves the same way it came, now that it hangs from the
+   top edge. The percentages are of the five seconds above: a quarter-second in,
+   four and a quarter fully opaque, half a second out. */
 @keyframes toast-inout {
   0% {
     opacity: 0;
-    transform: translate(-50%, 8px);
+    transform: translate(-50%, -8px);
   }
-  8% {
+  5% {
     opacity: 1;
     transform: translate(-50%, 0);
   }
-  85% {
+  90% {
     opacity: 1;
     transform: translate(-50%, 0);
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, 4px);
+    transform: translate(-50%, -4px);
   }
 }
 
@@ -307,6 +326,29 @@ body {
     animation-name: toast-hold;
     transform: translateX(-50%);
   }
+}
+
+/* The one part of the toast that takes a click. Borrows .banner-close's box
+   whole, because it is the same control on the app's other transient message
+   and they appear in the same corner of the same screen. */
+.toast-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: inherit;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 0 2px;
+  flex-shrink: 0;
+  pointer-events: auto;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
 }
 
 /* Wraps so a narrow viewport (or a future fourth view) pushes controls onto a
@@ -517,12 +559,38 @@ body {
 
 /* journal multiselect filter */
 
-/* Holds every non-search control on one line (journals, citation threshold,
-   and any view-specific extras), wrapping rather than overflowing. */
+/* Two slots, not one wrapping line: the controls that narrow, and the action on
+   their result. They used to share a single wrap, which meant the action's
+   position was a function of how much the filters happened to add up to — and
+   they add up to more than fits. At 920px of .app content a loaded collection
+   asks for roughly 1,075px (two ~130px triggers, ~370px of citation control and
+   ~200px of year range, plus 18px gaps), so the 168px action wrapped onto a
+   second line. That is what made it move on the first load: `margin-left: auto`
+   pins it to the right edge, so on one line it cannot be pushed sideways at all,
+   and the movement anyone saw was it dropping a line as the citation and year
+   controls arrived with the papers (see PaperFilters — both are derived from the
+   loaded list and are absent until it lands).
+
+   Splitting it means the wrap happens inside .filter-controls and stops there.
+   align-items is flex-start rather than center for the same reason, and it is
+   load-bearing: centred, the action would slide down half a row's height the
+   moment the filters took two lines instead of one. Aligned to the top it sits
+   on the first line of controls whatever they do below it. */
 .filter-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+/* The wrapping half — journals, subjects, the citation threshold, the year
+   range and any view-specific extras. `min-width: 0` so a long row wraps rather
+   than pushing past the action beside it. */
+.filter-controls {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
   gap: 18px;
 }
 
@@ -2304,9 +2372,15 @@ html {
   box-shadow: 0 16px 0 var(--bg);
 }
 
+/* Wraps for the reason .workspace-bar above it does: the picker now holds a
+   240px floor and the mode switch is three labelled buttons, so below roughly
+   640px of content the two no longer share a line. Dropping the picker onto its
+   own line is what that used to be paid for by the trigger's ellipsis, which
+   the floor takes away. */
 .workspace-nav {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -2375,6 +2449,28 @@ html {
   color: var(--text);
   cursor: pointer;
   max-width: 320px;
+  /* One box across the selections this reaches, for the same reason
+     .save-all-btn and .remove-selected hold theirs — except that here what the
+     stable width buys is not a stable neighbour but a stable *anchor*.
+
+     Radix positions the menu against this trigger when it opens and does not
+     re-measure while it closes, and the close outlives the selection by one
+     --dur-fast exit (see .ws-menu[data-state="closed"]). So a trigger that
+     resizes on select spends that exit disagreeing with a menu still painted
+     beside it, which is what read as jumpiness. The resize was real and had two
+     causes: the name changing width, and the count badge coming or going —
+     "All collections" deliberately carries none, so picking a collection from
+     it both changed the text and grew the box.
+
+     240px covers the labels and a badge in every workspace; past it the trigger
+     still grows to the 320px cap, which moves only what is after it (the share
+     button) and never the menu, which is align="start" on an edge that stays
+     put. It also holds through the skeleton handoff, since .ws-trigger-loading
+     is this same box.
+
+     The floor is why .workspace-nav wraps: it is one of the two things that can
+     no longer give width back on a narrow viewport. */
+  min-width: 240px;
   transition: border-color var(--dur-fast) var(--ease);
 }
 
@@ -2407,6 +2503,15 @@ html {
   display: inline-flex;
   align-items: center;
   color: var(--muted);
+}
+
+/* Pinned to the trigger's right edge, which only matters now that the trigger
+   has a width of its own: with the content shorter than the floor the caret
+   would otherwise sit wherever the name ended, mid-box, with dead space after
+   it. Scoped to .ws-trigger because FilterSkeleton reuses .ws-caret inside
+   .filter-trigger, which is still content-sized and has no free space to take. */
+.ws-trigger .ws-caret {
+  margin-left: auto;
 }
 
 /* Paper-count badge in the picker trigger and its options — the pill contrast
@@ -2616,9 +2721,16 @@ html {
 }
 
 /* The bulk save sits at the far end of the filter row, past the controls that
-   narrow — it acts on their result rather than being one of them. */
+   narrow — it acts on their result rather than being one of them.
+
+   `flex: none` so it keeps its own width (both buttons that land here set a
+   min-width) instead of being squeezed by the controls beside it. The auto
+   margin still earns its place: .filter-controls is only rendered when
+   something narrows, and without it a row holding nothing but the action would
+   draw it on the left. */
 .filter-action {
   margin-left: auto;
+  flex: none;
 }
 
 .save-all-btn {
@@ -2637,10 +2749,12 @@ html {
   white-space: nowrap;
   /* One fixed box for every state this reaches — "Save 4 papers", "Save 12,480
      papers", "Saving…", and the empty stand-in that holds the slot when nothing
-     matches. .filter-row wraps, so a button that changed width as the filters
-     narrowed could pull itself onto a second line and walk the whole paper list
-     up and down behind it. Wide enough for five-figure counts; past that it
-     grows, which only moves its own left edge (it is margin-left: auto). */
+     matches. The button can no longer change lines — .filter-action sits
+     outside the wrap with flex: none — so what a fixed box holds still is its
+     left edge, which margin-left: auto walks leftward as the count grows, and
+     the width left over for .filter-controls beside it, which re-wraps when
+     that edge moves. Wide enough for five-figure counts; past that it grows,
+     which only moves that same left edge. */
   min-width: 190px;
   transition:
     border-color var(--dur-fast) var(--ease),
@@ -2691,8 +2805,9 @@ html {
 
    Its own min-width, narrower than the save button's: the counts here are what
    fits on a screen and got ticked, not a whole filtered set, so five figures is
-   not a case. Fixed all the same, because the label carries a number and
-   .filter-row wraps. */
+   not a case. Fixed all the same, and for .save-all-btn's reason rather than
+   its own: the label carries a number, and a number that resizes the button
+   walks its left edge and re-wraps the controls beside it. */
 .remove-selected {
   display: inline-flex;
   align-items: center;

@@ -562,7 +562,7 @@ export function CitationGraph({
                   }.`
                 : subjects.length > 0
                   ? `No papers here are filed under ${
-                      subjects.length === 1 ? "that subject" : "any of those subjects"
+                      subjects.length === 1 ? "that subject" : "all of those subjects"
                     }${majorOnly ? " as a main subject" : ""}.`
                   : "No papers yet."}
             </div>

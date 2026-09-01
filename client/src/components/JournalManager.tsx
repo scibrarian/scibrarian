@@ -173,9 +173,42 @@ export function JournalManager({
   }
   for (const k of stagedAdds.keys()) excluded.add(k);
 
+  // Staged removals sit at the top of the left pane whether or not a search is
+  // running, so pressing Remove moves the rows here instead of leaving them
+  // nowhere: the pane is otherwise search-only, and a removal staged with an
+  // empty search box would simply vanish. They are catalog rows here, so they
+  // key by nlm_id — a legacy journal stored without one cannot be drawn here at
+  // all, so it leaves the right pane for nowhere and its removal can't be taken
+  // back without closing the dialog. Applying then drops that row and nothing
+  // else: articles join journals on nlm_id, so a journal without one holds no
+  // papers to delete. Rows like this predate NLM resolution — POST /journals
+  // has no path that stores a null — so the wart is worth naming, not fixing.
+  const lq = leftFilter.trim().toLowerCase();
+  const pendingRemovals: JournalSearchResult[] = (current ?? [])
+    .filter(
+      (j) =>
+        j.nlm_id != null &&
+        stagedRemovals.has(j.id) &&
+        (!searching || j.name.toLowerCase().includes(lq))
+    )
+    .map((j) => ({
+      nlm_id: j.nlm_id as string,
+      title: j.name,
+      abbr: j.name,
+      issn: "",
+      metric: j.metric,
+    }));
+  const pending = new Set(pendingRemovals.map((r) => r.nlm_id));
+
   // Search results keep the server's relevance-aware order (metric-desc with
-  // catalog name-relevance breaking ties).
-  const leftRows = (searching ? searchResults : []).filter((r) => !excluded.has(r.nlm_id));
+  // catalog name-relevance breaking ties), under the staged removals — which a
+  // search can return too, hence the dedupe.
+  const leftRows = [
+    ...pendingRemovals,
+    ...(searching ? searchResults : []).filter(
+      (r) => !excluded.has(r.nlm_id) && !pending.has(r.nlm_id)
+    ),
+  ];
 
   const rightAll: RightRow[] = [
     ...(current ?? [])
@@ -334,6 +367,10 @@ export function JournalManager({
         const created = await api.createJournal(r.abbr || r.title, r.nlm_id);
         if (created.medline_indexed === false) unindexed.push(created.name);
         committedAnything = true;
+        // Both halves of the move, in one batch: unstaging alone would drop the
+        // row out of the right pane (and back into the left, under a search)
+        // when the add had in fact just succeeded.
+        setCurrent((prev) => [...(prev ?? []), created]);
         setStagedAdds((prev) => {
           const next = new Map(prev);
           next.delete(r.nlm_id);
@@ -345,6 +382,10 @@ export function JournalManager({
         removedFromInterests += res.removedFromInterests;
         removalsCommitted = true;
         committedAnything = true;
+        // Same batch, same reason, and this was the visible bug: unstaging on
+        // its own un-hid the journal in the right pane, so each delete landing
+        // put the row back under "Your journals" as if it had just been added.
+        setCurrent((prev) => (prev ?? []).filter((j) => j.id !== id));
         setStagedRemovals((prev) => {
           const next = new Set(prev);
           next.delete(id);
@@ -431,15 +472,16 @@ export function JournalManager({
     );
   }
 
-  const leftEmpty = !searching
-    ? "Type to search the NLM catalog (e.g. lancet, n engl j med)…"
-    : searchLoading
-      ? "Searching…"
-      : searchResults.length === 0
-        ? "No matches."
-        : leftRows.length === 0
-          ? "All matches already added."
-          : null;
+  const leftEmpty =
+    leftRows.length > 0
+      ? null
+      : !searching
+        ? "Type to search the NLM catalog (e.g. lancet, n engl j med)…"
+        : searchLoading
+          ? "Searching…"
+          : searchResults.length === 0
+            ? "No matches."
+            : "All matches already added.";
 
   const applyLabel = dirty
     ? `Apply (${[

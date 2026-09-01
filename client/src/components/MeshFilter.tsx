@@ -255,6 +255,15 @@ export function MeshFilter({
               )}
             </div>
 
+            {/* The counts above are source-wide: each says how much of this
+                source that one heading touches. Ticking a second subject keeps
+                only the papers under both, so the result can be smaller than
+                either number — and nothing else on screen would say why. */}
+            {selected.length > 1 && (
+              <p className="filter-note">
+                Showing papers filed under all {selected.length} subjects.
+              </p>
+            )}
             {data?.truncated && (
               <p className="filter-note">
                 Showing the most common subjects. Search to reach the rest.

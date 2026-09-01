@@ -556,19 +556,37 @@ const SOURCE_REQUIRED =
 // bound parameters, so this isn't about injection — it's that each one is
 // another placeholder in an IN list, and a hand-written URL shouldn't be able to
 // hand SQLite a few thousand of them.
-const MAX_MESH_FILTER = 50;
+//
+// Over the ceiling the request is refused, not trimmed. Now that the filter
+// ANDs, dropping ids past a cap *widens* the result rather than narrowing it,
+// and there is no honest filter left to answer with — a narrowing control that
+// quietly returns a superset gives the user nothing to notice the loss by.
+//
+// MESH_FACET_LIMIT is the ceiling because it is the most headings the dropdown
+// offers at once, so one pass through that list cannot reach it. Ticking across
+// several searches still can, and that request is refused too: 200 subjects one
+// paper must carry all of is the empty set in any real corpus.
+export const MAX_MESH_FILTER = MESH_FACET_LIMIT;
 
 // The filters both /papers and /graph accept, so a query means the same thing in
 // either view: free text (?q=), MeSH descriptors (?mesh=D003924,D009369 — a
-// paper filed under any of them), and ?mesh_major=1 to keep only papers a
-// descriptor is a main point of. Ids are shape-checked purely to bound the list;
-// an unrecognized one simply matches nothing.
-function parseFilter(req: Request): PaperFilter {
+// paper filed under all of them, see meshPredicate), and ?mesh_major=1 to keep
+// only papers each descriptor is a main point of. Ids are shape-checked purely
+// to bound the list; an unrecognized one matches no paper, which under AND
+// empties the whole result rather than merely contributing nothing to it.
+//
+// Answers the 400 message instead of a filter when more descriptors are named
+// than MAX_MESH_FILTER allows; both callers hand that straight back.
+function parseFilter(req: Request): PaperFilter | { error: string } {
   const mesh = String(req.query.mesh ?? "")
     .split(",")
     .map((s) => s.trim())
-    .filter((s) => /^[A-Za-z0-9]{1,16}$/.test(s))
-    .slice(0, MAX_MESH_FILTER);
+    .filter((s) => /^[A-Za-z0-9]{1,16}$/.test(s));
+  if (mesh.length > MAX_MESH_FILTER) {
+    return {
+      error: `At most ${MAX_MESH_FILTER} subjects can be filtered by at once.`,
+    };
+  }
   return {
     q: req.query.q ? String(req.query.q) : undefined,
     mesh: mesh.length > 0 ? mesh : undefined,
@@ -582,6 +600,7 @@ api.get(
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
     const filter = parseFilter(req);
+    if ("error" in filter) return res.status(400).json(filter);
     let rows = listPapers(source, filter);
 
     // Backfill missing/stale citation counts, like /graph does. Poll and import
@@ -715,8 +734,11 @@ api.get(
     const source = parseSource(req);
     if (!source) return res.status(400).json({ error: SOURCE_REQUIRED });
     // Same filters the papers list takes, resolved by the same SQL, so they
-    // select the same papers whichever view is showing.
-    const papers = graphPapersForSource(source, parseFilter(req));
+    // select the same papers whichever view is showing — the refusal included,
+    // so neither view can answer a request the other rejects.
+    const filter = parseFilter(req);
+    if ("error" in filter) return res.status(400).json(filter);
+    const papers = graphPapersForSource(source, filter);
     const pmids = papers.map((p) => p.pmid);
     const inSet = new Set(pmids);
 
@@ -937,6 +959,7 @@ api.get("/collections", (_req, res) => {
       ...c,
       fileCount: counts[c.id]?.files ?? 0,
       matchedCount: counts[c.id]?.matched ?? 0,
+      heldCount: counts[c.id]?.held ?? 0,
     }))
   );
 });

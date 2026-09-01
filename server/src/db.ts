@@ -1022,15 +1022,36 @@ function searchPredicate(
 }
 
 // The subject condition, the second half of what narrows a paper source.
-// Selecting several descriptors keeps a paper filed under ANY of them, which is
-// how a facet normally reads ("show me either subject") and the only version
-// that stays useful — ANDing two headings usually lands on nothing, since a
-// paper is filed under the handful of subjects it is actually about.
+// Selecting several descriptors keeps a paper filed under ALL of them.
+//
+// The usual facet convention is the opposite — checkboxes within one dimension
+// read as OR — but that convention rests on the values being mutually exclusive
+// per item, which is why it is right for the journal filter next to this one: a
+// paper has one journal, so ANDing journals always lands on nothing. MeSH is
+// the other case. NLM files a MEDLINE paper under ten to fifteen headings at
+// once, so pairs genuinely co-occur, and ANDing is both answerable and the only
+// thing this control can do that picking subjects one at a time cannot. ORing
+// only ever *widens*, which is backwards for the one control whose job is to
+// narrow a library down.
+//
+// The cost, accepted deliberately, is that a selection can land on nothing: the
+// facet counts beside each heading are taken over the whole source (see
+// meshFacetsForSource), so a heading reading 44 can still leave zero papers
+// once it is ANDed with what is already picked. Conditioning those counts on
+// the selection would predict the drop, but it also re-ranks the list under the
+// cursor on every tick, which costs more than the dead end does.
+//
+// Written as one grouped subquery rather than an EXISTS per descriptor because
+// COUNT(*) is exact here — (pmid, ui) is article_mesh's primary key, so a paper
+// cannot carry the same descriptor twice — and it reads idx_article_mesh_ui
+// once. The ids are deduplicated first: a repeated ?mesh= id would otherwise
+// raise the count past anything the paper can reach and match nothing.
 //
 // `major` narrows to PubMed's starred headings: papers the descriptor is a
 // *main point* of, rather than ones that merely mention it. That is the
 // difference between a filing system and a keyword search, so it's a filter and
-// not a ranking.
+// not a ranking. Under AND it applies to every selected descriptor — each one
+// has to be a main point, not just one of them.
 //
 // Same contract as searchPredicate: appends its own bind params in the textual
 // order of its placeholders, and returns "" when there's nothing to add.
@@ -1040,10 +1061,12 @@ function meshPredicate(
   params: (string | number)[]
 ): string {
   if (!uis || uis.length === 0) return "";
-  params.push(...uis);
-  const placeholders = uis.map(() => "?").join(",");
+  const wanted = [...new Set(uis)];
+  params.push(...wanted, wanted.length);
+  const placeholders = wanted.map(() => "?").join(",");
   return `a.pmid IN (SELECT am.pmid FROM article_mesh am
-                     WHERE am.ui IN (${placeholders})${major ? " AND am.major = 1" : ""})`;
+                     WHERE am.ui IN (${placeholders})${major ? " AND am.major = 1" : ""}
+                     GROUP BY am.pmid HAVING COUNT(*) = ?)`;
 }
 
 // Everything narrowing a source's papers, in one place so /papers and /graph
@@ -1268,6 +1291,14 @@ export function journalsForSource(source: PaperSource): string[] {
 // whole vocabulary: a few thousand MEDLINE papers carry tens of thousands of
 // distinct descriptors between them. `q` filters by heading text, so searching
 // reaches past the cut rather than only re-ordering what already came back.
+//
+// Deliberately unconditioned by whatever subjects are already selected, even
+// though the filter ANDs and a count therefore over-promises what ticking the
+// box will leave. Conditioning them is the obvious fix and the wrong one: the
+// counts are also the sort key, so every tick would re-rank the list under the
+// cursor — including the row just clicked, which under AND takes the largest
+// count of all and would jump to the top. A number that reads high and a list
+// that holds still beats a number that reads exactly and a list that moves.
 export function meshFacetsForSource(
   source: PaperSource,
   q?: string,
@@ -1789,16 +1820,28 @@ export function deleteCollection(id: number): void {
   gcBlobsIfOrphaned(hashes);
 }
 
-export function collectionCounts(): Record<number, { files: number; matched: number }> {
+// Two counts over the same rows, because they answer the two different
+// questions "what 'held' means" above separates. `matched` is how many uploads
+// found a paper — about files, which is what the picker badge reports. `held`
+// is how many distinct papers the collection actually holds, and anything
+// deciding whether a collection has papers has to ask that one.
+//
+// The CASE is not there to skip nulls (COUNT DISTINCT already does) but so the
+// custody predicate is named rather than inlined: heldFile changing has to move
+// this count with it, which is the whole point of one spelling.
+export function collectionCounts(): Record<number, { files: number; matched: number; held: number }> {
   const rows = db
     .prepare(
       `SELECT collection_id, COUNT(*) AS files,
-              SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched
+              SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched,
+              COUNT(DISTINCT CASE WHEN ${heldFile()} THEN pmid END) AS held
        FROM collection_files GROUP BY collection_id`
     )
-    .all() as { collection_id: number; files: number; matched: number }[];
-  const out: Record<number, { files: number; matched: number }> = {};
-  for (const r of rows) out[r.collection_id] = { files: r.files, matched: r.matched ?? 0 };
+    .all() as { collection_id: number; files: number; matched: number; held: number }[];
+  const out: Record<number, { files: number; matched: number; held: number }> = {};
+  for (const r of rows) {
+    out[r.collection_id] = { files: r.files, matched: r.matched ?? 0, held: r.held ?? 0 };
+  }
   return out;
 }
 

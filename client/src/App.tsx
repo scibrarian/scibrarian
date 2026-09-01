@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage } from "./lib/format";
+import { showToast } from "./lib/toast";
 import type {
   AuthStatus,
   BookmarkFolder,
@@ -64,10 +65,16 @@ export default function App() {
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   const [activeCollectionId, setActiveCollectionId] = useState<CollectionSelection | null>(null);
-  // Each workspace remembers its own view; the defaults match what each is
-  // usually for (reading new papers vs. working through papers you've kept).
+  // Each workspace remembers its own view, and every one of them opens on
+  // Papers. Interests used to open on Timeline, on the grounds that what it is
+  // for — reading what's new — is the one question a date axis answers. That
+  // held for the view in isolation and not for moving between views: switching
+  // workspace changed the shape of the page as well as its contents, so the
+  // switch read as landing somewhere else rather than as the same list of a
+  // different source. One default across all three makes the workspaces
+  // comparable, and Timeline is still one click away and remembered after it.
   const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
-    interests: "timeline",
+    interests: "table",
     bookmarks: "table",
     papers: "table",
   });
@@ -611,7 +618,30 @@ export default function App() {
         msg += ` “${r.topicName}” matches more papers than PubMed will return — kept the ${r.found.toLocaleString()} most recent, skipped ${r.truncated!.toLocaleString()}. Narrow the topic or watch fewer journals for full coverage.`;
       }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
-      setStatus(msg);
+      // Which channel this lands in is decided by whether there is anything to
+      // *do* about it, not by whether it went well.
+      //
+      // A poll is the one message in the app that arrives long after the click
+      // that asked for it — it is a PubMed round trip, so by the time it lands
+      // the list has been scrolled and read. The banner is in flow above
+      // <main>, so raising one there pushes the whole workspace down by its
+      // height, including the "Check for new papers" button that started this
+      // and whatever row the pointer was over. That is the wrong thing to do to
+      // someone who is mid-read, and it is the common case: almost every poll
+      // has nothing to report but a count.
+      //
+      // So a plain count goes to the toast — fixed to the viewport, so it lands
+      // in view wherever the reader has scrolled to, and it displaces nothing. The persistent record that a poll ran is the
+      // "Updated …" stamp beside the button, which is what someone goes looking
+      // for later anyway.
+      //
+      // Anything the user has to act on keeps the banner and keeps the shove:
+      // a truncated feed needs the topic narrowed, and a per-topic failure needs
+      // to be read. Both are long enough to overflow a pill, both have to
+      // survive longer than the toast's five seconds, and neither can be re-read
+      // once gone — a toast can be sent away early, never called back.
+      if (capped.length || errs.length) setStatus(msg);
+      else showToast(msg);
       // /refresh polls the active topic, and every topic when there is none.
       if (activeTopicId != null) reloadSource({ topic: activeTopicId });
       else reloadEverything();
@@ -644,6 +674,39 @@ export default function App() {
           : null
         : activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
+
+  // Whether the selected source is already known to hold nothing, before its
+  // papers have been asked for. Every source in the workspace has been counted
+  // for the picker already (see WorkspaceNav), so one counted at 0 can open on
+  // its empty state instead of skeletoning its way to one.
+  //
+  // Deliberately a hint rather than an assertion, which is what separates it
+  // from seedEmptySource: that writes an answer into the papers cache and it
+  // stands until the token bumps, so a stale count there would show an empty
+  // view over papers that exist. This only decides what a view paints *while
+  // its fetch is in flight* — the fetch still runs and its answer still lands,
+  // so a count that has gone stale costs one empty frame rather than one
+  // skeleton frame, and corrects itself.
+  //
+  // `=== 0` rather than a falsy test on purpose: a topic's articleCount is
+  // optional, and a source whose count is unknown has to fall back to the
+  // skeleton rather than claim emptiness. An absent source or an absent count
+  // therefore reaches the views as false, never as undefined.
+  //
+  // A collection is asked with heldCount rather than the matchedCount its badge
+  // draws. The views below list the papers a collection holds, and db.ts
+  // decides that with heldFile and nothing else (see "what 'held' means");
+  // matched uploads count files, and are equal to held papers only while
+  // nothing writes a pmid outside setFileMatched. Nothing does, so this changes
+  // no pixel — it keeps one more reader off a spelling that is equal by
+  // convention rather than by construction.
+  const knownEmpty = inInterests
+    ? activeTopic?.articleCount === 0
+    : inLibrary
+      ? activeCollectionId === "all"
+        ? collections.every((c) => c.heldCount === 0)
+        : activeCollection?.heldCount === 0
+      : activeFolder?.paperCount === 0;
   const showViewControls = !showSettings && source != null;
   const sourceId = source ? sourceKey(source) : null;
   // The token every cached fetch under this source is stamped with; a bump to
@@ -782,6 +845,7 @@ export default function App() {
       viewMode={viewMode}
       reloadToken={reloadToken}
       emptyState={emptyState}
+      knownEmpty={knownEmpty}
       access={access}
       bookmarking={bookmarking}
       // The same handler the collection chrome uses: removing papers changes

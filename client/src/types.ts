@@ -95,8 +95,8 @@ export type {
 // an already-fetched list, so toggling them never costs a request.
 export interface PaperQuery {
   q?: string;
-  mesh?: string[]; // MeSH descriptor UIs; a paper filed under any of them matches
-  meshMajor?: boolean; // keep only papers a selected descriptor is a main point of
+  mesh?: string[]; // MeSH descriptor UIs; a paper filed under all of them matches
+  meshMajor?: boolean; // keep only papers every selected descriptor is a main point of
 }
 
 export interface Topic extends TopicRow {
@@ -175,7 +175,8 @@ export interface BookmarkFolder extends BookmarkFolderRow {
 
 export interface Collection extends CollectionRow {
   fileCount: number;
-  matchedCount: number;
+  matchedCount: number; // uploads that found a paper — files, and what the picker badge draws
+  heldCount: number; // distinct papers held, the count the papers views actually list
 }
 
 // The API strips content_hash (blob-store key) from what viewers can see.
