@@ -16,6 +16,21 @@ describe("describeSweep", () => {
     );
   });
 
+  // The same three zeros, the opposite situation. Reachable the first time
+  // anyone pairs — nothing made beforehand carries a stamp — so the sweep is
+  // honest about the counts while the sentence built from them says the work is
+  // safely delivered.
+  it("does not call an empty scope a finished sweep", () => {
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 0, shared_collections: 0 })).toBe(
+      "Nothing is shared with your organization yet, so nothing is being copied up."
+    );
+    // Measured and non-zero is the genuinely finished sweep, and it keeps the
+    // sentence it always had — as does the build above that reports no scope.
+    expect(describeSweep({ sent: 0, skipped: 0, remaining: 0, shared_collections: 2 })).toBe(
+      "Everything shared is already with your organization."
+    );
+  });
+
   // The finding this exists for: sent and skipped are both zero, so the old
   // test called it complete — with twelve papers still outstanding.
   it("does not call a sweep finished while work remains", () => {
