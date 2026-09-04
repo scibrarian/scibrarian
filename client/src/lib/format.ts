@@ -25,6 +25,14 @@ export function describeSweep(r: ProPushResult): string {
 }
 
 function describeMoved(r: ProPushResult): string {
+  // Ahead of the all-zeros test, which this case would otherwise fall into and
+  // be told the exact opposite of. An explicit 0 only: undefined is a run that
+  // never counted a scope — or a Pro build too old to report one — and reading
+  // that as "nothing is shared" would invent the same false confidence pointing
+  // the other way.
+  if (r.shared_collections === 0) {
+    return "Nothing is shared with your organization yet, so nothing is being copied up.";
+  }
   if (r.sent === 0 && r.skipped === 0 && r.remaining === 0) {
     return "Everything shared is already with your organization.";
   }

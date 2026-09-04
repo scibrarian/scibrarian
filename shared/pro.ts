@@ -201,6 +201,27 @@ export interface ProPushResult {
    * as a measured zero.
    */
   unreadable?: number;
+  /**
+   * Collections in scope for this sweep — those stamped for the master the
+   * spoke is paired to right now.
+   *
+   * Zero is the state that needed a field. A sweep with nothing shared and a
+   * sweep that has already sent everything both report {sent: 0, skipped: 0,
+   * remaining: 0}, so the panel called both of them "everything shared is
+   * already with your organization" — the opposite of the truth for the first,
+   * and read as exactly the permission describeSweep warns about: to stop
+   * worrying about whether the agency has the paper.
+   *
+   * It needs no lapsed engagement to reach. Collections are stamped at creation
+   * and never adopted retroactively, so a writer who has just paired for the
+   * first time has a full library, an empty scope, and every reason to press
+   * Sync now to see whether it worked.
+   *
+   * Optional for the same reason as held_back: a run that returned before it
+   * read the database never counted one, and "not measured" must not render as
+   * a measured zero.
+   */
+  shared_collections?: number;
   error?: string;
   /**
    * Set when this run did nothing because another sweep already held the lock.
