@@ -1,4 +1,4 @@
-# SciLuminate — working notes
+# Scibrarian — working notes
 
 ## Never reformat a file as a side effect
 

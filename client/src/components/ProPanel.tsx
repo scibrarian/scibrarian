@@ -19,11 +19,16 @@ import type {
 // /api/pro are closed. Rendered when GET /auth reports a `pro` block, which is
 // null in a free build, so nothing here is ever reachable there.
 //
-// One instance can be both ends at once and the panel says so plainly, because
-// there is no role to configure: this instance is a *master* if anything paired
-// with it, and a *spoke* if it paired with something. Both halves are shown to
-// whoever holds the admin token — which is the person who runs this instance,
-// not an account with a tier.
+// Two halves, and the build decides which one is on screen. The master half —
+// minting codes for other people — is the server's; the spoke half — pairing
+// this library to an organization's — is the desktop's, because the person
+// connecting to an organization is a writer on their own machine, never the
+// licensed server that *is* the organization's library. Neither half is a role
+// to configure or a tier on an account: whoever holds the admin token sees
+// whichever half their build has.
+//
+// The one crossing is a spoke half that is already connected, which stays
+// wherever it is — see `spoke` below.
 //
 // Reads nothing from the /auth block. That block gates whether Settings renders
 // this at all, but it is fetched once at page load, so anything read from it
@@ -65,6 +70,16 @@ export function ProPanel({
    * /api/settings, which Settings has already fetched, and a second request for
    * one boolean would answer at its own pace and give this panel a third load
    * state to be jumpy about.
+   *
+   * Null outlives that load in one case only. `ready` waits for the settings
+   * request to settle, so past it null is no longer "still coming" — it is that
+   * request having failed, or having answered without the field. Both gates
+   * below withhold their half rather than guess, which in that case leaves the
+   * panel with neither: a deliberate trade, on the grounds that the settings
+   * request essentially always answers.
+   *
+   * Both halves hang off it — see `spoke` below and the master gate in the
+   * render.
    */
   desktop: boolean | null;
   onPairingChanged: () => void;
@@ -146,13 +161,20 @@ export function ProPanel({
   // other three, and the license, the node list and the mint form all rendered
   // empty behind one banner. Whatever arrived is shown; what didn't is reported.
   async function reload() {
+    // /api/pro/nodes answers for the master half alone — the node list, the
+    // license, the organization name and this library's public address, and
+    // every one of them is drawn inside `desktop === false`. A desktop app was
+    // fetching all four on mount and after every action to render none of them,
+    // and a rejection put a banner on this panel about a section it does not
+    // have. The first reload can still make the call, because it races the flag
+    // and a null one is not yet a desktop build; every reload after it knows.
     const [n, m, sy, cs] = await Promise.allSettled([
-      api.proNodes(),
+      desktop === true ? Promise.resolve(null) : api.proNodes(),
       api.proMaster(),
       api.proSync(),
       api.getCollections(),
     ]);
-    if (n.status === "fulfilled") {
+    if (n.status === "fulfilled" && n.value) {
       setNodes(n.value.nodes);
       setOrgName(n.value.org_name);
       // Both, always. Without the first the box renders empty on every visit
@@ -352,6 +374,22 @@ export function ProPanel({
   // that still means something.
   const ended = master.connected && Boolean(master.rejected_at);
 
+  // Whether this build has a spoke half at all. Pairing is the desktop app's:
+  // someone connecting to an organization is a writer on their own machine, and
+  // the server build is the thing they connect *to* — so on a server the form
+  // below asked for a code that nobody would ever be sent. A server is never the
+  // spoke end of one of these, which makes the build the whole of the question:
+  // an `|| master.connected` here could only ever repeat what the first test had
+  // already settled, while reading as though a paired server were a real state
+  // this half had to cover.
+  //
+  // `desktop === true`, not `!== false`: a null flag is not a desktop build.
+  // Past `ready` it is a settings request that failed rather than one still in
+  // flight — see `desktop` — and an instance that cannot say what it is gets no
+  // pairing form rather than a guessed one. The master gate reads its own flag
+  // the same way.
+  const spoke = desktop === true;
+
   const nodeState = (n: ProNode): "revoked" | "expired" | "pending" | "active" => {
     if (n.revoked_at) return "revoked";
     if (new Date(n.expires_at) <= new Date()) return "expired";
@@ -361,176 +399,212 @@ export function ProPanel({
   // After every hook, so the hook order is the same on both paths — and after
   // the effect above, which is what eventually makes this false.
   //
-  // `desktop !== true` here, where the real panel below uses `desktop ===
-  // false`. The two differ only while the flag is null, and that difference is
-  // the whole point: for the panel, null means "don't show a section you may
-  // have to take away again"; for a stand-in, null means "reserve the space you
-  // will probably need".
+  // The flag itself rather than the two halves derived from it, so the stand-in
+  // and the panel cannot come to different answers about the same build. A null
+  // one draws what a *hosted* instance draws — the master half and not the
+  // spoke half — because a hosted instance is the only build where a null flag
+  // is ever on screen long enough to be wrong about. `desktop` arrives with
+  // Settings' own fetch, which resolves before this panel's there —
+  // /api/pro/sync can be a round trip to the master — so whatever the stand-in
+  // derives from a null flag is seen, and then seen to change.
   //
-  // Sharing the panel's expression made the stand-in grow a whole section
-  // mid-load. `desktop` arrives with Settings' own fetch, which resolves before
-  // this panel's on a hosted instance — /api/pro/sync can be a round trip to
-  // the master — so the sequence was: skeleton without the master half,
-  // settings land, skeleton *with* it and ~200px taller, then the real panel.
-  // Everything below the Pro panel was shoved down by a stand-in, which is the
-  // one thing a stand-in exists not to do.
+  // Reserving no master half for it is what made that visible: the sequence was
+  // skeleton without it, settings land, skeleton *with* it and ~200px taller,
+  // then the real panel. Everything below the Pro panel was shoved down by a
+  // stand-in, which is the one thing a stand-in exists not to do.
   //
-  // The trade is a desktop build, where this over-reserves until the flag says
-  // so and the stand-in then shrinks. That direction is both rarer and cheaper:
-  // rarer because the desktop build's Pro calls are all loopback and usually
-  // settle before Settings' do, so the stand-in is generally gone before the
-  // flag matters; cheaper because any height left over at that point is
-  // absorbed into the single coordinated reveal `ready` already performs,
-  // rather than landing as a lone jump with nothing else moving.
-  if (!ready) return <ProPanelSkeleton master={desktop !== true} />;
+  // The trade is the desktop build, where the guess is wrong until the flag
+  // lands. It costs close to nothing: the desktop build's Pro calls are all
+  // loopback and usually settle before Settings' do, so the flag and `ready`
+  // arrive together and the stand-in is replaced rather than corrected — and
+  // any height it was still wrong about is absorbed into the single coordinated
+  // reveal `ready` already performs, rather than landing as a lone jump with
+  // nothing else moving.
+  if (!ready) return <ProPanelSkeleton desktop={desktop} />;
+
+  // Past `ready` a null flag is Settings' own request having failed, not one
+  // still in flight. Neither half renders for it — `spoke` is false and the
+  // master gate below wants `=== false` — so without this the panel was a
+  // heading and a hint above nothing at all, and the hint was the master's, that
+  // being the side the ternary falls to. Describing an arrangement while showing
+  // neither end of it is worse than saying the settings didn't load.
+  if (desktop === null) {
+    return (
+      <section className="panel pro-panel">
+        <h3>Shared holdings</h3>
+        <p className="hint">
+          This library&rsquo;s settings didn&rsquo;t load, so neither end of a pairing can be
+          shown here. Reload the page to try again.
+        </p>
+        <Banner kind="error" message={error} onDismiss={() => setError(null)} />
+      </section>
+    );
+  }
 
   return (
     <section className="panel pro-panel">
       <h3>Shared holdings</h3>
+      {/* Two readings of the same arrangement, because each build only ever
+          holds one end of it. Left as the spoke's on an unpaired server, this
+          told an operator to connect their library to their organization's
+          directly above the half that connects other people to *them*. */}
       <p className="hint">
-        Connect this library to your organization&rsquo;s, so a paper someone has already bought
-        doesn&rsquo;t get bought again. Papers are copied between instances you pair — nothing is
-        sent anywhere else.
+        {spoke ? (
+          <>
+            Connect this library to your organization&rsquo;s, so a paper someone has already
+            bought doesn&rsquo;t get bought again.
+          </>
+        ) : (
+          <>
+            Connect your writers&rsquo; libraries to this one, so a paper someone has already
+            bought doesn&rsquo;t get bought again.
+          </>
+        )}{" "}
+        Papers are copied between instances you pair — nothing is sent anywhere else.
       </p>
 
       <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
-      {/* ---- spoke side: who this instance is connected to ---- */}
-      <h4>Your organization</h4>
-      {master.connected ? (
-        <div className="pro-connected">
-          {master.rejected_at ? (
-            /* The panel used to keep saying "Connected" indefinitely after a
-               master revoked this node: the check is a live lookup there, and
-               every path that meets the 401 here swallows it by design. Now the
-               first refused request records it and this says so. */
-            <p className="pro-rejected">
-              <Unlink size={14} className="inline-icon" aria-hidden />
-              <span>
-                <strong>{master.name}</strong> has ended this connection
-                {` (${master.rejected_at.slice(0, 10)})`}. Lookups and
-                copies have stopped. Papers already here stay in your library — ask them for a
-                new pairing code to reconnect.
-              </span>
-            </p>
-          ) : (
-            <p>
-              <Link2 size={14} className="inline-icon" aria-hidden /> Connected to{" "}
-              <strong>{master.name}</strong> <span className="hint">({master.url})</span>
-            </p>
-          )}
-          <button type="button" disabled={busy} onClick={() => void disconnect()}>
-            <Unlink size={14} className="inline-icon" aria-hidden /> Disconnect
-          </button>
-          <p className="hint">
-            Disconnecting stops future lookups and copies. Papers already copied here stay in
-            your library.
-          </p>
+      {spoke && (
+        <>
+          {/* ---- spoke side: who this instance is connected to ---- */}
+          <h4>Your organization</h4>
+          {master.connected ? (
+            <div className="pro-connected">
+              {master.rejected_at ? (
+                /* The panel used to keep saying "Connected" indefinitely after a
+                   master revoked this node: the check is a live lookup there, and
+                   every path that meets the 401 here swallows it by design. Now the
+                   first refused request records it and this says so. */
+                <p className="pro-rejected">
+                  <Unlink size={14} className="inline-icon" aria-hidden />
+                  <span>
+                    <strong>{master.name}</strong> has ended this connection
+                    {` (${master.rejected_at.slice(0, 10)})`}. Lookups and
+                    copies have stopped. Papers already here stay in your library — disconnect, then ask them for a
+                    new pairing code to reconnect.
+                  </span>
+                </p>
+              ) : (
+                <p>
+                  <Link2 size={14} className="inline-icon" aria-hidden /> Connected to{" "}
+                  <strong>{master.name}</strong> <span className="hint">({master.url})</span>
+                </p>
+              )}
+              <button type="button" disabled={busy} onClick={() => void disconnect()}>
+                <Unlink size={14} className="inline-icon" aria-hidden /> Disconnect
+              </button>
+              <p className="hint">
+                Disconnecting stops future lookups and copies. Papers already copied here stay in
+                your library.
+              </p>
 
-          {/* The engagement boundary, one row per collection.
+              {/* The engagement boundary, one row per collection.
               
-              Stamped when a collection is created, from whatever pairing was
-              live then — so this list is normally something to read rather than
-              something to operate. It stays editable because a stamp can be
-              wrong, and because un-sharing has to be possible without deleting
-              anything — but not once the master has ended the connection, when
-              stamping a collection against a pairing that is over would record
-              a boundary with nobody on the other side of it. */}
-          <h5>Collections</h5>
-          {collections.length === 0 ? (
-            <p className="hint">No collections yet.</p>
-          ) : (
-            <ul className="pro-collections">
-              {collections.map((c) => {
-                const stamp = stamps.find((s) => s.collection_id === c.id);
-                const shared = stamp?.active === true;
-                return (
-                  <li key={c.id}>
-                    <span className="pro-collection-name">{c.name}</span>
-                    {/* Three reasons a row is not syncing and only one of them
-                        is "some other organisation" — saying that of the org
-                        named right above, whose connection has merely ended,
-                        was the reading `ended` was added to prevent. */}
-                    <span className="hint">
-                      {shared
-                        ? `shared with ${stamp!.org_name}`
-                        : stamp?.ended
-                          ? `${stamp.org_name} (connection ended)`
-                          : stamp
-                            ? `${stamp.org_name} (not your current organization)`
-                            : "local"}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={busy || ended}
-                      onClick={() =>
-                        void run(() =>
-                          shared ? api.proUnshareCollection(c.id) : api.proShareCollection(c.id)
-                        ).then((ok) => {
-                          // Only on success, and only the stamps: the Library's
-                          // icon and badge are drawn from them, and this panel
-                          // is the one place they change without a collection
-                          // being created or a pairing moving.
-                          //
-                          // run() has already reloaded them, so what goes up is
-                          // that answer rather than a signal to fetch it again.
-                          if (ok) onSharingChanged(lastStamps.current);
-                        })
-                      }
-                    >
-                      {shared ? "Stop sharing" : `Share with ${master.name}`}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          <div className="pro-row">
-            {/* Spinner and label both, the way .refresh-btn does it. `busy`
-                alone only reached `disabled`, so a sweep over a slow link was
-                a button that had stopped responding and nothing else — the
-                work was invisible until the counts landed. */}
-            <button type="button" disabled={busy || ended} onClick={() => void syncNow()}>
-              {syncing && <span className="btn-spinner" aria-hidden="true" />}
-              {syncing ? "Syncing…" : "Sync now"}
-            </button>
-          </div>
-          {/* One line either way: the progress and the answer share an element,
-              so the panel keeps its height across the whole sweep rather than
-              losing a row on click and regaining it on completion.
+                  Stamped when a collection is created, from whatever pairing was
+                  live then — so this list is normally something to read rather than
+                  something to operate. It stays editable because a stamp can be
+                  wrong, and because un-sharing has to be possible without deleting
+                  anything — but not once the master has ended the connection, when
+                  stamping a collection against a pairing that is over would record
+                  a boundary with nobody on the other side of it. */}
+              <h5>Collections</h5>
+              {collections.length === 0 ? (
+                <p className="hint">No collections yet.</p>
+              ) : (
+                <ul className="pro-collections">
+                  {collections.map((c) => {
+                    const stamp = stamps.find((s) => s.collection_id === c.id);
+                    const shared = stamp?.active === true;
+                    return (
+                      <li key={c.id}>
+                        <span className="pro-collection-name">{c.name}</span>
+                        {/* Three reasons a row is not syncing and only one of them
+                            is "some other organisation" — saying that of the org
+                            named right above, whose connection has merely ended,
+                            was the reading `ended` was added to prevent. */}
+                        <span className="hint">
+                          {shared
+                            ? `shared with ${stamp!.org_name}`
+                            : stamp?.ended
+                              ? `${stamp.org_name} (connection ended)`
+                              : stamp
+                                ? `${stamp.org_name} (not your current organization)`
+                                : "local"}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy || ended}
+                          onClick={() =>
+                            void run(() =>
+                              shared ? api.proUnshareCollection(c.id) : api.proShareCollection(c.id)
+                            ).then((ok) => {
+                              // Only on success, and only the stamps: the Library's
+                              // icon and badge are drawn from them, and this panel
+                              // is the one place they change without a collection
+                              // being created or a pairing moving.
+                              //
+                              // run() has already reloaded them, so what goes up is
+                              // that answer rather than a signal to fetch it again.
+                              if (ok) onSharingChanged(lastStamps.current);
+                            })
+                          }
+                        >
+                          {shared ? "Stop sharing" : `Share with ${master.name}`}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <div className="pro-row">
+                {/* Spinner and label both, the way .refresh-btn does it. `busy`
+                    alone only reached `disabled`, so a sweep over a slow link was
+                    a button that had stopped responding and nothing else — the
+                    work was invisible until the counts landed. */}
+                <button type="button" disabled={busy || ended} onClick={() => void syncNow()}>
+                  {syncing && <span className="btn-spinner" aria-hidden="true" />}
+                  {syncing ? "Syncing…" : "Sync now"}
+                </button>
+              </div>
+              {/* One line either way: the progress and the answer share an element,
+                  so the panel keeps its height across the whole sweep rather than
+                  losing a row on click and regaining it on completion.
 
-              role="status" is worth having only because of that — a live region
-              announces a *change* to content it was already showing, and this
-              one is now on screen before the result replaces "Syncing…". */}
-          {(syncing || syncMsg) && (
-            <p className="hint" role="status">
-              {syncing ? "Syncing…" : syncMsg}
-            </p>
+                  role="status" is worth having only because of that — a live region
+                  announces a *change* to content it was already showing, and this
+                  one is now on screen before the result replaces "Syncing…". */}
+              {(syncing || syncMsg) && (
+                <p className="hint" role="status">
+                  {syncing ? "Syncing…" : syncMsg}
+                </p>
+              )}
+              <p className="hint">
+                {ended
+                  ? `Sharing can't be changed while ${master.name} has this connection ended — reconnect with a new pairing code first. Papers already sent to them stay there.`
+                  : `Stopping sharing affects future copies only — papers already sent to ${master.name} stay there.`}
+              </p>
+            </div>
+          ) : (
+            <form className="pro-form" onSubmit={(e) => void connect(e)}>
+              <label htmlFor="pro-code" className="hint">
+                Paste the pairing code your organization sent you.
+              </label>
+              <div className="pro-row">
+                <input
+                  id="pro-code"
+                  value={pairingCode}
+                  onChange={(e) => setPairingCode(e.target.value)}
+                  placeholder="Pairing code"
+                  spellCheck={false}
+                />
+                <button type="submit" className="primary" disabled={busy || !pairingCode.trim()}>
+                  Connect
+                </button>
+              </div>
+            </form>
           )}
-          <p className="hint">
-            {ended
-              ? `Sharing can't be changed while ${master.name} has this connection ended — reconnect with a new pairing code first. Papers already sent to them stay there.`
-              : `Stopping sharing affects future copies only — papers already sent to ${master.name} stay there.`}
-          </p>
-        </div>
-      ) : (
-        <form className="pro-form" onSubmit={(e) => void connect(e)}>
-          <label htmlFor="pro-code" className="hint">
-            Paste the pairing code your organization sent you.
-          </label>
-          <div className="pro-row">
-            <input
-              id="pro-code"
-              value={pairingCode}
-              onChange={(e) => setPairingCode(e.target.value)}
-              placeholder="Pairing code"
-              spellCheck={false}
-            />
-            <button type="submit" className="primary" disabled={busy || !pairingCode.trim()}>
-              Connect
-            </button>
-          </div>
-        </form>
+        </>
       )}
 
       {/* The master half: minting pairing codes so other people's instances
@@ -539,10 +613,13 @@ export function ProPanel({
           code it minted would point somewhere nobody else can get to, and the
           address field the mint form is gated on has nothing valid to hold.
 
-          `desktop === false`, not `!desktop`: the flag arrives with the settings,
-          a request later than this panel's first paint, and null means "not known
-          yet". Showing this and then taking it away is the worse direction —
-          it is a section an operator may already have started reading. */}
+          `desktop === false`, not `!desktop`: a null flag is not a server. It
+          used to mean the settings simply hadn't arrived — this panel painted on
+          mount, a request ahead of them — and the reading then was that showing
+          a section and taking it away again is the worse direction. `ready` now
+          holds the whole panel until that request settles, so what survives here
+          is a request that failed, and the answer is the one `spoke` gives
+          above: withhold the half rather than guess at it. */}
       {desktop === false && (
         <>
           {/* ---- master side: who is connected to this instance ---- */}

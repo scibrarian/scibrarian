@@ -26,6 +26,16 @@ const proBundle = path.join(repoRoot, "pro", "dist", "index.js");
 // Inside bundle/, so the one `files` entry that already ships the server ships
 // this too — see bundlePro() for why it must be exactly here.
 const proPackage = path.join(here, "bundle", "node_modules", "@scibrarian", "pro");
+// The EULA that governs a Pro build, and the two shippable renderings of it.
+// Markdown is the source and no installer target can read it: NSIS and the dmg
+// take RTF, the AppImage takes plain text, none of the three takes .md. The
+// output lands in bundle/ for the same reason the module does — the one `files`
+// entry that already ships the server ships this too.
+const proEula = path.join(repoRoot, "pro", "EULA.md");
+const eulaOut = {
+  rtf: path.join(here, "bundle", "EULA.rtf"),
+  txt: path.join(here, "bundle", "EULA.txt"),
+};
 
 const hasPro = () => fs.existsSync(proSrc);
 
@@ -161,6 +171,185 @@ function assertClientIsBuilt() {
   }
 }
 
+// RTF is ASCII by construction. `\`, `{` and `}` are its control characters, and
+// anything above 127 has to be a numeric escape — a raw UTF-8 byte comes out as
+// mojibake in both the NSIS rich-edit control and the macOS SLA, and the EULA
+// has six em dashes in it. `\uN?` is that escape: N is the UTF-16 code unit as a
+// *signed* 16-bit number, and `?` is what a reader too old to understand \u
+// shows in its place. Walking code units rather than code points is what makes a
+// surrogate pair come out as the two escapes RTF expects.
+function rtfEscape(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\" || ch === "{" || ch === "}") {
+      out += `\\${ch}`;
+      continue;
+    }
+    const unit = text.charCodeAt(i);
+    out += unit < 128 ? ch : `\\u${unit > 32767 ? unit - 65536 : unit}?`;
+  }
+  return out;
+}
+
+// Hard-wrapped rather than left to whatever opens it. The AppImage does not
+// display its license, it files it away, so the next thing to read the plain
+// text is an editor or a terminal — and a 900-character paragraph on one line is
+// unreadable in both. The source's own wrapping cannot be reused: `**bold**`
+// spans a line break in three places, so paragraphs have to be joined before the
+// markers come off, which discards the original breaks on the way.
+function wrap(text, width, hanging = 0) {
+  const pad = " ".repeat(hanging);
+  const lines = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line === "") line = word;
+    else if (line.length + 1 + word.length <= width) line += ` ${word}`;
+    else {
+      lines.push(line);
+      line = pad + word;
+    }
+  }
+  if (line !== "") lines.push(line);
+  return lines;
+}
+
+/**
+ * pro/EULA.md rendered into one of the two formats an installer can show.
+ *
+ * Deliberately not a markdown library. The whole of what the EULA uses is ATX
+ * headings, a blockquote, `**bold**`, ordered lists and one `---`, and a legal
+ * document is the wrong place to hand rendering to a dependency that guesses:
+ * what a parser quietly drops here is a term somebody is being asked to accept.
+ * A construct this does not recognise comes out as its own source text, which is
+ * visible in the installer — the right place for a rendering bug to surface.
+ *
+ * `**bold**` is the only inline construct, and it carries meaning rather than
+ * decoration: Section 11's warranty disclaimer is bold in order to be
+ * conspicuous, and the EULA's own draft notes turn on whether that is enough.
+ * That is why the RTF exists at all, and why it is the copy given to the two
+ * targets that put the document in front of a person.
+ *
+ * One function for both formats rather than two passes. Two would be two chances
+ * for the plain text and the rich text to say different things, in the one
+ * document where that matters.
+ */
+function renderEula(markdown, format) {
+  const rtf = format === "rtf";
+  const WRAP = 78;
+  const esc = rtf ? rtfEscape : (s) => s;
+
+  // Split on the `**` runs rather than replacing them, so an unpaired marker
+  // stays visible in the text instead of swallowing the rest of the paragraph.
+  const inline = (text) =>
+    text
+      .split(/(\*\*[^*]+\*\*)/)
+      .map((part) => {
+        if (!/^\*\*[^*]+\*\*$/.test(part)) return esc(part);
+        const inner = esc(part.slice(2, -2));
+        return rtf ? `{\\b ${inner}}` : inner;
+      })
+      .join("");
+
+  const out = [];
+
+  for (const block of markdown.split(/\n{2,}/)) {
+    let lines = block.split("\n").filter((line) => line.trim() !== "");
+
+    // Peeled off first, and the block carries on afterwards rather than ending:
+    // a heading is its own block throughout this file, and if one ever acquires
+    // a paragraph glued to it, both should render instead of one going missing.
+    const heading = /^(#{1,6})\s+(.*?)\s*#*$/.exec(lines[0] ?? "");
+    if (heading) {
+      const text = inline(heading[2]);
+      const title = heading[1].length === 1;
+      if (rtf) {
+        out.push(
+          title
+            ? `\\pard\\qc\\sa240{\\b\\fs32 ${text}}\\par`
+            : `\\pard\\sb240\\sa120{\\b\\fs24 ${text}}\\par`
+        );
+      } else {
+        // Ruled, because plain text has no weight to switch on and the EULA
+        // numbers its own sections in the heading text. Unruled, `## 4.
+        // Restrictions` and clause 4 *of* that section are the same two
+        // characters at the same margin twenty lines apart, in a document that
+        // cites both by number \u2014 "Except as Section 2 permits", "in violation
+        // of ... Section 6". The RTF tells them apart with \\fs24 and bold; this
+        // is the plain-text half of the same distinction, and the one target
+        // reading it is the AppImage, whose copy is filed away to be re-read
+        // rather than clicked through.
+        //
+        // `=` under the title and `-` under a section, each as wide as the
+        // longest line above it \u2014 never the full width, which is what the `---`
+        // rule renders as.
+        const rows = wrap(text, WRAP);
+        const rule = (title ? "=" : "-").repeat(Math.max(1, ...rows.map((row) => row.length)));
+        out.push([...rows, rule].join("\n"));
+      }
+      lines = lines.slice(1);
+    }
+
+    if (/^-{3,}$/.test(lines[0] ?? "")) {
+      out.push(rtf ? "\\pard\\brdrb\\brdrs\\brdrw10\\brsp20\\sa240\\par" : "-".repeat(WRAP));
+      lines = lines.slice(1);
+    }
+
+    if (lines.length === 0) continue;
+
+    // The blockquote is the draft banner, and the marker comes off every line.
+    if (lines.every((line) => /^>\s?/.test(line))) {
+      const text = inline(lines.map((line) => line.replace(/^>\s?/, "")).join(" "));
+      out.push(
+        rtf
+          ? `\\pard\\li360\\ri360\\sa240 ${text}\\par`
+          : wrap(text, WRAP - 4)
+              .map((line) => `    ${line}`)
+              .join("\n")
+      );
+      continue;
+    }
+
+    // Ordered lists: `1. ` opens an item, and a line that opens no item
+    // continues the one before it — which is how the numbered restrictions in
+    // Sections 3 and 4 wrap. The number is carried through rather than
+    // recounted, because the EULA cites its own clauses by number.
+    if (/^\d+\.\s/.test(lines[0])) {
+      const items = [];
+      for (const line of lines) {
+        const opened = /^(\d+)\.\s+(.*)$/.exec(line);
+        if (opened) items.push({ n: opened[1], text: opened[2] });
+        else items[items.length - 1].text += ` ${line.trim()}`;
+      }
+      for (const { n, text } of items) {
+        out.push(
+          rtf
+            ? `\\pard\\fi-360\\li360\\sa120 ${n}.\\tab ${inline(text)}\\par`
+            : wrap(`${n}. ${inline(text)}`, WRAP, 3).join("\n")
+        );
+      }
+      continue;
+    }
+
+    const text = inline(lines.join(" "));
+    out.push(rtf ? `\\pard\\sa240 ${text}\\par` : wrap(text, WRAP).join("\n"));
+  }
+
+  // A blank line between blocks in plain text; in RTF the spacing is the `\sa`
+  // on each paragraph, so the newlines there only keep the file readable.
+  if (!rtf) return `${out.join("\n\n")}\n`;
+
+  // `\fs` is half-points: 10pt body, 16pt title, 12pt section headings. Segoe UI
+  // is the Windows installer's own font, and the macOS SLA substitutes its own
+  // when it is missing — the right way round, since the NSIS page is the one
+  // somebody actually reads at length.
+  return (
+    "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fswiss\\fcharset0 Segoe UI;}}\n" +
+    "\\fs20\n" +
+    `${out.join("\n")}\n}\n`
+  );
+}
+
 /**
  * Put the Pro module where the bundled server can resolve it, on a checkout
  * that has one. Returns whether this is a Pro build.
@@ -200,6 +389,13 @@ function bundlePro() {
   // ship the proprietary module that was already sitting in bundle/. Only ever
   // this subtree, which nothing but this function writes.
   fs.rmSync(path.join(here, "bundle", "node_modules"), { recursive: true, force: true });
+
+  // The same failure one file over, and it needs its own removal because these
+  // sit beside bundle/node_modules rather than inside it. `files: ["bundle/**"]`
+  // packs the whole directory, so a copy left by an earlier Pro build would ride
+  // inside a free installer — and the `license` keys in the packaging config,
+  // which are off on a free build, are not what would have stopped it.
+  for (const stale of Object.values(eulaOut)) fs.rmSync(stale, { force: true });
 
   // Absence is not a failure — a free checkout has no pro/ and builds a
   // complete desktop app without it. Presence that then goes wrong is fatal,
@@ -241,6 +437,21 @@ function bundlePro() {
       2
     ) + "\n"
   );
+
+  // Both formats, because the three installer targets do not agree on one: NSIS
+  // and the dmg read the RTF, the AppImage takes plain text and nothing else.
+  // Which target gets which is set in electron-builder.config.cjs, and only on a
+  // Pro build — the agreement covers a build that includes the Pro Module, and
+  // the free build is AGPL.
+  if (!fs.existsSync(proEula)) {
+    throw new Error(
+      `${proEula} is missing. It is what a Pro installer asks the user to accept, so a ` +
+        "build without it would install the Pro Module having agreed nothing at all."
+    );
+  }
+  const eula = fs.readFileSync(proEula, "utf8");
+  fs.writeFileSync(eulaOut.rtf, renderEula(eula, "rtf"));
+  fs.writeFileSync(eulaOut.txt, renderEula(eula, "txt"));
   // Written, copied, and *resolvable* are three different claims, and only the
   // third is the one runtime makes. Everything above proves files are on disk in
   // a directory this function chose; what loadPro() does is ask Node to resolve a

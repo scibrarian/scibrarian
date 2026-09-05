@@ -181,11 +181,17 @@ export function PromptDialog({
   /**
    * An optional pre-filled choice shown beneath the input.
    *
-   * Pre-filled, never a gate: the dialog submits whether or not it is touched.
-   * A forced confirmation gets pattern-matched and clicked through within a
-   * week, leaving the same failure mode plus a step everyone resents.
+   * Never a gate: the dialog submits whether or not it is touched. A forced
+   * confirmation gets pattern-matched and clicked through within a week,
+   * leaving the same failure mode plus a step everyone resents.
+   *
+   * `disabled` keeps the row on screen but pins it to `defaultChecked`, which
+   * is then what `onSubmit` receives. Omitted, the checkbox is live; setting it
+   * is a caller declaring that this is a state the dialog *reports* rather than
+   * asks about — worth seeing at the moment it takes effect, but decided
+   * elsewhere and undone elsewhere.
    */
-  option?: { label: string; hint?: string; defaultChecked: boolean };
+  option?: { label: string; hint?: string; defaultChecked: boolean; disabled?: boolean };
   onSubmit: (value: string, optionChecked: boolean) => void;
   onCancel: () => void;
 }) {
@@ -224,6 +230,7 @@ export function PromptDialog({
             <input
               type="checkbox"
               checked={checked}
+              disabled={option.disabled}
               onChange={(e) => setChecked(e.target.checked)}
             />
             <span>

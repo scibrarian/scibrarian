@@ -520,74 +520,87 @@ export function Settings({
         />
       )}
 
-      <section className="panel">
-        <h2>Sharing</h2>
-        {!ready && (
-          <p className="hint" aria-busy="true" aria-label="Loading sharing info">
-            <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
-            <SkeletonBar w="60%" h={12} />
-          </p>
-        )}
-        {ready && settings &&
-          (settings.desktop ? (
-            // The desktop app binds to loopback with no admin token and no
-            // server/.env, so there is nothing to configure here — pointing at
-            // the server instructions would send someone looking for files the
-            // installer never created. Run the server build to share.
-            <p className="hint">
-              The desktop app is private to this computer — nothing it stores is reachable
-              from the network, and nobody else can connect. To share your library with
-              other people, run Scibrarian as a server instead: see the README&rsquo;s
-              &ldquo;Sharing your server&rdquo; section.
+      {/* Absent entirely in the desktop build, which binds to loopback with no
+          admin token and no server/.env: nothing here is configurable, and no
+          address it could print would reach anyone. Pointing at the server
+          instructions instead would send someone looking for files the installer
+          never created; the README says outright that sharing is unavailable in
+          this build, which is the place for it. Run the server build to share.
+
+          Held until `ready` rather than dropped the moment the flag lands, which
+          is what `!ready ||` is doing here. The heading and the two bars below
+          sit outside the `ready` gate and do occupy height, so keying the
+          section on the flag alone made a Pro desktop build paint them and then
+          take them away on its own — `ready` is `loaded && proReady` there, and
+          Settings' own fetch lands well before the Pro panel reports in. That is
+          a lone reflow with nothing else moving, the one thing the stand-ins on
+          this page exist to prevent; this way the removal happens inside the
+          single coordinated reveal. A free build never had the gap, `ready`
+          being just `loaded` when `pro` is null.
+
+          `=== false` rather than `!== true`, so a null flag past `ready` — a
+          settings request that failed — withholds the section rather than
+          showing a heading over nothing, the same reading the Pro panel gives
+          its own null. */}
+      {(!ready || settings?.desktop === false) && (
+        <section className="panel">
+          <h2>Sharing</h2>
+          {!ready && (
+            <p className="hint" aria-busy="true" aria-label="Loading sharing info">
+              <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
+              <SkeletonBar w="60%" h={12} />
             </p>
-          ) : settings.share_urls.length === 0 ? (
-            <p className="hint">
-              Only this machine can connect right now. To let others view your server, set{" "}
-              <code>HOST</code> and <code>ADMIN_TOKEN</code> in <code>server/.env</code> and
-              restart — see the README&rsquo;s &ldquo;Sharing your server&rdquo; section.
-            </p>
-          ) : (
-            <>
+          )}
+          {ready && settings &&
+            (settings.share_urls.length === 0 ? (
               <p className="hint">
-                Send one of these addresses to anyone on your network. They can view
-                everything except stored PDFs — share those with the{" "}
-                <Share2 size={14} className="inline-icon" aria-hidden /> buttons, or turn
-                on Open Library below. Changing anything still requires the admin token.
+                Only this machine can connect right now. To let others view your server, set{" "}
+                <code>HOST</code> and <code>ADMIN_TOKEN</code> in <code>server/.env</code> and
+                restart — see the README&rsquo;s &ldquo;Sharing your server&rdquo; section.
               </p>
-              <ul className="list">
-                {settings.share_urls.map((url) => (
-                  <li key={url}>
-                    <span>
-                      <code>{url}</code>
-                    </span>
-                    <button className="link-btn" onClick={() => copyUrl(url)}>
-                      {copiedUrl === url ? <>Copied <Check size={13} className="inline-icon" aria-hidden /></> : "Copy"}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <label className="open-library">
-                <span>
-                  Open Library {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
-                </span>
-                <span className="switch-row">
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    className="switch"
-                    checked={settings.library_open}
-                    onChange={(e) => toggleOpenLibrary(e.target.checked)}
-                  />
-                  <span className="hint">
-                    When on, viewers can freely download stored files and collection zips —
-                    no share link needed. When off, files are owner-only and shared via
-                    expiring links.
+            ) : (
+              <>
+                <p className="hint">
+                  Send one of these addresses to anyone on your network. They can view
+                  everything except stored PDFs — share those with the{" "}
+                  <Share2 size={14} className="inline-icon" aria-hidden /> buttons, or turn
+                  on Open Library below. Changing anything still requires the admin token.
+                </p>
+                <ul className="list">
+                  {settings.share_urls.map((url) => (
+                    <li key={url}>
+                      <span>
+                        <code>{url}</code>
+                      </span>
+                      <button className="link-btn" onClick={() => copyUrl(url)}>
+                        {copiedUrl === url ? <>Copied <Check size={13} className="inline-icon" aria-hidden /></> : "Copy"}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <label className="open-library">
+                  <span>
+                    Open Library {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
                   </span>
-                </span>
-              </label>
-            </>
-          ))}
-      </section>
+                  <span className="switch-row">
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      className="switch"
+                      checked={settings.library_open}
+                      onChange={(e) => toggleOpenLibrary(e.target.checked)}
+                    />
+                    <span className="hint">
+                      When on, viewers can freely download stored files and collection zips —
+                      no share link needed. When off, files are owner-only and shared via
+                      expiring links.
+                    </span>
+                  </span>
+                </label>
+              </>
+            ))}
+        </section>
+      )}
 
       {/* Last, and deliberately so: the one control here that destroys
           everything sits below every control that builds it, so nothing above

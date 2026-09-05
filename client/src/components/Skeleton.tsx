@@ -299,10 +299,11 @@ export function PapersTableSkeleton({
 
 // Stands in for the Pro panel while its own reload is in flight.
 //
-// Sized to the panel's shortest *certain* state. The spoke half is always
-// drawn, so it is always reserved; the master half is drawn whenever this is
-// not the desktop build, which Settings already knows by the time this renders
-// — so `master` reserves a fact rather than guessing at one.
+// Sized to the panel's shortest *certain* state. Each half belongs to one build
+// — the spoke half to the desktop app, the master half to the server — so each
+// is reserved only where the panel will actually draw it. The flag is the
+// caller's own, read here the same way it reads it there; see it for which way
+// a not-yet-known build is guessed.
 //
 // What is deliberately not reserved is anything conditional on the pairing: the
 // collections list, the mint form's minted code, the node rows. Those are
@@ -312,18 +313,22 @@ export function PapersTableSkeleton({
 //
 // The real headings rather than bars over them. They never change, so a shimmer
 // there would be standing in for strings this file already knows.
-export function ProPanelSkeleton({ master }: { master: boolean }) {
+export function ProPanelSkeleton({ desktop }: { desktop: boolean | null }) {
   return (
     <section className="panel pro-panel" aria-busy="true" aria-label="Loading shared holdings">
       <h3>Shared holdings</h3>
       <SkeletonBar w="92%" h={12} style={{ marginBottom: 6 }} />
       <SkeletonBar w="70%" h={12} style={{ marginBottom: 18 }} />
-      <h4>Your organization</h4>
-      <SkeletonBar w="46%" h={12} style={{ marginBottom: 10 }} />
-      {/* The pairing row: a full-width input beside its button, which is what
-          sets the spoke half's height more than anything else in it. */}
-      <ProSkeletonRow button={92} />
-      {master && (
+      {desktop === true && (
+        <>
+          <h4>Your organization</h4>
+          <SkeletonBar w="46%" h={12} style={{ marginBottom: 10 }} />
+          {/* The pairing row: a full-width input beside its button, which is what
+              sets the spoke half's height more than anything else in it. */}
+          <ProSkeletonRow button={92} />
+        </>
+      )}
+      {desktop !== true && (
         <>
           <h4>People connected to this library</h4>
           <SkeletonBar w="88%" h={12} style={{ marginBottom: 4 }} />
