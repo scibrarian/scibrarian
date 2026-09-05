@@ -1193,17 +1193,21 @@ export default function App() {
         placeholder="Collection name"
         maxLength={MAX_NAME_CHARS}
         submitLabel="Create"
-        // Pre-filled, never a gate. The common case — this really is work for
-        // the organization you are paired to — costs nothing, and the exception
-        // is one click at the only moment the writer knows the answer. Absent
-        // entirely when unpaired, which is why such collections stay local
-        // permanently rather than being adopted on a later pairing.
+        // Shown, not asked. Every new collection on a paired instance is
+        // shared, and the disabled checkbox is how the writer learns that while
+        // naming one rather than discovering it later. Undoing it is Stop
+        // sharing on the collection in Settings, which is forward-only —
+        // whatever was added before it stays in the organization's library.
+        //
+        // Absent entirely when unpaired, which is why such collections stay
+        // local permanently rather than being adopted on a later pairing.
         option={
           pro?.is_paired
             ? {
-                label: "Share with your organization",
+                label: "Shared with your organization",
                 hint: " Papers you add here are copied to its library — the PDF and its PubMed ID, nothing else.",
                 defaultChecked: true,
+                disabled: true,
               }
             : undefined
         }

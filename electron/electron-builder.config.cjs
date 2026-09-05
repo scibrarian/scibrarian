@@ -241,6 +241,47 @@ module.exports = {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
     perMachine: false,
+
+    // The EULA, on the one target that can put it in front of somebody and
+    // require Accept before the install proceeds — and only because
+    // `oneClick: false` above makes this the assisted wizard, which is the only
+    // NSIS flavour with a license page.
+    //
+    // Pro only. The agreement covers a build that includes the Pro Module, and
+    // the free build is AGPL — which is also why it is named here rather than
+    // left to electron-builder's convention, where a build/license.rtf would be
+    // found automatically and shown by *both* tiers with nothing to say so.
+    // `null` is an off switch, but for NSIS only most of the way. It drops the
+    // explicit path and the plain `license.rtf` convention; nsisLicense then
+    // falls through to a second, *localized* scan that takes no options at all,
+    // and picks up `license_<lang>` / `eula_<lang>` in .rtf, .txt or .html from
+    // buildResources on either tier. electron/build/ holds icons and
+    // installer.nsh and nothing else, so nothing is found today \u2014 but a
+    // localized license dropped in there later would appear in the *free*
+    // installer with nothing here to explain it. The dmg and the AppImage have
+    // no such fallback: `null` stops both dead.
+    //
+    // Written by build.mjs beside the Pro module. The path resolves against
+    // electron/ rather than buildResources, because it is deliberately not in
+    // buildResources — that is the directory the convention scans.
+    license: isProBuild ? "bundle/EULA.rtf" : null,
+  },
+
+  // The macOS half of the same agreement. hdiutil shows it when the disk image
+  // is mounted and will not open the volume until it is agreed to, which is as
+  // close to the NSIS page as macOS gets. Nothing equivalent for the zip beside
+  // it, and that is correct: the zip is what electron-updater downloads, and an
+  // update is not a fresh acceptance.
+  dmg: {
+    license: isProBuild ? "bundle/EULA.rtf" : null,
+  },
+
+  // Linux has no click-through to hook. An AppImage is a file you run, with no
+  // installer to put a page in front of, so this only copies the document into
+  // the image — the terms travel with the artifact and nobody is asked to
+  // accept them. Plain text because that is all this target reads.
+  appImage: {
+    license: isProBuild ? "bundle/EULA.txt" : null,
   },
 
   mac: {
