@@ -226,12 +226,22 @@ export function PromptDialog({
           maxLength={maxLength}
         />
         {option && (
-          <label className="modal-option">
+          <label className={`modal-option${option.disabled ? " modal-option-fixed" : ""}`}>
             <input
               type="checkbox"
               checked={checked}
-              disabled={option.disabled}
-              onChange={(e) => setChecked(e.target.checked)}
+              // `aria-disabled` and a handler that declines, rather than
+              // `disabled`. A pinned row is the one place this dialog *tells*
+              // the writer something instead of asking — on a paired instance
+              // that sentence is where they learn their papers leave the
+              // machine — and `disabled` takes it out of the tab order, so
+              // whoever is reading by keyboard or screen reader goes input →
+              // Cancel → Create and is never told at all. Focusable and
+              // announced as unavailable says the same thing to everyone.
+              aria-disabled={option.disabled || undefined}
+              onChange={(e) => {
+                if (!option.disabled) setChecked(e.target.checked);
+              }}
             />
             <span>
               {option.label}
