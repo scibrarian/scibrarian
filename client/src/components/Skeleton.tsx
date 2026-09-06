@@ -50,7 +50,7 @@ export function SkeletonBar({
 // and PapersTable both open with the same <PaperFilters>, and `searchable`
 // defaults on for both, so this is what the toolbar looks like either way.
 //
-// That is what makes it safe for a stand-in rendered before the workspace is
+// That is what makes it safe for a stand-in rendered before the section is
 // known. Neither .timeline-wrap nor .papers-table-view carries any CSS of its
 // own, so this lands in the same place whichever one ends up around it.
 export function ToolbarSkeleton() {
@@ -60,7 +60,7 @@ export function ToolbarSkeleton() {
         className="search"
         type="search"
         // The full-text wording, which is a guess: this draws before the
-        // bootstrap has said which workspace it landed in. It is the right
+        // bootstrap has said which section it landed in. It is the right
         // guess, because the bootstrap prefers the Library whenever a
         // collection exists (see App), and collections are exactly the sources
         // that carry PDFs. Being wrong costs only the sentence — .search is
@@ -138,7 +138,7 @@ export function FilterSkeleton({ label }: { label: string }) {
         <span className="filter-label">
           <SkeletonBar h={14}>{label}</SkeletonBar>
         </span>
-        <span className="ws-caret">
+        <span className="picker-caret">
           <SkeletonBar w={16} h={16} />
         </span>
       </button>

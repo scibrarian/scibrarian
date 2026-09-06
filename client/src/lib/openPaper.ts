@@ -34,7 +34,7 @@ export interface PaperOpener {
 // Opening a paper is identical in every view (table, timeline, graph): a stored
 // PDF when one exists and the viewer may have it, PubMed otherwise. Papers from
 // a topic have no file, so the same handler does the right thing there too —
-// no branching on which workspace we're in.
+// no branching on which section we're in.
 export function usePaperOpener({
   isAdmin,
   tokenRequired,

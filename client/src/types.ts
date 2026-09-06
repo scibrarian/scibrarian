@@ -205,7 +205,7 @@ export interface ImportStartResponse {
 // four kinds and the two used to mirror each other by hand.
 export type { PaperSource } from "../../shared/source";
 
-// What the Library workspace is pointed at: one collection, or every collection
+// What the Library section is pointed at: one collection, or every collection
 // at once. "all" is deliberately not a reserved id — a sentinel number would be
 // one bad comparison away from selecting a real collection, and this can't be
 // mistaken for one.

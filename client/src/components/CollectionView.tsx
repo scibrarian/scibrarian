@@ -73,7 +73,7 @@ export function CollectionView({
   // all of that chrome is absent — the same shape a viewer already sees. The
   // component is still rendered rather than skipped, because `source-head`
   // below is a deliberate spacer: without it the papers module starts at a
-  // different height here than in every other workspace and the list jumps as
+  // different height here than in every other section and the list jumps as
   // you switch.
   collectionId: number | null;
   isAdmin: boolean;
@@ -416,7 +416,7 @@ export function CollectionView({
   return (
     <div className="source-view">
       {/* The row is always here, because the papers below it start at one
-          height in every workspace; the management chrome inside it is
+          height in every section; the management chrome inside it is
           admin-only, so viewers just see the papers module (and, below, live
           progress of any admin-triggered import). Showing every collection at
           once empties it the same way: adding files, renaming and deleting all

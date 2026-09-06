@@ -132,7 +132,7 @@ export function describeRemoval(asked: number, removed: number, papers: number):
  *
  * Afterwards, and only afterwards. The confirmation beforehand says the same
  * fixed thing every time (see RESET_WARNING in Settings) — what it is asking
- * about is which workspaces empty, which is a fact about the app rather than
+ * about is which sections empty, which is a fact about the app rather than
  * about this library. Once it has happened, the counts are the report: they are
  * the only thing that says the button did what it claimed, and how much.
  */

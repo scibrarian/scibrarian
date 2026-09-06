@@ -18,7 +18,7 @@ const VIEWS: { value: ViewMode; label: string }[] = [
 // roving focus — the group is one tab stop and arrow keys move within it.
 //
 // A segmented control reads well up to ~5 items. Past that, or once a view
-// applies to only one workspace (a fixed row would then be lying about what's
+// applies to only one section (a fixed row would then be lying about what's
 // available), this should become a DropdownMenu — already a dependency, so the
 // swap stays inside this file.
 export function ViewSwitcher({

@@ -15,7 +15,7 @@ import type {
 import type { Bookmarking } from "./lib/bookmarking";
 import { seedEmptySource, sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
-import { WorkspaceNav, MODES, type Mode } from "./components/WorkspaceNav";
+import { SectionNav, MODES, type Mode } from "./components/SectionNav";
 import { PaperViews } from "./components/PaperViews";
 import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import { MAX_NAME_CHARS } from "../../shared/limits";
 
-// The prose below points at the Library workspace by name and glyph, so it
+// The prose below points at the Library section by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
 // could drift from the one the mode switch draws. Aliased because JSX needs a
 // capitalized binding to treat it as a component.
@@ -65,13 +65,13 @@ export default function App() {
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   const [activeCollectionId, setActiveCollectionId] = useState<CollectionSelection | null>(null);
-  // Each workspace remembers its own view, and every one of them opens on
+  // Each section remembers its own view, and every one of them opens on
   // Papers. Interests used to open on Timeline, on the grounds that what it is
   // for — reading what's new — is the one question a date axis answers. That
   // held for the view in isolation and not for moving between views: switching
-  // workspace changed the shape of the page as well as its contents, so the
+  // section changed the shape of the page as well as its contents, so the
   // switch read as landing somewhere else rather than as the same list of a
-  // different source. One default across all three makes the workspaces
+  // different source. One default across all three makes the sections
   // comparable, and Timeline is still one click away and remembered after it.
   const [viewByMode, setViewByMode] = useState<Record<Mode, ViewMode>>({
     interests: "table",
@@ -88,7 +88,7 @@ export default function App() {
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
   // "Do I already have this?" lives in the header rather than inside a
-  // workspace: the question arrives from outside the app (an assignment, a
+  // section: the question arrives from outside the app (an assignment, a
   // reference list someone sent) and has to be askable without first navigating
   // to the right collection — or knowing which collection would hold it.
   const [checkingHave, setCheckingHave] = useState(false);
@@ -294,7 +294,7 @@ export default function App() {
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
-        // Preselect each workspace's first entry, then land in the first one
+        // Preselect each section's first entry, then land in the first one
         // that actually has something in it (nav order: Library, Interests,
         // Bookmarks) so switching modes never opens on an empty picker.
         if (fs.length > 0) setActiveFolderId(fs[0].id);
@@ -342,7 +342,7 @@ export default function App() {
   function changeMode(m: Mode) {
     setShowSettings(false);
     setMode(m);
-    // Entering a workspace with nothing selected falls back to its first entry,
+    // Entering a section with nothing selected falls back to its first entry,
     // so a mode switch always lands on something.
     if (m === "interests" && activeTopicId == null && topics.length > 0) {
       setActiveTopicId(topics[0].id);
@@ -624,7 +624,7 @@ export default function App() {
       // A poll is the one message in the app that arrives long after the click
       // that asked for it — it is a PubMed round trip, so by the time it lands
       // the list has been scrolled and read. The banner is in flow above
-      // <main>, so raising one there pushes the whole workspace down by its
+      // <main>, so raising one there pushes the whole section down by its
       // height, including the "Check for new papers" button that started this
       // and whatever row the pointer was over. That is the wrong thing to do to
       // someone who is mid-read, and it is the common case: almost every poll
@@ -676,8 +676,8 @@ export default function App() {
       : activeFolder && { folder: activeFolder.id };
 
   // Whether the selected source is already known to hold nothing, before its
-  // papers have been asked for. Every source in the workspace has been counted
-  // for the picker already (see WorkspaceNav), so one counted at 0 can open on
+  // papers have been asked for. Every source in the section has been counted
+  // for the picker already (see SectionNav), so one counted at 0 can open on
   // its empty state instead of skeletoning its way to one.
   //
   // Deliberately a hint rather than an assertion, which is what separates it
@@ -778,7 +778,7 @@ export default function App() {
     <>No papers in this folder yet.</>
   );
 
-  // Same idea one level up: nothing is selected because this workspace has no
+  // Same idea one level up: nothing is selected because this section has no
   // entries at all.
   const noSourceState = !isAdmin ? (
     <>
@@ -893,7 +893,7 @@ export default function App() {
             //
             // What's reserved is what the load is about to produce. The view
             // switch: `source` is null until then, but the load lands in the
-            // first workspace that holds anything (see the effect above), so it
+            // first section that holds anything (see the effect above), so it
             // appears for everyone past an empty app. "Check references" is
             // ungated and always does. The icon buttons are one or two — a
             // viewer's padlock, or an admin's gear beside the one that locks
@@ -982,8 +982,8 @@ export default function App() {
         </div>
       </header>
 
-      <div className="workspace-bar">
-        <WorkspaceNav
+      <div className="section-bar">
+        <SectionNav
           mode={mode}
           isAdmin={isAdmin}
           onModeChange={changeMode}
@@ -1013,7 +1013,7 @@ export default function App() {
         {!loaded ? (
           // Reserve what is certain here, and nothing else.
           //
-          // The action row, because every workspace that draws papers draws one
+          // The action row, because every section that draws papers draws one
           // too and .source-head holds a fixed height whatever goes in it — so
           // the papers don't jump down a row's height when this is replaced
           // (mirrors the header). And the toolbar, because both paper views
@@ -1029,7 +1029,7 @@ export default function App() {
           //
           // The body is deliberately absent. This used to reserve a whole
           // TimelineSkeleton, which was a guess it had no way to make: the
-          // workspace this lands in is not settled until the bootstrap resolves
+          // section this lands in is not settled until the bootstrap resolves
           // — the effect above sets `mode` in the same batch as `loaded` — and
           // it guessed timeline while the initial `viewMode` says table. With a
           // collection present it reserved 708px of timeline and the answer came
@@ -1062,7 +1062,7 @@ export default function App() {
             onLibraryReset={async () => {
               // No notice from here. What was deleted is reported in the panel
               // the button is in — this runs with the reader scrolled to the
-              // foot of Settings, and a banner above the workspace bar is the
+              // foot of Settings, and a banner above the section bar is the
               // one place they are certainly not looking.
               //
               // Every selection at once, and before the reloads rather than
@@ -1092,9 +1092,9 @@ export default function App() {
         ) : !source ? (
           <div className="empty">{noSourceState}</div>
         ) : inInterests ? (
-          // Every workspace puts its source-scoped actions in the same row, in
+          // Every section puts its source-scoped actions in the same row, in
           // the same place, in every view — so the papers below start at one
-          // vertical position and switching workspace or view doesn't shift
+          // vertical position and switching section or view doesn't shift
           // them. A topic's actions are polling ones: when it last ran, and
           // running it now.
           <div className="source-view">

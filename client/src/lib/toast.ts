@@ -5,7 +5,7 @@
 // it's fire-and-forget UI that shouldn't be tied to any component's lifecycle.
 //
 // A dismiss button rides along because the toast now holds the screen for five
-// seconds over the workspace bar: long enough that someone who has already read
+// seconds over the section bar: long enough that someone who has already read
 // it, or who wants the nav underneath, should be able to take it back rather
 // than wait the animation out.
 let active: HTMLElement | null = null;

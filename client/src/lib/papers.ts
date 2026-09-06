@@ -21,7 +21,7 @@ export const SEARCH_PLACEHOLDER = "Search titles, abstracts & authors…";
 export const SEARCH_PLACEHOLDER_FULL_TEXT = "Search titles, abstracts, authors & PDF text…";
 
 // Cache the last successful fetch per (source, search). Remounting a view —
-// flipping between Papers/Timeline, or clicking back into a workspace — then
+// flipping between Papers/Timeline, or clicking back into a section — then
 // paints from cache instead of refetching. The Table and Timeline modules share
 // this cache because they read the same endpoint with the same key. reloadToken
 // is this source's alone (see lib/reload), bumped whenever its data changes —
