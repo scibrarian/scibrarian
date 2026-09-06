@@ -284,8 +284,14 @@ body {
 }
 
 /* Narrower than the section picker's menu, which carries count badges. These
-   rows carry a tick and a pencil, and both are fixed-width. */
-.workspace-menu {
+   rows carry a tick and one or two icon buttons, all of them fixed-width.
+
+   Both classes are on the element and both set min-width, so this has to out-
+   specify .picker-menu rather than merely follow it: written as `.workspace-menu`
+   alone it lost the tie on source order — .picker-menu is declared some two
+   thousand lines further down — and the narrower menu this describes was never
+   what rendered. */
+.picker-menu.workspace-menu {
   min-width: 220px;
 }
 
@@ -2073,6 +2079,24 @@ code {
 .picker-menu,
 .bookmark-menu {
   transform-origin: var(--radix-dropdown-menu-content-transform-origin, center);
+  /* And no horizontal scrollbar, ever — which needs saying out loud because
+     each of these only asks for `overflow-y: auto`, and when one axis is not
+     visible the other computes from `visible` to `auto` rather than staying
+     put. So all three already had a live horizontal scroll container they never
+     declared.
+
+     Empty, until the entry animation above runs over a name long enough to be
+     ellipsised. For exactly --dur-fast, Chromium reports the menu's scrollWidth
+     as the *unclipped* width of that text — 456px against a 358px box, measured
+     on a 30-character workspace name — even though every row inside is within
+     its bounds and the text's own `overflow: hidden` is drawing it correctly.
+     The animation is the trigger: the overflow is gone on the frame it ends.
+     What a reader sees is a scrollbar flashing on and off as the menu opens.
+
+     Hidden rather than chased, because these menus have no horizontal content
+     by design: every name ellipsises and every badge is a two-digit count. A
+     bar here could only ever be an artefact. */
+  overflow-x: hidden;
 }
 
 .filter-menu[data-state="closed"],
