@@ -216,6 +216,32 @@ describe("heldElsewhere", () => {
   });
 });
 
+describe("workspaceContents", () => {
+  // What the delete confirmation says out loud. Files rather than articles,
+  // because a stored PDF is the thing somebody paid for.
+  it("counts what deleting a workspace would destroy", () => {
+    expect(elsewhere.workspaceContents("other")).toEqual({ collections: 1, files: 2 });
+  });
+
+  // A measured zero, not an absent answer: a workspace created and never opened
+  // holds nothing, and the dialog is right to read as the small thing it is.
+  it("reports a workspace with no database yet as empty", () => {
+    expect(elsewhere.workspaceContents("never-opened")).toEqual({ collections: 0, files: 0 });
+  });
+
+  // Absent, so the dialog claims nothing it cannot support and falls back to
+  // what it can always say safely.
+  it("answers null for a database it cannot read", () => {
+    fs.writeFileSync(otherDb, "not a database");
+    expect(elsewhere.workspaceContents("other")).toBeNull();
+  });
+
+  it("answers null off-desktop, where there is nothing to size", () => {
+    delete process.env.SCIBRARIAN_WORKSPACES_ROOT;
+    expect(elsewhere.workspaceContents("other")).toBeNull();
+  });
+});
+
 describe("/have, with another workspace on the machine", () => {
   it("still answers held for a paper in this workspace, with no elsewhere line", async () => {
     const [answer] = await have.checkHoldings([MINE.pmid], { lookUpFree: false });

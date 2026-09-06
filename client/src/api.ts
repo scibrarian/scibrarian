@@ -327,6 +327,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ name }),
     }),
+  // Irreversible, and more so than resetLibrary: that keeps the settings, the
+  // reference lists and any pairing, where this takes the whole database and
+  // blob store. Refused for the active workspace — see the route.
+  deleteWorkspace: (id: string) =>
+    req<WorkspacesResponse>(`/api/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" }),
   // Answers, *then* the app restarts into the chosen workspace — so a resolved
   // promise here means the switch is committed and the window is about to go,
   // not that anything is ready to look at. `restarting` is false only where

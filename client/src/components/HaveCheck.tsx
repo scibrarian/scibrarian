@@ -389,7 +389,7 @@ function AnswerRow({
           will go and look. */}
       {!held && elsewhere && (
         <p className="have-elsewhere">
-          You already own this — in your <strong>{elsewhere.workspace}</strong> workspace,
+          Exists in <strong>{elsewhere.workspace}</strong> workspace,
           under “{elsewhere.collection}”.
         </p>
       )}

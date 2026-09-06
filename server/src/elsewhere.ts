@@ -1,3 +1,13 @@
+// What this process can learn about the *other* workspaces on this machine,
+// without writing a byte to any of them.
+//
+// Two questions, one module, because both are answered by opening someone
+// else's app.db read-only and both must fail the same careful way. The first is
+// the holdings union below; the second is what a workspace contains, asked once
+// by the confirmation ahead of deleting it.
+//
+// ---
+//
 // "You already own this — it's in your Acme workspace."
 //
 // Workspaces keep one agency's material out of another's, and that isolation
@@ -146,5 +156,53 @@ function readOne(
     }
   } finally {
     db.close();
+  }
+}
+
+// ---------- what a workspace holds ----------
+
+/**
+ * Enough to make "delete this workspace" a decision rather than a click.
+ *
+ * Both counts are optional in the wire type for the reason ProNode's activity
+ * counts are: absent and zero are different answers, and this one is read by
+ * someone about to destroy a library. Zero means measured and empty — a
+ * workspace created and never filled, which is a much lighter thing to delete.
+ * Absent means the database could not be read, and the dialog then says what it
+ * always safely can: this cannot be undone.
+ *
+ * Files rather than papers, because that is what is actually irreplaceable. An
+ * articles row is a PubMed fetch away from coming back; a stored PDF is the one
+ * somebody paid for.
+ */
+export interface WorkspaceContents {
+  collections: number;
+  files: number;
+}
+
+export function workspaceContents(id: string): WorkspaceContents | null {
+  if (!workspacesEnabled()) return null;
+  const dbPath = workspaceDbPath(id);
+  // Created and never opened: no database, and nothing in it. A measured zero
+  // rather than an unreadable one, which is the honest reading and the one that
+  // gives the dialog its lighter wording.
+  if (!fs.existsSync(dbPath)) return { collections: 0, files: 0 };
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const count = (sql: string) => Number((db.prepare(sql).get() as { c: number }).c);
+      return {
+        collections: count("SELECT COUNT(*) AS c FROM collections"),
+        files: count("SELECT COUNT(*) AS c FROM collection_files"),
+      };
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    // Never fatal. This decorates a list that has to render either way, and a
+    // workspace whose database will not open is one a person is more likely to
+    // want rid of, not less.
+    console.warn(`[workspaces] could not size "${id}": ${errMessage(err)}`);
+    return null;
   }
 }

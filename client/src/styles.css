@@ -298,10 +298,23 @@ body {
   width: 14px;
 }
 
+/* Rename, and — on every row but the one you are in — delete.
+
+   Held in their own box so the row's `justify-content: space-between` puts the
+   pair at the far end as one unit; two bare buttons would be spaced apart from
+   each other as well as from the name. */
+.workspace-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
 /* Reveals on hover or keyboard focus within the row, like a list-item action
-   should — but never on the row you are already in, where it is the only
-   control and hiding it would make renaming the current workspace undiscoverable. */
-.workspace-rename {
+   should — but never on the row you are already in, where rename is the only
+   control and hiding it would make renaming the current workspace
+   undiscoverable. */
+.workspace-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -316,16 +329,23 @@ body {
   transition: opacity var(--dur-fast) var(--ease);
 }
 
-.picker-option:hover .workspace-rename,
-.picker-option[data-highlighted] .workspace-rename,
-.picker-option.active .workspace-rename,
-.workspace-rename:focus-visible {
+.picker-option:hover .workspace-action,
+.picker-option[data-highlighted] .workspace-action,
+.picker-option.active .workspace-action,
+.workspace-action:focus-visible {
   opacity: 1;
 }
 
-.workspace-rename:hover {
+.workspace-action:hover {
   color: var(--text);
   background: var(--panel);
+}
+
+/* Red on hover only. Sitting red permanently in a menu of ordinary rows makes
+   the whole list read as an alarm, and the row this appears on is one someone
+   opened the menu to *switch* to far more often than to delete. */
+.workspace-action.danger:hover {
+  color: var(--danger);
 }
 
 /* Beside the trigger rather than in the app banner: the switcher sits above

@@ -250,7 +250,7 @@ function firstRun(): WorkspaceRecord {
     // there was more than one place to put it. An agency's name is something
     // they add when they create the second workspace and the distinction starts
     // to mean something.
-    name: "My library",
+    name: "Default workspace",
     created_at: new Date().toISOString(),
   };
   ensureWorkspaceDirs(ws.id);
@@ -335,6 +335,32 @@ export function renameWorkspace(id: string, name: string): WorkspaceRecord | nul
     workspaces: reg.workspaces.map((w) => (w.id === id ? renamed : w)),
   });
   return renamed;
+}
+
+/**
+ * Destroy a workspace and everything in it. Irreversible.
+ *
+ * Refuses the active one, which is not a policy so much as a fact: its database
+ * is open in this process, Windows will not unlink a file that is, and there
+ * would be nothing for the app to be looking at afterwards. It is also what
+ * guarantees a workspace always survives — the active one cannot be the thing
+ * being deleted, so the list can never empty.
+ *
+ * **The registry entry goes first, then the files.** If the removal fails part
+ * way, an orphaned directory is invisible and costs disk; a registry row
+ * pointing at a gutted library is offered in the picker, read by the holdings
+ * union, and switched into. Of the two halves this can be left in, that is the
+ * one to leave.
+ */
+export function deleteWorkspace(id: string): "ok" | "active" | "unknown" {
+  const reg = readRegistry();
+  if (!reg || !reg.workspaces.some((w) => w.id === id)) return "unknown";
+  if (reg.active === id) return "active";
+  writeRegistry({ ...reg, workspaces: reg.workspaces.filter((w) => w.id !== id) });
+  // force, so a directory already gone — a half-finished earlier attempt — is
+  // not an error on the run that finishes the job.
+  fs.rmSync(workspaceDir(id), { recursive: true, force: true });
+  return "ok";
 }
 
 /**

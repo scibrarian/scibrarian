@@ -127,11 +127,13 @@ import type {
   Workspace,
   WorkspacesResponse,
 } from "./types.js";
+import { workspaceContents } from "./elsewhere.js";
 import {
   activeWorkspace,
   canRestart,
   checkWorkspaceName,
   createWorkspace,
+  deleteWorkspace,
   listWorkspaces,
   renameWorkspace,
   requestRestart,
@@ -1432,8 +1434,23 @@ api.put("/settings", (req, res) => {
 
 // One row as the client sees it. `active` is derived rather than stored on each
 // record, so there is exactly one source of truth for which library is open.
+//
+// The contents are counted for every row but that one, because that one cannot
+// be deleted — so the counts would answer a question nobody can ask, at the
+// price of a second connection to the database this process already holds open.
+// A workspace whose database will not open contributes no counts and is still
+// listed: it is a candidate for deletion like any other, and rather more likely
+// to be one.
 function toWorkspaceRow(w: WorkspaceRecord, activeId: string): Workspace {
-  return { id: w.id, name: w.name, created_at: w.created_at, active: w.id === activeId };
+  const row: Workspace = {
+    id: w.id,
+    name: w.name,
+    created_at: w.created_at,
+    active: w.id === activeId,
+  };
+  if (row.active) return row;
+  const contents = workspaceContents(w.id);
+  return contents ? { ...row, ...contents } : row;
 }
 
 function workspacesBody(): WorkspacesResponse {
@@ -1483,6 +1500,34 @@ api.patch("/workspaces/:id", (req, res) => {
     return res.status(404).json({ error: "No such workspace." });
   }
   res.json(workspacesBody());
+});
+
+// Delete a workspace and everything in it. The only route here that destroys
+// anything, and it destroys more than /data/reset does: that one keeps the
+// settings, the MeSH and journal reference lists, and any Pro pairing, where
+// this takes the whole database and blob store with it.
+//
+// No typed-name gate ahead of it, deliberately, and the reasoning is the one
+// already written on PromptDialog's `option`: a forced confirmation gets
+// pattern-matched and clicked through within a week, leaving the same failure
+// mode plus a step everyone resents. What is offered instead is a dialog that
+// says what is actually about to go — the collection and file counts above are
+// there for that sentence and nothing else.
+api.delete("/workspaces/:id", (req, res) => {
+  if (noWorkspaces(res)) return;
+  switch (deleteWorkspace(String(req.params.id))) {
+    case "unknown":
+      return res.status(404).json({ error: "No such workspace." });
+    // Not a policy: its database is open in this process, and there would be
+    // nothing left for the window to be looking at. It is also what guarantees
+    // one always survives.
+    case "active":
+      return res.status(409).json({
+        error: "You can't delete the workspace you're in. Switch to another one first.",
+      });
+    default:
+      return res.json(workspacesBody());
+  }
 });
 
 // Switch workspace: record the choice, answer, then restart into it.

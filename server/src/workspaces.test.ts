@@ -6,6 +6,7 @@ import {
   activeWorkspace,
   checkWorkspaceName,
   createWorkspace,
+  deleteWorkspace,
   ensureActiveWorkspace,
   listWorkspaces,
   onRestartRequested,
@@ -15,6 +16,7 @@ import {
   setActiveWorkspace,
   workspaceBlobsDir,
   workspaceDbPath,
+  workspaceDir,
   workspacesEnabled,
 } from "./workspaces.js";
 
@@ -166,6 +168,57 @@ describe("switching", () => {
   it("reports a rename of an id it doesn't have", () => {
     ensureActiveWorkspace();
     expect(renameWorkspace("not-a-workspace", "Nope")).toBeNull();
+  });
+});
+
+describe("deleting", () => {
+  it("removes the workspace and its whole directory", () => {
+    // By id, not by name: what the first workspace is called is a product
+    // decision that can change, and it is not what this test is about.
+    const mine = ensureActiveWorkspace();
+    const acme = createWorkspace("Acme");
+    fs.writeFileSync(workspaceDbPath(acme.id), "pretend-sqlite");
+
+    expect(deleteWorkspace(acme.id)).toBe("ok");
+    expect(listWorkspaces().map((w) => w.id)).toEqual([mine.id]);
+    expect(fs.existsSync(workspaceDir(acme.id))).toBe(false);
+  });
+
+  // Not a policy but a fact: its database is open in this process, Windows will
+  // not unlink a file that is, and there would be nothing left for the window to
+  // be looking at.
+  it("refuses the workspace the app is running in", () => {
+    const mine = ensureActiveWorkspace();
+    createWorkspace("Acme");
+
+    expect(deleteWorkspace(mine.id)).toBe("active");
+    expect(listWorkspaces()).toHaveLength(2);
+    expect(fs.existsSync(workspaceDir(mine.id))).toBe(true);
+  });
+
+  // Which is also what guarantees a workspace always survives: the last one
+  // standing is necessarily the active one, and the active one is refused.
+  it("cannot empty the list", () => {
+    const only = ensureActiveWorkspace();
+    expect(deleteWorkspace(only.id)).toBe("active");
+    expect(listWorkspaces()).toHaveLength(1);
+  });
+
+  it("reports an id it doesn't have", () => {
+    ensureActiveWorkspace();
+    expect(deleteWorkspace("not-a-workspace")).toBe("unknown");
+  });
+
+  // The registry entry goes first, so a removal that fails part way leaves an
+  // orphaned directory — invisible, costs disk — rather than a registry row
+  // pointing at a gutted library, which the picker offers and the union reads.
+  it("does not resurrect a workspace whose directory was already gone", () => {
+    ensureActiveWorkspace();
+    const acme = createWorkspace("Acme");
+    fs.rmSync(workspaceDir(acme.id), { recursive: true, force: true });
+
+    expect(deleteWorkspace(acme.id)).toBe("ok");
+    expect(listWorkspaces()).toHaveLength(1);
   });
 });
 

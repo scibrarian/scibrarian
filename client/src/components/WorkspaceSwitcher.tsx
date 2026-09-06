@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, Pencil, Plus, Boxes } from "lucide-react";
+import { Check, ChevronDown, Pencil, Plus, Trash2, Boxes } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
 import type { Workspace } from "../types";
@@ -26,11 +26,48 @@ import { MAX_NAME_CHARS } from "../../../shared/limits";
 // reasonably think something had crashed.
 const SWITCH_TITLE = "Switch workspace";
 
+/**
+ * What deleting one would destroy, said out loud.
+ *
+ * Three wordings for three states, and that distinction is the whole point of
+ * carrying the counts. A workspace with papers in it names them, because "4
+ * stored PDFs" is what stops a wrong click long after "this cannot be undone"
+ * has stopped being read. An empty one says so and reads as the small thing it
+ * is. One whose counts are absent could not be measured — see the Workspace
+ * type — so it claims nothing it cannot support and falls back to the shape of
+ * the loss rather than its size.
+ *
+ * The whole sentence rather than a fragment the caller splices in: the three
+ * states do not share a grammar, and the version that tried to ended up
+ * promising to delete the stored PDFs twice.
+ */
+function deleteWarning(w: Workspace): string {
+  // True of all three, and the part that actually needs saying: a workspace is
+  // not a folder things can be moved out of first.
+  const tail = "Nothing moves to another workspace, and this cannot be undone.";
+  const rest = "its topics, its settings, and any organization pairing";
+  if (w.collections == null || w.files == null) {
+    return `This permanently deletes its whole library — every collection and every stored PDF, plus ${rest}. ${tail}`;
+  }
+  if (w.collections === 0 && w.files === 0) {
+    return `This workspace is empty — no collections, no stored PDFs. Deleting it also removes ${rest}. ${tail}`;
+  }
+  const collections = `${w.collections} collection${w.collections === 1 ? "" : "s"}`;
+  const files = `${w.files} stored PDF${w.files === 1 ? "" : "s"}`;
+  return `This permanently deletes its whole library — ${collections} and ${files}, plus ${rest}. ${tail}`;
+}
+
 export function WorkspaceSwitcher() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<Workspace | null>(null);
   const [switchingTo, setSwitchingTo] = useState<Workspace | null>(null);
+  const [deleting, setDeleting] = useState<Workspace | null>(null);
+  // The menu is controlled so a row action can close it. It cannot close
+  // itself: the action buttons stop the click reaching the row, so Radix never
+  // sees a selection — and an open menu paints crisp and undimmed above a
+  // dialog's scrim, looking live while the scrim swallows every click on it.
+  const [menuOpen, setMenuOpen] = useState(false);
   // Set once the switch is committed and the process is on its way out. The
   // window is about to disappear, so this is the last thing this component ever
   // renders — it exists so the seconds before that don't look like a dead click.
@@ -88,7 +125,7 @@ export function WorkspaceSwitcher() {
 
   return (
     <>
-      <DropdownMenu.Root>
+      <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenu.Trigger className="workspace-trigger" disabled={restarting}>
           <Boxes size={15} className="workspace-icon" aria-hidden />
           {/* The control's accessible name has to carry what the glyph says to
@@ -102,7 +139,19 @@ export function WorkspaceSwitcher() {
         </DropdownMenu.Trigger>
 
         <DropdownMenu.Portal>
-          <DropdownMenu.Content className="picker-menu workspace-menu" align="start" sideOffset={6} loop>
+          <DropdownMenu.Content
+            className="picker-menu workspace-menu"
+            align="start"
+            sideOffset={6}
+            loop
+            // Every row action opens a dialog, and on close Radix hands focus
+            // back to the trigger — which lands *after* the dialog has taken it,
+            // leaving a focus trap the keyboard is standing outside of. The
+            // dialog does its own focus management; this only declines to fight
+            // it. Nothing is lost for a menu dismissed with Escape, which the
+            // dialog's own close then returns focus for.
+            onCloseAutoFocus={(e) => e.preventDefault()}
+          >
             {workspaces.map((w) => (
               <DropdownMenu.Item
                 key={w.id}
@@ -131,23 +180,47 @@ export function WorkspaceSwitcher() {
                 {/* Rename is a button inside the row rather than a second menu
                     level: there are only ever a handful of workspaces, and a
                     submenu to reach one field is more chrome than the field. */}
-                <button
-                  type="button"
-                  className="workspace-rename"
-                  aria-label={`Rename ${w.name}`}
-                  title="Rename"
-                  onClick={(e) => {
-                    // Both, and neither is redundant: stopPropagation keeps the
-                    // click off the row's own handler, preventDefault keeps Radix
-                    // from treating it as a selection and closing the menu out
-                    // from under the dialog that is about to open.
-                    e.stopPropagation();
-                    e.preventDefault();
-                    setRenaming(w);
-                  }}
-                >
-                  <Pencil size={13} aria-hidden />
-                </button>
+                <span className="workspace-actions">
+                  <button
+                    type="button"
+                    className="workspace-action"
+                    aria-label={`Rename ${w.name}`}
+                    title="Rename"
+                    onClick={(e) => {
+                      // stopPropagation keeps the click off the row's own
+                      // handler, which would read it as picking this workspace
+                      // and offer to switch to it instead. That is also why the
+                      // menu has to be dismissed by hand here — see menuOpen.
+                      e.stopPropagation();
+                      setMenuOpen(false);
+                      setRenaming(w);
+                    }}
+                  >
+                    <Pencil size={13} aria-hidden />
+                  </button>
+                  {/* Absent on the active row rather than disabled there, because
+                      a disabled control invites working out how to enable it and
+                      there is no way: the workspace you are in cannot be deleted,
+                      its database being open in this very process. The way to
+                      delete Acme is to be somewhere else — which the row above
+                      this one is how you do. Its absence is also what guarantees
+                      the list can never empty. */}
+                  {!w.active && (
+                    <button
+                      type="button"
+                      className="workspace-action danger"
+                      aria-label={`Delete ${w.name}`}
+                      title="Delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuOpen(false);
+                        setDeleting(w);
+                      }}
+                    >
+                      <Trash2 size={13} aria-hidden />
+                    </button>
+                  )}
+                </span>
               </DropdownMenu.Item>
             ))}
             <DropdownMenu.Separator className="picker-sep" />
@@ -176,7 +249,6 @@ export function WorkspaceSwitcher() {
       <PromptDialog
         open={creating}
         title="New workspace"
-        placeholder="Agency or client name"
         maxLength={MAX_NAME_CHARS}
         submitLabel="Create"
         onSubmit={(name) => {
@@ -201,11 +273,25 @@ export function WorkspaceSwitcher() {
       />
 
       <ConfirmDialog
+        open={deleting != null}
+        title={deleting ? `Delete “${deleting.name}”?` : ""}
+        message={deleting ? deleteWarning(deleting) : ""}
+        confirmLabel="Delete workspace"
+        danger
+        onConfirm={() => {
+          const target = deleting;
+          setDeleting(null);
+          if (target) void run(api.deleteWorkspace(target.id));
+        }}
+        onCancel={() => setDeleting(null)}
+      />
+
+      <ConfirmDialog
         open={switchingTo != null}
         title={SWITCH_TITLE}
         message={
           `Scibrarian will close and reopen in “${switchingTo?.name}”. ` +
-          "Each workspace is a separate library, so nothing moves between them."
+          "Each workspace uses its own data, so nothing moves between them."
         }
         confirmLabel="Switch and restart"
         onConfirm={() => {
