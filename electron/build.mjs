@@ -28,13 +28,21 @@ const proBundle = path.join(repoRoot, "pro", "dist", "index.js");
 const proPackage = path.join(here, "bundle", "node_modules", "@scibrarian", "pro");
 // The EULA that governs a Pro build, and the two shippable renderings of it.
 // Markdown is the source and no installer target can read it: NSIS and the dmg
-// take RTF, the AppImage takes plain text, none of the three takes .md. The
-// output lands in bundle/ for the same reason the module does — the one `files`
-// entry that already ships the server ships this too.
+// take RTF, the AppImage takes plain text, none of the three takes .md.
+//
+// Beside bundle/ rather than inside it, and deliberately outside every `files`
+// pattern. These are read by the *installer*, which electron-builder assembles
+// from the `license` keys in the packaging config — resolved against electron/,
+// not collected through `files` — so being packed is no part of reaching a user.
+// Inside bundle/ they were, and only ever as freight: 38 KB of the asar that
+// nothing in the running app can open. It also made a stale copy from an earlier
+// Pro build something a later free build could ship, which needed a removal to
+// hold back. Out here neither is possible.
 const proEula = path.join(repoRoot, "pro", "EULA.md");
+const eulaDir = path.join(here, "eula");
 const eulaOut = {
-  rtf: path.join(here, "bundle", "EULA.rtf"),
-  txt: path.join(here, "bundle", "EULA.txt"),
+  rtf: path.join(eulaDir, "EULA.rtf"),
+  txt: path.join(eulaDir, "EULA.txt"),
 };
 
 const hasPro = () => fs.existsSync(proSrc);
@@ -446,7 +454,7 @@ function renderEula(markdown, format) {
  * Put the Pro module where the bundled server can resolve it, on a checkout
  * that has one. Returns whether this is a Pro build.
  *
- * The desktop app is the *spoke* half of shared holdings: it pairs with a
+ * The desktop app is the *spoke* half of agency holdings: it pairs with a
  * remote master and reads its holdings back down. All of that lives in pro/,
  * loaded through `loadPro()`'s dynamic `import("@scibrarian/pro")` inside the
  * server bundle — a bare specifier resolved at runtime, because the specifier
@@ -482,12 +490,10 @@ function bundlePro() {
   // this subtree, which nothing but this function writes.
   fs.rmSync(path.join(here, "bundle", "node_modules"), { recursive: true, force: true });
 
-  // The same failure one file over, and it needs its own removal because these
-  // sit beside bundle/node_modules rather than inside it. `files: ["bundle/**"]`
-  // packs the whole directory, so a copy left by an earlier Pro build would ride
-  // inside a free installer — and the `license` keys in the packaging config,
-  // which are off on a free build, are not what would have stopped it.
-  for (const stale of Object.values(eulaOut)) fs.rmSync(stale, { force: true });
+  // No matching removal for the rendered EULAs, and none is wanted. They are
+  // written outside every `files` pattern (see eulaOut), so a copy left behind by
+  // an earlier Pro build is not something a free installer could collect however
+  // stale it gets. The removal above exists because bundle/ *is* collected.
 
   // Absence is not a failure — a free checkout has no pro/ and builds a
   // complete desktop app without it. Presence that then goes wrong is fatal,
@@ -554,6 +560,11 @@ function bundlePro() {
     );
   }
   const eula = source.replaceAll(SOURCE_URL_TOKEN, correspondingSourceUrl());
+  // Made here rather than assumed: eula/ is this function's own output directory
+  // and nothing else creates it, so on a fresh checkout the first Pro build is
+  // the one that needs it — and writeFileSync into a directory that is not there
+  // fails with an ENOENT naming the file, not the missing parent.
+  fs.mkdirSync(eulaDir, { recursive: true });
   fs.writeFileSync(eulaOut.rtf, renderEula(eula, "rtf"));
   fs.writeFileSync(eulaOut.txt, renderEula(eula, "txt"));
   // Written, copied, and *resolvable* are three different claims, and only the

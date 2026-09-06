@@ -11,6 +11,7 @@ Caddyfile
 .DS_Store
 .claude
 electron/bundle/
+electron/eula/
 
 # Signing material, in case a certificate or key gets exported into the tree
 # while wiring up a desktop release.

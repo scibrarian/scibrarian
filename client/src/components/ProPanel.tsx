@@ -13,7 +13,7 @@ import type {
   ProNode,
 } from "../types";
 
-// Shared holdings — the Settings panel for the Pro tier.
+// Agency holdings — the Settings panel for the Pro tier.
 //
 // Public, like the rest of the client: only the implementations behind
 // /api/pro are closed. Rendered when GET /auth reports a `pro` block, which is
@@ -431,7 +431,7 @@ export function ProPanel({
   if (desktop === null) {
     return (
       <section className="panel pro-panel">
-        <h3>Shared holdings</h3>
+        <h3>Agency holdings</h3>
         <p className="hint">
           This library&rsquo;s settings didn&rsquo;t load, so neither end of a pairing can be
           shown here. Reload the page to try again.
@@ -443,7 +443,7 @@ export function ProPanel({
 
   return (
     <section className="panel pro-panel">
-      <h3>Shared holdings</h3>
+      <h3>Agency holdings</h3>
       {/* Two readings of the same arrangement, because each build only ever
           holds one end of it. Left as the spoke's on an unpaired server, this
           told an operator to connect their library to their organization's
