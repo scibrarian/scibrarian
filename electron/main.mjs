@@ -19,6 +19,16 @@ import { fileURLToPath } from "node:url";
 // reading like a broken install rather than an interop rule. Take the default
 // export and destructure it. Same family of trap as ELECTRON_RUN_AS_NODE.
 import electronUpdater from "electron-updater";
+// Static, and safe to be: this bundle imports nothing but node builtins and
+// reads its root from the environment lazily, so importing it does not decide
+// anything. That is exactly what bundle/server.mjs cannot promise — importing
+// *it* opens the database at whatever DB_PATH says at that moment — which is
+// why the workspace registry is a bundle of its own. See electron/build.mjs.
+import {
+  ensureActiveWorkspace,
+  workspaceBlobsDir,
+  workspaceDbPath,
+} from "./bundle/workspaces.mjs";
 
 const { autoUpdater } = electronUpdater;
 
@@ -39,9 +49,10 @@ function clientDist() {
 }
 
 /**
- * Point the server at this machine's per-user data directory and pin it to
- * loopback, before the module is imported — config.ts reads process.env once at
- * evaluation, so a dynamic import after this is what makes the ordering safe.
+ * Point the server at this machine's per-user data directory, choose which
+ * workspace it opens, and pin it to loopback — all before the module is
+ * imported, since config.ts reads process.env once at evaluation and a dynamic
+ * import after this is what makes the ordering safe.
  *
  * The defaults it would otherwise use are all relative to the repo root, which
  * in a packaged app is a read-only directory inside the bundle.
@@ -57,9 +68,38 @@ function configureServer() {
   process.env.HOST = "127.0.0.1";
   process.env.PORT = "0"; // OS-assigned: never collide with a dev server or another app
   process.env.ADMIN_TOKEN = ""; // single local user; also keeps share-link minting disabled
-  process.env.DB_PATH = path.join(userData, "app.db");
-  process.env.BLOBS_DIR = path.join(userData, "blobs");
   process.env.CLIENT_DIST = clientDist();
+
+  // Workspaces: several separate libraries on one machine, for the freelancer
+  // who works for several agencies. Set before the registry is read, because
+  // this is what turns the feature on — nothing else sets it, so a Docker or
+  // `npm start` deployment has no workspaces and reads DB_PATH as it always did.
+  //
+  // The registry lives at the root and the libraries under it, never the other
+  // way round; server/src/workspaces.ts has the layout and why it is that shape.
+  process.env.SCIBRARIAN_WORKSPACES_ROOT = userData;
+
+  // The database this launch opens. Switching workspaces rewrites the registry
+  // and relaunches, so this line is the whole of the switch: there is no second
+  // path that changes it, and every launch takes this one.
+  const workspace = ensureActiveWorkspace();
+  process.env.DB_PATH = workspaceDbPath(workspace.id);
+  process.env.BLOBS_DIR = workspaceBlobsDir(workspace.id);
+  console.log(`[desktop] workspace: ${workspace.name}`);
+}
+
+/**
+ * Quit and start again, which is how a workspace switch takes effect.
+ *
+ * relaunch() only *queues* the new instance — it starts once this process
+ * exits — so the quit is not optional and the order is not a choice. The
+ * single-instance lock makes it load-bearing too: a second copy launched before
+ * this one had gone would find the lock held, hand focus back to the window
+ * that is about to close, and quit.
+ */
+function relaunchApp() {
+  app.relaunch();
+  app.quit();
 }
 
 /**
@@ -229,7 +269,7 @@ async function main() {
   try {
     // Imported only now, so it reads the environment configureServer() just set.
     const { start } = await import("./bundle/server.mjs");
-    ({ port } = await start());
+    ({ port } = await start({ onRestart: relaunchApp }));
   } catch (err) {
     dialog.showErrorBox(
       "Scibrarian could not start",

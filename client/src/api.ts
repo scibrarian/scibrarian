@@ -35,6 +35,7 @@ import type {
   TopicRemovalResult,
   TopicSuggestResponse,
   UploadResponse,
+  WorkspacesResponse,
 } from "./types";
 import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth";
@@ -308,6 +309,34 @@ export const api = {
 
   // Irreversible. Answers with what it deleted.
   resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),
+
+  // ---------- workspaces (desktop only) ----------
+  //
+  // An empty list is what every other deployment answers, and what the switcher
+  // reads as "this build has none". So there is no capability flag to fetch
+  // first and no branch on the deployment kind: the list is the feature.
+  //
+  // The mutations 404 off the desktop. Nothing reaches them there, because
+  // nothing draws a control to reach them from.
+
+  getWorkspaces: () => req<WorkspacesResponse>("/api/workspaces"),
+  createWorkspace: (name: string) =>
+    req<WorkspacesResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
+  renameWorkspace: (id: string, name: string) =>
+    req<WorkspacesResponse>(`/api/workspaces/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  // Answers, *then* the app restarts into the chosen workspace — so a resolved
+  // promise here means the switch is committed and the window is about to go,
+  // not that anything is ready to look at. `restarting` is false only where
+  // nothing can restart the process (a browser pointed at the desktop build's
+  // port), and then the choice simply applies the next time it is opened.
+  switchWorkspace: (id: string) =>
+    req<{ ok: true; restarting: boolean }>("/api/workspaces/switch", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
 
   // ---------- Pro: agency holdings ----------
   //

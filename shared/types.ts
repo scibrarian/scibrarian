@@ -101,7 +101,7 @@ export interface TopicSuggestResponse {
   unchecked: number; // held papers whose headings haven't been fetched yet
 }
 
-// A user-created bookmark folder: the Bookmarks workspace's counterpart to a
+// A user-created bookmark folder: the Bookmarks section's counterpart to a
 // topic or a collection. Holds papers saved out of Interests (membership lives
 // in the bookmarks table), so unlike a collection it has no files behind it.
 export interface BookmarkFolder {
@@ -321,6 +321,23 @@ export interface HaveMatch {
   pub_types: string[];
 }
 
+/**
+ * The fourth verdict: you own this, in another workspace on this machine.
+ *
+ * Desktop only, and never a route to the file — the bytes stay in the workspace
+ * that holds them, and this says only where to go and look. That thinness is
+ * deliberate in the same way OrgHolding's is, but for the opposite reason:
+ * OrgHolding is thin because the master must never volunteer what it holds,
+ * while this is thin because a paper's whereabouts is the entire useful answer
+ * to "have I already bought this?".
+ */
+export interface ElsewhereHolding {
+  /** The workspace's name, as the person named it — "Acme", "My library". */
+  workspace: string;
+  /** The collection it sits in there, which is how they will find it. */
+  collection: string;
+}
+
 // The answer for one pasted line.
 export interface HaveAnswer {
   parsed: ParsedRefView;
@@ -341,6 +358,19 @@ export interface HaveAnswer {
   // it the UI cannot tell "the org doesn't have it" from "nobody answered", and
   // rendering the second as the first is what ends in a duplicate purchase.
   orgChecked: boolean;
+  // You already own this, in another workspace on this machine. Null on a
+  // server deployment, on a desktop with one workspace, and whenever the other
+  // workspaces held nothing matching.
+  //
+  // Purely additive: it suppresses no lookup and changes no other field. An org
+  // hit and a free copy are both still worth reporting beside it — the org has
+  // a Copy button behind it, and a legal free copy is quicker to open than a
+  // relaunch into another workspace. What this removes is only the reason to
+  // *buy*, which is the one thing none of the others covers.
+  elsewhere: ElsewhereHolding | null;
+  // Whether every other workspace answered. False means one could not be read,
+  // so an absent `elsewhere` is "nobody looked" rather than "you don't own it".
+  elsewhereChecked: boolean;
 }
 
 export interface HaveResponse {
@@ -425,4 +455,37 @@ export interface GraphResponse {
   // search — the filter chips must stay put while a query narrows the graph.
   // Same list /papers returns, so the dropdown matches across views.
   journals: string[];
+}
+
+// ---------- workspaces ----------
+
+/**
+ * One of the separate libraries this machine holds — a desktop-only idea.
+ *
+ * A freelancer straddles agencies, and a workspace is the coarse boundary
+ * collection_org's per-collection stamp deliberately isn't: its own database,
+ * its own blob store, its own pairing, its own topic and MeSH vocabulary. The
+ * fine boundary decides what *syncs*; this one decides what a session can see
+ * at all.
+ *
+ * `id` is opaque — an identifier the client passes back, never parsed and never
+ * shown. It names a directory, so it must survive a rename, which rules out
+ * anything derived from the name.
+ */
+export interface Workspace {
+  id: string;
+  name: string;
+  created_at: string;
+  /** The one this process is running in. Exactly one row carries it. */
+  active: boolean;
+}
+
+/**
+ * An empty list is the honest answer for every deployment that isn't the
+ * desktop app, and the one the client keys off: no rows, no switcher. Better
+ * than a flag, because a build with the feature and a build without it then
+ * differ in what they *have* rather than in what they claim.
+ */
+export interface WorkspacesResponse {
+  workspaces: Workspace[];
 }

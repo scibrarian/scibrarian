@@ -231,6 +231,111 @@ body {
   color: var(--text);
 }
 
+/* ---------- workspace switcher ---------- */
+
+/* Which separate library this window is in. Desktop only, and absent from every
+   other build — so nothing else in the brand may depend on it being here.
+
+   Boxed where the reload button beside it is borderless, and that is the whole
+   point of the treatment: reload acts on the page, this one names the thing the
+   page is *of*. A control that changes which library you are looking at should
+   not be lighter than the one that refreshes it. Muted rather than accented,
+   because it is a statement of where you are first and a control second. */
+.workspace-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  margin-left: 4px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.workspace-trigger:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.workspace-trigger:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.workspace-icon {
+  color: var(--accent);
+}
+
+/* Truncates rather than wraps: the brand is one line, and a long agency name
+   growing it would move the whole header down. MAX_NAME_CHARS bounds what can
+   arrive here, and this bounds what it does on the way in. */
+.workspace-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Narrower than the section picker's menu, which carries count badges. These
+   rows carry a tick and a pencil, and both are fixed-width. */
+.workspace-menu {
+  min-width: 220px;
+}
+
+/* Stands in for the tick on the rows that don't have one, so every name in the
+   list starts at the same x. Without it the current workspace is the only row
+   that lines up, and the eye reads the indent as grouping. 14px is the tick's
+   own size. */
+.inline-icon-gap {
+  display: inline-block;
+  width: 14px;
+}
+
+/* Reveals on hover or keyboard focus within the row, like a list-item action
+   should — but never on the row you are already in, where it is the only
+   control and hiding it would make renaming the current workspace undiscoverable. */
+.workspace-rename {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 3px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.picker-option:hover .workspace-rename,
+.picker-option[data-highlighted] .workspace-rename,
+.picker-option.active .workspace-rename,
+.workspace-rename:focus-visible {
+  opacity: 1;
+}
+
+.workspace-rename:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+/* Beside the trigger rather than in the app banner: the switcher sits above
+   everything the banner covers, and a name clash belongs next to the box that
+   caused it. */
+.workspace-error {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* ---------- icons ---------- */
 
 /* Icons are sized via the `size` prop in JSX; keep them from shrinking inside
@@ -3551,6 +3656,24 @@ html {
   color: #1d4ed8;
 }
 
+/* Already yours, in another workspace on this machine. Amber rather than the
+   org row's blue, and deliberately not green: green is `held`, which means
+   there is a file this session can open, and there isn't one — the bytes are in
+   another database's blob store and the isolation between workspaces is what
+   keeps them there. What this colour has to say is "stop, you own this" without
+   promising a click, which is the same job the warning tint does elsewhere. */
+.have-pill.elsewhere-held {
+  background: #fdf1dc;
+  color: #a16207;
+}
+
+.have-elsewhere {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #a16207;
+}
+
 .have-org {
   display: flex;
   align-items: center;
@@ -4126,6 +4249,15 @@ html {
 
   .have-org {
     color: #8fb6f2;
+  }
+
+  .have-pill.elsewhere-held {
+    background: #33280f;
+    color: #e3bd6b;
+  }
+
+  .have-elsewhere {
+    color: #e3bd6b;
   }
 
   /* Bright shimmer washes out on dark panels; use a faint sheen instead. */

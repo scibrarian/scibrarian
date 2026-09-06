@@ -16,6 +16,7 @@ import type { Bookmarking } from "./lib/bookmarking";
 import { seedEmptySource, sourceKey } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
 import { SectionNav, MODES, type Mode } from "./components/SectionNav";
+import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { PaperViews } from "./components/PaperViews";
 import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
@@ -882,6 +883,17 @@ export default function App() {
           >
             <RotateCw size={15} aria-hidden />
           </button>
+          {/* Which separate library this window is looking at — desktop only,
+              and it draws nothing anywhere else (see WorkspaceSwitcher).
+
+              In the brand rather than the section bar, and deliberately outside
+              the `loaded` gate below. A workspace is the thing everything else
+              on the page is *inside*: the sections, the pickers and the view
+              switch all name parts of one library, and this names which library
+              they are parts of. It also fetches its own list, so it has no
+              reason to wait for a bootstrap that is loading the contents of
+              whichever workspace this turns out to be. */}
+          <WorkspaceSwitcher />
         </div>
         <div className="header-actions">
           {!loaded ? (

@@ -124,7 +124,21 @@ import type {
   PapersResponse,
   Settings,
   TopicSuggestResponse,
+  Workspace,
+  WorkspacesResponse,
 } from "./types.js";
+import {
+  activeWorkspace,
+  canRestart,
+  checkWorkspaceName,
+  createWorkspace,
+  listWorkspaces,
+  renameWorkspace,
+  requestRestart,
+  setActiveWorkspace,
+  workspacesEnabled,
+  type WorkspaceRecord,
+} from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
@@ -780,7 +794,7 @@ api.get(
   })
 );
 
-// ---------- workspace entry names (collections + bookmark folders) ----------
+// ---------- section entry names (collections + bookmark folders) ----------
 
 // A name a person typed, checked at both ends before anything looks it up:
 // non-empty once trimmed, and no longer than the picker has room to draw. Sends
@@ -801,7 +815,7 @@ function badName(res: Response, name: string): boolean {
   return false;
 }
 
-// Names within a workspace are unique case-insensitively (see the unique index
+// Names within a section are unique case-insensitively (see the unique index
 // in db.ts) — two entries with the same name are indistinguishable in the
 // picker. Sends the 409 and returns true when the requested name belongs to a
 // different row; `selfId` is the row being renamed, so re-saving an entry's own
@@ -828,7 +842,7 @@ function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void
 
 // ---------- bookmark folders (saved papers) ----------
 
-// The Bookmarks workspace's picker list, shaped like /collections: the stored
+// The Bookmarks section's picker list, shaped like /collections: the stored
 // row plus the count the dropdown badges. Papers themselves come from
 // /api/papers?folder=<id>, since a folder is just another paper source.
 api.get("/bookmark-folders", (_req, res) => {
@@ -1400,6 +1414,109 @@ api.put("/settings", (req, res) => {
   }
   rescheduleFromSettings();
   res.json(settingsResponse());
+});
+
+// ---------- workspaces (desktop only) ----------
+
+// Separate libraries on one machine, for the freelancer who works for several
+// agencies. See server/src/workspaces.ts for the shape of it; what matters here
+// is that every route below is inert unless the Electron main process set the
+// root, so a Docker or `npm start` deployment is untouched and answers with an
+// empty list.
+//
+// Admin-gated on the read as well as the write, like /settings and for the same
+// kind of reason — more sharply, in fact. The list is the names of the agencies
+// this person works for, which is client-relationship intelligence about them
+// rather than about any library, and it is the one thing here that would be
+// worth reading on an instance with viewers on it.
+
+// One row as the client sees it. `active` is derived rather than stored on each
+// record, so there is exactly one source of truth for which library is open.
+function toWorkspaceRow(w: WorkspaceRecord, activeId: string): Workspace {
+  return { id: w.id, name: w.name, created_at: w.created_at, active: w.id === activeId };
+}
+
+function workspacesBody(): WorkspacesResponse {
+  const active = activeWorkspace();
+  return {
+    workspaces: active ? listWorkspaces().map((w) => toWorkspaceRow(w, active.id)) : [],
+  };
+}
+
+// Sends its own 404 and returns true when this build has no workspaces. A 404
+// rather than a 403: the routes genuinely do not exist off the desktop, and
+// saying so is both true and the same answer an older client would get.
+function noWorkspaces(res: Response): boolean {
+  if (workspacesEnabled()) return false;
+  res.status(404).json({ error: "Workspaces are only available in the desktop app." });
+  return true;
+}
+
+api.get("/workspaces", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
+  // Deliberately not noWorkspaces(): an empty list is the honest answer for a
+  // server deployment and the one the client is built to read, where a 404 here
+  // would be an error state to render on every page load of every hosted
+  // instance for a feature it correctly does not have.
+  res.json(workspacesBody());
+});
+
+api.post("/workspaces", (req, res) => {
+  if (noWorkspaces(res)) return;
+  const name = String(req.body?.name ?? "").trim();
+  const problem = checkWorkspaceName(name);
+  if (problem) return res.status(400).json({ error: problem });
+  createWorkspace(name);
+  // The whole list, not just the new row: the client's next act is to redraw a
+  // picker that now has one more entry, and a create that returns only what it
+  // created leaves it merging two sources of truth.
+  res.status(201).json(workspacesBody());
+});
+
+api.patch("/workspaces/:id", (req, res) => {
+  if (noWorkspaces(res)) return;
+  const id = String(req.params.id);
+  const name = String(req.body?.name ?? "").trim();
+  const problem = checkWorkspaceName(name, id);
+  if (problem) return res.status(400).json({ error: problem });
+  if (!renameWorkspace(id, name)) {
+    return res.status(404).json({ error: "No such workspace." });
+  }
+  res.json(workspacesBody());
+});
+
+// Switch workspace: record the choice, answer, then restart into it.
+//
+// The restart is the feature, not a shortcut around one. `db` is a module-scope
+// handle that the poll scheduler, the Pro push sweep, warmCitations and every
+// in-flight request hold by reference, and swapping it underneath them fails
+// each separately at whatever moment it next touches the database — see
+// onRestartRequested. Relaunching reaches the new workspace through the path
+// every launch already takes.
+//
+// Ordered response-then-restart, and gated on `finish`: the process is about to
+// exit, so a restart fired before the bytes are on the wire leaves the client
+// with a dropped connection and no way to tell a successful switch from a
+// failed one. The client is meanwhile showing "switching…", because the honest
+// end of this request is the window disappearing.
+api.post("/workspaces/switch", (req, res) => {
+  if (noWorkspaces(res)) return;
+  const id = String(req.body?.id ?? "");
+  const current = activeWorkspace();
+  if (current && current.id === id) {
+    return res.status(409).json({ error: "That workspace is already open." });
+  }
+  if (!setActiveWorkspace(id)) {
+    return res.status(404).json({ error: "No such workspace." });
+  }
+  // `restarting` is what the client waits on. False means the choice is saved
+  // and takes effect the next time the app is opened by hand — the case for a
+  // browser pointed at a desktop build's port, which is not how anyone uses it
+  // but is reachable, and is better answered honestly than by hanging.
+  res.on("finish", () => {
+    requestRestart();
+  });
+  res.json({ ok: true, restarting: canRestart() });
 });
 
 // ---------- delete everything ----------

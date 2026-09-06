@@ -56,12 +56,13 @@ export const MAX_HAVE_REFS = 300;
 // 100kb default. The removal did, for one release.
 export const MAX_BULK_BOOKMARK_BYTES = MAX_BULK_BOOKMARK_PMIDS * 22;
 
-// Longest name a collection or bookmark folder may carry.
+// Longest name a collection, bookmark folder or workspace may carry.
 //
 // A display bound rather than a storage one: these names are drawn in the
-// workspace picker's trigger, in the dropdown rows beside a count badge, and in
-// the Pro panel's per-collection list — none of which have room to grow, and
-// all of which turn a long name into a truncation or a wrapped row.
+// section picker's trigger, in the dropdown rows beside a count badge, in the
+// Pro panel's per-collection list, and — for a workspace — in the brand row,
+// which has less room than any of them. None have room to grow, and all turn a
+// long name into a truncation or a wrapped row.
 //
 // Counted in UTF-16 code units, which is what an input's `maxLength` counts. So
 // the two agree exactly: the box stops accepting at the character the server

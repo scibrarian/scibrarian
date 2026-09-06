@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Check, ExternalLink, FileText, Minus, TriangleAlert, Users } from "lucide-react";
+import { Boxes, Check, ExternalLink, FileText, Minus, TriangleAlert, Users } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -292,8 +292,9 @@ export function HaveCheck({
 function Summary({ response }: { response: HaveResponse }) {
   const { results } = response;
   const held = results.filter((r) => r.held).length;
-  const org = results.filter((r) => !r.held && r.org).length;
-  const free = results.filter((r) => !r.held && !r.org && r.free).length;
+  const elsewhere = results.filter((r) => !r.held && r.elsewhere).length;
+  const org = results.filter((r) => !r.held && !r.elsewhere && r.org).length;
+  const free = results.filter((r) => !r.held && !r.org && !r.elsewhere && r.free).length;
   const unreadable = results.filter((r) => r.parsed.kind === "unknown").length;
   return (
     <p className="have-summary">
@@ -301,6 +302,8 @@ function Summary({ response }: { response: HaveResponse }) {
         {held} of {results.length}
       </strong>{" "}
       already in your library.
+      {elsewhere > 0 &&
+        ` You already own ${elsewhere} more, in ${elsewhere === 1 ? "another workspace" : "your other workspaces"}.`}
       {org > 0 && ` ${org} more ${org === 1 ? "is" : "are"} held by your organization.`}
       {free > 0 && ` ${free} unowned ${free === 1 ? "paper has" : "papers have"} a free copy.`}
       {unreadable > 0 &&
@@ -344,14 +347,16 @@ function AnswerRow({
   /** Some row's transfer is in flight. Disables every Copy button, not just this one. */
   busy: boolean;
 }) {
-  const { parsed, match, held, free, freeChecked, org } = answer;
+  const { parsed, match, held, free, freeChecked, org, elsewhere } = answer;
   const kind = held
     ? "held"
     : parsed.kind === "unknown"
       ? "unreadable"
-      : org
-        ? "org-held"
-        : "not-held";
+      : elsewhere
+        ? "elsewhere-held"
+        : org
+          ? "org-held"
+          : "not-held";
 
   return (
     <li className={`have-row ${kind}`}>
@@ -367,7 +372,7 @@ function AnswerRow({
           "Nothing found for PMID 30000001 (identifier lookup skipped)" printed
           directly above "Held by Acme Medical" reads as a contradiction on the
           one row where the copy is most worth offering. */}
-      {!match && !org && parsed.kind !== "unknown" && (
+      {!match && !org && !elsewhere && parsed.kind !== "unknown" && (
         <p className="have-nothing">
           Nothing found for {describe(parsed)}
           {freeChecked ? "" : " (identifier lookup skipped)"}.
@@ -375,6 +380,19 @@ function AnswerRow({
       )}
 
       {parsed.kind === "unknown" && <p className="have-nothing">{parsed.reason}</p>}
+
+      {/* First of the three lines a not-held row can carry, because it is the
+          only one that says the reader already owns this. No button: the file
+          is in another database's blob store and this session has no route to
+          it, which is the isolation working rather than a gap in it. Naming the
+          collection is what makes the sentence actionable — it is where they
+          will go and look. */}
+      {!held && elsewhere && (
+        <p className="have-elsewhere">
+          You already own this — in your <strong>{elsewhere.workspace}</strong> workspace,
+          under “{elsewhere.collection}”.
+        </p>
+      )}
 
       {/* The org line sits above the free-copy one because it changes the
           decision more: a copy the agency already bought costs nothing and
@@ -626,6 +644,18 @@ function Verdict({ kind }: { kind: string }) {
     return (
       <span className="have-pill unreadable">
         <TriangleAlert size={13} className="inline-icon" aria-hidden /> Couldn’t read this
+      </span>
+    );
+  }
+  // "Not in your library" is true of the workspace you are standing in and
+  // false of your laptop, and the second is the one that decides a purchase.
+  // Ranked above the org verdict because this is a paper the writer paid for
+  // themselves: the org line loses them an approval cycle, this one loses them
+  // the money.
+  if (kind === "elsewhere-held") {
+    return (
+      <span className="have-pill elsewhere-held">
+        <Boxes size={13} className="inline-icon" aria-hidden /> In another workspace
       </span>
     );
   }

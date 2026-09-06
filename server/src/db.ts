@@ -392,7 +392,14 @@ db.exec(`
 //
 // `alias` prefixes the column for queries that join collection_files under a
 // name (`cf.`, `cf2.`); the subqueries selecting from it bare pass nothing.
-const heldFile = (alias = "") => `${alias}pmid IS NOT NULL`;
+//
+// Exported for elsewhere.ts, which asks the same custody question of a
+// *different* workspace's database. The predicate is redundant there — that
+// query already filters `pmid IN (...)` — and it is written anyway, because
+// "one spelling everywhere" is the whole point of this const and a second
+// module deciding custody for itself is exactly the drift the note above is
+// about.
+export const heldFile = (alias = "") => `${alias}pmid IS NOT NULL`;
 
 // The distinct papers the user actually holds a file for — the Library, as the
 // custody positioning means it.

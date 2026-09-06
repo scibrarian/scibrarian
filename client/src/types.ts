@@ -9,6 +9,7 @@ import type {
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
   Topic as TopicRow,
+  ElsewhereHolding,
   EvidenceClass,
   FreeCopy,
   GraphEdge,
@@ -36,6 +37,8 @@ import type {
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
+  Workspace,
+  WorkspacesResponse,
 } from "../../shared/types";
 
 import type { ProStatus as ProStatusRow } from "../../shared/pro";
@@ -60,6 +63,7 @@ export type {
   AbstractsResponse,
   BookmarkEntry,
   CollectionFileStatus,
+  ElsewhereHolding,
   EvidenceClass,
   FreeCopy,
   HaveAnswer,
@@ -87,6 +91,8 @@ export type {
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
+  Workspace,
+  WorkspacesResponse,
 };
 
 // What narrows a paper source server-side, shared by /api/papers and /api/graph

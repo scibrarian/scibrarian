@@ -32,6 +32,8 @@ export type {
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
+  Workspace,
+  WorkspacesResponse,
 } from "../../shared/types.js";
 
 import { SETTING_DEFAULTS } from "./config.js";

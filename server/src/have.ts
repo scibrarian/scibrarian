@@ -8,9 +8,11 @@ import {
   type HoldingRow,
 } from "./db.js";
 import { lookupWorks, type OaWork } from "./openalex.js";
+import { heldElsewhere } from "./elsewhere.js";
 import { orgCheck } from "./pro-hooks.js";
 import { evidenceFromRows } from "./pubmed-parse.js";
 import type { OrgHolding } from "../../shared/pro.js";
+import type { ElsewhereHolding } from "../../shared/types.js";
 import type { HaveAnswer, HaveMatch } from "./types.js";
 
 // "Do I already have this?" — the custody question, answered for a list of
@@ -133,6 +135,24 @@ export async function checkHoldings(
     pubTypes: pubTypesByPmids(pmids),
   });
 
+  // --- other-workspace pass: the fourth verdict, already yours, filed elsewhere ---
+  //
+  // Ahead of the org pass because it is local: no request, no network, and the
+  // same answer with the machine offline. It belongs with the local pass in
+  // every way except that it cannot set `held`, which stays a statement about
+  // *this* workspace — the file is in another database's blob store and this
+  // session has no route to it.
+  //
+  // Additive and nothing more. It suppresses neither the org check nor the
+  // free-copy lookup, unlike an org hit which suppresses the second: those two
+  // both offer a way to *get* the paper, and this one offers a way to stop
+  // paying for it. A writer told "you own this in Acme" is still better off
+  // knowing the org has a copy they can pull, or that a legal free one exists.
+  applyElsewhere(
+    local.filter((r) => !r.held),
+    orgKey
+  );
+
   // --- org pass: the third verdict, held by your org but not by you ---
   //
   // Ordered between the local pass and OpenAlex on purpose. An org hit makes
@@ -208,6 +228,30 @@ export async function checkHoldings(
   const secondLook = new Map<string, HoldingRow>();
   for (const row of holdingsByPmids(resolvedPmids)) secondLook.set(row.pmid, row);
 
+  // The PMID OpenAlex supplied for a line that had none. Both second passes
+  // below are about exactly these lines, and both need the same key.
+  const oaPmid = (r: LocalResult): string =>
+    (r.ref.doi ? oaByDoi.get(r.ref.doi)?.pmid : undefined) ?? "";
+
+  // --- second other-workspace pass: the same gap, closed the same way ---
+  //
+  // The reason is identical to the second org pass below, so read that one
+  // first. A pasted DOI for a paper *this* workspace has never seen carries no
+  // PMID through the first pass — orgKey finds none on the row, because there
+  // is no row — so the union was never asked about it. OpenAlex has now
+  // supplied one.
+  //
+  // Left out, this is the case that re-buys: a writer in Bristol's workspace
+  // pastes a DOI for a paper sitting in their Acme workspace, and because the
+  // Bristol database has no article record to hang a PMID on, they are told
+  // "not in your library" about a PDF already on their own disk. Every other
+  // route into this check has a PMID by the time the first pass runs; this one
+  // structurally cannot.
+  applyElsewhere(
+    pending.filter((r) => !r.elsewhereChecked && secondLook.get(oaPmid(r))?.file_id == null),
+    oaPmid
+  );
+
   // --- second org pass: the lines OpenAlex just gave a PMID to ---
   //
   // A pasted DOI naming a paper this library has never seen has no PMID when
@@ -223,8 +267,6 @@ export async function checkHoldings(
   // if the org is asked first. This covers the remainder — the lines that had
   // no PMID to ask about — and asks about nothing the first pass already did.
   if (checkOrg) {
-    const oaPmid = (r: LocalResult): string =>
-      (r.ref.doi ? oaByDoi.get(r.ref.doi)?.pmid : undefined) ?? "";
     // Rows the second look found on disk are held now, and a held row never
     // shows an org line — asking about them would spend the request on an
     // answer nothing renders.
@@ -272,6 +314,39 @@ interface LocalResult {
   oa?: OaWork | null;
   org?: OrgHolding | null;
   orgChecked?: boolean;
+  elsewhere?: ElsewhereHolding | null;
+  elsewhereChecked?: boolean;
+}
+
+/**
+ * Ask the other workspaces about these lines, and record what they said.
+ *
+ * `keyOf` is the PMID to ask under, which differs between the two calls: the
+ * first uses orgKey (the article row's id, or the pasted one), the second the
+ * id OpenAlex supplied for a line that had neither.
+ *
+ * A hit is recorded whatever `checked` says — it was read out of a database on
+ * this machine and is true regardless of what some other workspace failed to
+ * answer. Only the *absence* depends on a complete answer, which is what
+ * `elsewhereChecked` reports, and it is set only for lines actually in the
+ * batch: a line with no identifier was never asked about, and marking it
+ * checked would make the field mean something other than what it says. Same
+ * rule the org pass follows, for the same reason.
+ */
+function applyElsewhere(candidates: LocalResult[], keyOf: (r: LocalResult) => string): void {
+  const pmids = candidates.flatMap((r) => {
+    const pmid = keyOf(r);
+    return pmid ? [pmid] : [];
+  });
+  if (pmids.length === 0) return;
+  const { holdings, checked } = heldElsewhere(pmids);
+  for (const r of candidates) {
+    const pmid = keyOf(r);
+    if (!pmid) continue;
+    if (checked) r.elsewhereChecked = true;
+    const hit = holdings.get(pmid);
+    if (hit) r.elsewhere = hit;
+  }
 }
 
 // The PMID an org lookup would use for this line. A cached article row is
@@ -312,5 +387,7 @@ function toAnswer(
     freeChecked,
     org: r.org ?? null,
     orgChecked: r.orgChecked ?? false,
+    elsewhere: r.elsewhere ?? null,
+    elsewhereChecked: r.elsewhereChecked ?? false,
   };
 }

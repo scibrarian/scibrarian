@@ -617,20 +617,43 @@ function bundlePro() {
 assertDependenciesMirrorServer();
 assertClientIsBuilt();
 
-await build({
-  entryPoints: [path.join(repoRoot, "server", "src", "index.ts")],
-  // Not dist/ — that belongs to electron-builder's installer output.
-  outfile: path.join(here, "bundle", "server.mjs"),
+// Shared by both bundles below: our own sources in, npm dependencies left
+// external, ESM out to match the source (config.ts derives paths from
+// import.meta.url, which has no meaning in a CJS output and would silently
+// become undefined).
+const bundleOptions = {
   bundle: true,
   platform: "node",
-  // ESM, matching the source: the server is written as ESM ("type": "module"),
-  // and config.ts derives paths from import.meta.url, which has no meaning in a
-  // CJS output and would silently become undefined.
   format: "esm",
   target: "node22",
   packages: "external",
   sourcemap: true,
   logLevel: "info",
+};
+
+await build({
+  ...bundleOptions,
+  entryPoints: [path.join(repoRoot, "server", "src", "index.ts")],
+  // Not dist/ — that belongs to electron-builder's installer output.
+  outfile: path.join(here, "bundle", "server.mjs"),
+});
+
+// The workspace registry, bundled a second time and on its own.
+//
+// main.mjs has to read it *before* it imports the server, because what it reads
+// is which database to point the server at — and importing bundle/server.mjs
+// evaluates db.ts, which opens DB_PATH as it loads. So the one module the main
+// process needs early cannot come from the bundle that needs the answer.
+//
+// A second copy is harmless because workspaces.ts imports nothing but node
+// builtins and reads its root from the environment lazily: all the state it has
+// lives in a JSON file on disk, and both copies see the same one. The single
+// exception is the restart handler, which is why that is passed through start()
+// rather than registered directly — see onRestartRequested.
+await build({
+  ...bundleOptions,
+  entryPoints: [path.join(repoRoot, "server", "src", "workspaces.ts")],
+  outfile: path.join(here, "bundle", "workspaces.mjs"),
 });
 
 // After the server, so the line below is the last thing on screen: which tier
