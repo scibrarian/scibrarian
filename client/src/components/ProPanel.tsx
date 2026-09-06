@@ -13,7 +13,7 @@ import type {
   ProNode,
 } from "../types";
 
-// Shared holdings — the Settings panel for the Pro tier.
+// Agency holdings — the Settings panel for the Pro tier.
 //
 // Public, like the rest of the client: only the implementations behind
 // /api/pro are closed. Rendered when GET /auth reports a `pro` block, which is
@@ -153,26 +153,31 @@ export function ProPanel({
   const [pairingCode, setPairingCode] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Settled, not all-or-nothing. These four answer independently and only the
-  // first is load-bearing: the sync stamps are read inside the `connected`
-  // branch alone, so on a master-only instance — or against a Pro module built
-  // before /api/pro/sync existed — that request 404s while /api/pro/nodes
-  // answers perfectly well. Under Promise.all the first rejection discarded the
-  // other three, and the license, the node list and the mint form all rendered
-  // empty behind one banner. Whatever arrived is shown; what didn't is reported.
+  // Settled, not all-or-nothing. These four answer independently: against a Pro
+  // module built before /api/pro/sync existed that request 404s while
+  // /api/pro/nodes answers perfectly well, and the first reload of any build
+  // makes both calls before the flag below can spare it either. Under
+  // Promise.all the first rejection discarded the other three, and the license,
+  // the node list and the mint form all rendered empty behind one banner.
+  // Whatever arrived is shown; what didn't is reported.
   async function reload() {
-    // /api/pro/nodes answers for the master half alone — the node list, the
-    // license, the organization name and this library's public address, and
-    // every one of them is drawn inside `desktop === false`. A desktop app was
-    // fetching all four on mount and after every action to render none of them,
-    // and a rejection put a banner on this panel about a section it does not
-    // have. The first reload can still make the call, because it races the flag
-    // and a null one is not yet a desktop build; every reload after it knows.
+    // Each half fetches only what its own build draws, because neither build
+    // draws both. /api/pro/nodes answers for the master half — the node list,
+    // the license, the organization name and this library's public address, all
+    // of them inside `desktop === false`; the stamps and the collection list
+    // answer for the spoke half, drawn inside `spoke` and nowhere else. Left
+    // ungated, each build fetched the other's section on mount and after every
+    // action to render none of it, and a rejection put a banner on this panel
+    // about a half it does not have.
+    //
+    // The first reload still makes every call, because it races the flag and a
+    // null one is neither build; every reload after it knows. `=== true` and
+    // `=== false` rather than a negation, for that reason — see `spoke`.
     const [n, m, sy, cs] = await Promise.allSettled([
       desktop === true ? Promise.resolve(null) : api.proNodes(),
       api.proMaster(),
-      api.proSync(),
-      api.getCollections(),
+      desktop === false ? Promise.resolve(null) : api.proSync(),
+      desktop === false ? Promise.resolve(null) : api.getCollections(),
     ]);
     if (n.status === "fulfilled" && n.value) {
       setNodes(n.value.nodes);
@@ -188,10 +193,12 @@ export function ProPanel({
     if (m.status === "fulfilled") setMaster(m.value);
     // Cleared on a failure rather than left holding the previous answer, which
     // is the one the share just invalidated: handing that up would redraw the
-    // Library's badge exactly as it was before the click.
-    lastStamps.current = sy.status === "fulfilled" ? sy.value.stamps : null;
-    if (sy.status === "fulfilled") setStamps(sy.value.stamps);
-    if (cs.status === "fulfilled") setCollections(cs.value);
+    // Library's badge exactly as it was before the click. A null value is the
+    // call this build skipped, and clears it for the same reason — a server has
+    // no spoke half to hand a stamp up from.
+    lastStamps.current = sy.status === "fulfilled" && sy.value ? sy.value.stamps : null;
+    if (sy.status === "fulfilled" && sy.value) setStamps(sy.value.stamps);
+    if (cs.status === "fulfilled" && cs.value) setCollections(cs.value);
     // Reports a failure but never clears one: run() has already cleared the
     // banner for this action, and a sweep that came back with an error of its
     // own sets it *before* this runs.
@@ -431,7 +438,7 @@ export function ProPanel({
   if (desktop === null) {
     return (
       <section className="panel pro-panel">
-        <h3>Shared holdings</h3>
+        <h3>Agency holdings</h3>
         <p className="hint">
           This library&rsquo;s settings didn&rsquo;t load, so neither end of a pairing can be
           shown here. Reload the page to try again.
@@ -443,7 +450,7 @@ export function ProPanel({
 
   return (
     <section className="panel pro-panel">
-      <h3>Shared holdings</h3>
+      <h3>Agency holdings</h3>
       {/* Two readings of the same arrangement, because each build only ever
           holds one end of it. Left as the spoke's on an unpaired server, this
           told an operator to connect their library to their organization's

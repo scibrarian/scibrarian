@@ -3677,7 +3677,7 @@ html {
   color: var(--warn);
 }
 
-/* ---- Shared holdings (Pro) settings panel ---- */
+/* ---- Agency holdings (Pro) settings panel ---- */
 
 .pro-form {
   margin: 8px 0 12px;
@@ -4158,6 +4158,15 @@ html {
 .modal-option .hint {
   display: block;
   margin-top: 2px;
+}
+
+/* A row the dialog states rather than asks — see PromptDialog's `option`. Full
+   contrast and still focusable, because being read is the whole of its job; what
+   goes is the pointer, which offers a click this row will not answer. Greying it
+   out instead would dim the one sentence that has to land. */
+.modal-option-fixed,
+.modal-option-fixed input {
+  cursor: default;
 }
 
 /* The connection this instance believed it had, after the organisation ended

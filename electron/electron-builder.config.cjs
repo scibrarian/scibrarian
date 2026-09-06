@@ -261,10 +261,12 @@ module.exports = {
     // installer with nothing here to explain it. The dmg and the AppImage have
     // no such fallback: `null` stops both dead.
     //
-    // Written by build.mjs beside the Pro module. The path resolves against
-    // electron/ rather than buildResources, because it is deliberately not in
-    // buildResources — that is the directory the convention scans.
-    license: isProBuild ? "bundle/EULA.rtf" : null,
+    // Written by build.mjs into electron/eula/. The path resolves against
+    // electron/, and the directory is chosen twice over: not buildResources,
+    // which is what the convention scans, and not `files`, which is what the
+    // *app* is packed from. An installer license is read at assembly time and
+    // never by the running app, so a copy inside the asar would be freight.
+    license: isProBuild ? "eula/EULA.rtf" : null,
   },
 
   // The macOS half of the same agreement. hdiutil shows it when the disk image
@@ -273,7 +275,7 @@ module.exports = {
   // it, and that is correct: the zip is what electron-updater downloads, and an
   // update is not a fresh acceptance.
   dmg: {
-    license: isProBuild ? "bundle/EULA.rtf" : null,
+    license: isProBuild ? "eula/EULA.rtf" : null,
   },
 
   // Linux has no click-through to hook. An AppImage is a file you run, with no
@@ -281,7 +283,7 @@ module.exports = {
   // the image — the terms travel with the artifact and nobody is asked to
   // accept them. Plain text because that is all this target reads.
   appImage: {
-    license: isProBuild ? "bundle/EULA.txt" : null,
+    license: isProBuild ? "eula/EULA.txt" : null,
   },
 
   mac: {

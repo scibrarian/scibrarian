@@ -315,8 +315,8 @@ export function PapersTableSkeleton({
 // there would be standing in for strings this file already knows.
 export function ProPanelSkeleton({ desktop }: { desktop: boolean | null }) {
   return (
-    <section className="panel pro-panel" aria-busy="true" aria-label="Loading shared holdings">
-      <h3>Shared holdings</h3>
+    <section className="panel pro-panel" aria-busy="true" aria-label="Loading agency holdings">
+      <h3>Agency holdings</h3>
       <SkeletonBar w="92%" h={12} style={{ marginBottom: 6 }} />
       <SkeletonBar w="70%" h={12} style={{ marginBottom: 18 }} />
       {desktop === true && (

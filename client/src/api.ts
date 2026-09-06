@@ -309,7 +309,7 @@ export const api = {
   // Irreversible. Answers with what it deleted.
   resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),
 
-  // ---------- Pro: shared holdings ----------
+  // ---------- Pro: agency holdings ----------
   //
   // Every one of these 404s in a free build, where /api/pro is unmounted. The
   // UI never reaches them: it renders off `auth.pro`, which is null there.

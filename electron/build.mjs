@@ -28,13 +28,21 @@ const proBundle = path.join(repoRoot, "pro", "dist", "index.js");
 const proPackage = path.join(here, "bundle", "node_modules", "@scibrarian", "pro");
 // The EULA that governs a Pro build, and the two shippable renderings of it.
 // Markdown is the source and no installer target can read it: NSIS and the dmg
-// take RTF, the AppImage takes plain text, none of the three takes .md. The
-// output lands in bundle/ for the same reason the module does — the one `files`
-// entry that already ships the server ships this too.
+// take RTF, the AppImage takes plain text, none of the three takes .md.
+//
+// Beside bundle/ rather than inside it, and deliberately outside every `files`
+// pattern. These are read by the *installer*, which electron-builder assembles
+// from the `license` keys in the packaging config — resolved against electron/,
+// not collected through `files` — so being packed is no part of reaching a user.
+// Inside bundle/ they were, and only ever as freight: 38 KB of the asar that
+// nothing in the running app can open. It also made a stale copy from an earlier
+// Pro build something a later free build could ship, which needed a removal to
+// hold back. Out here neither is possible.
 const proEula = path.join(repoRoot, "pro", "EULA.md");
+const eulaDir = path.join(here, "eula");
 const eulaOut = {
-  rtf: path.join(here, "bundle", "EULA.rtf"),
-  txt: path.join(here, "bundle", "EULA.txt"),
+  rtf: path.join(eulaDir, "EULA.rtf"),
+  txt: path.join(eulaDir, "EULA.txt"),
 };
 
 const hasPro = () => fs.existsSync(proSrc);
@@ -214,6 +222,79 @@ function wrap(text, width, hanging = 0) {
   return lines;
 }
 
+// The token pro/EULA.md carries where Section 2 makes its Corresponding Source
+// offer, and what gets replaced on the way into the installer. Braces rather than
+// the [BRACKETS] the draft uses for its other blanks, because those are filled in
+// by hand once and this one cannot be: it names a different commit every build.
+const SOURCE_URL_TOKEN = "{{SOURCE_URL}}";
+
+/**
+ * Where the source for *this* build can be fetched, for the EULA's Section 2.
+ *
+ * A commit rather than a tag or a branch, because the offer is made to the person
+ * holding this particular binary. Someone who installs this build and never
+ * updates has to be able to get the source it was made from years later, after
+ * main has moved on and after any tag that once pointed here could have been
+ * moved or deleted. A commit URL is the only one of the three that cannot rot.
+ *
+ * Read out of git rather than passed in, because the working tree already is the
+ * answer in both places this runs. pro/.github/workflows/publish-pro-desktop.yml
+ * checks the public repository out at a commit it pinned once, and only then
+ * checks the Pro module into pro/ beneath it — so at the root, origin is the
+ * public repository and HEAD is that pinned commit. Passing either in would be a
+ * second copy of a fact git is already holding, of the kind that drifts.
+ *
+ * A local build answers with its own HEAD, which is only true of the artifact if
+ * that commit is pushed and the tree is clean. Neither is checked here: local Pro
+ * builds are for testing the installer, and the run that publishes one is the CI
+ * path above, where both hold by construction.
+ *
+ * PUBLIC_SOURCE_URL overrides the lot, for a build tree with no git in it.
+ */
+function correspondingSourceUrl() {
+  if (process.env.PUBLIC_SOURCE_URL) return process.env.PUBLIC_SOURCE_URL;
+
+  const git = (...args) => {
+    const ran = spawnSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" });
+    return ran.status === 0 ? ran.stdout.trim() : "";
+  };
+
+  // Both spellings a checkout can carry: https://github.com/owner/repo(.git) and
+  // the scp-like git@github.com:owner/repo(.git) of one cloned over SSH. Host and
+  // slug are read together rather than the slug alone, because owner/repo is not
+  // a distinctive enough shape to identify a forge by: a GitLab or Gitea remote
+  // matches it, and so does a plain clone path — C:/src/x/repo yields `x/repo` —
+  // so the URL below would have been built confidently around whatever came out.
+  const origin = git("remote", "get-url", "origin").replace(/\.git$/, "");
+  const sha = git("rev-parse", "HEAD");
+  const remote =
+    /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(origin) ??
+    /^(?:https?|git|ssh):\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+)$/.exec(origin);
+  if (!remote || !sha || !/^[^/]+\/[^/]+$/.test(remote[2])) {
+    throw new Error(
+      "Could not resolve the Corresponding Source URL for the EULA: this tree has no git " +
+        "origin and HEAD to read, and PUBLIC_SOURCE_URL is unset. Section 2 would ship " +
+        "offering the source of a proprietary build at nothing in particular."
+    );
+  }
+  const [, host, slug] = remote;
+  // Refused rather than rewritten, because swapping the host in would not be
+  // enough: `/tree/<sha>` is GitHub's spelling of a commit, where GitLab wants
+  // `/-/tree/` and Gitea `/src/commit/`. Deriving the host alone would trade an
+  // offer pointing at the wrong repository for one pointing at no page at all,
+  // and both are the same failure as far as Section 2 is concerned.
+  // PUBLIC_SOURCE_URL is the way in for every forge that is not this one.
+  if (host !== "github.com") {
+    throw new Error(
+      `Could not resolve the Corresponding Source URL for the EULA: origin is on ${host}, ` +
+        "and the commit URL built here is GitHub's own. Set PUBLIC_SOURCE_URL to the address " +
+        "this build's source can actually be fetched from. Section 2 would otherwise ship " +
+        "offering it at a github.com repository this build did not come from."
+    );
+  }
+  return `https://github.com/${slug}/tree/${sha}`;
+}
+
 /**
  * pro/EULA.md rendered into one of the two formats an installer can show.
  *
@@ -235,6 +316,15 @@ function wrap(text, width, hanging = 0) {
  * document where that matters.
  */
 function renderEula(markdown, format) {
+  // Checked rather than defaulted. `format === "rtf"` on its own sends every
+  // other value down the plain-text path, and the caller writes that result to
+  // EULA.rtf — where NSIS, which recognises RTF by the leading `{\rtf` and
+  // nothing else, would show the agreement as its own raw source with Section
+  // 11's bold disclaimer among the casualties. That is the one thing the RTF
+  // rendering exists for, so a format this does not know is loud.
+  if (format !== "rtf" && format !== "txt") {
+    throw new Error(`renderEula was asked for an unknown format: ${JSON.stringify(format)}.`);
+  }
   const rtf = format === "rtf";
   const WRAP = 78;
   const esc = rtf ? rtfEscape : (s) => s;
@@ -253,7 +343,17 @@ function renderEula(markdown, format) {
 
   const out = [];
 
-  for (const block of markdown.split(/\n{2,}/)) {
+  // Belt and braces: `.gitattributes` checks pro/EULA.md out as LF on every
+  // platform, so a CR should not reach here at all. It is worth the line anyway
+  // because what it prevents is silent and total rather than cosmetic — a CRLF
+  // document holds no `\n\n`, so the whole agreement would arrive as a single
+  // block, every line would keep a trailing CR, and no heading would match
+  // (`.` does not match `\r`). The installer would show one 18,000-character
+  // paragraph with no headings, no lists and no bold, and the build would
+  // report success.
+  const source = markdown.replace(/\r\n?/g, "\n");
+
+  for (const block of source.split(/\n{2,}/)) {
     let lines = block.split("\n").filter((line) => line.trim() !== "");
 
     // Peeled off first, and the block carries on afterwards rather than ending:
@@ -354,7 +454,7 @@ function renderEula(markdown, format) {
  * Put the Pro module where the bundled server can resolve it, on a checkout
  * that has one. Returns whether this is a Pro build.
  *
- * The desktop app is the *spoke* half of shared holdings: it pairs with a
+ * The desktop app is the *spoke* half of agency holdings: it pairs with a
  * remote master and reads its holdings back down. All of that lives in pro/,
  * loaded through `loadPro()`'s dynamic `import("@scibrarian/pro")` inside the
  * server bundle — a bare specifier resolved at runtime, because the specifier
@@ -390,12 +490,10 @@ function bundlePro() {
   // this subtree, which nothing but this function writes.
   fs.rmSync(path.join(here, "bundle", "node_modules"), { recursive: true, force: true });
 
-  // The same failure one file over, and it needs its own removal because these
-  // sit beside bundle/node_modules rather than inside it. `files: ["bundle/**"]`
-  // packs the whole directory, so a copy left by an earlier Pro build would ride
-  // inside a free installer — and the `license` keys in the packaging config,
-  // which are off on a free build, are not what would have stopped it.
-  for (const stale of Object.values(eulaOut)) fs.rmSync(stale, { force: true });
+  // No matching removal for the rendered EULAs, and none is wanted. They are
+  // written outside every `files` pattern (see eulaOut), so a copy left behind by
+  // an earlier Pro build is not something a free installer could collect however
+  // stale it gets. The removal above exists because bundle/ *is* collected.
 
   // Absence is not a failure — a free checkout has no pro/ and builds a
   // complete desktop app without it. Presence that then goes wrong is fatal,
@@ -449,7 +547,24 @@ function bundlePro() {
         "build without it would install the Pro Module having agreed nothing at all."
     );
   }
-  const eula = fs.readFileSync(proEula, "utf8");
+  const source = fs.readFileSync(proEula, "utf8");
+  // Asserted rather than assumed. Substitution that silently matches nothing is
+  // how the shipped agreement ends up making no Corresponding Source offer at
+  // all — an edit to Section 2 that reworded the token away would otherwise
+  // produce a clean build and an installer that quietly stopped complying.
+  if (!source.includes(SOURCE_URL_TOKEN)) {
+    throw new Error(
+      `${proEula} no longer contains ${SOURCE_URL_TOKEN}. That token is where Section 2 ` +
+        "offers the source this build was made from, and the AGPL portions of a Pro " +
+        "installer cannot be distributed without it."
+    );
+  }
+  const eula = source.replaceAll(SOURCE_URL_TOKEN, correspondingSourceUrl());
+  // Made here rather than assumed: eula/ is this function's own output directory
+  // and nothing else creates it, so on a fresh checkout the first Pro build is
+  // the one that needs it — and writeFileSync into a directory that is not there
+  // fails with an ENOENT naming the file, not the missing parent.
+  fs.mkdirSync(eulaDir, { recursive: true });
   fs.writeFileSync(eulaOut.rtf, renderEula(eula, "rtf"));
   fs.writeFileSync(eulaOut.txt, renderEula(eula, "txt"));
   // Written, copied, and *resolvable* are three different claims, and only the
