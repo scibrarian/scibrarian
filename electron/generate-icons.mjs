@@ -1,5 +1,6 @@
 // Builds the app-icon set the packaging config expects — build/icon.png
-// (1024x1024), build/icon.ico and build/icon.icns — from one source image at
+// (1024x1024), build/icon.ico and build/icon.icns — plus the web client's
+// favicon at ../client/public/favicon.png, all from one source image at
 // build/icon-source.png.
 //
 // Why a script rather than electron-builder's own icon handling: the config
@@ -29,6 +30,14 @@
 // beside the rest. Windows and Linux have no such convention and their icons
 // use the whole square, which is why this is applied to the icns alone rather
 // than to the canvas all three are cut from.
+//
+// The favicon is cut from that same full-square canvas — the browser tab has no
+// Dock grid to sit on, so it matches the Windows and Linux icons, not the Mac
+// one. It is written into the client workspace because that is what serves it
+// (vite copies client/public/ into the build verbatim), but it is generated
+// here so that replacing build/icon-source.png stays the single move that
+// changes every icon the app shows. Like the three above, the result is
+// committed — the web build does not run this script.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -38,7 +47,12 @@ import png2icons from "png2icons";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const buildDir = path.join(here, "build");
+const faviconPath = path.join(here, "..", "client", "public", "favicon.png");
 const SIZE = 1024;
+// Big enough to stay crisp everywhere a favicon is scaled up — pinned tabs and
+// bookmark bars pull it well past the 16-32px of the tab strip — while landing
+// around 30 KB PNG-compressed rather than the ~45 KB a 256 costs.
+const FAVICON = 192;
 // Apple's icon grid puts a standard app icon in 824 of its 1024 points. A tenth
 // of the canvas on each side lands within a few pixels of that.
 const MAC_PAD = 0.1;
@@ -90,6 +104,11 @@ const macCanvas = square(macPad);
 const iconPng = path.join(buildDir, "icon.png");
 await canvas.writeAsync(iconPng);
 
+// The favicon: the same 1024 canvas, resampled down once. BICUBIC to match the
+// resampler png2icons uses for the .ico below, so the tab icon and the Windows
+// icon are the same picture at different sizes.
+await canvas.clone().resize(FAVICON, FAVICON, Jimp.RESIZE_BICUBIC).writeAsync(faviconPath);
+
 // png2icons takes a PNG buffer and derives the whole size ladder itself.
 // usePngCompression keeps the 256px frame in the .ico small (Windows reads
 // PNG-compressed frames fine); the third arg 0 means "every standard size".
@@ -109,3 +128,6 @@ console.log(`generate-icons: from ${path.relative(here, sourcePath)}  (bg ${bg},
 console.log(`  build/icon.png    ${SIZE}x${SIZE}   ${kb(fs.statSync(iconPng).size)}`);
 console.log(`  build/icon.ico    ${kb(ico.length)}`);
 console.log(`  build/icon.icns   ${kb(icns.length)}   (pad ${macPad}, Apple's grid)`);
+console.log(
+  `  client/public/favicon.png   ${FAVICON}x${FAVICON}   ${kb(fs.statSync(faviconPath).size)}`,
+);
