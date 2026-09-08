@@ -22,6 +22,13 @@
 // --bg defaults to transparent; pass e.g. --bg "#141d2e" for a filled tile.
 // --pad is the margin left on each side as a fraction of the canvas (default 0,
 // i.e. the source fills the square) — raise it for art that runs to its edges.
+//
+// The .icns gets a floor under that margin whatever --pad says, because macOS
+// is the one platform with an opinion: every icon in the Dock sits on the same
+// grid, inset from its canvas, so one that fills its square reads as oversized
+// beside the rest. Windows and Linux have no such convention and their icons
+// use the whole square, which is why this is applied to the icns alone rather
+// than to the canvas all three are cut from.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -32,6 +39,9 @@ import png2icons from "png2icons";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const buildDir = path.join(here, "build");
 const SIZE = 1024;
+// Apple's icon grid puts a standard app icon in 824 of its 1024 points. A tenth
+// of the canvas on each side lands within a few pixels of that.
+const MAC_PAD = 0.1;
 
 function flag(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -47,21 +57,35 @@ if (!fs.existsSync(sourcePath)) {
   process.exit(1);
 }
 
+const source = await Jimp.read(sourcePath);
+const bgColor = bg === "transparent" ? 0x00000000 : Jimp.cssColorToHex(bg);
+
 // Fit the source inside the padded square, keeping its aspect ratio, and centre
 // it on a canvas of the chosen background. A portrait source simply ends up with
 // transparent bars left and right — that is the source's problem to fix, not
 // this script's.
-const source = await Jimp.read(sourcePath);
-const content = Math.round(SIZE * (1 - pad * 2));
-source.scaleToFit(content, content);
+//
+// From the original every time rather than by re-padding an earlier canvas: the
+// icns is inset further than the other two, and scaling art that has already
+// been scaled once is a second resample for no reason.
+function square(padding) {
+  const art = source.clone();
+  const content = Math.round(SIZE * (1 - padding * 2));
+  art.scaleToFit(content, content);
+  const canvas = new Jimp(SIZE, SIZE, bgColor);
+  canvas.composite(
+    art,
+    Math.round((SIZE - art.bitmap.width) / 2),
+    Math.round((SIZE - art.bitmap.height) / 2),
+  );
+  return canvas;
+}
 
-const bgColor = bg === "transparent" ? 0x00000000 : Jimp.cssColorToHex(bg);
-const canvas = new Jimp(SIZE, SIZE, bgColor);
-canvas.composite(
-  source,
-  Math.round((SIZE - source.bitmap.width) / 2),
-  Math.round((SIZE - source.bitmap.height) / 2),
-);
+// A floor, not an addition: art that already needs --pad 0.2 does not want
+// another tenth on top of it for the Mac.
+const macPad = Math.max(pad, MAC_PAD);
+const canvas = square(pad);
+const macCanvas = square(macPad);
 
 const iconPng = path.join(buildDir, "icon.png");
 await canvas.writeAsync(iconPng);
@@ -70,12 +94,13 @@ await canvas.writeAsync(iconPng);
 // usePngCompression keeps the 256px frame in the .ico small (Windows reads
 // PNG-compressed frames fine); the third arg 0 means "every standard size".
 const png = await canvas.getBufferAsync(Jimp.MIME_PNG);
+const macPng = await macCanvas.getBufferAsync(Jimp.MIME_PNG);
 
 const ico = png2icons.createICO(png, png2icons.BICUBIC, 0, true, false);
 if (!ico) throw new Error("generate-icons: ICO conversion returned nothing");
 fs.writeFileSync(path.join(buildDir, "icon.ico"), ico);
 
-const icns = png2icons.createICNS(png, png2icons.BICUBIC, 0);
+const icns = png2icons.createICNS(macPng, png2icons.BICUBIC, 0);
 if (!icns) throw new Error("generate-icons: ICNS conversion returned nothing");
 fs.writeFileSync(path.join(buildDir, "icon.icns"), icns);
 
@@ -83,4 +108,4 @@ const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
 console.log(`generate-icons: from ${path.relative(here, sourcePath)}  (bg ${bg}, pad ${pad})`);
 console.log(`  build/icon.png    ${SIZE}x${SIZE}   ${kb(fs.statSync(iconPng).size)}`);
 console.log(`  build/icon.ico    ${kb(ico.length)}`);
-console.log(`  build/icon.icns   ${kb(icns.length)}`);
+console.log(`  build/icon.icns   ${kb(icns.length)}   (pad ${macPad}, Apple's grid)`);
