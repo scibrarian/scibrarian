@@ -9,11 +9,19 @@
 // paired master. A workspace is the coarse boundary those need. Separate
 // database, separate blob store, separate pairing.
 //
-// **Desktop only, and by construction.** SCIBRARIAN_WORKSPACES_ROOT is set by
-// the Electron main process and by nothing else, so a Docker or `npm start`
-// deployment reads DB_PATH exactly as it always did and every function here
-// answers "off". A hosted instance is one organisation's server; the problem
-// this solves does not exist there.
+// **Desktop only, and by construction.** It takes two variables, both set by
+// the Electron main process and by nothing else: SCIBRARIAN_WORKSPACES_ROOT,
+// which says where the libraries live, and SCIBRARIAN_DESKTOP, which is that
+// process saying what it is. A Docker or `npm start` deployment sets neither,
+// reads DB_PATH exactly as it always did, and gets "off" from every function
+// here. A hosted instance is one organisation's server; the problem this solves
+// does not exist there.
+//
+// The conjunction is what makes "by construction" true rather than merely
+// customary. The root alone is an undocumented variable but a reachable one,
+// and an operator who set it on a hosted box would switch on a feature whose
+// every assumption — one local user, a loopback bind, no admin token — is false
+// there.
 //
 // Nothing in this module imports config.ts or db.ts, and the root is read from
 // the environment lazily rather than at module scope. Both are load-bearing:
@@ -52,8 +60,17 @@ export function workspacesRoot(): string {
   return process.env.SCIBRARIAN_WORKSPACES_ROOT?.trim() || "";
 }
 
+/**
+ * Whether this build has workspaces at all — see the note above for why it
+ * takes both variables rather than just the root.
+ *
+ * Read raw from the environment rather than through config.ts's IS_DESKTOP,
+ * which is the identical value. Importing config.ts here would freeze the
+ * answer before the question is asked, which is the ordering this whole module
+ * is arranged around.
+ */
 export function workspacesEnabled(): boolean {
-  return workspacesRoot() !== "";
+  return workspacesRoot() !== "" && process.env.SCIBRARIAN_DESKTOP === "1";
 }
 
 // ---------- the on-disk layout ----------
@@ -222,7 +239,10 @@ function validateName(name: string, existing: WorkspaceRecord[], exceptId = ""):
  */
 export function ensureActiveWorkspace(): WorkspaceRecord {
   if (!workspacesEnabled()) {
-    throw new Error("SCIBRARIAN_WORKSPACES_ROOT is not set; workspaces are desktop-only.");
+    throw new Error(
+      "Workspaces are desktop-only: SCIBRARIAN_WORKSPACES_ROOT and " +
+        "SCIBRARIAN_DESKTOP=1 must both be set."
+    );
   }
   const existing = readRegistry();
   // readRegistry guarantees the active id names one of these, but the lookup is
@@ -367,9 +387,13 @@ function adoptLegacyLibrary(id: string): void {
     if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
   }
   if (fs.existsSync(legacyBlobs)) adoptBlobs(legacyBlobs, workspaceBlobsDir(id));
-  // tmp-uploads is deliberately left behind. blobstore.ts empties it on every
-  // startup, so its contents are dead uploads by definition and moving them
-  // would carry rubbish into the new layout.
+  // tmp-uploads is removed rather than moved. Its contents are dead uploads by
+  // definition — blobstore.ts empties it on every startup — so carrying them
+  // into the new layout would carry rubbish. Removed rather than simply left,
+  // because config.ts derives UPLOAD_TMP_DIR from BLOBS_DIR: once the blobs
+  // move under the workspace, the directory blobstore.ts empties on startup is
+  // the one beside them, and this one would be emptied by nothing, ever.
+  fs.rmSync(path.join(root, "tmp-uploads"), { recursive: true, force: true });
 }
 
 /**
@@ -485,9 +509,21 @@ export function deleteWorkspace(id: string): "ok" | "active" | "unknown" {
   if (!reg || !reg.workspaces.some((w) => w.id === id)) return "unknown";
   if (reg.active === id) return "active";
   writeRegistry({ ...reg, workspaces: reg.workspaces.filter((w) => w.id !== id) });
-  // force, so a directory already gone — a half-finished earlier attempt — is
-  // not an error on the run that finishes the job.
-  fs.rmSync(workspaceDir(id), { recursive: true, force: true });
+  try {
+    // force, so a directory already gone — a half-finished earlier attempt — is
+    // not an error on the run that finishes the job.
+    fs.rmSync(workspaceDir(id), { recursive: true, force: true });
+  } catch (err) {
+    // Reported, never thrown, and this is the other half of the ordering above.
+    // The registry has already been written: the workspace is gone as far as
+    // anything can see, and answering the caller with a failure would leave a
+    // picker showing a row that the next read will not produce, beside a
+    // message saying the delete did not happen. Windows raises this for
+    // ordinary reasons — a PDF open in a viewer, a scanner on the blob store —
+    // and what survives is bytes nothing references.
+    const why = err instanceof Error ? err.message : String(err);
+    console.warn(`[workspaces] deleted ${id}, but its directory remains: ${why}`);
+  }
   return "ok";
 }
 

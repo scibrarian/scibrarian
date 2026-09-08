@@ -35,6 +35,7 @@ import type {
   TopicRemovalResult,
   TopicSuggestResponse,
   UploadResponse,
+  WorkspaceContentsResponse,
   WorkspacesResponse,
 } from "./types";
 import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
@@ -320,6 +321,11 @@ export const api = {
   // nothing draws a control to reach them from.
 
   getWorkspaces: () => req<WorkspacesResponse>("/api/workspaces"),
+  // Asked when the delete confirmation opens, not with the list: counting means
+  // opening another workspace's database and scanning two tables, and this is
+  // the only thing that reads the answer.
+  workspaceContents: (id: string) =>
+    req<WorkspaceContentsResponse>(`/api/workspaces/${encodeURIComponent(id)}/contents`),
   createWorkspace: (name: string) =>
     req<WorkspacesResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
   renameWorkspace: (id: string, name: string) =>

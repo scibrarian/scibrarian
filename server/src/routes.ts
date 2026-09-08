@@ -125,6 +125,7 @@ import type {
   Settings,
   TopicSuggestResponse,
   Workspace,
+  WorkspaceContentsResponse,
   WorkspacesResponse,
 } from "./types.js";
 import { workspaceContents } from "./elsewhere.js";
@@ -1450,22 +1451,20 @@ api.put("/settings", (req, res) => {
 // One row as the client sees it. `active` is derived rather than stored on each
 // record, so there is exactly one source of truth for which library is open.
 //
-// The contents are counted for every row but that one, because that one cannot
-// be deleted — so the counts would answer a question nobody can ask, at the
-// price of a second connection to the database this process already holds open.
-// A workspace whose database will not open contributes no counts and is still
-// listed: it is a candidate for deletion like any other, and rather more likely
-// to be one.
+// Deliberately four fields and no database work. The collection and file counts
+// used to be assembled here, which meant workspaceContents opening a connection
+// and scanning two tables per inactive workspace — on this body, which answers
+// the GET as well as create, rename and delete. Four workspaces cost three
+// databases opened and six scans before the picker could draw a name, for a
+// pair of numbers one dialog reads about one workspace. They are their own
+// route now, asked when that dialog opens.
 function toWorkspaceRow(w: WorkspaceRecord, activeId: string): Workspace {
-  const row: Workspace = {
+  return {
     id: w.id,
     name: w.name,
     created_at: w.created_at,
     active: w.id === activeId,
   };
-  if (row.active) return row;
-  const contents = workspaceContents(w.id);
-  return contents ? { ...row, ...contents } : row;
 }
 
 function workspacesBody(): WorkspacesResponse {
@@ -1473,6 +1472,17 @@ function workspacesBody(): WorkspacesResponse {
   return {
     workspaces: active ? listWorkspaces().map((w) => toWorkspaceRow(w, active.id)) : [],
   };
+}
+
+// The name a create or a rename is asking for, or null when the body carried
+// nothing usable.
+//
+// A typeof check rather than String(), which is what this was. String({}) is
+// "[object Object]" — fifteen characters, not blank, unlikely to clash — so it
+// passed every validation below and became a workspace with that name.
+function bodyName(body: unknown): string | null {
+  const name = (body as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" ? name.trim() : null;
 }
 
 // Sends its own 404 and returns true when this build has no workspaces. A 404
@@ -1495,7 +1505,8 @@ api.get("/workspaces", (req, res) => {
 
 api.post("/workspaces", (req, res) => {
   if (noWorkspaces(res)) return;
-  const name = String(req.body?.name ?? "").trim();
+  const name = bodyName(req.body);
+  if (name === null) return res.status(400).json({ error: "A workspace needs a name." });
   const problem = checkWorkspaceName(name);
   if (problem) return res.status(400).json({ error: problem });
   createWorkspace(name);
@@ -1508,13 +1519,35 @@ api.post("/workspaces", (req, res) => {
 api.patch("/workspaces/:id", (req, res) => {
   if (noWorkspaces(res)) return;
   const id = String(req.params.id);
-  const name = String(req.body?.name ?? "").trim();
+  const name = bodyName(req.body);
+  if (name === null) return res.status(400).json({ error: "A workspace needs a name." });
   const problem = checkWorkspaceName(name, id);
   if (problem) return res.status(400).json({ error: problem });
   if (!renameWorkspace(id, name)) {
     return res.status(404).json({ error: "No such workspace." });
   }
   res.json(workspacesBody());
+});
+
+// What deleting one would destroy, counted on demand rather than with the list.
+//
+// Admin-gated like the list it belongs to, and for the same reason: how much
+// material sits in each of this person's libraries is about them rather than
+// about any paper.
+//
+// Answers 200 with a null `contents` for a database that will not open. That is
+// not an error — the workspace is real, still listed, and still deletable —
+// and it is a different answer from an empty one, which the dialog's wording
+// depends on being able to tell apart.
+api.get("/workspaces/:id/contents", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
+  if (noWorkspaces(res)) return;
+  const id = String(req.params.id);
+  if (!listWorkspaces().some((w) => w.id === id)) {
+    return res.status(404).json({ error: "No such workspace." });
+  }
+  const body: WorkspaceContentsResponse = { contents: workspaceContents(id) };
+  res.json(body);
 });
 
 // Delete a workspace and everything in it. The only route here that destroys

@@ -35,11 +35,11 @@
 
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { heldFile } from "./db.js";
+import { heldFileSql } from "./db.js";
 import { otherWorkspaces, workspaceDbPath, workspacesEnabled } from "./workspaces.js";
-import { SQL_PARAMS_PER_CHUNK } from "../../shared/sqlite.js";
+import { eachIdChunk } from "../../shared/sqlite.js";
 import { errMessage } from "./util.js";
-import type { ElsewhereHolding } from "../../shared/types.js";
+import type { ElsewhereHolding, WorkspaceContents } from "../../shared/types.js";
 
 export interface ElsewhereResult {
   /**
@@ -131,18 +131,19 @@ function readOne(
   try {
     // Chunked for the same reason queryByIds is: a pasted reference list is
     // bounded, but this is the shape that stops being true the moment something
-    // else calls it.
-    for (let i = 0; i < pmids.length; i += SQL_PARAMS_PER_CHUNK) {
-      const chunk = pmids.slice(i, i + SQL_PARAMS_PER_CHUNK);
+    // else calls it. Through the shared helper rather than a loop written again
+    // here — the chunk size and the bind order are one rule, and a second copy
+    // of it fails by returning no rows, which reads as "you don't own this".
+    eachIdChunk(pmids, [], (placeholders, params) => {
       const rows = db
         .prepare(
           `SELECT cf.pmid AS pmid, MIN(c.name) AS collection_name
              FROM collection_files cf
              JOIN collections c ON c.id = cf.collection_id
-            WHERE ${heldFile("cf.")} AND cf.pmid IN (${chunk.map(() => "?").join(",")})
+            WHERE ${heldFileSql("cf.")} AND cf.pmid IN (${placeholders})
             GROUP BY cf.pmid`
         )
-        .all(...chunk) as { pmid: string; collection_name: string }[];
+        .all(...params) as { pmid: string; collection_name: string }[];
       for (const row of rows) {
         // First workspace to claim a paper keeps it, and within one workspace
         // MIN(name) picks the collection. Both are arbitrary but stable —
@@ -153,7 +154,7 @@ function readOne(
           into.set(row.pmid, { workspace: workspaceName, collection: row.collection_name });
         }
       }
-    }
+    });
   } finally {
     db.close();
   }
@@ -164,22 +165,10 @@ function readOne(
 /**
  * Enough to make "delete this workspace" a decision rather than a click.
  *
- * Both counts are optional in the wire type for the reason ProNode's activity
- * counts are: absent and zero are different answers, and this one is read by
- * someone about to destroy a library. Zero means measured and empty — a
- * workspace created and never filled, which is a much lighter thing to delete.
- * Absent means the database could not be read, and the dialog then says what it
- * always safely can: this cannot be undone.
- *
- * Files rather than papers, because that is what is actually irreplaceable. An
- * articles row is a PubMed fetch away from coming back; a stored PDF is the one
- * somebody paid for.
+ * Null rather than a zeroed pair when the database will not open — see
+ * WorkspaceContentsResponse for why absent and zero have to stay distinguishable
+ * all the way to the dialog.
  */
-export interface WorkspaceContents {
-  collections: number;
-  files: number;
-}
-
 export function workspaceContents(id: string): WorkspaceContents | null {
   if (!workspacesEnabled()) return null;
   const dbPath = workspaceDbPath(id);

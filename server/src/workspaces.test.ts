@@ -39,10 +39,12 @@ let root: string;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "scibrarian-workspaces-"));
   process.env.SCIBRARIAN_WORKSPACES_ROOT = root;
+  process.env.SCIBRARIAN_DESKTOP = "1";
 });
 
 afterEach(() => {
   delete process.env.SCIBRARIAN_WORKSPACES_ROOT;
+  delete process.env.SCIBRARIAN_DESKTOP;
   onRestartRequested(undefined);
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -64,6 +66,21 @@ describe("a build with no workspaces", () => {
   });
 
   it("refuses to invent one for an embedder that asks", () => {
+    expect(() => ensureActiveWorkspace()).toThrow(/desktop-only/);
+  });
+
+  // The root on its own is not enough, and that is the whole point of the
+  // second variable. It is undocumented but reachable, and an operator who set
+  // it on a hosted instance would otherwise switch on a feature every one of
+  // whose assumptions — one local user, a loopback bind, no admin token — is
+  // false there.
+  it("stays off for a root set without the desktop build saying so", () => {
+    process.env.SCIBRARIAN_WORKSPACES_ROOT = root;
+    delete process.env.SCIBRARIAN_DESKTOP;
+
+    expect(workspacesEnabled()).toBe(false);
+    expect(listWorkspaces()).toEqual([]);
+    expect(activeWorkspace()).toBeNull();
     expect(() => ensureActiveWorkspace()).toThrow(/desktop-only/);
   });
 });
@@ -107,6 +124,20 @@ describe("first run", () => {
     // Moved, not copied: a second copy of a 46 MB database is one that drifts.
     expect(fs.existsSync(path.join(root, "app.db"))).toBe(false);
     expect(fs.existsSync(path.join(root, "blobs", "abc.pdf"))).toBe(false);
+  });
+
+  // Left where it was, this is emptied by nothing ever again: config.ts derives
+  // UPLOAD_TMP_DIR from BLOBS_DIR, so once the blobs move under the workspace
+  // the directory blobstore.ts clears on every startup is the one beside them,
+  // and whatever partial uploads this held at migration stay on disk for good.
+  it("removes the dead upload directory rather than stranding it", () => {
+    fs.writeFileSync(path.join(root, "app.db"), "pretend-sqlite");
+    fs.mkdirSync(path.join(root, "tmp-uploads"), { recursive: true });
+    fs.writeFileSync(path.join(root, "tmp-uploads", "half-sent.pdf"), "partial");
+
+    ensureActiveWorkspace();
+
+    expect(fs.existsSync(path.join(root, "tmp-uploads"))).toBe(false);
   });
 
   // The move used to happen before the registry was written, so an EPERM on the

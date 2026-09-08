@@ -495,22 +495,39 @@ export interface Workspace {
   created_at: string;
   /** The one this process is running in. Exactly one row carries it. */
   active: boolean;
-  /**
-   * What deleting this one would destroy, so the confirmation can say.
-   *
-   * Optional, and the two states are different answers: zero is measured and
-   * empty — a workspace created and never filled, a much lighter thing to
-   * delete — while absent means its database could not be read, and the dialog
-   * falls back to what it can always say safely. The same rule ProNode's
-   * activity counts follow, and it matters more here, because this pair is read
-   * by someone about to destroy a library.
-   *
-   * Never present on the active row: that workspace cannot be deleted, so there
-   * is nothing to warn about and no reason to open a second connection to a
-   * database this process already has open.
-   */
-  collections?: number;
-  files?: number;
+}
+
+/**
+ * What deleting a workspace would destroy, so the confirmation can say.
+ *
+ * Files rather than papers, because that is what is actually irreplaceable. An
+ * articles row is a PubMed fetch away from coming back; a stored PDF is the one
+ * somebody paid for.
+ */
+export interface WorkspaceContents {
+  collections: number;
+  files: number;
+}
+
+/**
+ * Asked for one workspace, when the confirmation that reads it opens.
+ *
+ * Not carried on the rows of the list, which is where it used to live: counting
+ * means opening a second connection to a database this process does not have
+ * open and scanning two tables, and the list is the response to the GET as well
+ * as to create, rename and delete. Every page load paid for it; one dialog,
+ * about one workspace, behind two clicks, read it.
+ *
+ * Null and zero are different answers, and the distinction is the reason this
+ * is nullable rather than an empty pair. Zero is measured and empty — a
+ * workspace created and never filled, a much lighter thing to delete. Null
+ * means the database could not be read, and the dialog falls back to what it
+ * can always say safely. The same rule ProNode's activity counts follow, and it
+ * matters more here, because this is read by someone about to destroy a
+ * library.
+ */
+export interface WorkspaceContentsResponse {
+  contents: WorkspaceContents | null;
 }
 
 /**

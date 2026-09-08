@@ -178,7 +178,7 @@ function listContents(s: LibraryStats): string {
 // here rather than at the call sites so two messages about the same rows cannot
 // disagree about how to write them — which is what "1,204 papers" from a reset
 // beside "1204 papers" from a collection removal was.
-function plural(n: number, noun: string): string {
+export function plural(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
 }
 

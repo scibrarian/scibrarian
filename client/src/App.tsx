@@ -696,7 +696,7 @@ export default function App() {
   //
   // A collection is asked with heldCount rather than the matchedCount its badge
   // draws. The views below list the papers a collection holds, and db.ts
-  // decides that with heldFile and nothing else (see "what 'held' means");
+  // decides that with heldFileSql and nothing else (see "what 'held' means");
   // matched uploads count files, and are equal to held papers only while
   // nothing writes a pmid outside setFileMatched. Nothing does, so this changes
   // no pixel — it keeps one more reader off a spelling that is equal by

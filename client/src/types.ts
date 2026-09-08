@@ -37,6 +37,8 @@ import type {
   TopicSuggestion,
   TopicSuggestResponse,
   Workspace,
+  WorkspaceContents,
+  WorkspaceContentsResponse,
   WorkspacesResponse,
 } from "../../shared/types";
 
@@ -90,6 +92,8 @@ export type {
   TopicSuggestion,
   TopicSuggestResponse,
   Workspace,
+  WorkspaceContents,
+  WorkspaceContentsResponse,
   WorkspacesResponse,
 };
 

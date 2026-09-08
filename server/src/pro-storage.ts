@@ -118,8 +118,9 @@ export function manualMatchCountIn(collectionId: number): number {
  * module's hands, where a stale candidate list, a re-used id after a delete or
  * an off-by-one on a cursor turns into a PDF from a deliberately local
  * collection landing in the agency's library. The boundary is the headline
- * promise of this feature, so it is enforced the same way `heldFile` enforces
- * "held" rather than trusting what it is handed.
+ * promise of this feature, so it is enforced the same way `heldFileSql` (db.ts,
+ * and not the heldFile below) enforces "held" rather than trusting what it is
+ * handed.
  */
 export function readFileBytes(collectionId: number, fileId: number): Buffer | null {
   const file = getCollectionFile(fileId);

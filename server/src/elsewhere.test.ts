@@ -64,7 +64,7 @@ function article(p: { pmid: string; doi: string }) {
   };
 }
 
-// Give a collection file a PMID, which is what makes it *held* — see heldFile
+// Give a collection file a PMID, which is what makes it *held* — see heldFileSql
 // in db.ts for why custody is that column and not the articles row.
 function hold(collectionId: number, pmid: string): void {
   for (const f of db.listCollectionFiles(collectionId)) {
@@ -144,15 +144,28 @@ beforeAll(async () => {
   );
 
   // Set last, so nothing above this line depends on the feature being on.
+  // Both, because either alone leaves it off — see workspacesEnabled.
   process.env.SCIBRARIAN_WORKSPACES_ROOT = root;
+  process.env.SCIBRARIAN_DESKTOP = "1";
 });
 
-afterAll(closeTempDb);
+afterAll(() => {
+  // Unset as well as torn down. closeTempDb removes the directory this points
+  // at, so a variable left set names a root that no longer exists and
+  // workspacesEnabled() answers true for it. Invisible only because vitest
+  // forks a process per file — turn isolation off, or move these describes
+  // into a shared file, and whichever suite ran next would see a phantom
+  // feature switched on.
+  delete process.env.SCIBRARIAN_WORKSPACES_ROOT;
+  delete process.env.SCIBRARIAN_DESKTOP;
+  closeTempDb();
+});
 
 // Every test restores the fixture it might have moved: one damages the other
 // workspace's database on purpose, and another rewrites the registry.
 afterEach(() => {
   process.env.SCIBRARIAN_WORKSPACES_ROOT = root;
+  process.env.SCIBRARIAN_DESKTOP = "1";
   fs.copyFileSync(otherDbBackup, otherDb);
   writeRegistry(
     [

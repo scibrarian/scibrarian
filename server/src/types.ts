@@ -32,6 +32,8 @@ export type {
   TopicSuggestion,
   TopicSuggestResponse,
   Workspace,
+  WorkspaceContents,
+  WorkspaceContentsResponse,
   WorkspacesResponse,
 } from "../../shared/types.js";
 

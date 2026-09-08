@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, Pencil, Plus, Trash2, Boxes } from "lucide-react";
 import { api } from "../api";
-import { errorMessage } from "../lib/format";
-import type { Workspace } from "../types";
+import { errorMessage, plural } from "../lib/format";
+import type { Workspace, WorkspaceContents } from "../types";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { MAX_NAME_CHARS } from "../../../shared/limits";
 
@@ -40,20 +40,29 @@ const SWITCH_TITLE = "Switch workspace";
  * The whole sentence rather than a fragment the caller splices in: the three
  * states do not share a grammar, and the version that tried to ended up
  * promising to delete the stored PDFs twice.
+ *
+ * Null covers two states that want the same words: the counts have not arrived
+ * yet, and the database could not be read to produce them. Both get the wider
+ * sentence, which is true either way — so a dialog that opens before the answer
+ * lands is never wrong, only less specific.
  */
-function deleteWarning(w: Workspace): string {
+export function deleteWarning(contents: WorkspaceContents | null): string {
   // True of all three, and the part that actually needs saying: a workspace is
   // not a folder things can be moved out of first.
   const tail = "Nothing moves to another workspace, and this cannot be undone.";
   const rest = "its topics, its settings, and any organization pairing";
-  if (w.collections == null || w.files == null) {
+  if (contents == null) {
     return `This permanently deletes its whole library — every collection and every stored PDF, plus ${rest}. ${tail}`;
   }
-  if (w.collections === 0 && w.files === 0) {
+  if (contents.collections === 0 && contents.files === 0) {
     return `This workspace is empty — no collections, no stored PDFs. Deleting it also removes ${rest}. ${tail}`;
   }
-  const collections = `${w.collections} collection${w.collections === 1 ? "" : "s"}`;
-  const files = `${w.files} stored PDF${w.files === 1 ? "" : "s"}`;
+  // plural rather than a rule spelled again here: it separates thousands, and a
+  // workspace big enough for that is exactly the one where "1204 stored PDFs"
+  // beside Settings' "1,204 papers" makes a reader wonder which is counting
+  // something else.
+  const collections = plural(contents.collections, "collection");
+  const files = plural(contents.files, "stored PDF");
   return `This permanently deletes its whole library — ${collections} and ${files}, plus ${rest}. ${tail}`;
 }
 
@@ -63,6 +72,17 @@ export function WorkspaceSwitcher() {
   const [renaming, setRenaming] = useState<Workspace | null>(null);
   const [switchingTo, setSwitchingTo] = useState<Workspace | null>(null);
   const [deleting, setDeleting] = useState<Workspace | null>(null);
+  // What the open delete dialog is about to destroy, once the count lands.
+  //
+  // Keyed by id rather than held as a bare pair: open one row's dialog, cancel,
+  // open another's, and the first request can still be in flight — and a count
+  // from the wrong workspace on *this* dialog is the one number here that must
+  // never be wrong. A mismatch reads as "not known yet", which is a wording the
+  // sentence already has.
+  const [contents, setContents] = useState<{
+    id: string;
+    contents: WorkspaceContents | null;
+  } | null>(null);
   // The menu is controlled so a row action can close it. It cannot close
   // itself: the action buttons stop the click reaching the row, so Radix never
   // sees a selection — and an open menu paints crisp and undimmed above a
@@ -96,10 +116,14 @@ export function WorkspaceSwitcher() {
   const active = workspaces.find((w) => w.active) ?? null;
   if (!active) return null;
 
+  // Cleared when the attempt starts rather than only when one succeeds. A
+  // message belongs to the act that produced it, and this one had no other way
+  // to go: nothing dropped it on cancel, so a name clash from a rename stood in
+  // the header until some later mutation happened to succeed.
   async function run(work: Promise<{ workspaces: Workspace[] }>): Promise<void> {
+    setError(null);
     try {
       setWorkspaces((await work).workspaces);
-      setError(null);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -107,6 +131,11 @@ export function WorkspaceSwitcher() {
 
   async function commitSwitch(target: Workspace): Promise<void> {
     setSwitchingTo(null);
+    // Before `restarting`, and the reason the two are never both on screen:
+    // these render as adjacent spans, so a refusal left over from an earlier
+    // dialog read as one line — “There is already a workspace called “Acme”.
+    // Switching…” — two unrelated states pretending to be a sentence.
+    setError(null);
     setRestarting(true);
     try {
       const { restarting: willRestart } = await api.switchWorkspace(target.id);
@@ -215,6 +244,15 @@ export function WorkspaceSwitcher() {
                         e.stopPropagation();
                         setMenuOpen(false);
                         setDeleting(w);
+                        // Counted now rather than carried on every row of every
+                        // list response: it opens that workspace's database and
+                        // scans two tables, and this dialog is the only thing
+                        // that reads the answer. Silent on failure — the
+                        // sentence has wording for "not known".
+                        void api
+                          .workspaceContents(w.id)
+                          .then((r) => setContents({ id: w.id, contents: r.contents }))
+                          .catch(() => {});
                       }}
                     >
                       <Trash2 size={13} aria-hidden />
@@ -255,7 +293,10 @@ export function WorkspaceSwitcher() {
           setCreating(false);
           void run(api.createWorkspace(name));
         }}
-        onCancel={() => setCreating(false)}
+        onCancel={() => {
+          setCreating(false);
+          setError(null);
+        }}
       />
 
       <PromptDialog
@@ -269,13 +310,18 @@ export function WorkspaceSwitcher() {
           setRenaming(null);
           if (target) void run(api.renameWorkspace(target.id, name));
         }}
-        onCancel={() => setRenaming(null)}
+        onCancel={() => {
+          setRenaming(null);
+          setError(null);
+        }}
       />
 
       <ConfirmDialog
         open={deleting != null}
         title={deleting ? `Delete “${deleting.name}”?` : ""}
-        message={deleting ? deleteWarning(deleting) : ""}
+        message={
+          deleting ? deleteWarning(contents?.id === deleting.id ? contents.contents : null) : ""
+        }
         confirmLabel="Delete workspace"
         danger
         onConfirm={() => {
@@ -283,7 +329,10 @@ export function WorkspaceSwitcher() {
           setDeleting(null);
           if (target) void run(api.deleteWorkspace(target.id));
         }}
-        onCancel={() => setDeleting(null)}
+        onCancel={() => {
+          setDeleting(null);
+          setError(null);
+        }}
       />
 
       <ConfirmDialog
@@ -297,7 +346,10 @@ export function WorkspaceSwitcher() {
         onConfirm={() => {
           if (switchingTo) void commitSwitch(switchingTo);
         }}
-        onCancel={() => setSwitchingTo(null)}
+        onCancel={() => {
+          setSwitchingTo(null);
+          setError(null);
+        }}
       />
     </>
   );
