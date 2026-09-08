@@ -372,6 +372,22 @@ export interface HaveAnswer {
   // Whether every other workspace answered. False means one could not be read,
   // so an absent `elsewhere` is "nobody looked" rather than "you don't own it".
   elsewhereChecked: boolean;
+  // Whether every check that applies *here* actually answered — the one field
+  // the UI reads to decide whether a not-held row may be drawn as a flat "not
+  // in your library".
+  //
+  // orgChecked and elsewhereChecked cannot answer that on their own, which is
+  // why this exists beside them. Each is false both when its check failed and
+  // when its check does not exist in this deployment: a hosted instance has no
+  // other workspaces, a free build has no organization, and an absence is
+  // trustworthy in both. Only the server knows which of the two a false means,
+  // so only the server can collapse them into this.
+  //
+  // False is therefore a real failure — a workspace whose database would not
+  // open, or a paired master that could not be reached — and a row carrying it
+  // must not be rendered as a settled no. That is the confident negative that
+  // ends in the duplicate purchase these fields exist to prevent.
+  verdictComplete: boolean;
 }
 
 export interface HaveResponse {

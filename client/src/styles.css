@@ -3661,6 +3661,13 @@ html {
   border-left-color: var(--warn);
 }
 
+/* A check that couldn't finish. Shares the warning edge with `unreadable`
+   because it is the same kind of answer — the app telling you it doesn't know,
+   rather than telling you no. */
+.have-row.unconfirmed {
+  border-left-color: var(--warn);
+}
+
 .have-verdict {
   display: flex;
   align-items: center;
@@ -3687,6 +3694,15 @@ html {
 }
 
 .have-pill.unreadable {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* Warn rather than the neutral not-held pill, and on variables so it needs no
+   dark-mode literal. The whole point of the row is that it must not be skimmed
+   as a settled negative — that reading is the one that ends in a second
+   purchase of a paper the reader already owns. */
+.have-pill.unconfirmed {
   background: var(--warn-soft);
   color: var(--warn);
 }

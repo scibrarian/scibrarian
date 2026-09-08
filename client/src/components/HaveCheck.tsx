@@ -295,6 +295,12 @@ function Summary({ response }: { response: HaveResponse }) {
   const elsewhere = results.filter((r) => !r.held && r.elsewhere).length;
   const org = results.filter((r) => !r.held && !r.elsewhere && r.org).length;
   const unreadable = results.filter((r) => r.parsed.kind === "unknown").length;
+  // The same invariant the row-level pill enforces, at the level a reader
+  // actually acts on: "3 of 10 already in your library" says the other seven
+  // are not, and a check that failed cannot support that.
+  const unconfirmed = results.filter(
+    (r) => !r.held && !r.elsewhere && !r.org && r.parsed.kind !== "unknown" && !r.verdictComplete
+  ).length;
   return (
     <p className="have-summary">
       <strong>
@@ -304,6 +310,7 @@ function Summary({ response }: { response: HaveResponse }) {
       {elsewhere > 0 &&
         ` You already own ${elsewhere} more, in ${elsewhere === 1 ? "another workspace" : "your other workspaces"}.`}
       {org > 0 && ` ${org} more ${org === 1 ? "is" : "are"} held by your organization.`}
+      {unconfirmed > 0 && ` ${unconfirmed} couldn’t be checked everywhere.`}
       {unreadable > 0 &&
         ` ${unreadable} line${unreadable === 1 ? "" : "s"} couldn’t be read.`}
     </p>
@@ -345,7 +352,9 @@ function AnswerRow({
   /** Some row's transfer is in flight. Disables every Copy button, not just this one. */
   busy: boolean;
 }) {
-  const { parsed, match, held, identifierChecked, org, elsewhere } = answer;
+  const { parsed, match, held, identifierChecked, org, elsewhere, verdictComplete } = answer;
+  // Last, and only over "not-held": a hit outranks it, because a workspace that
+  // could not be read says nothing about the one that already answered yes.
   const kind = held
     ? "held"
     : parsed.kind === "unknown"
@@ -354,7 +363,9 @@ function AnswerRow({
         ? "elsewhere-held"
         : org
           ? "org-held"
-          : "not-held";
+          : verdictComplete
+            ? "not-held"
+            : "unconfirmed";
 
   return (
     <li className={`have-row ${kind}`}>
@@ -657,6 +668,17 @@ function Verdict({ kind }: { kind: string }) {
     return (
       <span className="have-pill org-held">
         <Users size={13} className="inline-icon" aria-hidden /> In your organization
+      </span>
+    );
+  }
+  // A check that should have answered didn't — a workspace whose database would
+  // not open, or a master that could not be reached. The row below would say
+  // "Not in your library", which is the confident no this whole feature exists
+  // to avoid, and it would be indistinguishable from the answer we cannot give.
+  if (kind === "unconfirmed") {
+    return (
+      <span className="have-pill unconfirmed">
+        <TriangleAlert size={13} className="inline-icon" aria-hidden /> Couldn’t check everywhere
       </span>
     );
   }

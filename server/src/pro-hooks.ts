@@ -230,6 +230,21 @@ export function proStatus(): ProStatus | null {
 }
 
 /**
+ * Whether there is an organisation to ask at all — a module registered in this
+ * process.
+ *
+ * Deliberately neither of the two neighbours it could be mistaken for.
+ * proInstalled() asks whether the package resolves on disk, which is true of a
+ * build that has not loaded it and false in a test that registered a stub.
+ * proStatus() calls into the module for an answer this only needs the existence
+ * of. The caller is /have, deciding whether a null from orgCheck means "nobody
+ * to ask" or "asked, and nothing came back" — see verdictComplete.
+ */
+export function proActive(): boolean {
+  return mod != null;
+}
+
+/**
  * Provenance for a page of papers. Empty map in a free build, so callers spread
  * it in unconditionally and add nothing.
  *

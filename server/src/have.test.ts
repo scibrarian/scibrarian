@@ -154,6 +154,11 @@ describe("org verdict", () => {
     // The distinction the whole feature rests on: not "the org doesn't have
     // it", but "nobody was asked".
     expect(answer.orgChecked).toBe(false);
+    // And the distinction that makes orgChecked readable by a UI. Nobody was
+    // asked because there is nobody to ask — no Pro module, no other
+    // workspaces — so the local answer is the whole answer and the row is a
+    // plain "not in your library". A free build must not warn on every line.
+    expect(answer.verdictComplete).toBe(true);
   });
 
   it("reports a paper the org holds, with the master's label", async () => {
@@ -185,6 +190,11 @@ describe("org verdict", () => {
     expect(answer.held).toBe(false);
     expect(answer.org).toBeNull();
     expect(answer.orgChecked).toBe(false);
+    // The same orgChecked the free build above reports, and the opposite
+    // meaning: there was a master and it did not answer. Only this side knows
+    // which, so it is this side that says whether the row may be drawn as a
+    // settled "not in your library".
+    expect(answer.verdictComplete).toBe(false);
   });
 
   it("degrades the same way when the node has been revoked", async () => {

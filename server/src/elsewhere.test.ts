@@ -274,6 +274,21 @@ describe("/have, with another workspace on the machine", () => {
     expect(answer.elsewhere).toEqual({ workspace: null, collection: null });
   });
 
+  // The half that had no coverage, and the reason elsewhereChecked is tracked
+  // at all: a workspace that would not open must not leave the row renderable
+  // as "not in your library". The UI reads verdictComplete rather than the two
+  // per-check flags, because those are also false where the check simply does
+  // not exist — see the free-build case in have.test.ts.
+  it("will not report a settled no when a workspace could not be read", async () => {
+    fs.writeFileSync(otherDb, "not a database");
+
+    const [answer] = await have.checkHoldings([THEIRS.pmid], { lookUpIdentifiers: false });
+    expect(answer.held).toBe(false);
+    expect(answer.elsewhere).toBeNull();
+    expect(answer.elsewhereChecked).toBe(false);
+    expect(answer.verdictComplete).toBe(false);
+  });
+
   it("says so plainly when no other workspace has it", async () => {
     const [answer] = await have.checkHoldings(["40009999"], { lookUpIdentifiers: false });
     expect(answer.elsewhereChecked).toBe(true);

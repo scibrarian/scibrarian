@@ -9,7 +9,8 @@ import {
 } from "./db.js";
 import { lookupWorks, type OaWork } from "./openalex.js";
 import { heldElsewhere } from "./elsewhere.js";
-import { orgCheck } from "./pro-hooks.js";
+import { orgCheck, proActive } from "./pro-hooks.js";
+import { workspacesEnabled } from "./workspaces.js";
 import { evidenceFromRows } from "./pubmed-parse.js";
 import type { OrgHolding } from "../../shared/pro.js";
 import type { ElsewhereHolding } from "../../shared/types.js";
@@ -152,6 +153,24 @@ export async function checkHoldings(
     pubTypes: pubTypesByPmids(pmids),
   });
 
+  // Whether a check that could have answered this row did — see verdictComplete.
+  //
+  // The applicability half is the part only this side can know. Both flags read
+  // false on a deployment where their check does not exist at all:
+  // workspacesEnabled() is false on every hosted instance and proActive() in
+  // every free build, and the absence is trustworthy in both. Collapsing that
+  // into "a check failed" would put a warning on every row of every free build.
+  //
+  // An explicit opt-out is not a failure either. checkOrg is false for the
+  // local-only answer the client asks for while a paste is still being typed,
+  // and flagging every row of a preview would train a reader to ignore the one
+  // that matters. The lookup it skipped is reported by identifierChecked.
+  const elsewhereApplies = workspacesEnabled();
+  const orgApplies = checkOrg && proActive();
+  const complete = (r: LocalResult): boolean =>
+    (!elsewhereApplies || r.elsewhereChecked === true) &&
+    (!orgApplies || r.orgChecked === true);
+
   // --- other-workspace pass: the fourth verdict, already yours, filed elsewhere ---
   //
   // Ahead of the org pass because it is local: no request, no network, and the
@@ -229,7 +248,7 @@ export async function checkHoldings(
     // Hoisted: inside the map this rebuilt the whole context — a flatMap over
     // every result plus a batched publication-type query — once per answer row.
     const ctx = renderContext(namedPmids(local));
-    return local.map((r) => toAnswer(r, ctx, false));
+    return local.map((r) => toAnswer(r, ctx, { identifier: false, complete: complete(r) }));
   }
 
   const pending = [...needsLookup];
@@ -307,18 +326,24 @@ export async function checkHoldings(
   const ctx = renderContext([...namedPmids(local), ...secondLook.keys()]);
 
   return local.map((r) => {
-    if (!needsLookup.has(r)) return toAnswer(r, ctx, false);
+    if (!needsLookup.has(r)) return toAnswer(r, ctx, { identifier: false, complete: complete(r) });
     const work = (r.ref.doi ? oaByDoi.get(r.ref.doi) : null) ?? (r.ref.pmid ? oaByPmid.get(r.ref.pmid) : null) ?? null;
     const rediscovered = work?.pmid ? secondLook.get(work.pmid) : undefined;
     if (rediscovered && rediscovered.file_id != null) {
       // Held after all — under a PMID the pasted DOI didn't reach directly.
-      return toAnswer({ ...r, row: rediscovered, held: true }, ctx, false);
+      return toAnswer({ ...r, row: rediscovered, held: true }, ctx, {
+        identifier: false,
+        complete: complete(r),
+      });
     }
     // Still not held. Prefer whatever the library already knows about the paper
     // over OpenAlex's thinner record — a cached article row carries authors,
     // journal and the exact publication date.
     const enriched = r.row ?? rediscovered ?? null;
-    return toAnswer({ ...r, row: enriched, oa: work }, ctx, true);
+    return toAnswer({ ...r, row: enriched, oa: work }, ctx, {
+      identifier: true,
+      complete: complete(r),
+    });
   });
 }
 
@@ -397,12 +422,24 @@ function resolveLocally(
   return empty;
 }
 
-function toAnswer(r: LocalResult, ctx: RenderContext, identifierChecked: boolean): HaveAnswer {
+// What ran for a row, as the answer reports it. An object rather than two more
+// positional booleans: adjacent boolean arguments are one transposition away
+// from a wrong answer, and both of these exist to stop the row claiming more
+// certainty than there is.
+interface Checked {
+  /** The online identifier lookup ran for this row. */
+  identifier: boolean;
+  /** Every check that applies to this deployment answered. */
+  complete: boolean;
+}
+
+function toAnswer(r: LocalResult, ctx: RenderContext, checked: Checked): HaveAnswer {
   return {
     parsed: r.ref,
     held: r.held,
     match: r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa) : null,
-    identifierChecked,
+    identifierChecked: checked.identifier,
+    verdictComplete: checked.complete,
     org: r.org ?? null,
     orgChecked: r.orgChecked ?? false,
     elsewhere: r.elsewhere ?? null,
