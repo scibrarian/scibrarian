@@ -23,7 +23,7 @@ import type { HaveAnswer, HaveMatch } from "./types.js";
 // A writer asking whether the agency already bought a paper must get the same
 // answer with the internet down as with it up. OpenAlex is consulted only for
 // the lines that came back *not* held, and only to add things that make a
-// no more useful — the paper's title, and whether a legal free copy exists.
+// no more useful — the paper's title, and the PMID a pasted DOI didn't carry.
 
 // A paste bigger than this is chunked by the client (see shared/limits). The
 // cap exists because every line is a bound parameter and a URL segment, not
@@ -32,10 +32,20 @@ import type { HaveAnswer, HaveMatch } from "./types.js";
 export { MAX_REFS_PER_HAVE_REQUEST as MAX_REFS_PER_REQUEST } from "../../shared/limits.js";
 
 export interface HaveOptions {
-  /** Ask OpenAlex about the not-held lines. */
-  lookUpFree?: boolean;
+  /** Ask OpenAlex about the not-held lines, to resolve identifiers it can. */
+  lookUpIdentifiers?: boolean;
   /** Ask the paired master about the not-held lines (Pro; no-op in a free build). */
   checkOrg?: boolean;
+  /**
+   * Whether an elsewhere hit may say *which* workspace and collection.
+   *
+   * Off unless the caller asks for it, because the caller that matters is a
+   * public GET. The verdict — you already own this — is what the check is for
+   * and goes to everyone; the names are the agencies this person works for,
+   * which is what GET /workspaces is admin-gated to protect. Defaulting to off
+   * means a route added later leaks nothing by forgetting.
+   */
+  nameWorkspaces?: boolean;
 }
 
 // A stored row as the API reports it. `present` is one readdir's worth of blob
@@ -77,7 +87,14 @@ function fromOpenAlex(work: OaWork): HaveMatch {
     pub_date: work.year ? `${work.year}-01-01` : "",
     pub_date_display: work.year ? String(work.year) : "",
     doi: work.doi ?? "",
-    url: work.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${work.pmid}/` : work.free?.url || "",
+    // PubMed when there is a PMID, the DOI resolver otherwise. This used to
+    // fall back to the free copy's URL, which is gone; doi.org is the link that
+    // is always right for a paper identified by its DOI.
+    url: work.pmid
+      ? `https://pubmed.ncbi.nlm.nih.gov/${work.pmid}/`
+      : work.doi
+        ? `https://doi.org/${work.doi}`
+        : "",
     held: false,
     file_id: null,
     file_name: null,
@@ -108,7 +125,7 @@ interface RenderContext {
  */
 export async function checkHoldings(
   inputs: string[],
-  { lookUpFree = true, checkOrg = true }: HaveOptions = {}
+  { lookUpIdentifiers = true, checkOrg = true, nameWorkspaces = false }: HaveOptions = {}
 ): Promise<HaveAnswer[]> {
   const refs = inputs.map(parseRef);
   const present = existingBlobHashes();
@@ -144,19 +161,20 @@ export async function checkHoldings(
   // session has no route to it.
   //
   // Additive and nothing more. It suppresses neither the org check nor the
-  // free-copy lookup, unlike an org hit which suppresses the second: those two
-  // both offer a way to *get* the paper, and this one offers a way to stop
-  // paying for it. A writer told "you own this in Acme" is still better off
-  // knowing the org has a copy they can pull, or that a legal free one exists.
+  // identifier lookup, unlike an org hit which suppresses the second: an org hit
+  // offers a way to *get* the paper, and this one offers a way to stop paying
+  // for it. A writer told "you own this in Acme" is still better off knowing
+  // the org has a copy they can pull.
   applyElsewhere(
     local.filter((r) => !r.held),
-    orgKey
+    orgKey,
+    nameWorkspaces
   );
 
   // --- org pass: the third verdict, held by your org but not by you ---
   //
-  // Ordered between the local pass and OpenAlex on purpose. An org hit makes
-  // the free-copy lookup moot — the same reasoning that suppresses it for a
+  // Ordered between the local pass and OpenAlex on purpose. An org hit answers
+  // the line outright — the same reasoning that suppresses the lookup for a
   // paper rediscovered on disk below — so asking the master first also shrinks
   // what has to leave for OpenAlex.
   //
@@ -195,23 +213,23 @@ export async function checkHoldings(
 
   // --- enrichment pass: only the lines that came back not held ---
   //
-  // Two things are being asked at once, which is why this is worth a request:
-  // is there a free copy, and — for a DOI we couldn't place — does it resolve
-  // to a PMID we *do* hold? The second is a genuine second chance at a "yes",
-  // since a DOI can be absent or differently cased on an article record whose
-  // PMID we have.
+  // What is asked here: for a DOI we couldn't place, does it resolve to a PMID
+  // we *do* hold? A genuine second chance at a "yes", since a DOI can be absent
+  // or differently cased on an article record whose PMID we have — and the PMID
+  // it supplies is what the second org and other-workspace passes ask under,
+  // which is the only route those two have to a line that arrived as a DOI.
   //
-  // Lines the org holds are excluded: a writer who can get the file from the
-  // master has no use for a free-copy link, and offering one invites a second
-  // copy of something the agency already bought.
+  // Lines the org holds are excluded: they already have their answer, and
+  // resolving an identifier for a row about to read "held by your organization"
+  // spends a request on nothing.
   const needsLookup = new Set(
     local.filter((r) => !r.held && !r.org && (r.ref.kind === "doi" || r.ref.kind === "pmid"))
   );
-  if (!lookUpFree || needsLookup.size === 0) {
+  if (!lookUpIdentifiers || needsLookup.size === 0) {
     // Hoisted: inside the map this rebuilt the whole context — a flatMap over
     // every result plus a batched publication-type query — once per answer row.
     const ctx = renderContext(namedPmids(local));
-    return local.map((r) => toAnswer(r, ctx, false, null));
+    return local.map((r) => toAnswer(r, ctx, false));
   }
 
   const pending = [...needsLookup];
@@ -249,7 +267,8 @@ export async function checkHoldings(
   // structurally cannot.
   applyElsewhere(
     pending.filter((r) => !r.elsewhereChecked && secondLook.get(oaPmid(r))?.file_id == null),
-    oaPmid
+    oaPmid,
+    nameWorkspaces
   );
 
   // --- second org pass: the lines OpenAlex just gave a PMID to ---
@@ -258,12 +277,12 @@ export async function checkHoldings(
   // the first pass runs: orgKey finds nothing on the row (there is no row) and
   // nothing on the ref, so the line is not in that batch. OpenAlex has now
   // supplied one, and without asking again the writer is told "not in your
-  // library" — with a free-copy link — for a paper the agency already bought.
-  // That is the false negative this whole feature exists to prevent, reached by
-  // the one route the first pass structurally cannot cover.
+  // library" for a paper the agency already bought. That is the false negative
+  // this whole feature exists to prevent, reached by the one route the first
+  // pass structurally cannot cover.
   //
   // Kept as a second ask rather than by moving the first pass after OpenAlex:
-  // an org hit suppresses the free-copy lookup, and that only shrinks anything
+  // an org hit suppresses the identifier lookup, and that only shrinks anything
   // if the org is asked first. This covers the remainder — the lines that had
   // no PMID to ask about — and asks about nothing the first pass already did.
   if (checkOrg) {
@@ -288,20 +307,18 @@ export async function checkHoldings(
   const ctx = renderContext([...namedPmids(local), ...secondLook.keys()]);
 
   return local.map((r) => {
-    if (!needsLookup.has(r)) return toAnswer(r, ctx, false, null);
+    if (!needsLookup.has(r)) return toAnswer(r, ctx, false);
     const work = (r.ref.doi ? oaByDoi.get(r.ref.doi) : null) ?? (r.ref.pmid ? oaByPmid.get(r.ref.pmid) : null) ?? null;
     const rediscovered = work?.pmid ? secondLook.get(work.pmid) : undefined;
     if (rediscovered && rediscovered.file_id != null) {
-      // Held after all — under a PMID the pasted DOI didn't reach directly. No
-      // free-copy answer is offered here: it's moot, and offering one would
-      // invite buying a paper already on disk.
-      return toAnswer({ ...r, row: rediscovered, held: true }, ctx, false, null);
+      // Held after all — under a PMID the pasted DOI didn't reach directly.
+      return toAnswer({ ...r, row: rediscovered, held: true }, ctx, false);
     }
     // Still not held. Prefer whatever the library already knows about the paper
     // over OpenAlex's thinner record — a cached article row carries authors,
     // journal and the exact publication date.
     const enriched = r.row ?? rediscovered ?? null;
-    return toAnswer({ ...r, row: enriched, oa: work }, ctx, true, work?.free ?? null);
+    return toAnswer({ ...r, row: enriched, oa: work }, ctx, true);
   });
 }
 
@@ -333,7 +350,11 @@ interface LocalResult {
  * checked would make the field mean something other than what it says. Same
  * rule the org pass follows, for the same reason.
  */
-function applyElsewhere(candidates: LocalResult[], keyOf: (r: LocalResult) => string): void {
+function applyElsewhere(
+  candidates: LocalResult[],
+  keyOf: (r: LocalResult) => string,
+  withNames: boolean
+): void {
   const pmids = candidates.flatMap((r) => {
     const pmid = keyOf(r);
     return pmid ? [pmid] : [];
@@ -345,7 +366,10 @@ function applyElsewhere(candidates: LocalResult[], keyOf: (r: LocalResult) => st
     if (!pmid) continue;
     if (checked) r.elsewhereChecked = true;
     const hit = holdings.get(pmid);
-    if (hit) r.elsewhere = hit;
+    // The hit itself is the answer that stops the purchase, and it goes to
+    // every caller. Where it is found is withheld from the ones that could not
+    // have read it from GET /workspaces — see nameWorkspaces.
+    if (hit) r.elsewhere = withNames ? hit : { workspace: null, collection: null };
   }
 }
 
@@ -373,18 +397,12 @@ function resolveLocally(
   return empty;
 }
 
-function toAnswer(
-  r: LocalResult,
-  ctx: RenderContext,
-  freeChecked: boolean,
-  free: HaveAnswer["free"]
-): HaveAnswer {
+function toAnswer(r: LocalResult, ctx: RenderContext, identifierChecked: boolean): HaveAnswer {
   return {
     parsed: r.ref,
     held: r.held,
     match: r.row ? toMatch(r.row, ctx) : r.oa ? fromOpenAlex(r.oa) : null,
-    free,
-    freeChecked,
+    identifierChecked,
     org: r.org ?? null,
     orgChecked: r.orgChecked ?? false,
     elsewhere: r.elsewhere ?? null,

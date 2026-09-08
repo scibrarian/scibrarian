@@ -287,16 +287,6 @@ export interface ParsedRefView {
 // citable for statements that don't rest on numbers.
 export type EvidenceClass = "primary" | "secondary" | "untyped" | "unknown";
 
-// A legal free copy of a paper the library doesn't hold — the other half of the
-// approved purchase workflow, where the PM is told to look for a free version
-// before approving a buy.
-export interface FreeCopy {
-  url: string;
-  license: string | null; // e.g. "cc-by", null when the host doesn't say
-  version: string | null; // publishedVersion | acceptedVersion | submittedVersion
-  source: string | null; // repository or journal name, when OpenAlex reports one
-}
-
 // One paper the check identified, held or not. Mirrors Paper's file_* fields so
 // the client can open a stored copy exactly the way every other view does.
 export interface HaveMatch {
@@ -332,10 +322,22 @@ export interface HaveMatch {
  * to "have I already bought this?".
  */
 export interface ElsewhereHolding {
-  /** The workspace's name, as the person named it — "Acme", "My library". */
-  workspace: string;
-  /** The collection it sits in there, which is how they will find it. */
-  collection: string;
+  /**
+   * The workspace's name, as the person named it — "Acme", "My library".
+   *
+   * Null for a caller who is not the owner. /have is a public GET on purpose,
+   * so that the read-only viewers who are told to run the pre-purchase check
+   * can run it; the names are the one thing in the answer that isn't about the
+   * paper. They are the agencies this person works for, and GET /workspaces is
+   * admin-only for exactly that reason — so they are withheld here on the same
+   * terms rather than handed out through the route left open.
+   */
+  workspace: string | null;
+  /**
+   * The collection it sits in there, which is how they will find it. Withheld
+   * with the workspace name and for the same reason.
+   */
+  collection: string | null;
 }
 
 // The answer for one pasted line.
@@ -345,18 +347,17 @@ export interface HaveAnswer {
   // The paper, when one was identified; null when nothing matched. An
   // identifier names at most one paper, so there is never a set to choose from.
   match: HaveMatch | null;
-  // Only looked up for papers the library doesn't hold, and only when the
-  // request asked for it. Null means "no free copy found, or we couldn't ask".
-  free: FreeCopy | null;
-  // True when the free-copy lookup was attempted, so the UI can tell "no free
-  // version exists" from "we never checked".
-  freeChecked: boolean;
+  // True when the online identifier lookup was attempted, so a row that found
+  // nothing can say whether anyone actually looked. False for the local-only
+  // answer the client asks for while a paste is still being typed.
+  identifierChecked: boolean;
   // The third verdict — your org holds this even though you don't. Null in a
   // free build, and also whenever the master couldn't be reached.
   org: OrgHolding | null;
-  // The same distinction `freeChecked` draws, and it matters more here: without
-  // it the UI cannot tell "the org doesn't have it" from "nobody answered", and
-  // rendering the second as the first is what ends in a duplicate purchase.
+  // The same distinction `identifierChecked` draws, and it matters more here:
+  // without it the UI cannot tell "the org doesn't have it" from "nobody
+  // answered", and rendering the second as the first is what ends in a
+  // duplicate purchase.
   orgChecked: boolean;
   // You already own this, in another workspace on this machine. Null on a
   // server deployment, on a desktop with one workspace, and whenever the other

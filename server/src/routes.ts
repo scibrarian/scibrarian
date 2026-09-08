@@ -700,6 +700,13 @@ api.get("/abstracts", (req, res) => {
 // gate, which would make the mandated pre-purchase check unavailable to exactly
 // the read-only viewers who are told to perform it.
 //
+// Which is why the answer is trimmed for a caller who isn't the owner rather
+// than the route being closed to them. Everything about the *paper* goes to
+// everyone. The one thing that isn't about the paper is which workspace holds
+// it: those names are the agencies this person works for, and GET /workspaces
+// is admin-only to protect exactly that — handing them out through the route
+// deliberately left open would undo it.
+//
 // Long pastes are chunked by the client (MAX_REFS_PER_REQUEST), the same way
 // large uploads are — a URL is a poor container for a hundred references, and
 // `truncated` reports anything this request had to leave out.
@@ -718,14 +725,22 @@ api.get(
       return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
-    const offline = req.query.free === "0";
+    const offline = req.query.online === "0";
     const body: HaveResponse = {
-      // ?free=0 means "answer without leaving the machine" — the client sends
+      // ?online=0 means "answer without leaving the machine" — the client sends
       // it while a paste is still being typed, and drops it for the answer the
-      // user acts on. It gates the org check as well as the free-copy lookup,
+      // user acts on. It gates the org check as well as the identifier lookup,
       // because both are network calls and the flag is really about that.
       // (The held/not-held verdict itself is local either way.)
-      results: await checkHoldings(batch, { lookUpFree: !offline, checkOrg: !offline }),
+      results: await checkHoldings(batch, {
+        lookUpIdentifiers: !offline,
+        checkOrg: !offline,
+        // The owner already reads these names from GET /workspaces; nobody else
+        // does. On the desktop, where workspaces are the only place this can be
+        // true, ADMIN_TOKEN is empty and every local caller is the owner — so
+        // this is on for the one deployment the feature exists in.
+        nameWorkspaces: isAdminRequest(req),
+      }),
       truncated: lines.length - batch.length,
     };
     res.json(body);

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Boxes, Check, ExternalLink, FileText, Minus, TriangleAlert, Users } from "lucide-react";
+import { Boxes, Check, FileText, Minus, TriangleAlert, Users } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -130,7 +130,7 @@ export function HaveCheck({
   // request, on an action that just moved a whole PDF.
   //
   // A full check, network and all. This used to pass allowNetwork: false to
-  // skip the free-copy lookup on a row about to come back held — but that flag
+  // skip the identifier lookup on a row about to come back held — but that flag
   // suppresses the org check too, so any pull that did *not* leave the paper
   // held locally refreshed into "Not in your library" with no org line at all.
   // A pull can succeed and still not match: the collection may already hold
@@ -288,13 +288,12 @@ export function HaveCheck({
 }
 
 // The headline the reader acts on. Ordered by what changes a decision: what you
-// already have, then what you can get free, then what the app couldn't read.
+// already have, then what your organization has, then what the app couldn't read.
 function Summary({ response }: { response: HaveResponse }) {
   const { results } = response;
   const held = results.filter((r) => r.held).length;
   const elsewhere = results.filter((r) => !r.held && r.elsewhere).length;
   const org = results.filter((r) => !r.held && !r.elsewhere && r.org).length;
-  const free = results.filter((r) => !r.held && !r.org && !r.elsewhere && r.free).length;
   const unreadable = results.filter((r) => r.parsed.kind === "unknown").length;
   return (
     <p className="have-summary">
@@ -305,7 +304,6 @@ function Summary({ response }: { response: HaveResponse }) {
       {elsewhere > 0 &&
         ` You already own ${elsewhere} more, in ${elsewhere === 1 ? "another workspace" : "your other workspaces"}.`}
       {org > 0 && ` ${org} more ${org === 1 ? "is" : "are"} held by your organization.`}
-      {free > 0 && ` ${free} unowned ${free === 1 ? "paper has" : "papers have"} a free copy.`}
       {unreadable > 0 &&
         ` ${unreadable} line${unreadable === 1 ? "" : "s"} couldn’t be read.`}
     </p>
@@ -347,7 +345,7 @@ function AnswerRow({
   /** Some row's transfer is in flight. Disables every Copy button, not just this one. */
   busy: boolean;
 }) {
-  const { parsed, match, held, free, freeChecked, org, elsewhere } = answer;
+  const { parsed, match, held, identifierChecked, org, elsewhere } = answer;
   const kind = held
     ? "held"
     : parsed.kind === "unknown"
@@ -375,7 +373,7 @@ function AnswerRow({
       {!match && !org && !elsewhere && parsed.kind !== "unknown" && (
         <p className="have-nothing">
           Nothing found for {describe(parsed)}
-          {freeChecked ? "" : " (identifier lookup skipped)"}.
+          {identifierChecked ? "" : " (identifier lookup skipped)"}.
         </p>
       )}
 
@@ -389,15 +387,22 @@ function AnswerRow({
           will go and look. */}
       {!held && elsewhere && (
         <p className="have-elsewhere">
-          Exists in <strong>{elsewhere.workspace}</strong> workspace,
-          under “{elsewhere.collection}”.
+          {elsewhere.workspace && elsewhere.collection ? (
+            <>
+              Exists in <strong>{elsewhere.workspace}</strong> workspace,
+              under “{elsewhere.collection}”.
+            </>
+          ) : (
+            // A viewer on a hosted instance, who is told the fact that stops
+            // the purchase without being told whose library it is in.
+            <>Exists in another workspace on this machine.</>
+          )}
         </p>
       )}
 
-      {/* The org line sits above the free-copy one because it changes the
-          decision more: a copy the agency already bought costs nothing and
-          needs no license argument. The server suppresses the free-copy lookup
-          for these rows for the same reason. */}
+      {/* The server suppresses the identifier lookup for these rows: a copy the
+          agency already bought answers the line outright, and there is nothing
+          an identifier lookup could add to it. */}
       {!held && org && (
         <p className="have-org">
           <span>Held by {org.node}.</span>{" "}
@@ -432,20 +437,6 @@ function AnswerRow({
           onConfirm={onPull}
           busy={busy}
         />
-      )}
-
-      {/* Only ever offered for a paper the library doesn't hold: pointing at a
-          free copy of something already on disk would invite a second copy. */}
-      {!held && !org && free && (
-        <a className="have-free" href={free.url} target="_blank" rel="noopener noreferrer">
-          <ExternalLink size={13} className="inline-icon" aria-hidden />
-          Free copy
-          {free.source ? ` on ${free.source}` : ""}
-          {free.license ? ` (${free.license})` : ""}
-        </a>
-      )}
-      {!held && !org && !free && freeChecked && parsed.kind !== "unknown" && (
-        <span className="have-free none">No free copy found</span>
       )}
 
       {/* The line as pasted, so a long answer list can be read beside the

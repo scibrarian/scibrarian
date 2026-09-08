@@ -1,17 +1,18 @@
 import { getSetting } from "./db.js";
 import { fetchWithTimeout } from "./http.js";
 import { errMessage } from "./util.js";
-import type { FreeCopy } from "./types.js";
 
-// OpenAlex work lookup, for the half of "do I already have this?" that saves
-// money rather than time: when the library doesn't hold a paper, is there a
-// legal free copy before anyone buys one?
+// OpenAlex work lookup, for the identifiers "do I already have this?" cannot
+// resolve on its own: a DOI we can't find locally may still be a paper we hold
+// under its PMID, so resolving it here gives the holdings check a second,
+// better-informed look — and gives the org and other-workspace passes a PMID to
+// ask about where the pasted line had none.
 //
-// OpenAlex rather than Unpaywall because one request answers three questions at
-// once — the open-access location, the paper's identity (title, year), and the
-// PMID for a work we only had a DOI for. That last one matters: a DOI we can't
-// find locally may still be a paper we hold under its PMID, so resolving it
-// here gives the holdings check a second, better-informed look.
+// It also used to report a legal free copy, which is what open_access and
+// best_oa_location were selected for. That was removed: OpenAlex's best OA
+// location includes bronze — a publisher landing page with no license — so the
+// link could point somewhere that was not the paper, under a confident label
+// naming a repository.
 //
 // This is also the first use of the OpenAlex *works* API in the codebase
 // (journal-catalog.ts uses /sources for journal metrics). The roadmap's
@@ -20,7 +21,7 @@ const OPENALEX_WORKS = "https://api.openalex.org/works";
 
 // Only what the check reads. Asking for the whole work record would pull
 // abstracts and full authorship lists for papers nobody has decided to buy yet.
-const SELECT = "ids,title,publication_year,open_access,best_oa_location";
+const SELECT = "ids,title,publication_year";
 
 // OpenAlex allows up to 200 per page; 50 keeps the filter URL comfortably short
 // (DOIs are long) and matches the cap journal-catalog.ts uses.
@@ -31,23 +32,12 @@ export interface OaWork {
   doi: string | null; // bare and lowercased, matching how DOIs are stored here
   title: string;
   year: number | null;
-  free: FreeCopy | null;
-}
-
-interface OaLocation {
-  pdf_url?: string | null;
-  landing_page_url?: string | null;
-  license?: string | null;
-  version?: string | null;
-  source?: { display_name?: string | null } | null;
 }
 
 interface OaResult {
   ids?: { doi?: string; pmid?: string };
   title?: string | null;
   publication_year?: number | null;
-  open_access?: { is_oa?: boolean; oa_url?: string | null };
-  best_oa_location?: OaLocation | null;
 }
 
 // OpenAlex returns ids as URLs ("https://doi.org/10.1/x",
@@ -63,25 +53,6 @@ function barePmid(id: string | undefined): string | null {
   if (!id) return null;
   const m = /(\d{1,8})\s*$/.exec(id.replace(/\/+$/, ""));
   return m ? m[1] : null;
-}
-
-// The free copy, if OpenAlex says there is one.
-//
-// A PDF link is preferred over a landing page because the point is to read the
-// paper now, but a landing page is still an answer — some repositories only
-// expose one, and "here is where it's hosted" beats "no". `open_access.oa_url`
-// is the last resort: it is set on works whose best location OpenAlex hasn't
-// resolved to a record.
-function toFreeCopy(r: OaResult): FreeCopy | null {
-  const loc = r.best_oa_location;
-  const url = loc?.pdf_url || loc?.landing_page_url || r.open_access?.oa_url || null;
-  if (!url) return null;
-  return {
-    url,
-    license: loc?.license ?? null,
-    version: loc?.version ?? null,
-    source: loc?.source?.display_name ?? null,
-  };
 }
 
 async function fetchFiltered(filter: string): Promise<OaResult[]> {
@@ -120,7 +91,6 @@ export async function lookupWorks(
         doi: bareDoi(r.ids?.doi),
         title: r.title ?? "",
         year: typeof r.publication_year === "number" ? r.publication_year : null,
-        free: toFreeCopy(r),
       };
       if (work.doi) byDoi.set(work.doi, work);
       if (work.pmid) byPmid.set(work.pmid, work);

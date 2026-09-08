@@ -244,7 +244,7 @@ describe("workspaceContents", () => {
 
 describe("/have, with another workspace on the machine", () => {
   it("still answers held for a paper in this workspace, with no elsewhere line", async () => {
-    const [answer] = await have.checkHoldings([MINE.pmid], { lookUpFree: false });
+    const [answer] = await have.checkHoldings([MINE.pmid], { lookUpIdentifiers: false });
     expect(answer.held).toBe(true);
     expect(answer.elsewhere).toBeNull();
   });
@@ -253,14 +253,29 @@ describe("/have, with another workspace on the machine", () => {
   // store and this session has no route to it — but the writer is told they
   // already own it, which is the answer that stops the purchase.
   it("tells a writer they already own a paper filed in another workspace", async () => {
-    const [answer] = await have.checkHoldings([THEIRS.pmid], { lookUpFree: false });
+    const [answer] = await have.checkHoldings([THEIRS.pmid], {
+      lookUpIdentifiers: false,
+      nameWorkspaces: true,
+    });
     expect(answer.held).toBe(false);
     expect(answer.elsewhereChecked).toBe(true);
     expect(answer.elsewhere).toEqual({ workspace: "Acme", collection: "Acme papers" });
   });
 
+  // /have is a public GET, so that the read-only viewers told to run the
+  // pre-purchase check can run it. The verdict is what stops the purchase and
+  // goes to all of them; the workspace names are the agencies this person works
+  // for, which is what GET /workspaces is admin-gated to protect. Withheld by
+  // default, so a caller that forgets to ask leaks nothing.
+  it("withholds where it was found from a caller that is not the owner", async () => {
+    const [answer] = await have.checkHoldings([THEIRS.pmid], { lookUpIdentifiers: false });
+    expect(answer.held).toBe(false);
+    expect(answer.elsewhereChecked).toBe(true);
+    expect(answer.elsewhere).toEqual({ workspace: null, collection: null });
+  });
+
   it("says so plainly when no other workspace has it", async () => {
-    const [answer] = await have.checkHoldings(["40009999"], { lookUpFree: false });
+    const [answer] = await have.checkHoldings(["40009999"], { lookUpIdentifiers: false });
     expect(answer.elsewhereChecked).toBe(true);
     expect(answer.elsewhere).toBeNull();
   });
@@ -276,29 +291,27 @@ describe("/have, with another workspace on the machine", () => {
       doi: STRANGER.doi,
       title: "Stranger",
       year: 2024,
-      free: null,
     });
 
-    const [answer] = await have.checkHoldings([STRANGER.doi]);
+    const [answer] = await have.checkHoldings([STRANGER.doi], { nameWorkspaces: true });
     expect(answer.held).toBe(false);
     expect(answer.elsewhere).toEqual({ workspace: "Acme", collection: "Acme papers" });
   });
 
   // Purely additive, and this is the assertion that pins it: an elsewhere hit
-  // suppresses nothing. A legal free copy is quicker to open than a relaunch
-  // into another workspace, so it is still worth reporting beside the fact that
-  // the reader owns one.
-  it("still offers a free copy alongside", async () => {
+  // suppresses nothing. An org hit skips the identifier lookup for its row; this
+  // one does not, so the line is still enriched with whatever else can be said
+  // about the paper.
+  it("suppresses no other lookup on the rows it answers", async () => {
     oa.works.byPmid.set(THEIRS.pmid, {
       pmid: THEIRS.pmid,
       doi: THEIRS.doi,
       title: "Theirs",
       year: 2024,
-      free: { url: "https://example.org/theirs.pdf", source: "PMC", license: "cc-by" },
     });
 
-    const [answer] = await have.checkHoldings([THEIRS.pmid]);
+    const [answer] = await have.checkHoldings([THEIRS.pmid], { nameWorkspaces: true });
     expect(answer.elsewhere).toEqual({ workspace: "Acme", collection: "Acme papers" });
-    expect(answer.free?.url).toBe("https://example.org/theirs.pdf");
+    expect(answer.identifierChecked).toBe(true);
   });
 });

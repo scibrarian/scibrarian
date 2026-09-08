@@ -9,7 +9,6 @@ export type {
   CollectionFile,
   CollectionFileStatus,
   Topic,
-  FreeCopy,
   GraphEdge,
   GraphNode,
   GraphResponse,
