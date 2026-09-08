@@ -108,6 +108,41 @@ describe("first run", () => {
     expect(fs.existsSync(path.join(root, "app.db"))).toBe(false);
     expect(fs.existsSync(path.join(root, "blobs", "abc.pdf"))).toBe(false);
   });
+
+  // The move used to happen before the registry was written, so an EPERM on the
+  // second file — a scanner holding the -wal open, an indexer on the blobs
+  // directory — left the database moved, nothing pointing at it, and the next
+  // launch minting a fresh workspace beside a library it could no longer see.
+  it("finishes an adoption that was interrupted part way", () => {
+    fs.writeFileSync(path.join(root, "app.db"), "pretend-sqlite");
+    const ws = ensureActiveWorkspace();
+    // What an interrupted move leaves: the database across, the rest at the root.
+    fs.mkdirSync(path.join(root, "blobs"), { recursive: true });
+    fs.writeFileSync(path.join(root, "blobs", "abc.pdf"), "pretend-pdf");
+
+    expect(ensureActiveWorkspace().id).toBe(ws.id);
+    expect(fs.readFileSync(path.join(workspaceBlobsDir(ws.id), "abc.pdf"), "utf8")).toBe(
+      "pretend-pdf"
+    );
+    expect(fs.existsSync(path.join(root, "blobs"))).toBe(false);
+  });
+
+  // Which means the destination is no longer the empty directory first-run had
+  // just made. Replacing it wholesale, which is what clearing the way used to
+  // do, would take every PDF the interrupted attempt had already moved.
+  it("merges into a blob store that already has files in it", () => {
+    const ws = ensureActiveWorkspace();
+    fs.writeFileSync(path.join(workspaceBlobsDir(ws.id), "already.pdf"), "already");
+    fs.mkdirSync(path.join(root, "blobs"), { recursive: true });
+    fs.writeFileSync(path.join(root, "blobs", "arriving.pdf"), "arriving");
+
+    ensureActiveWorkspace();
+    expect(fs.readdirSync(workspaceBlobsDir(ws.id)).sort()).toEqual([
+      "already.pdf",
+      "arriving.pdf",
+    ]);
+    expect(fs.existsSync(path.join(root, "blobs"))).toBe(false);
+  });
 });
 
 describe("naming", () => {
@@ -226,13 +261,66 @@ describe("a damaged registry", () => {
   // Rebuilt rather than thrown on, because throwing here is an app that cannot
   // start and a user with no way to fix it. Nothing is lost: the libraries are
   // directories named by id, and a rebuilt registry finds them again.
-  it("is rebuilt rather than left to fail the launch", () => {
+  it("is rebuilt from the libraries on disk", () => {
     const first = ensureActiveWorkspace();
+    const acme = createWorkspace("Acme Medical");
+    fs.writeFileSync(workspaceDbPath(acme.id), "acme-sqlite");
     fs.writeFileSync(registry(), "{ not json");
 
     const rebuilt = ensureActiveWorkspace();
-    expect(rebuilt.id).not.toBe(first.id);
-    expect(listWorkspaces()).toHaveLength(1);
+
+    // Both of them, by id. A fresh workspace minted over the top would leave
+    // these two on disk with nothing left to name them — a person's whole
+    // library gone, by a route that looks from the outside like a working app.
+    expect(listWorkspaces().map((w) => w.id).sort()).toEqual([first.id, acme.id].sort());
+    expect([first.id, acme.id]).toContain(rebuilt.id);
+    expect(fs.readFileSync(workspaceDbPath(acme.id), "utf8")).toBe("acme-sqlite");
+  });
+
+  // Not damage at all, and the reason the fallback had to change: a read that
+  // failed once. A registry that is simply gone reached the same path, and the
+  // same fresh workspace was minted beside libraries nothing then named.
+  it("re-adopts when the registry is gone rather than damaged", () => {
+    const first = ensureActiveWorkspace();
+    const acme = createWorkspace("Acme Medical");
+    fs.rmSync(registry());
+
+    ensureActiveWorkspace();
+    expect(listWorkspaces().map((w) => w.id).sort()).toEqual([first.id, acme.id].sort());
+  });
+
+  // The names lived in the registry and nowhere else, so a rebuild cannot give
+  // them back. Numbered in the order the picker will draw them, and renamed by
+  // a person afterwards: the whole cost of a recovery that keeps every library.
+  it("names the libraries it recovers", () => {
+    ensureActiveWorkspace();
+    createWorkspace("Acme Medical");
+    fs.writeFileSync(registry(), "{ not json");
+
+    ensureActiveWorkspace();
+    expect(listWorkspaces().map((w) => w.name)).toEqual([
+      "Recovered workspace 1",
+      "Recovered workspace 2",
+    ]);
+  });
+
+  // An id out of the registry is joined into a path five times over and handed
+  // to a recursive remove, and deleteWorkspace's membership check is no defence
+  // — a hand-edited id really is in the list.
+  it("drops an entry whose id is not a directory name", () => {
+    const mine = ensureActiveWorkspace();
+    const raw = JSON.parse(fs.readFileSync(registry(), "utf8"));
+    fs.writeFileSync(
+      registry(),
+      JSON.stringify({
+        ...raw,
+        workspaces: [...raw.workspaces, { id: "../..", name: "Escape", created_at: "" }],
+      })
+    );
+
+    expect(listWorkspaces().map((w) => w.id)).toEqual([mine.id]);
+    expect(deleteWorkspace("../..")).toBe("unknown");
+    expect(fs.existsSync(root)).toBe(true);
   });
 
   // An `active` naming nothing is one interrupted write or one hand-edit away.

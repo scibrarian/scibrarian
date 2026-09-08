@@ -115,17 +115,37 @@ export function workspaceBlobsDir(id: string): string {
   return path.join(workspaceDir(id), "blobs");
 }
 
+/**
+ * Whether an id is safe to use as the directory name it becomes.
+ *
+ * Every id this app mints is a randomUUID, so in the ordinary course this is
+ * never false. It is checked anyway because an id read back out of the registry
+ * is joined into a path by all four functions above and then handed to a
+ * recursive remove in deleteWorkspace, and the registry is a JSON file sitting
+ * in a directory the user can open. An id of "../.." resolves above the root,
+ * and the membership check deleteWorkspace makes first would pass — the bad id
+ * really is in the list.
+ *
+ * A path-shape check rather than a UUID one on purpose: too strict a rule drops
+ * a workspace whose directory is real, and a dropped workspace is a library
+ * nothing opens again, which is the loss this whole module is arranged around.
+ */
+function isWorkspaceId(id: string): boolean {
+  if (!id || id === "." || id === "..") return false;
+  return !/[\\/\0]/.test(id) && !path.isAbsolute(id);
+}
+
 // ---------- the registry ----------
 
 /**
  * The registry, or null when there isn't a readable one.
  *
  * A file that exists but doesn't parse reads as absent on purpose. The caller
- * that matters is ensureActive(), which then builds a fresh one — and a
- * half-written registry is recoverable that way, where throwing at launch
- * leaves an app that cannot start and a user with no way to fix it. What is
- * never lost is a library: the directories are named by id and the ids are in
- * the file, so a rebuilt registry re-adopts whatever it finds on disk.
+ * that matters is ensureActive(), which then rebuilds — and a half-written
+ * registry is recoverable that way, where throwing at launch leaves an app that
+ * cannot start and a user with no way to fix it. What is never lost is a
+ * library: the directories are named by id, which is what lets rebuild() adopt
+ * whatever is on disk rather than mint a fresh workspace beside it.
  */
 function readRegistry(): Registry | null {
   if (!workspacesEnabled()) return null;
@@ -138,7 +158,7 @@ function readRegistry(): Registry | null {
   try {
     const parsed = JSON.parse(raw) as Partial<Registry>;
     const workspaces = (Array.isArray(parsed.workspaces) ? parsed.workspaces : []).flatMap((w) =>
-      w && typeof w.id === "string" && typeof w.name === "string"
+      w && typeof w.id === "string" && isWorkspaceId(w.id) && typeof w.name === "string"
         ? [{ id: w.id, name: w.name, created_at: String(w.created_at ?? "") }]
         : []
     );
@@ -205,27 +225,112 @@ export function ensureActiveWorkspace(): WorkspaceRecord {
     throw new Error("SCIBRARIAN_WORKSPACES_ROOT is not set; workspaces are desktop-only.");
   }
   const existing = readRegistry();
-  if (existing) {
-    const active = existing.workspaces.find((w) => w.id === existing.active);
-    // readRegistry guarantees this, but the lookup is what the type needs and
-    // the fallback costs a line.
-    if (active) {
-      ensureWorkspaceDirs(active.id);
-      return active;
-    }
-  }
-  return firstRun();
+  // readRegistry guarantees the active id names one of these, but the lookup is
+  // what the type needs and the fallback costs a line.
+  const active = existing?.workspaces.find((w) => w.id === existing.active) ?? rebuild();
+  ensureWorkspaceDirs(active.id);
+  adoptLegacyLibrary(active.id);
+  return active;
 }
 
 /**
- * Build the registry an install that predates workspaces should have had.
+ * The workspace to open when the registry could not say — a first launch, a
+ * damaged file, or a read that failed for a moment.
  *
- * The interesting half is adoption. Every desktop copy so far has kept its
- * library at <root>/app.db with its PDFs in <root>/blobs, and those are
- * someone's papers — the app cannot start a fresh empty workspace beside them
- * and leave them stranded at a path nothing will ever open again. So the files
- * are *moved* into the first workspace's directory and the registry points at
- * them.
+ * Adopting the directories already on disk is the whole of the difference
+ * between a damaged registry costing a name and costing a library. This used to
+ * go straight to firstRun(), which minted a fresh workspace and wrote it over
+ * the top: every real library stayed exactly where it was, in a directory
+ * nothing would ever name again. The registry is one small file, rewritten on
+ * every switch and read on a machine with an antivirus scanner in the way. It
+ * is not a thing to make a person's papers depend on.
+ *
+ * The oldest becomes active, because which one *was* is the single fact the
+ * file held that the directories cannot give back.
+ */
+function rebuild(): WorkspaceRecord {
+  const found = workspacesOnDisk();
+  if (found.length === 0) return firstRun();
+  writeRegistry({ active: found[0].id, workspaces: found });
+  return found[0];
+}
+
+/**
+ * Every library on disk, oldest first.
+ *
+ * Registry order is creation order — it is the order the picker draws — so the
+ * rebuild has to reconstruct it: readdir order is the filesystem's and means
+ * nothing. The directory's own birth time is the only record of it left.
+ *
+ * The names are not recoverable at all; they lived in the file. Renaming them
+ * afterwards is the whole cost of a recovery that keeps every library, which is
+ * the trade this is here to make.
+ */
+function workspacesOnDisk(): WorkspaceRecord[] {
+  let ids: string[];
+  try {
+    ids = fs
+      .readdirSync(workspacesDir(), { withFileTypes: true })
+      .filter((e) => e.isDirectory() && isWorkspaceId(e.name))
+      .map((e) => e.name);
+  } catch {
+    return []; // no workspaces directory: nothing has ever run here
+  }
+  const born = new Map(ids.map((id) => [id, birthTime(id)]));
+  // Two created in the same millisecond are ordered by id, which is arbitrary
+  // but at least the same on every launch — a picker that reshuffled itself
+  // between them would be worse.
+  ids.sort((a, b) => born.get(a)! - born.get(b)! || a.localeCompare(b));
+  return ids.map((id, i) => ({
+    id,
+    name: `Recovered workspace ${i + 1}`,
+    created_at: new Date(born.get(id)!).toISOString(),
+  }));
+}
+
+function birthTime(id: string): number {
+  try {
+    const stat = fs.statSync(workspaceDir(id));
+    // birthtime is 0 on the filesystems that don't record one; mtime is the
+    // better of the two wrong answers there.
+    return stat.birthtimeMs || stat.mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Build the registry a machine that has never had one should have had.
+ *
+ * Nothing is adopted here. adoptLegacyLibrary below is what brings a
+ * pre-workspaces library in, and it runs after this has written the registry —
+ * see the note there for why that order is the one that survives a move that
+ * fails halfway.
+ */
+function firstRun(): WorkspaceRecord {
+  const ws: WorkspaceRecord = {
+    id: randomUUID(),
+    // The same name whether or not anything is about to be adopted, because it
+    // is true of both: on a fresh install there is nothing yet to say whose
+    // library this is, and on an adopted one this is everything the person had
+    // from before there was more than one place to put it. An agency's name is
+    // something they add when they create the second workspace and the
+    // distinction starts to mean something.
+    name: "Default workspace",
+    created_at: new Date().toISOString(),
+  };
+  ensureWorkspaceDirs(ws.id);
+  writeRegistry({ active: ws.id, workspaces: [ws] });
+  return ws;
+}
+
+/**
+ * Move a library that predates workspaces into the workspace that will open it.
+ *
+ * Every desktop copy so far has kept its library at <root>/app.db with its PDFs
+ * in <root>/blobs, and those are someone's papers — the app cannot start a
+ * fresh empty workspace beside them and leave them stranded at a path nothing
+ * will ever open again.
  *
  * A move, not a copy: a 46 MB database duplicated on first launch is a second
  * copy that will drift, and rename() within one directory tree is atomic and
@@ -235,45 +340,68 @@ export function ensureActiveWorkspace(): WorkspaceRecord {
  *
  * This is not a schema migration and does not become one. Nothing here reads or
  * writes a table; the database is opaque, and what moves is a file.
+ *
+ * **Runs on every launch, and skips whatever is already in place.** It used to
+ * run once, inside first-run, before the registry had been written — so an
+ * EPERM on the second file, which on Windows is an ordinary thing for a scanner
+ * or an indexer to cause, left the database moved, no registry written, and the
+ * next launch minting a fresh workspace beside a library it could no longer
+ * see. Now the failure is loud and the launch after it finishes the job.
+ *
+ * Nothing can open a database in between: the embedder calls this before it has
+ * set DB_PATH, so a throw here means the server is never imported and no empty
+ * database is created over the top of the one still waiting at the root.
  */
-function firstRun(): WorkspaceRecord {
+function adoptLegacyLibrary(id: string): void {
   const root = workspacesRoot();
   const legacyDb = path.join(root, "app.db");
   const legacyBlobs = path.join(root, "blobs");
-  const adopting = fs.existsSync(legacyDb);
+  if (!fs.existsSync(legacyDb) && !fs.existsSync(legacyBlobs)) return;
 
-  const ws: WorkspaceRecord = {
-    id: randomUUID(),
-    // The same name whether or not anything was adopted, because it is true of
-    // both: on a fresh install there is nothing yet to say whose library this
-    // is, and on an adopted one this is everything the person had from before
-    // there was more than one place to put it. An agency's name is something
-    // they add when they create the second workspace and the distinction starts
-    // to mean something.
-    name: "Default workspace",
-    created_at: new Date().toISOString(),
-  };
-  ensureWorkspaceDirs(ws.id);
-
-  if (adopting) {
-    for (const suffix of ["", "-wal", "-shm"]) {
-      const from = `${legacyDb}${suffix}`;
-      if (fs.existsSync(from)) fs.renameSync(from, `${workspaceDbPath(ws.id)}${suffix}`);
-    }
-    if (fs.existsSync(legacyBlobs)) {
-      // The blob directory is created by ensureWorkspaceDirs, and rename onto an
-      // existing directory fails on every platform — so take the empty one out
-      // of the way first. Only ever the one this function just made.
-      fs.rmSync(workspaceBlobsDir(ws.id), { recursive: true, force: true });
-      fs.renameSync(legacyBlobs, workspaceBlobsDir(ws.id));
-    }
-    // tmp-uploads is deliberately left behind. blobstore.ts empties it on every
-    // startup, so its contents are dead uploads by definition and moving them
-    // would carry rubbish into the new layout.
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const from = `${legacyDb}${suffix}`;
+    const to = `${workspaceDbPath(id)}${suffix}`;
+    // A destination that already exists is a database this workspace is already
+    // using. Left alone, and the source left where it is: two databases is a
+    // question for a person, not one to answer by overwriting either of them.
+    if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to);
   }
+  if (fs.existsSync(legacyBlobs)) adoptBlobs(legacyBlobs, workspaceBlobsDir(id));
+  // tmp-uploads is deliberately left behind. blobstore.ts empties it on every
+  // startup, so its contents are dead uploads by definition and moving them
+  // would carry rubbish into the new layout.
+}
 
-  writeRegistry({ active: ws.id, workspaces: [ws] });
-  return ws;
+/**
+ * Move the stored PDFs across, merging rather than replacing.
+ *
+ * The whole directory in one rename is the fast path, and what a clean adoption
+ * takes. It is guarded on the destination being empty because this also runs as
+ * the resumption of an interrupted adoption, where the destination already
+ * holds whatever the first attempt managed to move — and the rmSync that clears
+ * the way, correct while it could only ever be aimed at the empty directory
+ * ensureWorkspaceDirs had just made, would there delete a library's PDFs.
+ *
+ * Merging skips a file the destination already has rather than overwriting it,
+ * which is safe rather than merely convenient: blobs are named by content hash,
+ * so two files with one name are the same bytes.
+ */
+function adoptBlobs(from: string, to: string): void {
+  if (!fs.existsSync(to) || fs.readdirSync(to).length === 0) {
+    // rename onto an existing directory fails on every platform, so take the
+    // empty one out of the way first.
+    if (fs.existsSync(to)) fs.rmdirSync(to);
+    fs.renameSync(from, to);
+    return;
+  }
+  for (const name of fs.readdirSync(from)) {
+    const source = path.join(from, name);
+    if (fs.existsSync(path.join(to, name))) fs.rmSync(source, { recursive: true, force: true });
+    else fs.renameSync(source, path.join(to, name));
+  }
+  // Only once it is genuinely empty: an entry that could not be moved is not
+  // one this should be the thing to delete.
+  if (fs.readdirSync(from).length === 0) fs.rmdirSync(from);
 }
 
 function ensureWorkspaceDirs(id: string): void {
