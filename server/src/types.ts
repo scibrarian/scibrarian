@@ -9,7 +9,6 @@ export type {
   CollectionFile,
   CollectionFileStatus,
   Topic,
-  FreeCopy,
   GraphEdge,
   GraphNode,
   GraphResponse,
@@ -32,6 +31,10 @@ export type {
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
+  Workspace,
+  WorkspaceContents,
+  WorkspaceContentsResponse,
+  WorkspacesResponse,
 } from "../../shared/types.js";
 
 import { SETTING_DEFAULTS } from "./config.js";

@@ -174,7 +174,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* The 14px that used to sit here moved into .workspace-bar's padding-top, so
+  /* The 14px that used to sit here moved into .section-bar's padding-top, so
      the bar has breathing room above its controls once it's stuck to the
      viewport edge. The gap between the two is unchanged: 2 + 12. */
   padding: 20px 0 2px;
@@ -201,34 +201,172 @@ body {
   color: var(--muted);
 }
 
+/* The brand mark, which is also the page-reload control (App.tsx explains why
+   reload lives here).
+
+   A plain image button: no border or fill of its own. Those are for the gear
+   and padlock at the far end of the header, which sit in a cluster; a box up
+   against the wordmark would read as attached to it, and the mark carries its
+   own colour. The hover is a faint panel tile behind the mark — enough to say
+   "this is a button" without the logo dimming or shifting. */
 .logo {
-  display: inline-flex;
-  align-items: center;
-  color: var(--accent);
-}
-
-/* Reload the page.
-
-   Borderless, where the gear and the padlock are boxed: those sit in a cluster
-   of controls at the far end of the header, and a bordered button up against
-   the wordmark reads as attached to it. Muted until hovered, so it annotates
-   the title rather than competing with it. */
-.reload-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 6px;
-  color: var(--muted);
+  border-radius: 8px;
+  padding: 3px;
+  /* Cancels the padding, so the hover tile has room without nudging the
+     wordmark along the row. */
+  margin: -3px;
   line-height: 1;
-  padding: 4px;
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease);
 }
 
-.reload-btn:hover {
+.logo:hover {
+  background: var(--panel);
+}
+
+.logo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.logo img {
+  display: block;
+}
+
+/* ---------- workspace switcher ---------- */
+
+/* Which separate library this window is in. Desktop only, and absent from every
+   other build — so nothing else in the brand may depend on it being here.
+
+   Boxed where the reload button beside it is borderless, and that is the whole
+   point of the treatment: reload acts on the page, this one names the thing the
+   page is *of*. A control that changes which library you are looking at should
+   not be lighter than the one that refreshes it. Muted rather than accented,
+   because it is a statement of where you are first and a control second. */
+.workspace-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  margin-left: 4px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.workspace-trigger:hover:not(:disabled) {
   color: var(--text);
+  border-color: var(--muted);
+}
+
+.workspace-trigger:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.workspace-icon {
+  color: var(--accent);
+}
+
+/* Truncates rather than wraps: the brand is one line, and a long agency name
+   growing it would move the whole header down. MAX_NAME_CHARS bounds what can
+   arrive here, and this bounds what it does on the way in. */
+.workspace-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Narrower than the section picker's menu, which carries count badges. These
+   rows carry a tick and one or two icon buttons, all of them fixed-width.
+
+   Both classes are on the element and both set min-width, so this has to out-
+   specify .picker-menu rather than merely follow it: written as `.workspace-menu`
+   alone it lost the tie on source order — .picker-menu is declared some two
+   thousand lines further down — and the narrower menu this describes was never
+   what rendered. */
+.picker-menu.workspace-menu {
+  min-width: 220px;
+}
+
+/* Stands in for the tick on the rows that don't have one, so every name in the
+   list starts at the same x. Without it the current workspace is the only row
+   that lines up, and the eye reads the indent as grouping. 14px is the tick's
+   own size. */
+.inline-icon-gap {
+  display: inline-block;
+  width: 14px;
+}
+
+/* Rename, and — on every row but the one you are in — delete.
+
+   Held in their own box so the row's `justify-content: space-between` puts the
+   pair at the far end as one unit; two bare buttons would be spaced apart from
+   each other as well as from the name. */
+.workspace-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+/* Reveals on hover or keyboard focus within the row, like a list-item action
+   should — but never on the row you are already in, where rename is the only
+   control and hiding it would make renaming the current workspace
+   undiscoverable. */
+.workspace-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 3px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.picker-option:hover .workspace-action,
+.picker-option[data-highlighted] .workspace-action,
+.picker-option.active .workspace-action,
+.workspace-action:focus-visible {
+  opacity: 1;
+}
+
+.workspace-action:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+/* Red on hover only. Sitting red permanently in a menu of ordinary rows makes
+   the whole list read as an alarm, and the row this appears on is one someone
+   opened the menu to *switch* to far more often than to delete. */
+.workspace-action.danger:hover {
+  color: var(--danger);
+}
+
+/* Beside the trigger rather than in the app banner: the switcher sits above
+   everything the banner covers, and a name clash belongs next to the box that
+   caused it. */
+.workspace-error {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* ---------- icons ---------- */
@@ -1548,7 +1686,7 @@ code {
 }
 
 /* 70vh where there's room, but never tall enough that the page scrolls far
-   enough to slide the canvas under .workspace-bar, which paints the top 80px of
+   enough to slide the canvas under .section-bar, which paints the top 80px of
    the viewport and would leave those nodes both invisible and unclickable —
    it's above the canvas, so it takes the drag too. Everything above the canvas
    cancels out of that: the page scrolls exactly as much as they push it down,
@@ -1936,7 +2074,7 @@ code {
 }
 
 /* The dropdown menus — journals, MeSH (which is .filter-menu with a modifier),
-   the workspace picker and the bookmark menu. Faster than the dialogs, at
+   the section picker and the bookmark menu. Faster than the dialogs, at
    --dur-fast: a menu is a direct answer to the click that opened it and any
    perceptible delay reads as the app hesitating.
 
@@ -1945,13 +2083,31 @@ code {
    publishes that as a custom property on the content element; the fallback
    matters only if Radix ever stops setting it. */
 .filter-menu,
-.ws-menu,
+.picker-menu,
 .bookmark-menu {
   transform-origin: var(--radix-dropdown-menu-content-transform-origin, center);
+  /* And no horizontal scrollbar, ever — which needs saying out loud because
+     each of these only asks for `overflow-y: auto`, and when one axis is not
+     visible the other computes from `visible` to `auto` rather than staying
+     put. So all three already had a live horizontal scroll container they never
+     declared.
+
+     Empty, until the entry animation above runs over a name long enough to be
+     ellipsised. For exactly --dur-fast, Chromium reports the menu's scrollWidth
+     as the *unclipped* width of that text — 456px against a 358px box, measured
+     on a 30-character workspace name — even though every row inside is within
+     its bounds and the text's own `overflow: hidden` is drawing it correctly.
+     The animation is the trigger: the overflow is gone on the frame it ends.
+     What a reader sees is a scrollbar flashing on and off as the menu opens.
+
+     Hidden rather than chased, because these menus have no horizontal content
+     by design: every name ellipsises and every badge is a two-digit count. A
+     bar here could only ever be an artefact. */
+  overflow-x: hidden;
 }
 
 .filter-menu[data-state="closed"],
-.ws-menu[data-state="closed"],
+.picker-menu[data-state="closed"],
 .bookmark-menu[data-state="closed"] {
   animation: menu-out var(--dur-fast) var(--ease-out);
 }
@@ -2310,7 +2466,7 @@ code {
   }
 }
 
-/* ---------- workspace nav (Interests / Library) ---------- */
+/* ---------- section nav (Interests / Library) ---------- */
 
 .gear-btn {
   display: inline-flex;
@@ -2338,20 +2494,20 @@ code {
 
 /* Anything the browser scrolls to of its own accord — a tabbed-to control below
    the fold, scrollIntoView — is otherwise parked flush against the viewport top,
-   which is where .workspace-bar sits, so it lands underneath the bar and its
+   which is where .section-bar sits, so it lands underneath the bar and its
    focus ring is invisible. Hold those landings clear of it: the bar measures
    59px and its gap to the content another 16px, so 80px clears both. */
 html {
   scroll-padding-top: 80px;
 }
 
-/* Pinned to the top of the viewport: which workspace you're in is exactly what
+/* Pinned to the top of the viewport: which section you're in is exactly what
    you lose track of while scrolling a few hundred papers, and Interests and
    Bookmarks render the same table, so the nav is the only thing telling them
    apart. It has to carry a background of its own, since the rows scroll
    underneath it. High enough to clear anything positioned that scrolls past,
    and below the dropdowns and modals (30+). */
-.workspace-bar {
+.section-bar {
   position: sticky;
   top: 0;
   z-index: 20;
@@ -2372,12 +2528,12 @@ html {
   box-shadow: 0 16px 0 var(--bg);
 }
 
-/* Wraps for the reason .workspace-bar above it does: the picker now holds a
+/* Wraps for the reason .section-bar above it does: the picker now holds a
    240px floor and the mode switch is three labelled buttons, so below roughly
    640px of content the two no longer share a line. Dropping the picker onto its
    own line is what that used to be paid for by the trigger's ellipsis, which
    the floor takes away. */
-.workspace-nav {
+.section-nav {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -2385,7 +2541,7 @@ html {
 }
 
 /* The switch is drawn as two pills with a gap: the Library, then the two
-   workspaces that are about deciding what to keep. The container carries the
+   sections that are about deciding what to keep. The container carries the
    grouping and the gap; each pill carries the border, the radius and the
    overflow clip that makes .active fill to its edges. */
 .mode-switch {
@@ -2429,14 +2585,14 @@ html {
   color: #fff;
 }
 
-.ws-picker {
+.picker {
   position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.ws-trigger {
+.picker-trigger {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2455,51 +2611,51 @@ html {
 
      Radix positions the menu against this trigger when it opens and does not
      re-measure while it closes, and the close outlives the selection by one
-     --dur-fast exit (see .ws-menu[data-state="closed"]). So a trigger that
+     --dur-fast exit (see .picker-menu[data-state="closed"]). So a trigger that
      resizes on select spends that exit disagreeing with a menu still painted
      beside it, which is what read as jumpiness. The resize was real and had two
      causes: the name changing width, and the count badge coming or going —
      "All collections" deliberately carries none, so picking a collection from
      it both changed the text and grew the box.
 
-     240px covers the labels and a badge in every workspace; past it the trigger
+     240px covers the labels and a badge in every section; past it the trigger
      still grows to the 320px cap, which moves only what is after it (the share
      button) and never the menu, which is align="start" on an edge that stays
-     put. It also holds through the skeleton handoff, since .ws-trigger-loading
+     put. It also holds through the skeleton handoff, since .picker-trigger-loading
      is this same box.
 
-     The floor is why .workspace-nav wraps: it is one of the two things that can
+     The floor is why .section-nav wraps: it is one of the two things that can
      no longer give width back on a narrow viewport. */
   min-width: 240px;
   transition: border-color var(--dur-fast) var(--ease);
 }
 
-.ws-trigger:hover {
+.picker-trigger:hover {
   border-color: var(--accent);
 }
 
-.ws-trigger-loading {
+.picker-trigger-loading {
   cursor: default;
 }
 
-.ws-trigger-loading:hover {
+.picker-trigger-loading:hover {
   border-color: var(--border);
 }
 
-/* Muted so it names the workspace without competing with the entry's own name.
+/* Muted so it names the section without competing with the entry's own name.
    Nothing here about shrinking: the trigger is capped at 320px and the name
    ellipsizes into what's left, but .lucide already carries flex: none. */
-.ws-trigger .ws-mode-icon {
+.picker-trigger .picker-mode-icon {
   color: var(--muted);
 }
 
-.ws-current {
+.picker-current {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ws-caret {
+.picker-caret {
   display: inline-flex;
   align-items: center;
   color: var(--muted);
@@ -2508,16 +2664,16 @@ html {
 /* Pinned to the trigger's right edge, which only matters now that the trigger
    has a width of its own: with the content shorter than the floor the caret
    would otherwise sit wherever the name ended, mid-box, with dead space after
-   it. Scoped to .ws-trigger because FilterSkeleton reuses .ws-caret inside
+   it. Scoped to .picker-trigger because FilterSkeleton reuses .picker-caret inside
    .filter-trigger, which is still content-sized and has no free space to take. */
-.ws-trigger .ws-caret {
+.picker-trigger .picker-caret {
   margin-left: auto;
 }
 
 /* Paper-count badge in the picker trigger and its options — the pill contrast
    is what keeps the number from reading as part of the name. */
-.ws-trigger .count,
-.ws-option .count {
+.picker-trigger .count,
+.picker-option .count {
   background: var(--accent-soft);
   color: var(--accent);
   border-radius: 999px;
@@ -2528,7 +2684,7 @@ html {
 
 /* Radix positions the menu (portal + popper), so no position/top/left here;
    the z-index is copied onto Radix's positioning wrapper. */
-.ws-menu {
+.picker-menu {
   min-width: 260px;
   max-width: 360px;
   max-height: 60vh;
@@ -2542,7 +2698,7 @@ html {
   animation: menu-in var(--dur-fast) var(--ease-out);
 }
 
-.ws-option {
+.picker-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2560,13 +2716,13 @@ html {
   transition: background-color var(--dur-fast) var(--ease);
 }
 
-.ws-option:hover,
-.ws-option[data-highlighted] {
+.picker-option:hover,
+.picker-option[data-highlighted] {
   background: var(--accent-soft);
   outline: none;
 }
 
-.ws-option.active {
+.picker-option.active {
   color: var(--accent);
   font-weight: 700;
   background: var(--accent-soft);
@@ -2575,25 +2731,25 @@ html {
 /* Divides the scope entry ("All collections") from the collections themselves.
    Inset to the padding of the options either side so it reads as a break in the
    list rather than an edge of the menu. */
-.ws-sep {
+.picker-sep {
   height: 1px;
   margin: 6px 10px;
   background: var(--border);
 }
 
-.ws-option-name {
+.picker-option-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ws-empty {
+.picker-empty {
   padding: 10px;
   color: var(--muted);
   font-size: 13px;
 }
 
-.ws-add {
+.picker-add {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2611,8 +2767,8 @@ html {
   transition: background-color var(--dur-fast) var(--ease);
 }
 
-.ws-add:hover,
-.ws-add[data-highlighted] {
+.picker-add:hover,
+.picker-add[data-highlighted] {
   background: var(--accent-soft);
   outline: none;
 }
@@ -2651,7 +2807,7 @@ html {
   cursor: default;
 }
 
-/* Narrower than the workspace picker's menu: it lists bare folder names, with
+/* Narrower than the section picker's menu: it lists bare folder names, with
    no counts or icons to leave room for. */
 .bookmark-menu {
   min-width: 200px;
@@ -2799,9 +2955,9 @@ html {
 }
 
 /* "Remove N selected" — the Library's bulk action, in the slot the bulk save
-   occupies in the workspaces that have one. Shares .save-all-btn's box because
+   occupies in the sections that have one. Shares .save-all-btn's box because
    it lands in the same place and must not change the filter row's height when
-   the workspace changes.
+   the section changes.
 
    Its own min-width, narrower than the save button's: the counts here are what
    fits on a screen and got ticked, not a whole filtered set, so five figures is
@@ -2867,7 +3023,7 @@ html {
   display: inline-flex;
 }
 
-/* The shell wrapped around a source's papers, in every workspace and every
+/* The shell wrapped around a source's papers, in every section and every
    view. Its head is the one row for actions on the selected source — a topic's
    refresh, a collection's uploads, a folder's rename — which is what puts the
    filters and papers below at the same vertical position everywhere. */
@@ -2881,12 +3037,12 @@ html {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  /* One row's height, held whether or not this workspace has actions and
+  /* One row's height, held whether or not this section has actions and
      whether or not the person looking may use them: the 15px line of a button's
      text between the 9px of vertical padding above and below it. A viewer's
      Bookmarks row is empty, and a topic's holds only a 13px "Updated …" line;
      both must still occupy what Library's four buttons do, or the papers below
-     move when you switch workspace. Stated as one number rather than derived
+     move when you switch section. Stated as one number rather than derived
      from 1lh, which resolves against the body's line-height here (24px, since
      .source-head holds no text of its own) and would overshoot the buttons by
      9px. The first load's SkeletonBar reserves this row at the same 33 — the
@@ -2912,7 +3068,7 @@ html {
 /* Every action is the same height: the text-only ones take the filled buttons'
    vertical padding rather than hugging their text. Without this a row of only
    text actions (Bookmarks) is 18px shorter than one that also has buttons
-   (Library), so switching workspaces shifts the papers underneath. Padding
+   (Library), so switching sections shifts the papers underneath. Padding
    rather than a fixed row height keeps the two in step if the type scale
    changes. */
 .source-actions > button {
@@ -2985,7 +3141,7 @@ html {
   overflow-wrap: break-word;
 }
 
-/* `top` must stay 0 — it is not the knob for clearing the sticky workspace bar.
+/* `top` must stay 0 — it is not the knob for clearing the sticky section bar.
    .papers-table-wrap above is overflow-x: auto, which makes it a scroll
    container on both axes, so this sticks to *its* scrollport rather than the
    viewport. That scrollport has no height of its own, so it never scrolls and
@@ -2996,7 +3152,7 @@ html {
    sitting on the first rows. Clearing the nav would mean giving the wrap a real
    scrollport, not an offset here.
    No z-index for the same reason: never pinning, it never overlaps the rows,
-   and it passes under the workspace bar on the way out however it's stacked,
+   and it passes under the section bar on the way out however it's stacked,
    since the bar's 20 beats an auto-positioned element either way. */
 .papers-table thead th {
   position: sticky;
@@ -3402,12 +3558,12 @@ html {
   .modal-backdrop,
   .modal,
   .filter-menu,
-  .ws-menu,
+  .picker-menu,
   .bookmark-menu,
   .modal-backdrop[data-state="closed"],
   .modal[data-state="closed"],
   .filter-menu[data-state="closed"],
-  .ws-menu[data-state="closed"],
+  .picker-menu[data-state="closed"],
   .bookmark-menu[data-state="closed"] {
     animation: none;
   }
@@ -3512,6 +3668,13 @@ html {
   border-left-color: var(--warn);
 }
 
+/* A check that couldn't finish. Shares the warning edge with `unreadable`
+   because it is the same kind of answer — the app telling you it doesn't know,
+   rather than telling you no. */
+.have-row.unconfirmed {
+  border-left-color: var(--warn);
+}
+
 .have-verdict {
   display: flex;
   align-items: center;
@@ -3542,6 +3705,15 @@ html {
   color: var(--warn);
 }
 
+/* Warn rather than the neutral not-held pill, and on variables so it needs no
+   dark-mode literal. The whole point of the row is that it must not be skimmed
+   as a settled negative — that reading is the one that ends in a second
+   purchase of a paper the reader already owns. */
+.have-pill.unconfirmed {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
 /* Held by the org but not by you. Deliberately not the green of `held` — the
    file isn't on this machine and a writer skimming pill colours must not read
    it as "open it". Blue reads as "there's a route to this" without promising
@@ -3549,6 +3721,24 @@ html {
 .have-pill.org-held {
   background: #e6effb;
   color: #1d4ed8;
+}
+
+/* Already yours, in another workspace on this machine. Amber rather than the
+   org row's blue, and deliberately not green: green is `held`, which means
+   there is a file this session can open, and there isn't one — the bytes are in
+   another database's blob store and the isolation between workspaces is what
+   keeps them there. What this colour has to say is "stop, you own this" without
+   promising a click, which is the same job the warning tint does elsewhere. */
+.have-pill.elsewhere-held {
+  background: #fdf1dc;
+  color: #a16207;
+}
+
+.have-elsewhere {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #a16207;
 }
 
 .have-org {
@@ -4025,21 +4215,6 @@ html {
   color: var(--muted);
 }
 
-.have-free {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 8px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--accent);
-}
-
-.have-free.none {
-  color: var(--muted);
-  font-weight: 400;
-}
-
 /* The line as pasted. Kept last and quiet: it's for finding your place in a
    list you're reading beside the original, not for reading — so it drops the
    global `code` fill, which at full row width reads as a UI element rather than
@@ -4126,6 +4301,15 @@ html {
 
   .have-org {
     color: #8fb6f2;
+  }
+
+  .have-pill.elsewhere-held {
+    background: #33280f;
+    color: #e3bd6b;
+  }
+
+  .have-elsewhere {
+    color: #e3bd6b;
   }
 
   /* Bright shimmer washes out on dark panels; use a faint sheen instead. */

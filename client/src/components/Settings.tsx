@@ -24,7 +24,7 @@ const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unche
 
 // What "Delete all data" is asking about, in the terms the app is navigated in.
 //
-// Fixed text rather than counts. The three workspaces are what someone actually
+// Fixed text rather than counts. The three sections are what someone actually
 // holds a picture of — the Library, Interests and Bookmarks in the header — so
 // naming them says what will be missing afterwards in the words the UI already
 // uses, which a row of totals does not. It is also the same sentence every

@@ -101,7 +101,7 @@ export interface TopicSuggestResponse {
   unchecked: number; // held papers whose headings haven't been fetched yet
 }
 
-// A user-created bookmark folder: the Bookmarks workspace's counterpart to a
+// A user-created bookmark folder: the Bookmarks section's counterpart to a
 // topic or a collection. Holds papers saved out of Interests (membership lives
 // in the bookmarks table), so unlike a collection it has no files behind it.
 export interface BookmarkFolder {
@@ -287,16 +287,6 @@ export interface ParsedRefView {
 // citable for statements that don't rest on numbers.
 export type EvidenceClass = "primary" | "secondary" | "untyped" | "unknown";
 
-// A legal free copy of a paper the library doesn't hold — the other half of the
-// approved purchase workflow, where the PM is told to look for a free version
-// before approving a buy.
-export interface FreeCopy {
-  url: string;
-  license: string | null; // e.g. "cc-by", null when the host doesn't say
-  version: string | null; // publishedVersion | acceptedVersion | submittedVersion
-  source: string | null; // repository or journal name, when OpenAlex reports one
-}
-
 // One paper the check identified, held or not. Mirrors Paper's file_* fields so
 // the client can open a stored copy exactly the way every other view does.
 export interface HaveMatch {
@@ -321,6 +311,35 @@ export interface HaveMatch {
   pub_types: string[];
 }
 
+/**
+ * The fourth verdict: you own this, in another workspace on this machine.
+ *
+ * Desktop only, and never a route to the file — the bytes stay in the workspace
+ * that holds them, and this says only where to go and look. That thinness is
+ * deliberate in the same way OrgHolding's is, but for the opposite reason:
+ * OrgHolding is thin because the master must never volunteer what it holds,
+ * while this is thin because a paper's whereabouts is the entire useful answer
+ * to "have I already bought this?".
+ */
+export interface ElsewhereHolding {
+  /**
+   * The workspace's name, as the person named it — "Acme", "My library".
+   *
+   * Null for a caller who is not the owner. /have is a public GET on purpose,
+   * so that the read-only viewers who are told to run the pre-purchase check
+   * can run it; the names are the one thing in the answer that isn't about the
+   * paper. They are the agencies this person works for, and GET /workspaces is
+   * admin-only for exactly that reason — so they are withheld here on the same
+   * terms rather than handed out through the route left open.
+   */
+  workspace: string | null;
+  /**
+   * The collection it sits in there, which is how they will find it. Withheld
+   * with the workspace name and for the same reason.
+   */
+  collection: string | null;
+}
+
 // The answer for one pasted line.
 export interface HaveAnswer {
   parsed: ParsedRefView;
@@ -328,19 +347,47 @@ export interface HaveAnswer {
   // The paper, when one was identified; null when nothing matched. An
   // identifier names at most one paper, so there is never a set to choose from.
   match: HaveMatch | null;
-  // Only looked up for papers the library doesn't hold, and only when the
-  // request asked for it. Null means "no free copy found, or we couldn't ask".
-  free: FreeCopy | null;
-  // True when the free-copy lookup was attempted, so the UI can tell "no free
-  // version exists" from "we never checked".
-  freeChecked: boolean;
+  // True when the online identifier lookup was attempted, so a row that found
+  // nothing can say whether anyone actually looked. False for the local-only
+  // answer the client asks for while a paste is still being typed.
+  identifierChecked: boolean;
   // The third verdict — your org holds this even though you don't. Null in a
   // free build, and also whenever the master couldn't be reached.
   org: OrgHolding | null;
-  // The same distinction `freeChecked` draws, and it matters more here: without
-  // it the UI cannot tell "the org doesn't have it" from "nobody answered", and
-  // rendering the second as the first is what ends in a duplicate purchase.
+  // The same distinction `identifierChecked` draws, and it matters more here:
+  // without it the UI cannot tell "the org doesn't have it" from "nobody
+  // answered", and rendering the second as the first is what ends in a
+  // duplicate purchase.
   orgChecked: boolean;
+  // You already own this, in another workspace on this machine. Null on a
+  // server deployment, on a desktop with one workspace, and whenever the other
+  // workspaces held nothing matching.
+  //
+  // Purely additive: it suppresses no lookup and changes no other field. An org
+  // hit and a free copy are both still worth reporting beside it — the org has
+  // a Copy button behind it, and a legal free copy is quicker to open than a
+  // relaunch into another workspace. What this removes is only the reason to
+  // *buy*, which is the one thing none of the others covers.
+  elsewhere: ElsewhereHolding | null;
+  // Whether every other workspace answered. False means one could not be read,
+  // so an absent `elsewhere` is "nobody looked" rather than "you don't own it".
+  elsewhereChecked: boolean;
+  // Whether every check that applies *here* actually answered — the one field
+  // the UI reads to decide whether a not-held row may be drawn as a flat "not
+  // in your library".
+  //
+  // orgChecked and elsewhereChecked cannot answer that on their own, which is
+  // why this exists beside them. Each is false both when its check failed and
+  // when its check does not exist in this deployment: a hosted instance has no
+  // other workspaces, a free build has no organization, and an absence is
+  // trustworthy in both. Only the server knows which of the two a false means,
+  // so only the server can collapse them into this.
+  //
+  // False is therefore a real failure — a workspace whose database would not
+  // open, or a paired master that could not be reached — and a row carrying it
+  // must not be rendered as a settled no. That is the confident negative that
+  // ends in the duplicate purchase these fields exist to prevent.
+  verdictComplete: boolean;
 }
 
 export interface HaveResponse {
@@ -425,4 +472,70 @@ export interface GraphResponse {
   // search — the filter chips must stay put while a query narrows the graph.
   // Same list /papers returns, so the dropdown matches across views.
   journals: string[];
+}
+
+// ---------- workspaces ----------
+
+/**
+ * One of the separate libraries this machine holds — a desktop-only idea.
+ *
+ * A freelancer straddles agencies, and a workspace is the coarse boundary
+ * collection_org's per-collection stamp deliberately isn't: its own database,
+ * its own blob store, its own pairing, its own topic and MeSH vocabulary. The
+ * fine boundary decides what *syncs*; this one decides what a session can see
+ * at all.
+ *
+ * `id` is opaque — an identifier the client passes back, never parsed and never
+ * shown. It names a directory, so it must survive a rename, which rules out
+ * anything derived from the name.
+ */
+export interface Workspace {
+  id: string;
+  name: string;
+  created_at: string;
+  /** The one this process is running in. Exactly one row carries it. */
+  active: boolean;
+}
+
+/**
+ * What deleting a workspace would destroy, so the confirmation can say.
+ *
+ * Files rather than papers, because that is what is actually irreplaceable. An
+ * articles row is a PubMed fetch away from coming back; a stored PDF is the one
+ * somebody paid for.
+ */
+export interface WorkspaceContents {
+  collections: number;
+  files: number;
+}
+
+/**
+ * Asked for one workspace, when the confirmation that reads it opens.
+ *
+ * Not carried on the rows of the list, which is where it used to live: counting
+ * means opening a second connection to a database this process does not have
+ * open and scanning two tables, and the list is the response to the GET as well
+ * as to create, rename and delete. Every page load paid for it; one dialog,
+ * about one workspace, behind two clicks, read it.
+ *
+ * Null and zero are different answers, and the distinction is the reason this
+ * is nullable rather than an empty pair. Zero is measured and empty — a
+ * workspace created and never filled, a much lighter thing to delete. Null
+ * means the database could not be read, and the dialog falls back to what it
+ * can always say safely. The same rule ProNode's activity counts follow, and it
+ * matters more here, because this is read by someone about to destroy a
+ * library.
+ */
+export interface WorkspaceContentsResponse {
+  contents: WorkspaceContents | null;
+}
+
+/**
+ * An empty list is the honest answer for every deployment that isn't the
+ * desktop app, and the one the client keys off: no rows, no switcher. Better
+ * than a flag, because a build with the feature and a build without it then
+ * differ in what they *have* rather than in what they claim.
+ */
+export interface WorkspacesResponse {
+  workspaces: Workspace[];
 }

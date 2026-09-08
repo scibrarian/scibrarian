@@ -22,3 +22,31 @@
  * the boundary — on the one request large enough to reach it.
  */
 export const SQL_PARAMS_PER_CHUNK = 900;
+
+/**
+ * Chunk a list of ids, handing each chunk to `fn` as a placeholder list and the
+ * params to bind against it: the chunk's ids, then `extra`.
+ *
+ * Ids rather than PMIDs, because holdingsByDois runs the same query shape over
+ * DOIs. Nothing here reads the values — they are bound, never interpolated — so
+ * the only thing the name was ever describing was the caller.
+ *
+ * Here rather than in db.ts because the size above and this bind order are one
+ * rule, and a caller needs both halves of it. A statement written against the
+ * opposite order returns nothing rather than failing, so a second copy to keep
+ * in step is a second place for that to happen silently — which is what the
+ * cross-workspace holdings union had become before this moved.
+ *
+ * Pure: it captures no database handle, which is what lets a module holding a
+ * different workspace's connection use it unchanged.
+ */
+export function eachIdChunk(
+  ids: string[],
+  extra: (string | number)[],
+  fn: (placeholders: string, params: (string | number)[]) => void
+): void {
+  for (let i = 0; i < ids.length; i += SQL_PARAMS_PER_CHUNK) {
+    const batch = ids.slice(i, i + SQL_PARAMS_PER_CHUNK);
+    fn(batch.map(() => "?").join(","), [...batch, ...extra]);
+  }
+}

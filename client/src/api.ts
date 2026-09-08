@@ -35,6 +35,8 @@ import type {
   TopicRemovalResult,
   TopicSuggestResponse,
   UploadResponse,
+  WorkspaceContentsResponse,
+  WorkspacesResponse,
 } from "./types";
 import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth";
@@ -194,12 +196,12 @@ export const api = {
   // guarantee in the UI where it's easy to break. Batches run in sequence, not
   // in parallel — the enrichment step calls OpenAlex, and firing six of those at
   // once at a free service to save a second is not a trade worth making.
-  // `allowNetwork: false` sends ?free=0, which means "answer without leaving
-  // the machine". It suppresses the org check as well as the free-copy lookup —
-  // the flag is about network calls, not about free copies — so a caller that
-  // passes false gets the local held/not-held verdict and nothing else. It was
-  // named lookUpFree, which read as if only OpenAlex were at stake, and the
-  // post-pull refresh below turned that misreading into a wrong answer.
+  // `allowNetwork: false` sends ?online=0, which means "answer without leaving
+  // the machine". It suppresses the org check as well as the identifier lookup,
+  // so a caller that passes false gets the local held/not-held verdict and
+  // nothing else. It was once named for the free-copy lookup alone, which read
+  // as if only OpenAlex were at stake, and the post-pull refresh below turned
+  // that misreading into a wrong answer.
   checkHave: async (refs: string[], allowNetwork = true): Promise<HaveResponse> => {
     const capped = refs.slice(0, MAX_HAVE_REFS);
     const results: HaveAnswer[] = [];
@@ -207,7 +209,7 @@ export const api = {
     for (let i = 0; i < capped.length; i += MAX_REFS_PER_HAVE_REQUEST) {
       const batch = capped.slice(i, i + MAX_REFS_PER_HAVE_REQUEST);
       const res = await req<HaveResponse>(
-        `/api/have?q=${encodeURIComponent(batch.join("\n"))}${allowNetwork ? "" : "&free=0"}`
+        `/api/have?q=${encodeURIComponent(batch.join("\n"))}${allowNetwork ? "" : "&online=0"}`
       );
       results.push(...res.results);
       truncated += res.truncated;
@@ -308,6 +310,44 @@ export const api = {
 
   // Irreversible. Answers with what it deleted.
   resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),
+
+  // ---------- workspaces (desktop only) ----------
+  //
+  // An empty list is what every other deployment answers, and what the switcher
+  // reads as "this build has none". So there is no capability flag to fetch
+  // first and no branch on the deployment kind: the list is the feature.
+  //
+  // The mutations 404 off the desktop. Nothing reaches them there, because
+  // nothing draws a control to reach them from.
+
+  getWorkspaces: () => req<WorkspacesResponse>("/api/workspaces"),
+  // Asked when the delete confirmation opens, not with the list: counting means
+  // opening another workspace's database and scanning two tables, and this is
+  // the only thing that reads the answer.
+  workspaceContents: (id: string) =>
+    req<WorkspaceContentsResponse>(`/api/workspaces/${encodeURIComponent(id)}/contents`),
+  createWorkspace: (name: string) =>
+    req<WorkspacesResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ name }) }),
+  renameWorkspace: (id: string, name: string) =>
+    req<WorkspacesResponse>(`/api/workspaces/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  // Irreversible, and more so than resetLibrary: that keeps the settings, the
+  // reference lists and any pairing, where this takes the whole database and
+  // blob store. Refused for the active workspace — see the route.
+  deleteWorkspace: (id: string) =>
+    req<WorkspacesResponse>(`/api/workspaces/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  // Answers, *then* the app restarts into the chosen workspace — so a resolved
+  // promise here means the switch is committed and the window is about to go,
+  // not that anything is ready to look at. `restarting` is false only where
+  // nothing can restart the process (a browser pointed at the desktop build's
+  // port), and then the choice simply applies the next time it is opened.
+  switchWorkspace: (id: string) =>
+    req<{ ok: true; restarting: boolean }>("/api/workspaces/switch", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
 
   // ---------- Pro: agency holdings ----------
   //

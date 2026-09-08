@@ -338,7 +338,7 @@ export function PapersTable({
         knownEmpty={knownEmpty}
         action={
           showSelectCol ? (
-            // Sits where the bulk save does in the workspaces that have one.
+            // Sits where the bulk save does in the sections that have one.
             // The two never coexist — bookmarking is null in the Library, which
             // is the only place removal is offered — so the slot carries
             // whichever bulk action this source actually has.

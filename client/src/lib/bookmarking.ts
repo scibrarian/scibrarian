@@ -5,7 +5,7 @@ import type { BookmarkFolder } from "../types";
 // hand it to the same control, so a paper is saved identically wherever it's
 // shown.
 //
-// A null Bookmarking is how a workspace opts out: the Library holds papers you
+// A null Bookmarking is how a section opts out: the Library holds papers you
 // already own, not ones you're still deciding about, so the control simply
 // doesn't render there. Interests (save what you find) and Bookmarks (unsave,
 // or file into a second folder) both get one.

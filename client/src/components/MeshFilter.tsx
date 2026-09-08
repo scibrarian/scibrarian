@@ -155,7 +155,7 @@ export function MeshFilter({
           aria-label="Filter by subject"
         >
           <span className="filter-label">{label}</span>
-          <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
+          <span className="picker-caret"><ChevronDown size={16} aria-hidden /></span>
         </DropdownMenu.Trigger>
 
         <DropdownMenu.Portal>

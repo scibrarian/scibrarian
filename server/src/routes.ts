@@ -124,7 +124,24 @@ import type {
   PapersResponse,
   Settings,
   TopicSuggestResponse,
+  Workspace,
+  WorkspaceContentsResponse,
+  WorkspacesResponse,
 } from "./types.js";
+import { workspaceContents } from "./elsewhere.js";
+import {
+  activeWorkspace,
+  canRestart,
+  checkWorkspaceName,
+  createWorkspace,
+  deleteWorkspace,
+  listWorkspaces,
+  renameWorkspace,
+  requestRestart,
+  setActiveWorkspace,
+  workspacesEnabled,
+  type WorkspaceRecord,
+} from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
@@ -684,6 +701,13 @@ api.get("/abstracts", (req, res) => {
 // gate, which would make the mandated pre-purchase check unavailable to exactly
 // the read-only viewers who are told to perform it.
 //
+// Which is why the answer is trimmed for a caller who isn't the owner rather
+// than the route being closed to them. Everything about the *paper* goes to
+// everyone. The one thing that isn't about the paper is which workspace holds
+// it: those names are the agencies this person works for, and GET /workspaces
+// is admin-only to protect exactly that — handing them out through the route
+// deliberately left open would undo it.
+//
 // Long pastes are chunked by the client (MAX_REFS_PER_REQUEST), the same way
 // large uploads are — a URL is a poor container for a hundred references, and
 // `truncated` reports anything this request had to leave out.
@@ -702,14 +726,22 @@ api.get(
       return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
-    const offline = req.query.free === "0";
+    const offline = req.query.online === "0";
     const body: HaveResponse = {
-      // ?free=0 means "answer without leaving the machine" — the client sends
+      // ?online=0 means "answer without leaving the machine" — the client sends
       // it while a paste is still being typed, and drops it for the answer the
-      // user acts on. It gates the org check as well as the free-copy lookup,
+      // user acts on. It gates the org check as well as the identifier lookup,
       // because both are network calls and the flag is really about that.
       // (The held/not-held verdict itself is local either way.)
-      results: await checkHoldings(batch, { lookUpFree: !offline, checkOrg: !offline }),
+      results: await checkHoldings(batch, {
+        lookUpIdentifiers: !offline,
+        checkOrg: !offline,
+        // The owner already reads these names from GET /workspaces; nobody else
+        // does. On the desktop, where workspaces are the only place this can be
+        // true, ADMIN_TOKEN is empty and every local caller is the owner — so
+        // this is on for the one deployment the feature exists in.
+        nameWorkspaces: isAdminRequest(req),
+      }),
       truncated: lines.length - batch.length,
     };
     res.json(body);
@@ -780,7 +812,7 @@ api.get(
   })
 );
 
-// ---------- workspace entry names (collections + bookmark folders) ----------
+// ---------- section entry names (collections + bookmark folders) ----------
 
 // A name a person typed, checked at both ends before anything looks it up:
 // non-empty once trimmed, and no longer than the picker has room to draw. Sends
@@ -801,7 +833,7 @@ function badName(res: Response, name: string): boolean {
   return false;
 }
 
-// Names within a workspace are unique case-insensitively (see the unique index
+// Names within a section are unique case-insensitively (see the unique index
 // in db.ts) — two entries with the same name are indistinguishable in the
 // picker. Sends the 409 and returns true when the requested name belongs to a
 // different row; `selfId` is the row being renamed, so re-saving an entry's own
@@ -828,7 +860,7 @@ function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void
 
 // ---------- bookmark folders (saved papers) ----------
 
-// The Bookmarks workspace's picker list, shaped like /collections: the stored
+// The Bookmarks section's picker list, shaped like /collections: the stored
 // row plus the count the dropdown badges. Papers themselves come from
 // /api/papers?folder=<id>, since a folder is just another paper source.
 api.get("/bookmark-folders", (_req, res) => {
@@ -1400,6 +1432,184 @@ api.put("/settings", (req, res) => {
   }
   rescheduleFromSettings();
   res.json(settingsResponse());
+});
+
+// ---------- workspaces (desktop only) ----------
+
+// Separate libraries on one machine, for the freelancer who works for several
+// agencies. See server/src/workspaces.ts for the shape of it; what matters here
+// is that every route below is inert unless the Electron main process set the
+// root, so a Docker or `npm start` deployment is untouched and answers with an
+// empty list.
+//
+// Admin-gated on the read as well as the write, like /settings and for the same
+// kind of reason — more sharply, in fact. The list is the names of the agencies
+// this person works for, which is client-relationship intelligence about them
+// rather than about any library, and it is the one thing here that would be
+// worth reading on an instance with viewers on it.
+
+// One row as the client sees it. `active` is derived rather than stored on each
+// record, so there is exactly one source of truth for which library is open.
+//
+// Deliberately four fields and no database work. The collection and file counts
+// used to be assembled here, which meant workspaceContents opening a connection
+// and scanning two tables per inactive workspace — on this body, which answers
+// the GET as well as create, rename and delete. Four workspaces cost three
+// databases opened and six scans before the picker could draw a name, for a
+// pair of numbers one dialog reads about one workspace. They are their own
+// route now, asked when that dialog opens.
+function toWorkspaceRow(w: WorkspaceRecord, activeId: string): Workspace {
+  return {
+    id: w.id,
+    name: w.name,
+    created_at: w.created_at,
+    active: w.id === activeId,
+  };
+}
+
+function workspacesBody(): WorkspacesResponse {
+  const active = activeWorkspace();
+  return {
+    workspaces: active ? listWorkspaces().map((w) => toWorkspaceRow(w, active.id)) : [],
+  };
+}
+
+// The name a create or a rename is asking for, or null when the body carried
+// nothing usable.
+//
+// A typeof check rather than String(), which is what this was. String({}) is
+// "[object Object]" — fifteen characters, not blank, unlikely to clash — so it
+// passed every validation below and became a workspace with that name.
+function bodyName(body: unknown): string | null {
+  const name = (body as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" ? name.trim() : null;
+}
+
+// Sends its own 404 and returns true when this build has no workspaces. A 404
+// rather than a 403: the routes genuinely do not exist off the desktop, and
+// saying so is both true and the same answer an older client would get.
+function noWorkspaces(res: Response): boolean {
+  if (workspacesEnabled()) return false;
+  res.status(404).json({ error: "Workspaces are only available in the desktop app." });
+  return true;
+}
+
+api.get("/workspaces", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
+  // Deliberately not noWorkspaces(): an empty list is the honest answer for a
+  // server deployment and the one the client is built to read, where a 404 here
+  // would be an error state to render on every page load of every hosted
+  // instance for a feature it correctly does not have.
+  res.json(workspacesBody());
+});
+
+api.post("/workspaces", (req, res) => {
+  if (noWorkspaces(res)) return;
+  const name = bodyName(req.body);
+  if (name === null) return res.status(400).json({ error: "A workspace needs a name." });
+  const problem = checkWorkspaceName(name);
+  if (problem) return res.status(400).json({ error: problem });
+  createWorkspace(name);
+  // The whole list, not just the new row: the client's next act is to redraw a
+  // picker that now has one more entry, and a create that returns only what it
+  // created leaves it merging two sources of truth.
+  res.status(201).json(workspacesBody());
+});
+
+api.patch("/workspaces/:id", (req, res) => {
+  if (noWorkspaces(res)) return;
+  const id = String(req.params.id);
+  const name = bodyName(req.body);
+  if (name === null) return res.status(400).json({ error: "A workspace needs a name." });
+  const problem = checkWorkspaceName(name, id);
+  if (problem) return res.status(400).json({ error: problem });
+  if (!renameWorkspace(id, name)) {
+    return res.status(404).json({ error: "No such workspace." });
+  }
+  res.json(workspacesBody());
+});
+
+// What deleting one would destroy, counted on demand rather than with the list.
+//
+// Admin-gated like the list it belongs to, and for the same reason: how much
+// material sits in each of this person's libraries is about them rather than
+// about any paper.
+//
+// Answers 200 with a null `contents` for a database that will not open. That is
+// not an error — the workspace is real, still listed, and still deletable —
+// and it is a different answer from an empty one, which the dialog's wording
+// depends on being able to tell apart.
+api.get("/workspaces/:id/contents", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
+  if (noWorkspaces(res)) return;
+  const id = String(req.params.id);
+  if (!listWorkspaces().some((w) => w.id === id)) {
+    return res.status(404).json({ error: "No such workspace." });
+  }
+  const body: WorkspaceContentsResponse = { contents: workspaceContents(id) };
+  res.json(body);
+});
+
+// Delete a workspace and everything in it. The only route here that destroys
+// anything, and it destroys more than /data/reset does: that one keeps the
+// settings, the MeSH and journal reference lists, and any Pro pairing, where
+// this takes the whole database and blob store with it.
+//
+// No typed-name gate ahead of it, deliberately, and the reasoning is the one
+// already written on PromptDialog's `option`: a forced confirmation gets
+// pattern-matched and clicked through within a week, leaving the same failure
+// mode plus a step everyone resents. What is offered instead is a dialog that
+// says what is actually about to go — the collection and file counts above are
+// there for that sentence and nothing else.
+api.delete("/workspaces/:id", (req, res) => {
+  if (noWorkspaces(res)) return;
+  switch (deleteWorkspace(String(req.params.id))) {
+    case "unknown":
+      return res.status(404).json({ error: "No such workspace." });
+    // Not a policy: its database is open in this process, and there would be
+    // nothing left for the window to be looking at. It is also what guarantees
+    // one always survives.
+    case "active":
+      return res.status(409).json({
+        error: "You can't delete the workspace you're in. Switch to another one first.",
+      });
+    default:
+      return res.json(workspacesBody());
+  }
+});
+
+// Switch workspace: record the choice, answer, then restart into it.
+//
+// The restart is the feature, not a shortcut around one. `db` is a module-scope
+// handle that the poll scheduler, the Pro push sweep, warmCitations and every
+// in-flight request hold by reference, and swapping it underneath them fails
+// each separately at whatever moment it next touches the database — see
+// onRestartRequested. Relaunching reaches the new workspace through the path
+// every launch already takes.
+//
+// Ordered response-then-restart, and gated on `finish`: the process is about to
+// exit, so a restart fired before the bytes are on the wire leaves the client
+// with a dropped connection and no way to tell a successful switch from a
+// failed one. The client is meanwhile showing "switching…", because the honest
+// end of this request is the window disappearing.
+api.post("/workspaces/switch", (req, res) => {
+  if (noWorkspaces(res)) return;
+  const id = String(req.body?.id ?? "");
+  const current = activeWorkspace();
+  if (current && current.id === id) {
+    return res.status(409).json({ error: "That workspace is already open." });
+  }
+  if (!setActiveWorkspace(id)) {
+    return res.status(404).json({ error: "No such workspace." });
+  }
+  // `restarting` is what the client waits on. False means the choice is saved
+  // and takes effect the next time the app is opened by hand — the case for a
+  // browser pointed at a desktop build's port, which is not how anyone uses it
+  // but is reachable, and is better answered honestly than by hanging.
+  res.on("finish", () => {
+    requestRestart();
+  });
+  res.json({ ok: true, restarting: canRestart() });
 });
 
 // ---------- delete everything ----------

@@ -81,7 +81,7 @@ describe("the counts a collection reports", () => {
   });
 
   it("agrees with the membership query about what the collection holds", () => {
-    // The point of spelling this count with heldFile: it cannot answer a
+    // The point of spelling this count with heldFileSql: it cannot answer a
     // different number than the join that actually selects the papers.
     expect(db.listPapers({ collection }, {}).length).toBe(counts().held);
   });

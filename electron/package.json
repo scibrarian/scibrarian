@@ -9,9 +9,10 @@
   "main": "main.mjs",
   "scripts": {
     "build": "node build.mjs",
+    "generate-icons": "node generate-icons.mjs",
     "start": "node start.mjs",
-    "pack": "node build.mjs && electron-builder --dir --config electron-builder.config.cjs",
-    "dist": "node build.mjs && electron-builder --config electron-builder.config.cjs"
+    "pack": "node generate-icons.mjs && node build.mjs && electron-builder --dir --config electron-builder.config.cjs",
+    "dist": "node generate-icons.mjs && node build.mjs && electron-builder --config electron-builder.config.cjs"
   },
   "dependencies": {
     "archiver": "^8.0.0",
@@ -27,6 +28,8 @@
   "devDependencies": {
     "electron": "43.2.0",
     "electron-builder": "^26.0.12",
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "jimp": "^0.22.12",
+    "png2icons": "^2.0.1"
   }
 }

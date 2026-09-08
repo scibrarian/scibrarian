@@ -8,7 +8,7 @@ import { MAX_NAME_CHARS } from "../../../shared/limits";
 // The bookmark-folder management shell: rename/delete chrome wrapped around
 // whichever analysis module (table or timeline) is active, exactly as
 // CollectionView does for the Library — same .source-* chrome, so the two
-// workspaces read the same way.
+// sections read the same way.
 //
 // It stays much smaller than CollectionView because a folder owns nothing: no
 // uploads, no import job, no files to reconcile. Its papers come from
@@ -54,7 +54,7 @@ export function BookmarkFolderView({
   return (
     <div className="source-view">
       {/* The row is always here, because the papers below it start at one
-          height in every workspace; only the management chrome inside it is
+          height in every section; only the management chrome inside it is
           admin-only, so a viewer gets the reserved space and nothing in it. */}
       <div className="source-head">
         {isAdmin && (

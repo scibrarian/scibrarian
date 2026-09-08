@@ -13,7 +13,7 @@ import {
 } from "./pubmed-parse.js";
 import { SNIPPET_CLOSE, SNIPPET_OPEN } from "../../shared/types.js";
 import { sourceHasFiles, type PaperSource } from "../../shared/source.js";
-import { SQL_PARAMS_PER_CHUNK } from "../../shared/sqlite.js";
+import { eachIdChunk } from "../../shared/sqlite.js";
 import { errMessage } from "./util.js";
 import type {
   Article,
@@ -392,11 +392,24 @@ db.exec(`
 //
 // `alias` prefixes the column for queries that join collection_files under a
 // name (`cf.`, `cf2.`); the subqueries selecting from it bare pass nothing.
-const heldFile = (alias = "") => `${alias}pmid IS NOT NULL`;
+//
+// Exported for elsewhere.ts, which asks the same custody question of a
+// *different* workspace's database. The predicate is redundant there — that
+// query already filters `pmid IN (...)` — and it is written anyway, because
+// "one spelling everywhere" is the whole point of this const and a second
+// module deciding custody for itself is exactly the drift the note above is
+// about.
+//
+// The Sql suffix earns its keep: pro-storage.ts exports a `heldFile` that takes
+// a PMID and answers with a path. Two one-argument, string-taking exports of
+// that name in sibling modules both reach index.ts, where importing the second
+// is a duplicate-identifier error and anywhere else the wrong one is one
+// autocomplete away.
+export const heldFileSql = (alias = "") => `${alias}pmid IS NOT NULL`;
 
 // The distinct papers the user actually holds a file for — the Library, as the
 // custody positioning means it.
-const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFile()})`;
+const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFileSql()})`;
 
 // ---------- settings ----------
 
@@ -647,30 +660,6 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
 });
 
 // ---------- articles ----------
-
-// Chunk a list of ids to stay well under SQLite's bound-parameter limit (an
-// all-time search can hand us thousands of PMIDs in a single call), handing
-// each chunk to `fn` as a placeholder list and the params to bind against it:
-// the chunk's ids, then `extra`.
-//
-// Ids rather than PMIDs, because holdingsByDois runs the same query shape over
-// DOIs. Nothing here reads the values — they are bound, never interpolated — so
-// the only thing the name was ever describing was the caller.
-//
-// The chunk size and that bind order live here and nowhere else. A statement
-// written against the opposite order returns nothing rather than failing, so a
-// second copy of the rule to keep in step is a second place for that to happen
-// silently.
-function eachIdChunk(
-  ids: string[],
-  extra: (string | number)[],
-  fn: (placeholders: string, params: (string | number)[]) => void
-): void {
-  for (let i = 0; i < ids.length; i += SQL_PARAMS_PER_CHUNK) {
-    const batch = ids.slice(i, i + SQL_PARAMS_PER_CHUNK);
-    fn(batch.map(() => "?").join(","), [...batch, ...extra]);
-  }
-}
 
 // An IN (...) query over the chunks, with the rows concatenated.
 function queryByIds<T>(
@@ -1014,7 +1003,7 @@ function searchPredicate(
                       JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
                       JOIN collection_files cf2 ON cf2.content_hash = pt.content_hash
                       WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf2.collection_id = ?" : ""}
-                        AND ${heldFile("cf2.")})`;
+                        AND ${heldFileSql("cf2.")})`;
   }
   return `(a.title LIKE ? ESCAPE '\\'
         OR a.abstract LIKE ? ESCAPE '\\'
@@ -1124,7 +1113,7 @@ function snippetsForSearch(source: PaperSource, q: string): Map<string, string> 
        JOIN pdf_text pt ON pt.rowid = pdf_text_fts.rowid
        JOIN collection_files cf ON cf.content_hash = pt.content_hash
        WHERE pdf_text_fts MATCH ?${collectionId != null ? " AND cf.collection_id = ?" : ""}
-         AND ${heldFile("cf.")}`
+         AND ${heldFileSql("cf.")}`
     )
     .all(
       SNIPPET_OPEN,
@@ -1204,12 +1193,12 @@ function sourceMembership(
   // checking against a purchase is actually asking. A paper held in three
   // collections is one row, linked by the same MIN(id) convention
   // HOLDING_SELECT uses to answer /have; the two must not disagree about which
-  // copy they mean, which is why both decide "held" with heldFile.
+  // copy they mean, which is why both decide "held" with heldFileSql.
   const collectionId = "allCollections" in source ? null : source.collection;
   const scope = collectionId === null ? "" : "collection_id = ? AND ";
   const fileLink = withFiles
     ? `LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-                  WHERE ${scope}${heldFile()}
+                  WHERE ${scope}${heldFileSql()}
                   GROUP BY pmid) mf ON mf.pmid = a.pmid
        LEFT JOIN collection_files cf ON cf.id = mf.file_id`
     : "";
@@ -1219,7 +1208,7 @@ function sourceMembership(
   const bind = collectionId === null ? [] : [collectionId];
   return {
     join: `JOIN (SELECT DISTINCT pmid FROM collection_files
-              WHERE ${scope}${heldFile()}) cp ON cp.pmid = a.pmid
+              WHERE ${scope}${heldFileSql()}) cp ON cp.pmid = a.pmid
        ${fileLink}`,
     params: withFiles ? [...bind, ...bind] : bind,
   };
@@ -1245,7 +1234,7 @@ const HOLDING_COLLECTIONS = `LEFT JOIN (
            SELECT DISTINCT cf3.pmid AS pmid, col3.name AS name
            FROM collection_files cf3
            JOIN collections col3 ON col3.id = cf3.collection_id
-           WHERE ${heldFile("cf3.")}
+           WHERE ${heldFileSql("cf3.")}
          ) GROUP BY pmid
        ) hc ON hc.pmid = a.pmid`;
 
@@ -1562,7 +1551,7 @@ export interface HoldingRow {
 }
 
 // The stored copy for a paper, across every collection: the lowest-id file row
-// that heldFile counts as held — the same set, and the same MIN(id) pick, the
+// that heldFileSql counts as held — the same set, and the same MIN(id) pick, the
 // collection views join on, so /have and the papers list can't name different
 // copies of one paper. One subquery here rather than two, because this query
 // has no collection to scope to.
@@ -1578,7 +1567,7 @@ const HOLDING_SELECT = `SELECT a.pmid, a.title, ${JOURNAL_DISPLAY} AS journal_na
    FROM articles a
    ${JOURNAL_LOOKUP}
    LEFT JOIN (SELECT pmid, MIN(id) AS file_id FROM collection_files
-              WHERE ${heldFile()} GROUP BY pmid) hf ON hf.pmid = a.pmid
+              WHERE ${heldFileSql()} GROUP BY pmid) hf ON hf.pmid = a.pmid
    LEFT JOIN collection_files cf ON cf.id = hf.file_id
    LEFT JOIN collections col ON col.id = cf.collection_id`;
 
@@ -1827,14 +1816,14 @@ export function deleteCollection(id: number): void {
 // deciding whether a collection has papers has to ask that one.
 //
 // The CASE is not there to skip nulls (COUNT DISTINCT already does) but so the
-// custody predicate is named rather than inlined: heldFile changing has to move
+// custody predicate is named rather than inlined: heldFileSql changing has to move
 // this count with it, which is the whole point of one spelling.
 export function collectionCounts(): Record<number, { files: number; matched: number; held: number }> {
   const rows = db
     .prepare(
       `SELECT collection_id, COUNT(*) AS files,
               SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched,
-              COUNT(DISTINCT CASE WHEN ${heldFile()} THEN pmid END) AS held
+              COUNT(DISTINCT CASE WHEN ${heldFileSql()} THEN pmid END) AS held
        FROM collection_files GROUP BY collection_id`
     )
     .all() as { collection_id: number; files: number; matched: number; held: number }[];

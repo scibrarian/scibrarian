@@ -29,6 +29,7 @@ import { startScheduler } from "./poller.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
+import { onRestartRequested } from "./workspaces.js";
 import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
 import { MAX_BULK_BOOKMARK_BYTES } from "../../shared/limits.js";
 
@@ -197,6 +198,19 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   res.status(status).json({ error: expose ? errMessage(err) : generic });
 });
 
+/**
+ * What an embedder can hand the server at startup. Only the desktop shell
+ * passes anything; the CLI entry below and the tests start with none.
+ */
+export interface StartOptions {
+  /**
+   * Quit and relaunch, so a workspace switch takes effect. Absent means the
+   * choice is still recorded and applies the next time the app is opened —
+   * which is the honest answer for a server nobody can restart from inside.
+   */
+  onRestart?: () => void;
+}
+
 // Bind and start the background work, resolving once the port is known.
 //
 // The port is read back off the listening socket rather than echoed from
@@ -205,7 +219,14 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
 // embedder — the Electron main process — can start the server in-process and
 // learn where to point its window. Rejects instead of exiting so a failed bind
 // is the caller's to report; the CLI path below turns that back into an exit.
-export async function start(): Promise<{ port: number; url: string }> {
+export async function start(options: StartOptions = {}): Promise<{ port: number; url: string }> {
+  // Registered before the bind, so no /workspaces/switch can arrive at a server
+  // that would save the choice and then have no way to act on it. Passed in
+  // rather than imported by workspaces.ts, because the desktop build bundles
+  // that module twice and only this copy is the one the routes will call — see
+  // onRestartRequested for the whole of it.
+  onRestartRequested(options.onRestart);
+
   // Without a token every request can mutate data, so exposing the server beyond
   // this machine in that state would let anyone who can reach it change anything.
   if (!HOST_IS_LOOPBACK && !ADMIN_TOKEN) {

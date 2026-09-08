@@ -8,7 +8,7 @@ import type { ShareLinkResponse } from "../types";
 // Mints an expiring signed link and puts the absolute URL on the clipboard, then
 // flashes ✓ on the button and pops a "Copied link to clipboard" toast so the copy
 // is unmistakable. Used for single files (papers table) and whole collections
-// (workspace bar).
+// (section bar).
 export function ShareLinkButton({
   mint,
   title,

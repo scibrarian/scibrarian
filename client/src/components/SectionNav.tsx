@@ -7,7 +7,7 @@ import { SkeletonBar } from "./Skeleton";
 
 export type Mode = "interests" | "bookmarks" | "papers";
 
-// One entry in the picker, normalized across the three workspaces so the menu
+// One entry in the picker, normalized across the three sections so the menu
 // renders from a single loop.
 interface PickerItem {
   id: number;
@@ -51,12 +51,12 @@ interface Picker {
   onAdd: () => void;
 }
 
-// How each workspace is named and drawn, and the only place that decides it:
+// How each section is named and drawn, and the only place that decides it:
 // the mode switch renders all three, the picker trigger looks up the active
-// one, and App's empty states name workspaces in prose. Separate literals would
-// let them drift onto different icons for the same workspace.
+// one, and App's empty states name sections in prose. Separate literals would
+// let them drift onto different icons for the same section.
 //
-// Keyed by Mode rather than a list of them so adding a fourth workspace without
+// Keyed by Mode rather than a list of them so adding a fourth section without
 // describing it here is a type error instead of an undefined at render. Module
 // scope because it never varies — this component re-renders on every id, banner
 // and refresh change, and rebuilding a constant each time is waste.
@@ -77,7 +77,7 @@ const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
 //
 // A split point in MODE_ORDER rather than a second list of names, for the same
 // reason MODE_ORDER itself is derived: a hand-written grouping is a place the
-// nav can silently lose a workspace that was added to MODES and forgotten here.
+// nav can silently lose a section that was added to MODES and forgotten here.
 // A fourth one joins the second group, which is a visible default rather than a
 // disappearance.
 const GROUPED_AFTER = 1;
@@ -89,7 +89,7 @@ const MODE_GROUPS = [MODE_ORDER.slice(0, GROUPED_AFTER), MODE_ORDER.slice(GROUPE
 // list never clutters the header. Radix DropdownMenu owns the open state and
 // supplies outside-click/Escape dismissal, arrow-key navigation, and focus
 // return.
-export function WorkspaceNav({
+export function SectionNav({
   mode,
   isAdmin,
   onModeChange,
@@ -213,20 +213,20 @@ export function WorkspaceNav({
   const ModeIcon = activeMode.icon;
 
   return (
-    <nav className="workspace-nav">
+    <nav className="section-nav">
       {/* Hidden outright while it stands in, rather than a named group whose
-          every button is hidden under it — that announces "Workspace" and then
+          every button is hidden under it — that announces "Section" and then
           nothing, which is worse than either being absent or being read. The
           buttons are disabled, so nothing inside can take focus while it is.
           Same shape as ViewSwitcherSkeleton, which hides its own container. */}
       <div
         className="mode-switch"
         role="group"
-        aria-label="Workspace"
+        aria-label="Section"
         aria-hidden={!loaded || undefined}
       >
         {/* Skeleton until the first load resolves, like the picker beside it:
-            switching workspace before there is anything to switch to lands on an
+            switching section before there is anything to switch to lands on an
             empty one, and a live control sitting among skeletons reads as the
             one part of the bar that's ready when it is the least ready of them.
             The real labels go inside the bars (see SkeletonBar) so each is
@@ -249,7 +249,7 @@ export function WorkspaceNav({
                   <SkeletonBar h={14}>{m.label}</SkeletonBar>
                 </button>
               ) : (
-                /* aria-pressed, not just the class: which workspace you're in is
+                /* aria-pressed, not just the class: which section you're in is
                    state, and drawn on its own it reaches only the people who can
                    see the fill. Same condition as the class so the two can't
                    disagree — under Settings none of them is pressed, because none
@@ -268,12 +268,12 @@ export function WorkspaceNav({
         ))}
       </div>
 
-      <div className="ws-picker">
+      <div className="picker">
         {/* Until the first load resolves we don't yet know if there are any
             topics/folders/collections, so show a placeholder rather than
             flashing the "No topics yet" empty state. */}
         {!loaded ? (
-          <div className="ws-trigger ws-trigger-loading" aria-hidden="true">
+          <div className="picker-trigger picker-trigger-loading" aria-hidden="true">
             {/* Stands in for the mode icon. Without it the trigger gains the
                 icon's 16px and the row's 8px gap on the handoff, widening
                 itself and shoving the share button along beside it. */}
@@ -282,8 +282,8 @@ export function WorkspaceNav({
           </div>
         ) : (
           <DropdownMenu.Root>
-            <DropdownMenu.Trigger className="ws-trigger">
-              {/* Which workspace this name belongs to. A topic, a bookmark
+            <DropdownMenu.Trigger className="picker-trigger">
+              {/* Which section this name belongs to. A topic, a bookmark
                   folder and a collection can all be called "Cardiac Imaging",
                   and the trigger is the part of the nav that changes — without
                   the icon the three render identically. The label carries the
@@ -291,9 +291,9 @@ export function WorkspaceNav({
                   icon: the trigger's name reads "Interests, Cardiac Imaging,
                   240", so it stands apart from its namesakes when read on its
                   own, away from the pressed button in the switch. */}
-              <ModeIcon size={16} className="ws-mode-icon" aria-hidden />
+              <ModeIcon size={16} className="picker-mode-icon" aria-hidden />
               <span className="sr-only">{activeMode.label}</span>
-              <span className="ws-current">{label}</span>
+              <span className="picker-current">{label}</span>
               {/* Guarded on `active` alone. Selecting the lead sets activeId to
                   null (see the picker above), and no item carries a null id, so
                   a lead and an active item are mutually exclusive by
@@ -303,34 +303,34 @@ export function WorkspaceNav({
                   the picker entry not carrying one: summing matchedCount
                   double-counts a paper filed in two collections. */}
               {active && <span className="count">{active.count}</span>}
-              <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
+              <span className="picker-caret"><ChevronDown size={16} aria-hidden /></span>
             </DropdownMenu.Trigger>
 
             <DropdownMenu.Portal>
-              <DropdownMenu.Content className="ws-menu" align="start" sideOffset={6} loop>
+              <DropdownMenu.Content className="picker-menu" align="start" sideOffset={6} loop>
                 {/* Above the divider because it isn't one of the collections —
                     it's the scope they all sit inside. The mode icon rather
                     than the folder the others carry, for the same reason. */}
                 {picker.lead && (
                   <>
                     <DropdownMenu.Item
-                      className={`ws-option ${picker.lead.active && !settingsActive ? "active" : ""}`}
+                      className={`picker-option ${picker.lead.active && !settingsActive ? "active" : ""}`}
                       onSelect={picker.lead.onSelect}
                     >
-                      <span className="ws-option-name">
+                      <span className="picker-option-name">
                         <Library size={14} className="inline-icon" aria-hidden /> {picker.lead.name}
                       </span>
                     </DropdownMenu.Item>
-                    <DropdownMenu.Separator className="ws-sep" />
+                    <DropdownMenu.Separator className="picker-sep" />
                   </>
                 )}
                 {picker.items.map((item) => (
                   <DropdownMenu.Item
                     key={item.id}
-                    className={`ws-option ${item.id === picker.activeId && !settingsActive ? "active" : ""}`}
+                    className={`picker-option ${item.id === picker.activeId && !settingsActive ? "active" : ""}`}
                     onSelect={() => picker.onSelect(item.id)}
                   >
-                    <span className="ws-option-name">
+                    <span className="picker-option-name">
                       {/* Same silhouette, different state. Swapping to a
                           share/network glyph was tried and reads as a different
                           *kind* of thing sitting in a list of folders, which is
@@ -350,9 +350,9 @@ export function WorkspaceNav({
                     <span className="count">{item.count}</span>
                   </DropdownMenu.Item>
                 ))}
-                {picker.items.length === 0 && <div className="ws-empty">{picker.empty}</div>}
+                {picker.items.length === 0 && <div className="picker-empty">{picker.empty}</div>}
                 {isAdmin && (
-                  <DropdownMenu.Item className="ws-add" onSelect={picker.onAdd}>
+                  <DropdownMenu.Item className="picker-add" onSelect={picker.onAdd}>
                     <Plus size={16} aria-hidden /> {picker.addLabel}
                   </DropdownMenu.Item>
                 )}

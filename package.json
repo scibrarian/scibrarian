@@ -19,6 +19,7 @@
     "desktop": "npm run build -w client && npm run build -w desktop && npm run start -w desktop",
     "desktop:pack": "npm run build -w client && npm run pack -w desktop",
     "desktop:dist": "npm run build -w client && npm run dist -w desktop",
+    "desktop:icons": "npm run generate-icons -w desktop",
     "test": "vitest run"
   },
   "devDependencies": {

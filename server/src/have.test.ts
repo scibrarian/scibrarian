@@ -41,8 +41,8 @@ const STRANGER = { pmid: "30000004", doi: "10.1000/stranger" };
 //
 // The second org pass runs only after a real enrichment call, so pinning it
 // needs an answer this test can choose. Recording what was asked also pins the
-// free-copy suppression directly, rather than by inferring it from a request
-// that never left.
+// lookup suppression directly, rather than by inferring it from a request that
+// never left.
 const oa = vi.hoisted(() => ({
   asked: [] as { dois: string[]; pmids: string[] }[],
   works: {
@@ -63,7 +63,6 @@ const oaWork = (o: { pmid: string; doi: string }) => ({
   doi: o.doi,
   title: `Paper ${o.pmid}`,
   year: 2024,
-  free: null,
 });
 
 function article(p: { pmid: string; doi: string }) {
@@ -141,11 +140,11 @@ afterEach(() => {
   oa.works = { byDoi: new Map(), byPmid: new Map() };
 });
 
-// lookUpFree is off everywhere except the one test that pins its suppression:
-// the free-copy lookup is the only part of /have that would otherwise leave the
-// machine, and these tests don't touch the network.
+// lookUpIdentifiers is off everywhere except the tests that pin its
+// suppression: the OpenAlex lookup is the only part of /have that would
+// otherwise leave the machine, and these tests don't touch the network.
 const check = (refs: string[], opts = {}) =>
-  have.checkHoldings(refs, { lookUpFree: false, ...opts });
+  have.checkHoldings(refs, { lookUpIdentifiers: false, ...opts });
 
 describe("org verdict", () => {
   it("is absent in a free build, and says so rather than saying no", async () => {
@@ -155,6 +154,11 @@ describe("org verdict", () => {
     // The distinction the whole feature rests on: not "the org doesn't have
     // it", but "nobody was asked".
     expect(answer.orgChecked).toBe(false);
+    // And the distinction that makes orgChecked readable by a UI. Nobody was
+    // asked because there is nobody to ask — no Pro module, no other
+    // workspaces — so the local answer is the whole answer and the row is a
+    // plain "not in your library". A free build must not warn on every line.
+    expect(answer.verdictComplete).toBe(true);
   });
 
   it("reports a paper the org holds, with the master's label", async () => {
@@ -186,6 +190,11 @@ describe("org verdict", () => {
     expect(answer.held).toBe(false);
     expect(answer.org).toBeNull();
     expect(answer.orgChecked).toBe(false);
+    // The same orgChecked the free build above reports, and the opposite
+    // meaning: there was a master and it did not answer. Only this side knows
+    // which, so it is this side that says whether the row may be drawn as a
+    // settled "not in your library".
+    expect(answer.verdictComplete).toBe(false);
   });
 
   it("degrades the same way when the node has been revoked", async () => {
@@ -231,8 +240,8 @@ describe("what the master is asked", () => {
   });
 
   it("is not asked at all when the request opted out", async () => {
-    // ?free=0 — the client sends it while a paste is still being typed, and it
-    // has to suppress every network call, not just OpenAlex.
+    // ?online=0 — the client sends it while a paste is still being typed, and
+    // it has to suppress every network call, not just OpenAlex.
     orgAnswer = holds(OWNED.pmid);
     hooks.registerPro(stub);
 
@@ -290,12 +299,12 @@ describe("what the master is asked", () => {
   });
 });
 
-describe("interaction with the free-copy lookup", () => {
+describe("interaction with the identifier lookup", () => {
   it("suppresses it for a paper the org holds", async () => {
-    // A writer who can get the file from the master has no use for a free-copy
-    // link, and offering one invites a second copy of something already bought.
+    // An org hit answers the line outright, so there is nothing an identifier
+    // lookup could add to it.
     //
-    // Note this is the one test that runs with lookUpFree on. It stays offline
+    // Note this is the one test that runs with lookUpIdentifiers on. It stays offline
     // *because* of the behaviour it pins: an org-held line is excluded from the
     // OpenAlex batch, which leaves it empty and short-circuits the request. If
     // that suppression ever regresses, this test reaches the network — which is
@@ -303,10 +312,9 @@ describe("interaction with the free-copy lookup", () => {
     orgAnswer = holds(OWNED.pmid);
     hooks.registerPro(stub);
 
-    const [answer] = await have.checkHoldings([OWNED.pmid], { lookUpFree: true });
+    const [answer] = await have.checkHoldings([OWNED.pmid], { lookUpIdentifiers: true });
     expect(answer.org).not.toBeNull();
-    expect(answer.freeChecked).toBe(false);
-    expect(answer.free).toBeNull();
+    expect(answer.identifierChecked).toBe(false);
     // Directly: the batch was never assembled, so OpenAlex was never called.
     expect(oa.asked).toEqual([]);
   });
@@ -318,14 +326,14 @@ describe("interaction with the free-copy lookup", () => {
 // DOI for a paper this library has never seen has neither, so the line is
 // dropped from the first batch — and OpenAlex, twenty lines later, is the thing
 // that knows its PMID. Without a second ask the writer is told "not in your
-// library", with a free-copy link, for a paper the agency already bought.
+// library" for a paper the agency already bought.
 describe("a DOI the library has never seen", () => {
   it("is asked about once OpenAlex places it", async () => {
     oa.works = { byDoi: new Map([[STRANGER.doi, oaWork(STRANGER)]]), byPmid: new Map() };
     orgAnswer = holds(STRANGER.pmid);
     hooks.registerPro(stub);
 
-    const [answer] = await have.checkHoldings([STRANGER.doi], { lookUpFree: true });
+    const [answer] = await have.checkHoldings([STRANGER.doi], { lookUpIdentifiers: true });
 
     // The first pass had nothing to ask; the second asks about the PMID
     // OpenAlex just supplied.
@@ -342,7 +350,7 @@ describe("a DOI the library has never seen", () => {
     };
     hooks.registerPro(stub);
 
-    const [answer] = await have.checkHoldings([STRANGER.doi], { lookUpFree: true });
+    const [answer] = await have.checkHoldings([STRANGER.doi], { lookUpIdentifiers: true });
     expect(answer.orgChecked).toBe(false);
     expect(answer.org).toBeNull();
   });
@@ -354,7 +362,7 @@ describe("a DOI the library has never seen", () => {
     orgAnswer = holds();
     hooks.registerPro(stub);
 
-    await have.checkHoldings([OWNED.doi], { lookUpFree: true });
+    await have.checkHoldings([OWNED.doi], { lookUpIdentifiers: true });
     expect(asked).toEqual([[OWNED.pmid]]);
   });
 });

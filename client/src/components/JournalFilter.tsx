@@ -41,7 +41,7 @@ export function JournalFilter({
       <DropdownMenu.Root>
         <DropdownMenu.Trigger className="filter-trigger">
           <span className="filter-label">{label}</span>
-          <span className="ws-caret"><ChevronDown size={16} aria-hidden /></span>
+          <span className="picker-caret"><ChevronDown size={16} aria-hidden /></span>
         </DropdownMenu.Trigger>
 
         <DropdownMenu.Portal>

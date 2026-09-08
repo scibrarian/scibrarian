@@ -52,7 +52,7 @@ export function PaperViews({
    */
   knownEmpty?: boolean;
   access: PaperAccess;
-  // null in a workspace that doesn't bookmark (the Library) — see Bookmarking.
+  // null in a section that doesn't bookmark (the Library) — see Bookmarking.
   bookmarking: Bookmarking | null;
   // Papers left the collection on screen (see PapersTable). Only the table
   // offers it, so only the table is handed it. Named for the collection because

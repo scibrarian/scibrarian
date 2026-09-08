@@ -24,7 +24,7 @@ export function ArticleCard({
   // paper with none stored.
   abstract: string | undefined;
   opener: PaperOpener;
-  // null where the workspace doesn't bookmark, or for a viewer who can't write.
+  // null where the section doesn't bookmark, or for a viewer who can't write.
   bookmarking: Bookmarking | null;
   onError: (message: string) => void;
   // Naming a new folder belongs to the timeline, not the card: one prompt for
