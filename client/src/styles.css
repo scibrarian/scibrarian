@@ -201,34 +201,41 @@ body {
   color: var(--muted);
 }
 
+/* The brand mark, which is also the page-reload control (App.tsx explains why
+   reload lives here).
+
+   A plain image button: no border or fill of its own. Those are for the gear
+   and padlock at the far end of the header, which sit in a cluster; a box up
+   against the wordmark would read as attached to it, and the mark carries its
+   own colour. The hover is a faint panel tile behind the mark — enough to say
+   "this is a button" without the logo dimming or shifting. */
 .logo {
-  display: inline-flex;
-  align-items: center;
-  color: var(--accent);
-}
-
-/* Reload the page.
-
-   Borderless, where the gear and the padlock are boxed: those sit in a cluster
-   of controls at the far end of the header, and a bordered button up against
-   the wordmark reads as attached to it. Muted until hovered, so it annotates
-   the title rather than competing with it. */
-.reload-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  border-radius: 6px;
-  color: var(--muted);
+  border-radius: 8px;
+  padding: 3px;
+  /* Cancels the padding, so the hover tile has room without nudging the
+     wordmark along the row. */
+  margin: -3px;
   line-height: 1;
-  padding: 4px;
   cursor: pointer;
-  transition: color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease);
 }
 
-.reload-btn:hover {
-  color: var(--text);
+.logo:hover {
+  background: var(--panel);
+}
+
+.logo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.logo img {
+  display: block;
 }
 
 /* ---------- workspace switcher ---------- */

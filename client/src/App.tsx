@@ -27,13 +27,11 @@ import { Banner } from "./components/Banner";
 import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
 import { HaveCheck, HAVE_CHECK_TITLE } from "./components/HaveCheck";
 import {
-  Dna,
   Settings as SettingsIcon,
   Lock,
   LockOpen,
   FilePlus,
   Plus,
-  RotateCw,
   SearchCheck,
 } from "lucide-react";
 import { MAX_NAME_CHARS } from "../../shared/limits";
@@ -859,30 +857,36 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          <span className="logo"><Dna aria-hidden /></span>
-          <h1>Scibrarian</h1>
-          <span className="version">v{__APP_VERSION__}</span>
-          {/* A real page reload, not a refetch. What it is reached for is a view
-              in a state the app's own cache invalidation didn't fix, and asking
-              the same code that produced that state to repair it is the thing
-              that already didn't work.
+          {/* The logo doubles as the page reload — a real reload, not a
+              refetch. What it is reached for is a view in a state the app's own
+              cache invalidation didn't fix, and asking the same code that
+              produced that state to repair it is the thing that already didn't
+              work.
 
-              In the brand rather than beside the gear for two reasons. The
-              desktop build is a plain BrowserWindow with no address bar, so
+              On the logo rather than a button beside the gear for two reasons.
+              The desktop build is a plain BrowserWindow with no address bar, so
               there is no reload anywhere on screen and the accelerator is the
               only way out — for a window that looks like an app, not a browser
               tab, that is not a discoverable one. And the header's controls are
               stand-ins until the first load resolves, while this has to work
               during exactly that load: a first paint that never finishes is
-              what it is for. */}
+              what it is for.
+
+              The mark is /favicon.png, generated from electron/build/
+              icon-source.png — the one place the app's icon is defined (see
+              electron/generate-icons.mjs). alt is empty because the <h1> beside
+              it already names the app and the button is labelled for its
+              action. */}
           <button
-            className="reload-btn"
+            className="logo"
             onClick={() => window.location.reload()}
             aria-label="Refresh"
             title="Refresh"
           >
-            <RotateCw size={15} aria-hidden />
+            <img src="/favicon.png" alt="" width={24} height={24} />
           </button>
+          <h1>Scibrarian</h1>
+          <span className="version">v{__APP_VERSION__}</span>
           {/* Which separate library this window is looking at — desktop only,
               and it draws nothing anywhere else (see WorkspaceSwitcher).
 
