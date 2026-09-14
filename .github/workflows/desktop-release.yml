@@ -1,8 +1,23 @@
-name: Desktop release
+name: Desktop build
 
-# Builds the desktop installers for all three platforms, signed if the matching
-# repository secrets exist and unsigned if they don't — so this template works
-# as-is today and starts signing the moment you add secrets, with no edit here.
+# Builds the desktop installers for all three platforms and attaches them to the
+# run. It deliberately does NOT create a release, because this repository ships
+# no desktop downloads: the only build it can produce is the free one, and the
+# installers we distribute are Pro, published from pro/.github/workflows/
+# publish-pro-desktop.yml to scibrarian-desktop-releases.
+#
+# The reason is that the two tiers are indistinguishable once downloaded. appId,
+# productName and the artifact names are identical — only the packed feed differs
+# — so a free installer offered beside the Pro one is a download somebody gets
+# wrong once and then never notices: it auto-updates happily from this repo's
+# releases, forever, with no Pro module and no pairing.
+#
+# Still worth running: forks get their own $GITHUB_REPOSITORY and so their own
+# feed, and this is how they build installers. It is also the check that the
+# desktop build still compiles on all three platforms before a Pro release.
+#
+# Signed if the matching repository secrets exist and unsigned if they don't — so
+# it works as-is and starts signing the moment you add secrets, with no edit here.
 #
 # Separate from ci.yml on purpose. That workflow deliberately skips the electron
 # workspace because its postinstall pulls a ~350 MB Chromium; this one needs it,
@@ -19,15 +34,12 @@ name: Desktop release
 # The non-secret Azure account names go in electron/signing.config.cjs, or as
 # repository *variables* of the same name — see the Windows build step.
 
+# Dispatch only. A `v*` tag in this repository marks the source that a Pro
+# release was cut from — it is not a desktop release here, and firing three
+# ten-minute builds (one of them at the 10x macOS minute rate) to produce
+# artifacts nobody collects is the wrong default.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Attach the installers to a GitHub release"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -53,20 +65,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-
-      # electron-builder names every artifact from the root package.json, not
-      # from the tag. Catching the mismatch here beats finding
-      # `Scibrarian-Setup-0.5.0.exe` attached to a release called v0.6.0.
-      - name: Check the tag matches package.json
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          pkg=$(node -p "require('./package.json').version")
-          tag=${GITHUB_REF_NAME#v}
-          if [ "$pkg" != "$tag" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $pkg"
-            exit 1
-          fi
 
       # Full install, electron workspace included — that Chromium download is
       # the thing being packaged.
@@ -101,11 +99,12 @@ jobs:
       #
       # `--publish never` on all three, and not optional now that the packaging
       # config has a `publish` target. With it unset, electron-builder infers a
-      # policy: a tag push makes it "onTag" and it uploads to the release itself,
-      # in parallel with the release job below and around that job's refusal to
-      # overwrite a published release. `never` suppresses only the upload — the
-      # latest*.yml files auto-update needs are written either way, since they
-      # are generated from the publish *config* rather than the publish action.
+      # policy from the ref and can decide to upload to a GitHub release on its
+      # own — which is the one thing this workflow exists not to do. `never`
+      # suppresses only the upload: the latest*.yml files auto-update needs are
+      # written either way, since they are generated from the publish *config*
+      # rather than the publish action, and a fork cutting its own release from
+      # these artifacts needs them present.
       #
       # Both `--` are load-bearing, per DESKTOP.md § Architecture.
       - name: Build (Windows)
@@ -178,61 +177,3 @@ jobs:
             electron/dist/*.blockmap
             electron/dist/latest*.yml
           if-no-files-found: error
-
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      # On a tag push the tag is the name. On a manual run the ref is a branch,
-      # so fall back to the version the installers were actually stamped with —
-      # `gh release create` will create the tag at this commit.
-      - name: Work out the release tag
-        id: tag
-        run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "name=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-          fi
-
-      # `gh` is preinstalled on the runner, so this needs no third-party action.
-      # A draft, because installers are worth downloading and launching once
-      # before anyone else gets them. Re-running the workflow uploads into the
-      # existing draft rather than failing on a duplicate tag.
-      #
-      # Only into a *draft*, though. On a manual run the tag is derived from
-      # package.json, which still reads the last released version until the next
-      # release bumps it — so a dispatch from main resolves to a tag that has
-      # already shipped, and `--clobber` would replace installers people have
-      # downloaded with a fresh build from unmerged commits, under an unchanged
-      # version number. Nothing upstream catches it: the tag-vs-package.json
-      # check only runs on tag pushes.
-      - name: Draft the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.name }}
-        run: |
-          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
-            if [ "$draft" != "true" ]; then
-              echo "::error::$TAG is already published — refusing to overwrite its assets."
-              echo "Bump the version in package.json and tag again, or delete the release first."
-              exit 1
-            fi
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
-          else
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --draft \
-              --generate-notes \
-              --title "$TAG" \
-              artifacts/*
-          fi

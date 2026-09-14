@@ -18,7 +18,7 @@ no source checkout, no toolchain, no build. Tags:
 | Tag | Points at |
 |-----|-----------|
 | `latest` | the newest commit on `main` |
-| `0.5.0` | the current release — re-pushed as fixes land within that version |
+| `1.0.0` | the current release — re-pushed as fixes land within that version |
 | `sha-<commit>` | one exact build; never moves, so it's what you pin or roll back to |
 
 CI builds and pushes these on every green `main` commit (`linux/amd64` and

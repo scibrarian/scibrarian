@@ -276,12 +276,19 @@ AppImages are conventionally distributed unsigned. Nothing to configure.
 
 ### Releasing from CI
 
-`.github/workflows/desktop-release.yml` builds all three platforms on a `v*` tag
-push or a manual run, then drafts a GitHub release with the installers attached.
-It is a template in the same sense as everything above: it runs today and
-produces unsigned artifacts, and it starts signing once the secrets exist — no
-edit either way, because an unset secret arrives as an empty string and empty
-counts as unset.
+`.github/workflows/desktop-release.yml` builds all three platforms on a manual
+dispatch and attaches the installers to the run. **It does not create a release.**
+This repository ships no desktop downloads: the only build it can produce is the
+free one, and the installers we distribute are Pro — see § Auto-update for why
+offering both is a trap rather than a courtesy.
+
+What it is still for: forks, which get their own `$GITHUB_REPOSITORY` and so
+their own feed, build their installers here; and it is the check that the desktop
+build still compiles on all three platforms before a Pro release goes out. It is
+a template in the same sense as everything above: it runs today and produces
+unsigned artifacts, and it starts signing once the secrets exist — no edit either
+way, because an unset secret arrives as an empty string and empty counts as
+unset.
 
 | Secret | For |
 |---|---|
@@ -301,13 +308,12 @@ per runner — three of them — which has no business on the per-push path. And
 macOS build passes `--universal`, because `macos-latest` is arm64 and a default
 build there produces a dmg that silently will not run on any Intel Mac.
 
-The release is created as a **draft**: installers are worth downloading and
-launching once before anyone else gets them. Re-running the workflow uploads
-into that draft. Once the release is published the workflow refuses to touch it
-and fails instead — a manual run takes its tag from `package.json`, which still
-reads the last released version until the next bump, so without that guard a
-dispatch from `main` would replace shipped installers with a fresh build under
-an unchanged version number.
+A `v*` tag in this repository marks the source a Pro release was cut from. It
+does not trigger anything here — three ten-minute builds, one at the 10x macOS
+minute rate, producing artifacts nobody collects is the wrong default. Pass that
+tag as `publish-pro-desktop.yml`'s `public_ref` instead, so both halves of the
+Pro build come from one immutable commit rather than from wherever `main` had
+got to.
 
 ### Checking the result
 
@@ -349,9 +355,11 @@ electron-builder emit `latest*.yml` beside the installers and write
 neither file exists and `autoUpdater` has nothing to read.
 
 "This repository" is meant literally: in CI the account and repository name come
-from `$GITHUB_REPOSITORY`, which is where `desktop-release.yml` uploads. A fork's
-installers therefore follow the fork's own releases rather than this project's.
-Outside CI the variable is unset and the names fall back to `scibrarian`.
+from `$GITHUB_REPOSITORY`, the repository being built. A fork's installers
+therefore follow the fork's own releases rather than this project's — which is
+what makes `desktop-release.yml` worth keeping even though this project publishes
+nothing from it. Outside CI the variable is unset and the names fall back to
+`scibrarian`.
 
 **Pro builds follow a feed of their own**, `scibrarian/scibrarian-desktop-releases`
 — a public repository holding installers and no source. It has to be a separate
@@ -384,16 +392,26 @@ target is `["dmg", "zip"]` because Squirrel.Mac cannot apply a `.dmg`: the dmg i
 what a person installs from, the zip is what the updater fetches, and
 `latest-mac.yml` names the zip.
 
-**Nothing reaches users until you publish the draft.** The GitHub provider
-cannot see draft releases, so the draft `desktop-release.yml` creates is
-invisible to every installed copy until you publish it. That is the release
-step, and it is the same button that was already worth pressing deliberately.
+**The two tiers are indistinguishable once downloaded.** `appId`, `productName`
+and the artifact names are identical — only the packed feed differs. That is why
+this repository publishes no installers at all: a free `Scibrarian-1.0.0.dmg`
+offered beside the Pro one of the same name is a download somebody gets wrong
+once and then never notices, because it keeps updating happily from the free feed
+with no Pro module and no pairing. Nothing after the download can tell them
+apart, so the only place to prevent it is the download page.
+
+**Nothing reaches users until you publish the draft.** The GitHub provider cannot
+see draft releases, so the draft `publish-pro-desktop.yml` creates on
+`scibrarian-desktop-releases` is invisible to every installed copy until you
+publish it. That is the release step, and it is the same button that was already
+worth pressing deliberately.
 
 CI passes `--publish never` to all three builds. Without it electron-builder
-infers a policy from the tag and uploads the artifacts itself, alongside the
-release job and around that job's refusal to overwrite a published release. The
-`latest*.yml` files are written either way — they come from the publish *config*,
-not from the publish action.
+infers a policy from the ref and can upload to a GitHub release on its own, which
+is the one thing the build workflow exists not to do. The `latest*.yml` files are
+written either way — they come from the publish *config*, not from the publish
+action — and a fork cutting its own release from these artifacts needs them
+present.
 
 ## Gotchas
 
