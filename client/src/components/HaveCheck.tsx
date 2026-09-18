@@ -11,10 +11,11 @@ import { ModalShell } from "./Dialogs";
 // What this feature is called wherever it is named: the header button, that
 // button's loading stand-in (which is sized from this text, so a rename that
 // missed it would leave the stand-in holding the old width), and the modal's
-// own title. It has been renamed once already — see commit 88626cf.
-export const HAVE_CHECK_TITLE = "Check references";
+// own title. It has been renamed twice already, and the first of those took
+// two commits to land everywhere — see 6158ea5 and 1ec0983.
+export const HAVE_CHECK_TITLE = "Check holdings";
 
-// "Check references" — the check a writer is required to run before asking a
+// "Check holdings" — the check a writer is required to run before asking a
 // project manager to approve buying an article.
 //
 // It answers on identifiers only: a PMID, a DOI, or a PubMed link, alone on the

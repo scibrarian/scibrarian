@@ -910,7 +910,7 @@ export default function App() {
             // What's reserved is what the load is about to produce. The view
             // switch: `source` is null until then, but the load lands in the
             // first section that holds anything (see the effect above), so it
-            // appears for everyone past an empty app. "Check references" is
+            // appears for everyone past an empty app. "Check holdings" is
             // ungated and always does. The icon buttons are one or two — a
             // viewer's padlock, or an admin's gear beside the one that locks
             // again — and a stored token is what tells the two apart, which is
@@ -945,18 +945,27 @@ export default function App() {
                   viewers — the writers told to check before requesting a
                   purchase — who need it most.
 
-                  Named after its *input*, not its scope. "Do I have this?" read
-                  as a lookup, which is what the search box does, so the two
-                  looked like the same thing offered twice; since search can now
-                  answer an identifier and span every collection, that reading
-                  was actively wrong. What this does and search can't is take a
-                  list and answer it line by line. Deliberately not "search
-                  everything" — after the all-collections source that describes
-                  the search box too. */}
+                  Named for what it answers, in the word the rest of the app
+                  already uses: heldCount, "Held by {org}", agency holdings.
+                  Two earlier names failed. "Do I have this?" read as a lookup,
+                  which is what the search box does, so the two looked like the
+                  same thing offered twice; since search can now answer an
+                  identifier and span every collection, that reading was
+                  actively wrong. "Check references" then collided with the
+                  MedComms term of art, where reference checking means verifying
+                  claims against their sources — a different job entirely.
+
+                  "Check holdings" is also neutral on count, one identifier or
+                  forty, which "Check a reference list" was not. Rejected:
+                  "search everything" (after the all-collections source that
+                  describes the search box too), "Check ownership" (the org's
+                  copy is not yours, and ownership reads as rights), and
+                  "Accessibility check" (a11y, and it implies the open-access
+                  answer openalex.ts deliberately removed). */}
               <button
                 className={`have-btn ${checkingHave ? "active" : ""}`}
                 onClick={() => setCheckingHave(true)}
-                title="Check a reference list against the library — paste PMIDs, DOIs, PubMed links or citations, one per line"
+                title="Check whether these are already held — paste PMIDs, DOIs or PubMed links, one per line"
               >
                 <SearchCheck size={16} aria-hidden />
                 <span className="have-btn-label">{HAVE_CHECK_TITLE}</span>
