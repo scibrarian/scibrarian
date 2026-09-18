@@ -6,7 +6,7 @@
 // further so distance from the anchor paper is visible too. "cites" = what this
 // paper builds on; "citedBy" = what builds on it.
 //
-// These counts are surfaced as the "citation chain" and "reference chain", never
+// These counts are surfaced as the "citing chain" and "reference chain", never
 // as citations, because they differ from a paper's citationCount on two axes at
 // once: they are transitive rather than direct, and confined to this collection
 // rather than all of PubMed (citationCount is iCite's global tally, and edges

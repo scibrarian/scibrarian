@@ -513,9 +513,16 @@ export function CitationGraph({
             {focusTitle || "(untitled)"}
           </span>
           {focusPaths ? (
-            <span className="path-focus-counts">
+            // The two caveats the labels can't carry themselves, and which
+            // otherwise live only in paths.ts where no user will find them:
+            // these are transitive and collection-only, so neither number
+            // bounds the paper's real citation count in either direction.
+            <span
+              className="path-focus-counts"
+              title="Papers on a citation path through this one, at any depth and within this collection only"
+            >
               <i style={{ backgroundColor: citedByColor }} aria-hidden />
-              {focusPaths.citedBy} in citation chain
+              {focusPaths.citedBy} in citing chain
               <i style={{ backgroundColor: citesColor }} aria-hidden />
               {focusPaths.cites} in reference chain
             </span>
@@ -638,7 +645,7 @@ export function CitationGraph({
                 <div className="graph-legend">
                   <span>
                     <i style={{ backgroundColor: citedByColor }} aria-hidden />
-                    {highlight.citedBy} in citation chain
+                    {highlight.citedBy} in citing chain
                   </span>
                   <span>
                     <i style={{ backgroundColor: citesColor }} aria-hidden />
@@ -765,7 +772,7 @@ export function CitationGraph({
             disabled={!selectedPaths || selectedPaths.nodes.size <= 1}
             title={
               selectedPaths && selectedPaths.nodes.size > 1
-                ? `Show only the ${selectedPaths.nodes.size} papers in this collection on a citation path through this one: ${selectedPaths.citedBy} in its citation chain, ${selectedPaths.cites} in its reference chain`
+                ? `Show only the ${selectedPaths.nodes.size} papers in this collection on a citation path through this one: ${selectedPaths.citedBy} in its citing chain, ${selectedPaths.cites} in its reference chain`
                 : undefined
             }
           >
