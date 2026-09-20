@@ -196,6 +196,24 @@ export function formatAuthors(authors: string[], max: number): string {
   return authors.slice(0, max).join(", ") + ", et al.";
 }
 
+// A size for someone deciding whether it is worth reclaiming, so it is rounded
+// hard: what the reader wants from "34 MB" is the order of magnitude, and a
+// second decimal is noise between them and that. Binary units, because that is
+// what every file manager they might cross-check against reports.
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return plural(bytes, "byte");
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = bytes / 1024;
+  let unit = 0;
+  while (n >= 1024 && unit < units.length - 1) {
+    n /= 1024;
+    unit++;
+  }
+  // One decimal below ten, none above: "3.4 MB", but "512 MB" rather than
+  // "512.4 MB", where the tenth is both unhelpful and unstable between reads.
+  return `${n < 10 ? round1(n) : Math.round(n)} ${units[unit]}`;
+}
+
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

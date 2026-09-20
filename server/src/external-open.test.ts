@@ -1,0 +1,370 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+
+// Every entry point in external-open.ts refuses unless this is the desktop
+// build, so the tests are one. Set before openTempDb, which is what first pulls
+// config.ts in — it reads the environment once, at evaluation.
+process.env.SCIBRARIAN_DESKTOP = "1";
+
+// Handing a stored PDF to the machine's own viewer, which is the one place an
+// outside program writes into the library.
+//
+// A filesystem test rather than a unit test, because every way of getting this
+// wrong loses work silently. The copy is what the user reads and annotates for
+// an afternoon; the blob is what the library thinks it holds. If those two part
+// company without a check-in, the annotations are on disk, unreachable, and
+// nothing anywhere reports a problem.
+//
+// The three ways a save comes back are each their own test: the watch (the app
+// was running), the next checkout (it wasn't), and the startup sweep (it isn't
+// yet). They are separate code, and only the first is the easy case.
+
+let db: Db;
+let blobPath: (hash: string) => string;
+let checkOutForExternalOpen: (fileId: number) => Promise<string>;
+let collectPendingCheckins: () => Promise<void>;
+let checkoutCacheStats: () => { files: number; bytes: number };
+let clearCheckouts: () => Promise<{ files: number; bytes: number }>;
+let EXTERNAL_OPEN_DIR: string;
+
+let collection: number;
+
+/**
+ * A real one-page PDF, small enough to sit in a test and complete enough for
+ * pdfjs to read the text back out — which matters here, because a check-in
+ * re-indexes the document it has just stored, and a stub PDF would let that
+ * half of it pass while doing nothing.
+ */
+function minimalPdf(text: string): Buffer {
+  const stream = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET`;
+  const objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R " +
+      "/Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objs.forEach((body, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offsets) out += `${String(o).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
+const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * A stored paper: bytes in the blob store, a row pointing at them, indexed.
+ *
+ * The text defaults to the file name because the store is content-addressed and
+ * these fixtures must not collide — two papers with identical bytes are one
+ * blob and, inside a collection, one row, so a shared body would quietly hand
+ * two tests the same file id.
+ */
+function store(name: string, text = name): number {
+  const bytes = minimalPdf(text);
+  const hash = sha256(bytes);
+  fs.writeFileSync(blobPath(hash), bytes);
+  db.addCollectionFiles(collection, [{ hash, name }]);
+  db.savePdfText({ contentHash: hash, text, pages: 1, truncated: false });
+  const row = db.listCollectionFiles(collection).find((f) => f.content_hash === hash);
+  if (!row) throw new Error(`fixture ${name} collided with another`);
+  return row.id;
+}
+
+const hashOf = (fileId: number): string => db.getCollectionFile(fileId)!.content_hash;
+
+const indexedText = (fileId: number): string | undefined =>
+  (
+    db.db.prepare("SELECT text FROM pdf_text WHERE content_hash = ?").get(hashOf(fileId)) as
+      | { text: string }
+      | undefined
+  )?.text;
+
+const isIndexed = (hash: string): boolean =>
+  db.db.prepare("SELECT 1 FROM pdf_text WHERE content_hash = ?").get(hash) !== undefined;
+
+/** A copy placed the way a finished session left it: no watch armed over it. */
+function copyLeftBehind(fileId: number, name: string, bytes: Buffer, ageMs = 0): string {
+  const dir = path.join(EXTERNAL_OPEN_DIR, String(fileId));
+  fs.mkdirSync(dir, { recursive: true });
+  const copy = path.join(dir, name);
+  fs.writeFileSync(copy, bytes);
+  if (ageMs) {
+    const when = new Date(Date.now() - ageMs);
+    fs.utimesSync(copy, when, when);
+  }
+  return copy;
+}
+
+beforeAll(async () => {
+  db = await openTempDb("external-open");
+  // After openTempDb: these read BLOBS_DIR at evaluation and EXTERNAL_OPEN_DIR
+  // is derived from it, so none of them may be imported until the environment
+  // points at the temp directory.
+  ({ blobPath } = await import("./blobstore.js"));
+  ({ EXTERNAL_OPEN_DIR } = await import("./config.js"));
+  ({ checkOutForExternalOpen, collectPendingCheckins, checkoutCacheStats, clearCheckouts } =
+    await import("./external-open.js"));
+  collection = db.createCollection("Reading").id;
+});
+
+afterAll(async () => {
+  // Every checkout above armed a watch, and a watch outlives the suite that
+  // armed it: the next tick after this line would call getCollectionFile on a
+  // closed database, and the temp directory would be left for whatever file
+  // this worker picks up next. clearCheckouts is what releases both, and it
+  // touches the database, so it has to go first.
+  await clearCheckouts();
+  closeTempDb();
+});
+
+describe("checking a stored PDF out for the system viewer", () => {
+  it("hands over a copy under the paper's own name, never the blob", async () => {
+    const id = store("Smith 2021.pdf");
+    const copy = await checkOutForExternalOpen(id);
+
+    // The whole reason a copy exists: the blob is named by its digest, and the
+    // viewer's title bar, its recent-files list and any "save as" show that.
+    expect(path.basename(copy)).toBe("Smith 2021.pdf");
+    expect(copy).not.toBe(blobPath(hashOf(id)));
+    expect(fs.readFileSync(copy)).toEqual(fs.readFileSync(blobPath(hashOf(id))));
+  });
+
+  it("reuses the copy rather than writing it again", async () => {
+    const id = store("Reopened.pdf");
+    const first = await checkOutForExternalOpen(id);
+    // Backdated, because a second copyFile is exactly what would reset it.
+    const when = new Date(Date.now() - 60_000);
+    fs.utimesSync(first, when, when);
+    const stamp = fs.statSync(first).mtimeMs;
+
+    const second = await checkOutForExternalOpen(id);
+    expect(second).toBe(first);
+    expect(fs.statSync(second).mtimeMs).toBe(stamp);
+  });
+
+  it("makes a name the filesystem would refuse into one it takes", async () => {
+    // Separators, the characters Windows rejects outright, and the trailing dot
+    // it drops silently — which would leave us disagreeing with the OS about
+    // what the file we had just written is called.
+    const hostile = store('../../up: "40%"? .pdf', "hostile name");
+    const copy = await checkOutForExternalOpen(hostile);
+    expect(path.dirname(copy)).toBe(path.join(EXTERNAL_OPEN_DIR, String(hostile)));
+    expect(path.basename(copy)).toBe("up_ _40%__ .pdf");
+
+    // CON.pdf is still the console device as far as Windows is concerned, and
+    // a name with no extension is not something the OS can route to a viewer.
+    expect(path.basename(await checkOutForExternalOpen(store("CON.pdf", "reserved")))).toBe(
+      "_CON.pdf"
+    );
+    expect(path.basename(await checkOutForExternalOpen(store("no-extension", "bare")))).toBe(
+      "no-extension.pdf"
+    );
+
+    // The proof that the scrub was enough: the OS took all three.
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  it("keeps a name inside what a path component may be", async () => {
+    // 255 characters is the whole of a component on ext4, NTFS and APFS alike,
+    // before any of the directories above it are counted — and names do arrive
+    // at it: anything exported from a cloud drive is named after the share
+    // link. The reference folder in this repo has one at exactly 255.
+    const copy = await checkOutForExternalOpen(store(`${"A".repeat(300)}.pdf`, "a long name"));
+    expect(path.basename(copy).endsWith(".pdf")).toBe(true);
+    expect(Buffer.byteLength(path.basename(copy), "utf8")).toBeLessThanOrEqual(120);
+    expect(fs.existsSync(copy)).toBe(true); // the filesystem took it
+
+    // Budgeted in bytes, not characters, because ext4 counts bytes: 130
+    // accented characters is 264 of them, refused on Linux while fitting
+    // comfortably on the other two.
+    const accented = await checkOutForExternalOpen(store(`${"é".repeat(200)}.pdf`, "accented"));
+    const base = path.basename(accented);
+    expect(Buffer.byteLength(base, "utf8")).toBeLessThanOrEqual(120);
+    expect(base).not.toContain("\uFFFD"); // and never cut through a character
+    expect(fs.existsSync(accented)).toBe(true);
+  });
+
+  it("is not fooled by a file the viewer left beside the copy", async () => {
+    const id = store("Beside a sidecar.pdf", "the paper itself");
+    const before = hashOf(id);
+    const copy = await checkOutForExternalOpen(id);
+    // Viewers write lock and temp files into the directory they are saving in,
+    // and Finder leaves a .DS_Store, which sorts ahead of the copy besides.
+    // Taken for the copy, this is handed to the OS as the paper — and hashes
+    // differently from the row, so the reuse path stores it as the paper too.
+    fs.writeFileSync(path.join(path.dirname(copy), ".DS_Store"), "not a pdf at all");
+
+    expect(await checkOutForExternalOpen(id)).toBe(copy);
+    expect(hashOf(id)).toBe(before);
+    expect(fs.existsSync(blobPath(before))).toBe(true);
+    expect(indexedText(id)).toContain("the paper itself");
+  });
+
+  it("refuses a file whose blob has gone", async () => {
+    const id = store("Orphaned.pdf");
+    fs.unlinkSync(blobPath(hashOf(id)));
+    await expect(checkOutForExternalOpen(id)).rejects.toThrow(/no longer stored/);
+  });
+});
+
+describe("taking back what the viewer saved", () => {
+  it("collects a save while the app is running", async () => {
+    const id = store("Annotated.pdf", "before highlighting");
+    const before = hashOf(id);
+    const copy = await checkOutForExternalOpen(id);
+
+    fs.writeFileSync(copy, minimalPdf("after highlighting"));
+    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), { timeout: 10_000, interval: 50 });
+
+    expect(fs.existsSync(blobPath(hashOf(id)))).toBe(true);
+    expect(indexedText(id)).toContain("after highlighting");
+    // The bytes the row used to name are referenced by nothing now, and the
+    // text extracted from them would otherwise keep answering searches.
+    expect(fs.existsSync(blobPath(before))).toBe(false);
+    expect(isIndexed(before)).toBe(false);
+  });
+
+  it("leaves a save still in progress alone", async () => {
+    const id = store("Halfway.pdf");
+    const before = hashOf(id);
+    const copy = await checkOutForExternalOpen(id);
+
+    // A PDF header and no end marker: what a viewer part way through writing
+    // one looks like. Storing this would replace the paper with a fragment.
+    fs.writeFileSync(copy, "%PDF-1.4\nnot finished yet");
+    // Long enough for the stat poll to have seen it more than once.
+    await new Promise((r) => setTimeout(r, 5_000));
+    expect(hashOf(id)).toBe(before);
+    // Past vitest's default: this one has to outlast the poll to mean anything.
+  }, 15_000);
+
+  it("collects a save the app was not running for, at the next open", async () => {
+    const id = store("Offline.pdf", "before the quit");
+    const before = hashOf(id);
+    // No watch was ever armed over this one — the session that opened it is
+    // gone, which is what every quit with a PDF still open leaves behind.
+    copyLeftBehind(id, "Offline.pdf", minimalPdf("saved after the app quit"));
+
+    const copy = await checkOutForExternalOpen(id);
+    expect(hashOf(id)).not.toBe(before);
+    expect(indexedText(id)).toContain("saved after the app quit");
+    // And the viewer is pointed back at the file holding those bytes, rather
+    // than at a fresh copy of the blob they have just replaced.
+    expect(fs.readFileSync(copy).toString("latin1")).toContain("saved after the app quit");
+  });
+
+  it("does not write a half-finished save over the paper at the next open", async () => {
+    const id = store("Quit mid-save.pdf", "the whole paper");
+    const before = hashOf(id);
+    // A header and no end marker: what quitting part way through a save leaves
+    // behind. Its hash differs from the row's, which was the whole of what this
+    // path asked before storing it over the paper and collecting the blob.
+    const copy = copyLeftBehind(id, "Quit mid-save.pdf", Buffer.from("%PDF-1.4\nnever finished"));
+
+    await checkOutForExternalOpen(id);
+
+    expect(hashOf(id)).toBe(before);
+    expect(fs.existsSync(blobPath(before))).toBe(true);
+    expect(indexedText(id)).toContain("the whole paper");
+    // Left alone rather than quietly dropped: the reader clears the cache.
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+});
+
+describe("collecting at startup", () => {
+  it("takes a save the process was not running for", async () => {
+    const id = store("Recovered.pdf", "before the crash");
+    const before = hashOf(id);
+    const copy = copyLeftBehind(id, "Recovered.pdf", minimalPdf("recovered"));
+
+    await collectPendingCheckins();
+
+    expect(hashOf(id)).not.toBe(before);
+    expect(indexedText(id)).toContain("recovered");
+    // Collected, never deleted. What is on disk is now what the library holds,
+    // and it stays there until the reader says otherwise.
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  it("leaves a copy that has nothing to give exactly where it is", async () => {
+    const id = store("Untouched.pdf");
+    const copy = copyLeftBehind(id, "Untouched.pdf", minimalPdf("Untouched.pdf"), 400 * 86_400_000);
+
+    await collectPendingCheckins();
+
+    // Over a year old and identical to the library, which under the old sweep
+    // was every reason to drop it. Nothing here deletes on age any more.
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  it("does not store a truncated copy over the paper", async () => {
+    const id = store("Truncated.pdf");
+    const before = hashOf(id);
+    const dir = path.join(EXTERNAL_OPEN_DIR, String(id));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "Truncated.pdf"), "%PDF-1.4\nnever finished");
+
+    await collectPendingCheckins();
+
+    expect(hashOf(id)).toBe(before);
+  });
+});
+
+describe("the cache the reader controls", () => {
+  it("reports what it is holding", async () => {
+    await clearCheckouts();
+    expect(checkoutCacheStats()).toEqual({ files: 0, bytes: 0 });
+
+    const first = await checkOutForExternalOpen(store("Counted one.pdf"));
+    await checkOutForExternalOpen(store("Counted two.pdf"));
+
+    const stats = checkoutCacheStats();
+    expect(stats.files).toBe(2);
+    expect(stats.bytes).toBe(fs.statSync(first).size * 2); // same fixture size
+  });
+
+  it("collects before it clears, so the button cannot lose an annotation", async () => {
+    const id = store("Annotated then cleared.pdf", "before");
+    const before = hashOf(id);
+    const copy = await checkOutForExternalOpen(id);
+    // Saved and cleared in the same breath — faster than the poll behind the
+    // copy, which is the window this ordering exists to close.
+    fs.writeFileSync(copy, minimalPdf("highlighted, then cleared"));
+
+    const freed = await clearCheckouts();
+
+    expect(hashOf(id)).not.toBe(before);
+    expect(indexedText(id)).toContain("highlighted, then cleared");
+    expect(freed.files).toBeGreaterThan(0);
+    expect(fs.existsSync(EXTERNAL_OPEN_DIR)).toBe(false);
+  });
+
+  it("leaves the library able to open the paper again afterwards", async () => {
+    const id = store("Reopened after clearing.pdf");
+    await checkOutForExternalOpen(id);
+    await clearCheckouts();
+
+    // The watch went with the file it was watching; if it had not, this
+    // checkout would decline to arm a fresh one and the next save would be
+    // collected by nothing at all.
+    const again = await checkOutForExternalOpen(id);
+    expect(fs.existsSync(again)).toBe(true);
+
+    const before = hashOf(id);
+    fs.writeFileSync(again, minimalPdf("annotated after a clear"));
+    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), { timeout: 10_000, interval: 50 });
+    expect(indexedText(id)).toContain("annotated after a clear");
+  });
+});

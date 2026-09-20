@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Search, Share2, Check, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { describeResetDone, errorMessage, round1 } from "../lib/format";
+import { describeResetDone, errorMessage, formatBytes, plural, round1 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
@@ -11,6 +11,7 @@ import { Typeahead } from "./Typeahead";
 import { ProPanel } from "./ProPanel";
 import type {
   AppSettings,
+  CacheStats,
   Topic,
   Journal,
   MeshSearchResult,
@@ -116,6 +117,19 @@ export function Settings({
     kind: "info" | "error";
     message: string;
   } | null>(null);
+  // The desktop viewer cache. Null until the fetch lands, and on a server build
+  // it stays null for good — the section is drawn on settings.desktop, and the
+  // route 404s anywhere else.
+  const [cache, setCache] = useState<CacheStats | null>(null);
+  const [clearingCache, setClearingCache] = useState(false);
+  // Reported in this panel rather than through savedMsg or the shell's notice,
+  // for the reason resetResult is: both of those draw far from the button that
+  // caused them — savedMsg under the Polling heading, three panels up — and a
+  // result the reader never sees reads as a click that did nothing.
+  const [cacheResult, setCacheResult] = useState<{
+    kind: "info" | "error";
+    message: string;
+  } | null>(null);
 
   function reload() {
     Promise.all([
@@ -144,6 +158,14 @@ export function Settings({
   }
 
   useEffect(reload, []);
+
+  // Once the settings say this is the desktop build, and not before: the route
+  // 404s everywhere else, and asking anyway would put a failed request in the
+  // console of every server deployment on every visit to this page.
+  useEffect(() => {
+    if (settings?.desktop === true) reloadCache();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.desktop]);
 
   // `name` is a MeSH heading — picked from the autocomplete, or typed and
   // submitted (the server validates it and rejects anything that isn't a real
@@ -189,6 +211,37 @@ export function Settings({
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
+    }
+  }
+
+  // Its own fetch rather than a member of reload()'s Promise.all: that one
+  // runs on every deployment, and this route is not there to answer on most of
+  // them. Called from the effect below once the settings say which build this
+  // is, and again after a clear.
+  function reloadCache() {
+    api
+      .cacheStats()
+      .then(setCache)
+      .catch(() => setCache(null)); // advisory; the section simply says nothing
+  }
+
+  async function clearCache() {
+    setCacheResult(null);
+    setClearingCache(true);
+    try {
+      const freed = await api.clearCache();
+      setCache({ files: 0, bytes: 0 });
+      setCacheResult({
+        kind: "info",
+        message:
+          freed.files === 0
+            ? "There was nothing cached."
+            : `Cleared ${plural(freed.files, "cached file")}, freeing ${formatBytes(freed.bytes)}.`,
+      });
+    } catch (err) {
+      setCacheResult({ kind: "error", message: errorMessage(err) });
+    } finally {
+      setClearingCache(false);
     }
   }
 
@@ -599,6 +652,46 @@ export function Settings({
                 </label>
               </>
             ))}
+        </section>
+      )}
+
+      {/* Desktop only, and drawn on the flag rather than on whether the fetch
+          worked: a server build has no such cache, and a section that appeared
+          only when a request failed would be a section nobody could explain.
+          Above "Delete all data" because it is the harmless half of the same
+          errand — reclaiming disk — and the destructive control stays last. */}
+      {settings?.desktop === true && (
+        <section className="panel">
+          <h2>Cached copies</h2>
+          <p className="hint">
+            The cache allows anything you annotate and save to go back into the library.
+            If you clear the cache, you will have to reopen files before editing them again.
+            {cache !== null && cache.files > 0 && (
+              <> Currently {plural(cache.files, "file")}, {formatBytes(cache.bytes)}.</>
+            )}
+            {cache !== null && cache.files === 0 && <> Nothing is cached right now.</>}
+          </p>
+          <button
+            type="button"
+            className="accent-btn icon-btn"
+            onClick={clearCache}
+            disabled={!ready || clearingCache || cache === null || cache.files === 0}
+          >
+            {clearingCache ? (
+              <span className="btn-spinner" aria-hidden="true" />
+            ) : (
+              <Trash2 size={12} aria-hidden />
+            )}
+            {clearingCache ? "Clearing…" : "Clear cached copies"}
+          </button>
+          {/* After the button, like the reset's report and for the same reason:
+              a message inserted above would push the control out from under the
+              pointer that just pressed it. */}
+          <Banner
+            kind={cacheResult?.kind ?? "info"}
+            message={cacheResult?.message ?? null}
+            onDismiss={() => setCacheResult(null)}
+          />
         </section>
       )}
 

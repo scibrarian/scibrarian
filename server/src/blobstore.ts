@@ -116,7 +116,9 @@ export function deleteBlobs(hashes: Iterable<string>): void {
   }
 }
 
-function sha256File(filePath: string): Promise<string> {
+// The digest a blob is named by. Exported for check-in (external-open.ts),
+// which has to arrive at the same one over a file it must not move into place.
+export function sha256File(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     fs.createReadStream(filePath)

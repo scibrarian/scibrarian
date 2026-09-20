@@ -446,6 +446,15 @@ export interface LibraryStats {
   files: number; // rows in collection_files, not distinct blobs
 }
 
+// What the desktop build's viewer cache holds. Copies of stored PDFs, made so
+// the machine's own PDF viewer has something under the paper's real name to
+// open — see server/src/external-open.ts. Always zeroes on a server build,
+// which has no such cache.
+export interface CacheStats {
+  files: number;
+  bytes: number;
+}
+
 export interface GraphNode {
   pmid: string;
   title: string;

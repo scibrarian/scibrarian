@@ -81,6 +81,7 @@ import {
   IS_DESKTOP,
   UPLOAD_TMP_DIR,
 } from "./config.js";
+import { checkoutCacheStats, clearCheckouts } from "./external-open.js";
 import { splitRefs } from "./citation-ref.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
@@ -1488,6 +1489,32 @@ function bodyName(body: unknown): string | null {
 // Sends its own 404 and returns true when this build has no workspaces. A 404
 // rather than a 403: the routes genuinely do not exist off the desktop, and
 // saying so is both true and the same answer an older client would get.
+// The desktop build's viewer cache: what it holds, and emptying it. Both 404
+// off the desktop for the same reason workspaces do — there is no cache on a
+// server build, because a browser renders a PDF rather than being handed a file
+// to open. external-open.ts refuses there too; this is the outer of the two.
+//
+// Read is admin-only rather than open: the file count is a reading history,
+// and on a shared instance that is the owner's, not every viewer's.
+api.get("/cache", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
+  if (!IS_DESKTOP) {
+    return res.status(404).json({ error: "The viewer cache only exists in the desktop app." });
+  }
+  res.json(checkoutCacheStats());
+});
+
+// POST, so no bare URL can empty it. Admin comes from the mutation gate.
+api.post(
+  "/cache/clear",
+  asyncHandler(async (_req, res) => {
+    if (!IS_DESKTOP) {
+      return res.status(404).json({ error: "The viewer cache only exists in the desktop app." });
+    }
+    res.json(await clearCheckouts());
+  })
+);
+
 function noWorkspaces(res: Response): boolean {
   if (workspacesEnabled()) return false;
   res.status(404).json({ error: "Workspaces are only available in the desktop app." });

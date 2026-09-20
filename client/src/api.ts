@@ -4,6 +4,7 @@ import type {
   AuthStatus,
   BookmarkEntry,
   BookmarkFolder,
+  CacheStats,
   Collection,
   CollectionFile,
   CollectionFilesResponse,
@@ -310,6 +311,18 @@ export const api = {
 
   // Irreversible. Answers with what it deleted.
   resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),
+
+  // ---------- viewer cache (desktop only) ----------
+  //
+  // Copies of stored PDFs, made so the machine's own viewer has a file under
+  // the paper's real name to open. Both 404 off the desktop, where no such
+  // cache exists — so the Settings section that reads them is drawn only when
+  // the build says it is the desktop one, rather than on a failed fetch.
+  //
+  // Clearing collects anything a viewer saved first, so the button cannot be
+  // the thing that loses an annotation. It answers with what it freed.
+  cacheStats: () => req<CacheStats>("/api/cache"),
+  clearCache: () => req<CacheStats>("/api/cache/clear", { method: "POST" }),
 
   // ---------- workspaces (desktop only) ----------
   //
