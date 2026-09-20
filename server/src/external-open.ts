@@ -66,12 +66,23 @@ const COW = fs.constants.COPYFILE_FICLONE;
 // isWholePdf. This is how much of the tail the end marker has to appear in.
 const EOF_WINDOW = 2048;
 
-// Windows refuses these in a filename outright, and refuses one whose base is a
-// reserved device besides — CON.pdf is still CON. safeFileName is about zip
-// entry names and header values and lets all of them through, so a checked-out
-// copy, which is a real file in a real directory the user can see, needs more.
+// Windows refuses these in a filename outright, and refuses one that names a
+// reserved device besides. safeFileName is about zip entry names and header
+// values and lets all of them through, so a checked-out copy, which is a real
+// file in a real directory the user can see, needs more.
+//
+// What Win32 reads as the device is everything up to the FIRST dot, with
+// trailing spaces dropped — not the name with its extension taken off. So
+// CON.pdf is CON, and so is "Aux. material.pdf", which is what makes this worth
+// spelling out: supplementary material is named that way all the time, and
+// testing the whole base let it through to a copyFile that could only fail.
 const ILLEGAL = /[<>:"|?*]/g;
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/** Whether Win32 would route a file of this name to a device instead. */
+function namesADevice(base: string): boolean {
+  return RESERVED.test(base.split(".")[0].trimEnd());
+}
 
 // What one path component may be: 255 bytes on ext4, 255 UTF-16 units on NTFS
 // and APFS. Windows caps the whole path at 260 on top of that, and a checkout
@@ -106,7 +117,9 @@ function openableName(fileName: string, fileId: number): string {
     .replace(/[. ]+$/, "")
     .replace(/\.pdf$/i, ""); // put back below, so the budget can never eat it
   const base = withinBudget(scrubbed, NAME_BUDGET - ".pdf".length) || fallback;
-  return RESERVED.test(base) ? `_${base}.pdf` : `${base}.pdf`;
+  // The underscore goes in front, where it breaks the device name rather than
+  // sitting behind a dot that Win32 never reads that far to find.
+  return namesADevice(base) ? `_${base}.pdf` : `${base}.pdf`;
 }
 
 /**
@@ -177,9 +190,10 @@ export async function checkOutForExternalOpen(fileId: number): Promise<string> {
   return copy;
 }
 
-// One watcher per checked-out file. Opening the same paper twice is the
-// ordinary case — it is still open from an hour ago — and must not arm a
-// second one.
+// One watcher per checked-out file, and the path it is watching. Opening the
+// same paper twice is the ordinary case — it is still open from an hour ago —
+// and must not arm a second one; the path is what says whether the one already
+// armed is still pointed at the file this checkout is handing over.
 const watches = new Map<number, string>();
 
 /**
@@ -191,12 +205,26 @@ const watches = new Map<number, string>();
  * already inside a watched directory is an event at all. Some viewers save
  * exactly that way, others write a temp file and rename it over the original,
  * and a watch that misses either one fails silently and loses the work. A stat
- * sees both, identically, on all three systems. What it costs is one stat every
- * POLL_MS per paper actually open, and a save noticed a couple of seconds late
- * — which is no different to anyone, since nothing is waiting on it.
+ * sees both, identically, on all three systems, and a save noticed a couple of
+ * seconds late is no different to anyone, since nothing is waiting on it.
+ *
+ * What it costs is one stat every POLL_MS for every paper opened since the app
+ * started — not per paper still open, which is what this used to claim. Nothing
+ * here can see a viewer close a document, and that is the same reason nothing
+ * deletes a copy on a timer: the watch lives until the copy goes or the process
+ * does. Twenty papers in a working day is twenty stats every two seconds, which
+ * is not a cost worth engineering around, and the alternative — guessing that a
+ * paper has been closed — is the guess that loses work.
+ *
+ * Re-armed when the path changes rather than skipped on the file id alone. A
+ * copy can be replaced at a different name — the reader renames it in Finder,
+ * removes it and reopens the paper — and a watch left on the old path is then
+ * polling nothing while the new copy's saves are collected by no one.
  */
 function watchForSaves(fileId: number, copy: string): void {
-  if (watches.has(fileId)) return;
+  const watched = watches.get(fileId);
+  if (watched === copy) return; // still open from an hour ago: the ordinary case
+  if (watched !== undefined) stopWatching(fileId);
   const watcher = fs.watchFile(copy, { interval: POLL_MS }, (now, before) => {
     // A zeroed stat is the file having gone: cleared, or deleted by hand.
     if (now.mtimeMs === 0) return stopWatching(fileId);

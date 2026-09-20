@@ -203,7 +203,29 @@ describe("checking a stored PDF out for the system viewer", () => {
       "no-extension.pdf"
     );
 
-    // The proof that the scrub was enough: the OS took all three.
+    // Win32 reads the device as everything up to the *first* dot, so these are
+    // AUX and CON too — and "Aux. material.pdf" is how supplementary material
+    // gets named all the time. Testing the whole base let both through to a
+    // copyFile on Windows that could only ever fail, leaving the reader with
+    // "Scibrarian could not open that PDF" and nothing to do about it.
+    expect(path.basename(await checkOutForExternalOpen(store("Aux. material.pdf", "aux dot")))).toBe(
+      "_Aux. material.pdf"
+    );
+    expect(path.basename(await checkOutForExternalOpen(store("CON.supp.pdf", "con dot")))).toBe(
+      "_CON.supp.pdf"
+    );
+    // Trailing spaces are dropped by Win32 before it looks, so this is AUX as
+    // well — and the scrub's own trailing-space strip does not reach it, being
+    // anchored to the end of the whole name rather than the first segment.
+    expect(path.basename(await checkOutForExternalOpen(store("AUX .notes.pdf", "aux space")))).toBe(
+      "_AUX .notes.pdf"
+    );
+    // Not a device: the segment merely starts with one.
+    expect(path.basename(await checkOutForExternalOpen(store("Auxiliary.pdf", "not aux")))).toBe(
+      "Auxiliary.pdf"
+    );
+
+    // The proof that the scrub was enough: the OS took all of them.
     expect(fs.existsSync(copy)).toBe(true);
   });
 
@@ -281,6 +303,26 @@ describe("taking back what the viewer saved", () => {
     dropFragment(copy);
     // Past vitest's default: this one has to outlast the poll to mean anything.
   }, 15_000);
+
+  it("follows the copy when it comes back under a different name", async () => {
+    const id = store("Renamed by the reader.pdf", "before the rename");
+    const before = hashOf(id);
+    const first = await checkOutForExternalOpen(id);
+    // The reader renames the copy in Finder, or removes it and reopens the
+    // paper. The next checkout hands back whatever is in the directory, so the
+    // path this file is watched at and the path the viewer has are now two
+    // different things — and the watch was armed on the file id alone, so it
+    // stayed on the old one and the new copy's saves were collected by nobody.
+    const renamed = path.join(path.dirname(first), "Renamed by the reader (1).pdf");
+    fs.renameSync(first, renamed);
+
+    const again = await checkOutForExternalOpen(id);
+    expect(again).toBe(renamed);
+
+    fs.writeFileSync(renamed, minimalPdf("saved under the new name"));
+    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), { timeout: 10_000, interval: 50 });
+    expect(indexedText(id)).toContain("saved under the new name");
+  });
 
   it("collects a save the app was not running for, at the next open", async () => {
     const id = store("Offline.pdf", "before the quit");
