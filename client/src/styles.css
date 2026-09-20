@@ -1149,6 +1149,13 @@ body {
   margin: 0 0 12px;
 }
 
+/* A hint the reader may have to act on. Muted is right for "here is how this
+   works" and wrong for "something of yours is not where you think it is", so
+   this keeps the size and takes the warning colour. */
+.hint.warn {
+  color: var(--warn);
+}
+
 .inline-form {
   display: flex;
   gap: 8px;

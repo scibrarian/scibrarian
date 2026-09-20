@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { EXTERNAL_OPEN_DIR, IS_DESKTOP, UPLOAD_TMP_DIR } from "./config.js";
@@ -9,7 +10,7 @@ import {
   sha256File,
   storeBlobFromTemp,
 } from "./blobstore.js";
-import { getCollectionFile, repointFileBlob, savePdfText } from "./db.js";
+import { gcBlobsIfOrphaned, getCollectionFile, repointFileBlob, savePdfText } from "./db.js";
 import { extractPdf } from "./pdf-text.js";
 import type { CacheStats, ClearedCache } from "./types.js";
 import { errMessage } from "./util.js";
@@ -237,25 +238,97 @@ async function collect(fileId: number, copy: string): Promise<void> {
  * bad revision but the document: checkIn repoints the row, and the blob it
  * stops naming is collected the moment nothing references it.
  *
- * What it answers matters to one caller. Three of the four outcomes leave the
- * library holding the copy's bytes, or with no row to hold them for; the fourth
- * leaves those bytes existing on disk and nowhere else, which is what stops
- * clearCheckouts deleting them.
+ * What it answers matters to the clear. "collected", "unchanged" and
+ * "orphaned" all leave the library holding the copy's bytes or with no row to
+ * hold them for, so the copy is the library's to delete; "unfinished" and a
+ * thrown error leave those bytes on disk and nowhere else; "busy" means another
+ * caller is partway through deciding.
  */
-type Checkin = "collected" | "unchanged" | "orphaned" | "unfinished";
+type Checkin = "collected" | "unchanged" | "orphaned" | "unfinished" | "busy";
+
+// The check-ins in flight, so no two run for one file at once.
+//
+// Three callers reach this and none knows about the others. A PDF whose hash,
+// copy and text extraction take longer than POLL_MS lets the watch fire again
+// while the first attempt is still inside checkIn; a clear sweeps the same copy
+// from another direction; a checkout does it once more on reuse.
+//
+// What overlapping cost was not corruption — copyFile closes before it returns,
+// and storeBlobFromTemp settles concurrent identical writes itself, so the
+// store cannot end up holding bytes that disagree with their own digest. It was
+// a false alarm. Both attempts built the same temp path, so whichever renamed
+// it into the store first left the other hashing a path that had gone; the
+// loser threw ENOENT, which this module records as a copy whose changes are not
+// in the library and the panel reports to the reader — over a save that had
+// been taken perfectly. Duplicated pdfjs extraction was the smaller half.
+const collecting = new Set<number>();
+
+/**
+ * Copies whose changes the library does not have, and why: a save the viewer
+ * never finished, or a check-in that failed.
+ *
+ * Kept because nothing else would ever say so. A failed check-in was a
+ * console.warn and no more, in a packaged desktop app with no console to warn
+ * to — the reader annotated a paper, the viewer reported a successful save, and
+ * the library went on serving the old document with every search answering from
+ * the old text. The startup sweep does retry, so this is not lost work; it is
+ * work whose absence had no way of being noticed until the next launch.
+ *
+ * Written by the gate below, which is the one place that has just hashed the
+ * copy and therefore knows. That makes it exact for every copy this process has
+ * looked at, and the startup sweep looks at all of them.
+ */
+const unsaved = new Map<number, string>();
+
+/** How many copies are holding changes the library does not have. */
+export function unsavedCheckouts(): number {
+  // Reconciled against the disk rather than trusted on its own. A copy can go
+  // without anything here being told: the reader deletes it by hand, a delete
+  // sweep takes it as an orphan, a whole workspace directory goes. An
+  // outstanding note about a file that no longer exists would have the panel
+  // warning about changes nobody can act on and nothing can ever clear — and
+  // the note is only ever written for a file that had just been hashed, so
+  // disk is the authority here and this map is the cache.
+  for (const fileId of [...unsaved.keys()]) {
+    if (copiesIn(checkoutDir(fileId)).length === 0) unsaved.delete(fileId);
+  }
+  return unsaved.size;
+}
 
 async function checkInIfWhole(fileId: number, copy: string): Promise<Checkin> {
-  const file = getCollectionFile(fileId);
-  if (!file) return "orphaned"; // the row went with its collection; only a clear takes the copy
-  const hash = await sha256File(copy);
-  if (hash === file.content_hash) return "unchanged"; // opened and read, not edited
-  // A save the viewer is still in the middle of, or one it never finished.
-  // Deliberately no retry: a write on the way to a finished file moves the
-  // mtime, so the poll comes back on its own, and a file that stops halfway
-  // stays in the cache as the fragment it is until the reader clears it.
-  if (!(await isWholePdf(copy))) return "unfinished";
-  await checkIn(fileId, copy, hash);
-  return "collected";
+  if (collecting.has(fileId)) return "busy";
+  collecting.add(fileId);
+  try {
+    const file = getCollectionFile(fileId);
+    // The row went with its collection. Nothing can be saved into it now, so
+    // there is nothing outstanding either; a delete sweep takes the copy.
+    if (!file) return forget(fileId, "orphaned");
+    const hash = await sha256File(copy);
+    if (hash === file.content_hash) return forget(fileId, "unchanged"); // read, not edited
+    // A save the viewer is still in the middle of, or one it never finished.
+    // Deliberately no retry: a write on the way to a finished file moves the
+    // mtime, so the poll comes back on its own, and a file that stops halfway
+    // stays in the cache as the fragment it is until the reader clears it.
+    if (!(await isWholePdf(copy))) {
+      unsaved.set(fileId, "the viewer did not finish writing it");
+      return "unfinished";
+    }
+    await checkIn(fileId, copy, hash);
+    return forget(fileId, "collected");
+  } catch (err) {
+    // Recorded here rather than in the three callers' catch blocks, so that
+    // every way of reaching a check-in reports one the same way.
+    unsaved.set(fileId, errMessage(err));
+    throw err;
+  } finally {
+    collecting.delete(fileId);
+  }
+}
+
+/** Drop any outstanding note about this file, and answer with `outcome`. */
+function forget(fileId: number, outcome: Checkin): Checkin {
+  unsaved.delete(fileId);
+  return outcome;
 }
 
 /**
@@ -267,11 +340,29 @@ async function checkIn(fileId: number, copy: string, hash: string): Promise<void
   // Through a temp file, because storeBlobFromTemp renames what it is given
   // into the store — and what it would be given here is the file the viewer
   // still has open. In the upload directory so that rename stays same-volume.
+  //
+  // Named for this attempt and no other. It used to be named after the file id
+  // and the hash, which are the two things two concurrent check-ins of one save
+  // have in common, so both built the same path and whichever renamed it into
+  // the store first left the other's storeBlobFromTemp hashing a file that was
+  // no longer there — an ENOENT reported as a save that did not make it, over
+  // one that had. The guard above makes that pair unreachable; this is what
+  // keeps it harmless if it becomes reachable again, and it costs a uuid.
   await fs.promises.mkdir(UPLOAD_TMP_DIR, { recursive: true });
-  const tmp = path.join(UPLOAD_TMP_DIR, `checkin-${fileId}-${hash.slice(0, 16)}.pdf`);
+  const tmp = path.join(UPLOAD_TMP_DIR, `checkin-${fileId}-${randomUUID()}.pdf`);
   await fs.promises.copyFile(copy, tmp, COW);
   const { hash: stored } = await storeBlobFromTemp(tmp);
-  if (!repointFileBlob(fileId, stored)) return;
+  if (!repointFileBlob(fileId, stored)) {
+    // The bytes are in the store and nothing points at them. repointFileBlob
+    // refuses when the row has gone between the save and this line, or when
+    // another row in the same collection already holds these bytes — and in
+    // the first case nothing else will ever collect the blob, because every
+    // other path that orphans one does this itself. Ordered this way round on
+    // purpose: store first so a crash leaves an unreferenced blob rather than a
+    // row pointing at bytes that are not there.
+    gcBlobsIfOrphaned([stored]);
+    return;
+  }
 
   // The text index is keyed by content_hash, so the old extraction went with
   // the old blob and this row has none until the new one is parsed. Its own
@@ -403,7 +494,7 @@ export async function discardOrphanedCheckouts(): Promise<number> {
 
 /** What the cache is costing, for the reader deciding whether to clear it. */
 export function checkoutCacheStats(): CacheStats {
-  if (!IS_DESKTOP) return { files: 0, bytes: 0 };
+  if (!IS_DESKTOP) return { files: 0, bytes: 0, unsaved: 0 };
   let bytes = 0;
   const copies = everyCopy();
   for (const { copy } of copies) {
@@ -413,24 +504,31 @@ export function checkoutCacheStats(): CacheStats {
       /* removed between the listing and the stat */
     }
   }
-  return { files: copies.length, bytes };
+  return { files: copies.length, bytes, unsaved: unsavedCheckouts() };
 }
 
+/** What a clear should do with one copy once it has tried to check it in. */
+type Disposition = "delete" | "unsaved" | "blocked";
+
 /**
- * Whether this copy is the library's to delete: because the library has just
- * taken its bytes, because it already held them, or because the row they
- * belonged to is gone and nothing will ever want them again.
+ * Try to get the copy's bytes into the library, and say what that leaves.
  *
- * A throw answers no. A check-in fails on a full disk, on a file the viewer
- * still holds a lock on, on a database that would not take the write — and in
- * each of those the copy is the only place those bytes exist.
+ * "delete" means the library has them: just taken, already held, or belonging
+ * to a row that is gone and will never want them. "unsaved" means it does not
+ * and cannot — a save the viewer never finished, or a check-in that failed on a
+ * full disk, a locked file, a database that would not take the write. "blocked"
+ * is neither: another pass is inside the same check-in right now, so this one
+ * has no business deleting the file it is reading.
  */
-async function theLibrarysToDelete(fileId: number, copy: string): Promise<boolean> {
+async function dispositionOf(fileId: number, copy: string): Promise<Disposition> {
   try {
-    return (await checkInIfWhole(fileId, copy)) !== "unfinished";
+    const outcome = await checkInIfWhole(fileId, copy);
+    if (outcome === "unfinished") return "unsaved";
+    if (outcome === "busy") return "blocked";
+    return "delete";
   } catch (err) {
     console.warn(`[external-open] clearing file ${fileId}: ${errMessage(err)}`);
-    return false;
+    return "unsaved";
   }
 }
 
@@ -444,13 +542,16 @@ async function theLibrarysToDelete(fileId: number, copy: string): Promise<boolea
  * check-in has to fail — a full disk, a locked file, a save the viewer never
  * finished — leaves bytes that exist in the cache and nowhere else.
  *
- * So a copy that could not be taken stays where it is, and the count says how
- * many stayed. That leaves the reader holding a few megabytes they had asked to
- * reclaim, and they can ask again; the other way round there is nothing to ask.
+ * So a copy that could not be taken stays where it is, and it is counted apart
+ * from the copy that was merely impossible to unlink. Both leave the reader
+ * holding megabytes they had asked to reclaim, and they can ask again — but
+ * only one of them is news about their work, and saying "your changes are at
+ * risk" to someone who has simply left a paper open in a viewer is how you
+ * teach them to disregard the sentence on the day it is true.
  */
 export async function clearCheckouts(): Promise<ClearedCache> {
-  if (!IS_DESKTOP) return { files: 0, bytes: 0, kept: 0 };
-  const cleared: ClearedCache = { files: 0, bytes: 0, kept: 0 };
+  if (!IS_DESKTOP) return { files: 0, bytes: 0, unsaved: 0, blocked: 0 };
+  const cleared: ClearedCache = { files: 0, bytes: 0, unsaved: 0, blocked: 0 };
   for (const { fileId, dir } of checkoutDirs()) {
     let keptHere = 0;
     for (const copy of copiesIn(dir)) {
@@ -460,17 +561,24 @@ export async function clearCheckouts(): Promise<ClearedCache> {
       } catch {
         continue; // removed between the listing and the stat; nothing to do
       }
-      if (!(await theLibrarysToDelete(fileId, copy))) {
+      const disposition = await dispositionOf(fileId, copy);
+      if (disposition !== "delete") {
         keptHere++;
+        if (disposition === "unsaved") cleared.unsaved++;
+        else cleared.blocked++;
         continue;
       }
       try {
         await fs.promises.rm(copy, { force: true });
       } catch (err) {
-        // Still on disk, so still counted as kept: the reader is owed a number
-        // that matches what they would find if they went and looked.
+        // Still on disk, so still counted: the reader is owed a number that
+        // matches what they would find if they went and looked. Blocked rather
+        // than unsaved, because the branch above is what "delete" ruled out —
+        // the library has these bytes, and only the unlink failed. Windows
+        // refuses one for a file a viewer still has open, where POSIX allows it.
         console.warn(`[external-open] clearing file ${fileId}: ${errMessage(err)}`);
         keptHere++;
+        cleared.blocked++;
         continue;
       }
       // The poll goes with the file it was watching. Left armed it would stat a
@@ -484,14 +592,15 @@ export async function clearCheckouts(): Promise<ClearedCache> {
     // viewer's lock and temp files with it: copiesIn does not list those, and
     // they are not anyone's work.
     if (keptHere === 0) await fs.promises.rm(dir, { recursive: true, force: true });
-    cleared.kept += keptHere;
   }
   // And the root, so a library that has never had a checkout and one that has
   // just been cleared look the same on disk.
-  if (cleared.kept === 0) await fs.promises.rm(EXTERNAL_OPEN_DIR, { recursive: true, force: true });
+  const kept = cleared.unsaved + cleared.blocked;
+  if (kept === 0) await fs.promises.rm(EXTERNAL_OPEN_DIR, { recursive: true, force: true });
   console.log(
     `[external-open] cleared ${cleared.files} cached file(s), ${cleared.bytes} bytes` +
-      (cleared.kept > 0 ? `; kept ${cleared.kept} whose changes are not in the library` : "")
+      (cleared.unsaved > 0 ? `; kept ${cleared.unsaved} not in the library` : "") +
+      (cleared.blocked > 0 ? `; ${cleared.blocked} could not be removed` : "")
   );
   return cleared;
 }

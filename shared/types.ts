@@ -453,18 +453,30 @@ export interface LibraryStats {
 export interface CacheStats {
   files: number;
   bytes: number;
+  // How many of those copies hold changes the library does not have: a save the
+  // viewer never finished, or one whose check-in failed. Not a property of the
+  // cache's size, and the only thing here a reader may need to act on — the
+  // library is serving the older document for those papers, and every search
+  // over them answers from the older text.
+  unsaved: number;
 }
 
 // What emptying that cache actually did, which is not the same shape as reading
-// it: these numbers are what went rather than what is there, and `kept` has no
-// counterpart at all in a reading. A copy is kept when the library could not
-// take the bytes in it — a save the viewer never finished, or a check-in that
-// failed — so those bytes exist in that one place and nowhere else, and
-// deleting them is the one way this feature loses an afternoon's work.
+// it: these numbers are what went rather than what is there.
+//
+// Two ways a copy survives a clear, and they are not the same news. `unsaved`
+// is the one that matters: the library could not take the bytes in it, so those
+// bytes exist in that one place and nowhere else, and deleting them would lose
+// an afternoon's work. `blocked` is the copy the library has already read and
+// simply could not unlink — a viewer still holding the file open, which Windows
+// refuses a delete for where POSIX allows it. Reported apart because telling
+// someone their changes are at risk when they left a paper open is how you
+// teach them to ignore the message that is true.
 export interface ClearedCache {
   files: number; // copies deleted
   bytes: number; // what they were occupying
-  kept: number; // copies left behind, because their changes are not in the library
+  unsaved: number; // left behind: their changes are not in the library
+  blocked: number; // left behind: the library has their contents, the unlink failed
 }
 
 export interface GraphNode {

@@ -676,6 +676,23 @@ export function Settings({
             )}
             {cache !== null && cache.files === 0 && <> Nothing is cached right now.</>}
           </p>
+          {/* The one thing in this section a reader may have to act on, so it
+              is a warning rather than another clause of the hint above. A
+              check-in can fail — a full disk, a file the viewer still holds, a
+              save the viewer never finished — and until now that was a console
+              warning in an app with no console: the paper was annotated, the
+              viewer reported the save, and the library went on serving the
+              older document with every search answering from the older text.
+              Reopening the paper is what takes the changes, and the next launch
+              tries again on its own. */}
+          {cache !== null && cache.unsaved > 0 && (
+            <p className="hint warn">
+              {plural(cache.unsaved, "cached file")}{" "}
+              {cache.unsaved === 1 ? "holds" : "hold"} changes that are not in the library.
+              Scibrarian tries again when you reopen the paper and on every launch. Clearing the
+              cache is what would lose them.
+            </p>
+          )}
           <button
             type="button"
             className="accent-btn icon-btn"

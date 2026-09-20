@@ -144,20 +144,32 @@ export function describeResetDone(s: LibraryStats): string {
 /**
  * What emptying the viewer cache did — including what it deliberately did not.
  *
- * The kept count is the half that has to be said out loud. A copy stays behind
- * when the library could not take the changes in it, and a reader who asked for
- * the cache to be empty will otherwise find it is not, conclude the button is
- * broken, and delete the directory by hand. That is the one action here that
- * loses work, so the sentence has to reach them before they take it.
+ * What stayed behind has to be said out loud, or a reader who asked for the
+ * cache to be empty finds it is not, concludes the button is broken, and
+ * deletes the directory by hand — which is the one action here that loses work.
+ *
+ * `unsaved` and `blocked` get their own sentences because only the first is
+ * about their work. A copy the library has already read and merely could not
+ * unlink is an ordinary consequence of having a paper open, and telling someone
+ * their changes are at risk every time they leave one open is how the sentence
+ * stops being read by the time it matters.
  */
 export function describeCacheCleared(c: ClearedCache): string {
-  const cleared =
-    c.files > 0 ? `Cleared ${plural(c.files, "cached file")}, freeing ${formatBytes(c.bytes)}.` : "";
-  if (c.kept === 0) return cleared || "There was nothing cached.";
-  const kept =
-    `Kept ${plural(c.kept, "cached file")} holding changes the library could not take — ` +
-    "those changes exist nowhere else.";
-  return cleared === "" ? kept : `${cleared} ${kept}`;
+  const said: string[] = [];
+  if (c.files > 0) said.push(`Cleared ${plural(c.files, "cached file")}, freeing ${formatBytes(c.bytes)}.`);
+  if (c.unsaved > 0) {
+    said.push(
+      `Kept ${plural(c.unsaved, "cached file")} holding changes the library could not take — ` +
+        "those changes exist nowhere else."
+    );
+  }
+  if (c.blocked > 0) {
+    said.push(
+      `${plural(c.blocked, "cached file")} could not be removed, most likely still open in a ` +
+        "viewer. The library already has what is in them, so nothing is at risk."
+    );
+  }
+  return said.length === 0 ? "There was nothing cached." : said.join(" ");
 }
 
 /**

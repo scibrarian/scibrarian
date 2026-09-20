@@ -30,6 +30,7 @@ let collectPendingCheckins: () => Promise<void>;
 let checkoutCacheStats: () => CacheStats;
 let clearCheckouts: () => Promise<ClearedCache>;
 let EXTERNAL_OPEN_DIR: string;
+let UPLOAD_TMP_DIR: string;
 
 let collection: number;
 
@@ -120,13 +121,30 @@ function dropFragment(copy: string): void {
   fs.rmSync(copy, { force: true });
 }
 
+/**
+ * Empty the cache, and say so, for a test whose subject is what one sweep does
+ * to one copy.
+ *
+ * collectPendingCheckins walks every copy on disk. A test that leaves other
+ * copies in front of its own gets them collected first, which is enough to make
+ * two of the tests below pass for reasons that have nothing to do with what
+ * they are checking — a synchronous delete meant for the gap inside one
+ * check-in lands inside an earlier one instead, and two sweeps meant to overlap
+ * on one file reach it at different moments. Asserted rather than assumed,
+ * because that failure is invisible: both tests go green.
+ */
+async function onlyCopyInCache(): Promise<void> {
+  await clearCheckouts();
+  expect(checkoutCacheStats()).toEqual({ files: 0, bytes: 0, unsaved: 0 });
+}
+
 beforeAll(async () => {
   db = await openTempDb("external-open");
   // After openTempDb: these read BLOBS_DIR at evaluation and EXTERNAL_OPEN_DIR
   // is derived from it, so none of them may be imported until the environment
   // points at the temp directory.
   ({ blobPath } = await import("./blobstore.js"));
-  ({ EXTERNAL_OPEN_DIR } = await import("./config.js"));
+  ({ EXTERNAL_OPEN_DIR, UPLOAD_TMP_DIR } = await import("./config.js"));
   ({ checkOutForExternalOpen, collectPendingCheckins, checkoutCacheStats, clearCheckouts } =
     await import("./external-open.js"));
   collection = db.createCollection("Reading").id;
@@ -298,6 +316,102 @@ describe("taking back what the viewer saved", () => {
   });
 });
 
+describe("two check-ins for one file at once", () => {
+  // An invariant test, and not a test of the guard in checkInIfWhole — it
+  // passes with that guard and the per-attempt temp name both reverted, which
+  // was checked rather than assumed. The damage they prevent turns on whether
+  // both copyFile calls land before both of storeBlobFromTemp's hashes, and
+  // nothing here can pin that down: the benign interleaving, where the second
+  // pass rebuilds its temp after the first has renamed its own away, is just as
+  // likely and leaves no trace. What this does hold to is the end state, which
+  // is the thing a future change would break noisily.
+  it("leaves one save collected, indexed, and nothing reported outstanding", async () => {
+    // The sweep below walks the whole cache, so this one has to be the whole of
+    // it: with another copy ahead of this file in the listing, the two passes
+    // reach it at different times and overlap on nothing.
+    await onlyCopyInCache();
+    const id = store("Saved twice at once.pdf", "before the double save");
+    const before = hashOf(id);
+    const copy = await checkOutForExternalOpen(id);
+    fs.writeFileSync(copy, minimalPdf("saved once, collected once"));
+
+    // Both passes over the same copy, overlapping deliberately. Reachable in
+    // the app: the poll fires again while a large PDF's hash, copy and text
+    // extraction are still running, and a clear sweeps from another direction.
+    //
+    // Two of these used to share one temp path, named after the file id and the
+    // hash — which are exactly what two check-ins of one save have in common.
+    // Whichever renamed it into the store first left the other's
+    // storeBlobFromTemp hashing a path that was no longer there, so the loser
+    // threw ENOENT over a save that had in fact been taken perfectly. That is
+    // what the count below is about: a spurious "your changes are not in the
+    // library" is the same sentence as the true one, and teaches the reader to
+    // disbelieve it.
+    await Promise.all([collectPendingCheckins(), collectPendingCheckins()]);
+
+    const now = hashOf(id);
+    expect(now).not.toBe(before);
+    expect(indexedText(id)).toContain("saved once, collected once");
+    // The save went in, so nothing is outstanding — no false alarm from the
+    // pass that lost. What the guard is for, though not what proves it.
+    expect(checkoutCacheStats().unsaved).toBe(0);
+    // The blob's name is its digest. Not a race this code can lose — copyFile
+    // closes before it returns and the store handles concurrent identical
+    // writes itself — but the cheapest possible check that it has not started.
+    expect(sha256(fs.readFileSync(blobPath(now)))).toBe(now);
+    // Nothing left in the upload directory to be renamed into the store later.
+    expect(fs.readdirSync(UPLOAD_TMP_DIR).filter((n) => n.startsWith("checkin-"))).toEqual([]);
+  });
+});
+
+describe("when the paper goes while its save is being taken back", () => {
+  it("leaves no blob in the store that nothing points at", async () => {
+    // Same reason as the overlap test above: the delete below has to land in
+    // the gap inside *this* file's check-in, and it lands in whichever one the
+    // sweep happens to be inside when it runs.
+    await onlyCopyInCache();
+    const id = store("Deleted mid-checkin.pdf", "before the deletion");
+    const annotated = minimalPdf("annotated, and then the paper was deleted");
+    const orphan = sha256(annotated);
+    const copy = copyLeftBehind(id, "Deleted mid-checkin.pdf", annotated);
+
+    // The row is read synchronously, before the first await, so the sweep has
+    // already decided this file exists. Deleting it here lands during the hash,
+    // and repointFileBlob then refuses — there is nothing left to point — after
+    // storeBlobFromTemp has moved the bytes into the store. That order is
+    // deliberate, so a crash leaves an unreferenced blob rather than a row
+    // naming bytes that are not there; what it needs is for the unreferenced
+    // blob to be collected rather than left in the store forever.
+    const pending = collectPendingCheckins();
+    db.deleteCollectionFile(id);
+    await pending;
+
+    expect(db.getCollectionFile(id)).toBeUndefined();
+    expect(fs.existsSync(blobPath(orphan))).toBe(false);
+    expect(isIndexed(orphan)).toBe(false);
+    dropFragment(copy);
+  });
+
+  it("keeps a blob another row in the collection turns out to hold", async () => {
+    // The other way repointFileBlob refuses: a sibling row already holds these
+    // bytes, so the collection would end up with two rows on one hash. The blob
+    // is not an orphan — the sibling is pointing at it — and the cleanup above
+    // must not be what deletes a paper that is still in the library.
+    await onlyCopyInCache();
+    const shared = minimalPdf("the bytes both rows would hold");
+    const sibling = store("Already holds them.pdf", "the bytes both rows would hold");
+    const id = store("Saved into a clash.pdf", "something else to begin with");
+    const copy = copyLeftBehind(id, "Saved into a clash.pdf", shared);
+
+    await collectPendingCheckins();
+
+    expect(hashOf(sibling)).toBe(sha256(shared));
+    expect(fs.existsSync(blobPath(hashOf(sibling)))).toBe(true);
+    expect(indexedText(sibling)).toContain("the bytes both rows would hold");
+    dropFragment(copy);
+  });
+});
+
 describe("collecting at startup", () => {
   it("takes a save the process was not running for", async () => {
     const id = store("Recovered.pdf", "before the crash");
@@ -342,7 +456,7 @@ describe("collecting at startup", () => {
 describe("the cache the reader controls", () => {
   it("reports what it is holding", async () => {
     await clearCheckouts();
-    expect(checkoutCacheStats()).toEqual({ files: 0, bytes: 0 });
+    expect(checkoutCacheStats()).toEqual({ files: 0, bytes: 0, unsaved: 0 });
 
     const first = await checkOutForExternalOpen(store("Counted one.pdf"));
     await checkOutForExternalOpen(store("Counted two.pdf"));
@@ -350,6 +464,8 @@ describe("the cache the reader controls", () => {
     const stats = checkoutCacheStats();
     expect(stats.files).toBe(2);
     expect(stats.bytes).toBe(fs.statSync(first).size * 2); // same fixture size
+    // Opened and read, not edited: nothing is outstanding.
+    expect(stats.unsaved).toBe(0);
   });
 
   it("collects before it clears, so the button cannot lose an annotation", async () => {
@@ -386,7 +502,10 @@ describe("the cache the reader controls", () => {
     const cleared = await clearCheckouts();
 
     expect(fs.existsSync(fragment)).toBe(true);
-    expect(cleared.kept).toBe(1);
+    // Unsaved, not blocked: the distinction is the whole of what the reader is
+    // told, and a fragment is the case where their changes are the ones at risk.
+    expect(cleared.unsaved).toBe(1);
+    expect(cleared.blocked).toBe(0);
     expect(hashOf(unfinished)).toBe(before);
     // And the copy that had nothing to give went in the same pass: one file the
     // library cannot take does not hold the whole cache on disk.
@@ -394,6 +513,31 @@ describe("the cache the reader controls", () => {
     expect(cleared.files).toBe(1);
 
     dropFragment(fragment);
+  });
+
+  it("says how many copies are holding changes the library does not have", async () => {
+    await clearCheckouts();
+    expect(checkoutCacheStats().unsaved).toBe(0);
+
+    const id = store("Reported as unsaved.pdf");
+    const before = hashOf(id);
+    copyLeftBehind(id, "Reported as unsaved.pdf", Buffer.from("%PDF-1.4\nhalf a save"));
+    // The startup sweep is what looks at every copy, so it is what discovers
+    // this one — a failed check-in used to be a console warning and nothing a
+    // reader could ever see.
+    await collectPendingCheckins();
+
+    expect(checkoutCacheStats().unsaved).toBe(1);
+    expect(hashOf(id)).toBe(before);
+
+    // And it stops being outstanding the moment the bytes do get in. Saved over
+    // with a document that is whole this time, which the next sweep can take.
+    const copy = copyLeftBehind(id, "Reported as unsaved.pdf", minimalPdf("finished on the retry"));
+    await collectPendingCheckins();
+
+    expect(checkoutCacheStats().unsaved).toBe(0);
+    expect(indexedText(id)).toContain("finished on the retry");
+    dropFragment(copy);
   });
 
   it("leaves the library able to open the paper again afterwards", async () => {
