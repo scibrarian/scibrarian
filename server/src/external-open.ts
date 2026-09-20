@@ -362,6 +362,45 @@ export async function collectPendingCheckins(): Promise<void> {
   }
 }
 
+/**
+ * Take away the copies whose paper no longer exists.
+ *
+ * A checked-out copy belongs to one collection_files row. When that row goes —
+ * one file deleted, papers removed from a collection, a whole collection
+ * dropped — the copy is left behind as a plaintext PDF under the paper's own
+ * name that nothing will ever check in again, because there is nothing left to
+ * check it into. The delete unlinks the blob and cannot reach this: the store
+ * and the cache are different directories, and db.ts sits underneath this
+ * module rather than above it, so the sweep is called from the routes.
+ *
+ * By orphanhood rather than by a list of ids the caller captured before its
+ * delete. Nothing has to be remembered at the call site — which is what the
+ * blob dance inside deleteCollection is careful to avoid asking for — a
+ * deletion path added later is covered the day it is written, and copies
+ * stranded by an earlier version are taken by the next delete of any kind.
+ *
+ * An unfinished save is no reason to keep one here, unlike in clearCheckouts:
+ * the row it would have been checked into is the thing that just went.
+ */
+export async function discardOrphanedCheckouts(): Promise<number> {
+  if (!IS_DESKTOP) return 0;
+  let discarded = 0;
+  for (const { fileId, dir } of checkoutDirs()) {
+    if (getCollectionFile(fileId)) continue;
+    try {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    } catch (err) {
+      // Never thrown on: the rows are already gone, and a copy that could not
+      // be removed must not turn a delete that happened into a failed request.
+      console.warn(`[external-open] discarding copies of file ${fileId}: ${errMessage(err)}`);
+      continue;
+    }
+    stopWatching(fileId); // no-op when nothing was watching this one
+    discarded++;
+  }
+  return discarded;
+}
+
 /** What the cache is costing, for the reader deciding whether to clear it. */
 export function checkoutCacheStats(): CacheStats {
   if (!IS_DESKTOP) return { files: 0, bytes: 0 };
