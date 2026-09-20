@@ -5,6 +5,8 @@ export type {
   Article,
   BookmarkEntry,
   BookmarkFolder,
+  CacheStats,
+  ClearedCache,
   Collection,
   CollectionFile,
   CollectionFileStatus,

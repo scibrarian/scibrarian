@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import type { CacheStats, ClearedCache } from "./types.js";
 
 // Every entry point in external-open.ts refuses unless this is the desktop
 // build, so the tests are one. Set before openTempDb, which is what first pulls
@@ -26,8 +27,8 @@ let db: Db;
 let blobPath: (hash: string) => string;
 let checkOutForExternalOpen: (fileId: number) => Promise<string>;
 let collectPendingCheckins: () => Promise<void>;
-let checkoutCacheStats: () => { files: number; bytes: number };
-let clearCheckouts: () => Promise<{ files: number; bytes: number }>;
+let checkoutCacheStats: () => CacheStats;
+let clearCheckouts: () => Promise<ClearedCache>;
 let EXTERNAL_OPEN_DIR: string;
 
 let collection: number;
@@ -105,6 +106,18 @@ function copyLeftBehind(fileId: number, name: string, bytes: Buffer, ageMs = 0):
     fs.utimesSync(copy, when, when);
   }
   return copy;
+}
+
+/**
+ * Take away a half-finished save a test put there on purpose.
+ *
+ * clearCheckouts keeps what the library could not take — that is the whole
+ * point of it — so a fragment written by one test outlives every clear and is
+ * still being counted by the cache tests further down. Each test that makes one
+ * drops it again, rather than the suite depending on an order.
+ */
+function dropFragment(copy: string): void {
+  fs.rmSync(copy, { force: true });
 }
 
 beforeAll(async () => {
@@ -247,6 +260,7 @@ describe("taking back what the viewer saved", () => {
     // Long enough for the stat poll to have seen it more than once.
     await new Promise((r) => setTimeout(r, 5_000));
     expect(hashOf(id)).toBe(before);
+    dropFragment(copy);
     // Past vitest's default: this one has to outlast the poll to mean anything.
   }, 15_000);
 
@@ -278,8 +292,9 @@ describe("taking back what the viewer saved", () => {
     expect(hashOf(id)).toBe(before);
     expect(fs.existsSync(blobPath(before))).toBe(true);
     expect(indexedText(id)).toContain("the whole paper");
-    // Left alone rather than quietly dropped: the reader clears the cache.
+    // Left alone rather than quietly dropped.
     expect(fs.existsSync(copy)).toBe(true);
+    dropFragment(copy);
   });
 });
 
@@ -314,11 +329,13 @@ describe("collecting at startup", () => {
     const before = hashOf(id);
     const dir = path.join(EXTERNAL_OPEN_DIR, String(id));
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "Truncated.pdf"), "%PDF-1.4\nnever finished");
+    const copy = path.join(dir, "Truncated.pdf");
+    fs.writeFileSync(copy, "%PDF-1.4\nnever finished");
 
     await collectPendingCheckins();
 
     expect(hashOf(id)).toBe(before);
+    dropFragment(copy);
   });
 });
 
@@ -349,6 +366,34 @@ describe("the cache the reader controls", () => {
     expect(indexedText(id)).toContain("highlighted, then cleared");
     expect(freed.files).toBeGreaterThan(0);
     expect(fs.existsSync(EXTERNAL_OPEN_DIR)).toBe(false);
+  });
+
+  it("keeps a copy whose changes it could not take, and clears the rest", async () => {
+    await clearCheckouts();
+    const unfinished = store("Never finished saving.pdf");
+    const before = hashOf(unfinished);
+    // A save the viewer began and never completed. It is not a document the
+    // library can store — and it is also the only copy of whatever the reader
+    // did to that paper, so deleting it is the one thing this button must not
+    // do. The old pass logged it and removed the directory anyway.
+    const fragment = copyLeftBehind(
+      unfinished,
+      "Never finished saving.pdf",
+      Buffer.from("%PDF-1.4\nhalf a save")
+    );
+    const ordinary = await checkOutForExternalOpen(store("Nothing to keep.pdf"));
+
+    const cleared = await clearCheckouts();
+
+    expect(fs.existsSync(fragment)).toBe(true);
+    expect(cleared.kept).toBe(1);
+    expect(hashOf(unfinished)).toBe(before);
+    // And the copy that had nothing to give went in the same pass: one file the
+    // library cannot take does not hold the whole cache on disk.
+    expect(fs.existsSync(ordinary)).toBe(false);
+    expect(cleared.files).toBe(1);
+
+    dropFragment(fragment);
   });
 
   it("leaves the library able to open the paper again afterwards", async () => {

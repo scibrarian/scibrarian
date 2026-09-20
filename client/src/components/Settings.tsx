@@ -2,7 +2,14 @@ import { FormEvent, useEffect, useState } from "react";
 import { Search, Share2, Check, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { describeResetDone, errorMessage, formatBytes, plural, round1 } from "../lib/format";
+import {
+  describeCacheCleared,
+  describeResetDone,
+  errorMessage,
+  formatBytes,
+  plural,
+  round1,
+} from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
@@ -229,15 +236,13 @@ export function Settings({
     setCacheResult(null);
     setClearingCache(true);
     try {
-      const freed = await api.clearCache();
-      setCache({ files: 0, bytes: 0 });
-      setCacheResult({
-        kind: "info",
-        message:
-          freed.files === 0
-            ? "There was nothing cached."
-            : `Cleared ${plural(freed.files, "cached file")}, freeing ${formatBytes(freed.bytes)}.`,
-      });
+      const cleared = await api.clearCache();
+      // Re-read rather than assuming empty. A copy whose changes the library
+      // could not take is still there, and so are its bytes — writing zeroes in
+      // here would tell the reader the cache is empty while the section's own
+      // message says it is not.
+      reloadCache();
+      setCacheResult({ kind: "info", message: describeCacheCleared(cleared) });
     } catch (err) {
       setCacheResult({ kind: "error", message: errorMessage(err) });
     } finally {

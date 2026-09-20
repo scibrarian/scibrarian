@@ -455,6 +455,18 @@ export interface CacheStats {
   bytes: number;
 }
 
+// What emptying that cache actually did, which is not the same shape as reading
+// it: these numbers are what went rather than what is there, and `kept` has no
+// counterpart at all in a reading. A copy is kept when the library could not
+// take the bytes in it — a save the viewer never finished, or a check-in that
+// failed — so those bytes exist in that one place and nowhere else, and
+// deleting them is the one way this feature loses an afternoon's work.
+export interface ClearedCache {
+  files: number; // copies deleted
+  bytes: number; // what they were occupying
+  kept: number; // copies left behind, because their changes are not in the library
+}
+
 export interface GraphNode {
   pmid: string;
   title: string;

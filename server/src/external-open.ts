@@ -11,6 +11,7 @@ import {
 } from "./blobstore.js";
 import { getCollectionFile, repointFileBlob, savePdfText } from "./db.js";
 import { extractPdf } from "./pdf-text.js";
+import type { CacheStats, ClearedCache } from "./types.js";
 import { errMessage } from "./util.js";
 
 // Opening a stored PDF in whatever this machine already opens PDFs with, for
@@ -235,18 +236,26 @@ async function collect(fileId: number, copy: string): Promise<void> {
  * fragment that the next open wrote over the paper. What that costs is not a
  * bad revision but the document: checkIn repoints the row, and the blob it
  * stops naming is collected the moment nothing references it.
+ *
+ * What it answers matters to one caller. Three of the four outcomes leave the
+ * library holding the copy's bytes, or with no row to hold them for; the fourth
+ * leaves those bytes existing on disk and nowhere else, which is what stops
+ * clearCheckouts deleting them.
  */
-async function checkInIfWhole(fileId: number, copy: string): Promise<void> {
+type Checkin = "collected" | "unchanged" | "orphaned" | "unfinished";
+
+async function checkInIfWhole(fileId: number, copy: string): Promise<Checkin> {
   const file = getCollectionFile(fileId);
-  if (!file) return; // the row went with its collection; only a clear takes the copy
+  if (!file) return "orphaned"; // the row went with its collection; only a clear takes the copy
   const hash = await sha256File(copy);
-  if (hash === file.content_hash) return; // opened and read, not edited
+  if (hash === file.content_hash) return "unchanged"; // opened and read, not edited
   // A save the viewer is still in the middle of, or one it never finished.
   // Deliberately no retry: a write on the way to a finished file moves the
   // mtime, so the poll comes back on its own, and a file that stops halfway
   // stays in the cache as the fragment it is until the reader clears it.
-  if (!(await isWholePdf(copy))) return;
+  if (!(await isWholePdf(copy))) return "unfinished";
   await checkIn(fileId, copy, hash);
+  return "collected";
 }
 
 /**
@@ -301,21 +310,30 @@ async function isWholePdf(filePath: string): Promise<boolean> {
   }
 }
 
-/**
- * Every checked-out copy on disk, with the file id whose directory it sits in.
- */
-function everyCopy(): { fileId: number; copy: string }[] {
+/** The per-file directories under the checkout root, each with its file id. */
+function checkoutDirs(): { fileId: number; dir: string }[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(EXTERNAL_OPEN_DIR, { withFileTypes: true });
   } catch {
     return []; // nothing has ever been opened externally
   }
-  const out: { fileId: number; copy: string }[] = [];
+  const out: { fileId: number; dir: string }[] = [];
   for (const entry of entries) {
     const fileId = Number(entry.name);
     if (!entry.isDirectory() || !Number.isInteger(fileId)) continue;
-    for (const copy of copiesIn(path.join(EXTERNAL_OPEN_DIR, entry.name))) out.push({ fileId, copy });
+    out.push({ fileId, dir: path.join(EXTERNAL_OPEN_DIR, entry.name) });
+  }
+  return out;
+}
+
+/**
+ * Every checked-out copy on disk, with the file id whose directory it sits in.
+ */
+function everyCopy(): { fileId: number; copy: string }[] {
+  const out: { fileId: number; copy: string }[] = [];
+  for (const { fileId, dir } of checkoutDirs()) {
+    for (const copy of copiesIn(dir)) out.push({ fileId, copy });
   }
   return out;
 }
@@ -345,7 +363,7 @@ export async function collectPendingCheckins(): Promise<void> {
 }
 
 /** What the cache is costing, for the reader deciding whether to clear it. */
-export function checkoutCacheStats(): { files: number; bytes: number } {
+export function checkoutCacheStats(): CacheStats {
   if (!IS_DESKTOP) return { files: 0, bytes: 0 };
   let bytes = 0;
   const copies = everyCopy();
@@ -360,21 +378,81 @@ export function checkoutCacheStats(): { files: number; bytes: number } {
 }
 
 /**
+ * Whether this copy is the library's to delete: because the library has just
+ * taken its bytes, because it already held them, or because the row they
+ * belonged to is gone and nothing will ever want them again.
+ *
+ * A throw answers no. A check-in fails on a full disk, on a file the viewer
+ * still holds a lock on, on a database that would not take the write — and in
+ * each of those the copy is the only place those bytes exist.
+ */
+async function theLibrarysToDelete(fileId: number, copy: string): Promise<boolean> {
+  try {
+    return (await checkInIfWhole(fileId, copy)) !== "unfinished";
+  } catch (err) {
+    console.warn(`[external-open] clearing file ${fileId}: ${errMessage(err)}`);
+    return false;
+  }
+}
+
+/**
  * Empty the cache, on the reader's say-so.
  *
- * Collects before it deletes, without exception. Otherwise this button is the
- * one way to throw away an annotation — the poll behind a checked-out copy
- * takes a save within seconds, but "within seconds" is not "before the click".
+ * Collects before it deletes, and deletes only what it managed to collect. The
+ * difference between those two is the whole of this function: a pass that logs
+ * what it could not take and then removes the directory anyway reports a
+ * success while throwing away the afternoon it failed to save. Every reason a
+ * check-in has to fail — a full disk, a locked file, a save the viewer never
+ * finished — leaves bytes that exist in the cache and nowhere else.
+ *
+ * So a copy that could not be taken stays where it is, and the count says how
+ * many stayed. That leaves the reader holding a few megabytes they had asked to
+ * reclaim, and they can ask again; the other way round there is nothing to ask.
  */
-export async function clearCheckouts(): Promise<{ files: number; bytes: number }> {
-  if (!IS_DESKTOP) return { files: 0, bytes: 0 };
-  await collectPendingCheckins();
-  const freed = checkoutCacheStats();
-  // The polls go with the files they were watching. Left armed they would each
-  // stat a path with nothing at it, and the checkout that re-creates the copy
-  // would decline to arm a fresh one because the map still claimed this id.
-  for (const fileId of [...watches.keys()]) stopWatching(fileId);
-  await fs.promises.rm(EXTERNAL_OPEN_DIR, { recursive: true, force: true });
-  console.log(`[external-open] cleared ${freed.files} cached file(s), ${freed.bytes} bytes`);
-  return freed;
+export async function clearCheckouts(): Promise<ClearedCache> {
+  if (!IS_DESKTOP) return { files: 0, bytes: 0, kept: 0 };
+  const cleared: ClearedCache = { files: 0, bytes: 0, kept: 0 };
+  for (const { fileId, dir } of checkoutDirs()) {
+    let keptHere = 0;
+    for (const copy of copiesIn(dir)) {
+      let size: number;
+      try {
+        size = fs.statSync(copy).size;
+      } catch {
+        continue; // removed between the listing and the stat; nothing to do
+      }
+      if (!(await theLibrarysToDelete(fileId, copy))) {
+        keptHere++;
+        continue;
+      }
+      try {
+        await fs.promises.rm(copy, { force: true });
+      } catch (err) {
+        // Still on disk, so still counted as kept: the reader is owed a number
+        // that matches what they would find if they went and looked.
+        console.warn(`[external-open] clearing file ${fileId}: ${errMessage(err)}`);
+        keptHere++;
+        continue;
+      }
+      // The poll goes with the file it was watching. Left armed it would stat a
+      // path with nothing at it, and the checkout that re-creates the copy
+      // would decline to arm a fresh one because the map still claimed this id.
+      if (watches.get(fileId) === copy) stopWatching(fileId);
+      cleared.files++;
+      cleared.bytes += size;
+    }
+    // The directory goes when nothing in it is being kept, which takes the
+    // viewer's lock and temp files with it: copiesIn does not list those, and
+    // they are not anyone's work.
+    if (keptHere === 0) await fs.promises.rm(dir, { recursive: true, force: true });
+    cleared.kept += keptHere;
+  }
+  // And the root, so a library that has never had a checkout and one that has
+  // just been cleared look the same on disk.
+  if (cleared.kept === 0) await fs.promises.rm(EXTERNAL_OPEN_DIR, { recursive: true, force: true });
+  console.log(
+    `[external-open] cleared ${cleared.files} cached file(s), ${cleared.bytes} bytes` +
+      (cleared.kept > 0 ? `; kept ${cleared.kept} whose changes are not in the library` : "")
+  );
+  return cleared;
 }

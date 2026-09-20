@@ -5,6 +5,7 @@ import type {
   BookmarkEntry,
   BookmarkFolder,
   CacheStats,
+  ClearedCache,
   Collection,
   CollectionFile,
   CollectionFilesResponse,
@@ -320,9 +321,11 @@ export const api = {
   // the build says it is the desktop one, rather than on a failed fetch.
   //
   // Clearing collects anything a viewer saved first, so the button cannot be
-  // the thing that loses an annotation. It answers with what it freed.
+  // the thing that loses an annotation. It answers with what it freed, and with
+  // how many copies it left alone because it could not get their changes into
+  // the library — which is why the clear is not simply a CacheStats back.
   cacheStats: () => req<CacheStats>("/api/cache"),
-  clearCache: () => req<CacheStats>("/api/cache/clear", { method: "POST" }),
+  clearCache: () => req<ClearedCache>("/api/cache/clear", { method: "POST" }),
 
   // ---------- workspaces (desktop only) ----------
   //

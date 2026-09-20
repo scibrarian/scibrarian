@@ -1,6 +1,6 @@
 // Small formatting helpers shared across components.
 
-import type { LibraryStats, ProPushResult } from "../types";
+import type { ClearedCache, LibraryStats, ProPushResult } from "../types";
 
 /**
  * One copy-up sweep's counts, as a sentence.
@@ -139,6 +139,25 @@ export function describeRemoval(asked: number, removed: number, papers: number):
 export function describeResetDone(s: LibraryStats): string {
   const contents = listContents(s);
   return contents === "" ? "This library was already empty." : `Deleted ${contents}.`;
+}
+
+/**
+ * What emptying the viewer cache did — including what it deliberately did not.
+ *
+ * The kept count is the half that has to be said out loud. A copy stays behind
+ * when the library could not take the changes in it, and a reader who asked for
+ * the cache to be empty will otherwise find it is not, conclude the button is
+ * broken, and delete the directory by hand. That is the one action here that
+ * loses work, so the sentence has to reach them before they take it.
+ */
+export function describeCacheCleared(c: ClearedCache): string {
+  const cleared =
+    c.files > 0 ? `Cleared ${plural(c.files, "cached file")}, freeing ${formatBytes(c.bytes)}.` : "";
+  if (c.kept === 0) return cleared || "There was nothing cached.";
+  const kept =
+    `Kept ${plural(c.kept, "cached file")} holding changes the library could not take — ` +
+    "those changes exist nowhere else.";
+  return cleared === "" ? kept : `${cleared} ${kept}`;
 }
 
 /**
