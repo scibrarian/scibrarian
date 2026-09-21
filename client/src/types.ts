@@ -5,6 +5,8 @@ import type {
   AbstractsResponse,
   BookmarkEntry,
   BookmarkFolder as BookmarkFolderRow,
+  CacheStats,
+  ClearedCache,
   Collection as CollectionRow,
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
@@ -63,6 +65,8 @@ export type {
 export type {
   AbstractsResponse,
   BookmarkEntry,
+  CacheStats,
+  ClearedCache,
   CollectionFileStatus,
   ElsewhereHolding,
   EvidenceClass,

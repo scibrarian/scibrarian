@@ -73,6 +73,11 @@ export const BLOBS_DIR = path.isAbsolute(process.env.BLOBS_DIR || "")
 
 export const UPLOAD_TMP_DIR = path.join(path.dirname(BLOBS_DIR), "tmp-uploads");
 
+// Where a stored PDF is checked out to so the machine's own viewer can open it
+// — beside the blobs, and so inside the workspace, which means switching
+// libraries switches these with it. Desktop only; see external-open.ts.
+export const EXTERNAL_OPEN_DIR = path.join(path.dirname(BLOBS_DIR), "open");
+
 // Fallback poll schedule (daily at 06:00) — used to seed the setting and as
 // the last resort when the saved cron expression is invalid.
 export const DEFAULT_POLL_CRON = "0 6 * * *";

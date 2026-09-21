@@ -122,17 +122,43 @@ function applyNavigationPolicy(contents, origin) {
     // scheme is a way to launch things that are not browsers.
     if (/^https?:$/i.test(new URL(url).protocol)) void shell.openExternal(url);
   };
+  // The file id in a URL that would open a stored PDF, or null for anything
+  // else. Matched on the path alone, which means a signed share link matches
+  // too and its signature goes unchecked — and that costs nothing here. The
+  // desktop build runs with no ADMIN_TOKEN (see configureServer), so the route
+  // this replaces already serves every stored PDF to anyone who can reach
+  // loopback, and on this build that is the machine's owner and nobody else.
+  const storedPdfFileId = (url) => {
+    try {
+      const u = new URL(url);
+      if (u.origin !== origin) return null;
+      const m = /^\/api\/collections\/files\/(\d+)\/content$/.exec(u.pathname);
+      return m ? Number(m[1]) : null;
+    } catch {
+      return null; // unparseable, or a scheme with no origin to match
+    }
+  };
 
   contents.setWindowOpenHandler(({ url }) => {
+    const fileId = storedPdfFileId(url);
+    if (fileId !== null) {
+      void openStoredPdf(fileId);
+      return { action: "deny" };
+    }
     // openPaper() opens a blank tab synchronously inside the click handler and
     // navigates it once it knows whether the destination is a stored PDF or
-    // PubMed. Allowing it keeps that flow intact; will-navigate below still
-    // judges wherever it ends up going.
-    if (url === "about:blank" || isAppUrl(url)) {
+    // PubMed. Denying it is what keeps that flow intact here, not allowing it:
+    // window.open hands the client back null, its own fallback re-opens the
+    // real destination once the fetch that decides it has returned, and that
+    // re-entry lands on the PDF branch above or the external one below. Both
+    // of those end outside this shell, so allowing the blank tab would only
+    // flash an empty frame open and shut on every click.
+    if (url === "about:blank") return { action: "deny" };
+    if (isAppUrl(url)) {
       return {
         action: "allow",
-        // A stored PDF opens here, in Chromium's viewer. Inherit nothing:
-        // state these explicitly so a child window can never be the weak one.
+        // Inherit nothing: state these explicitly so a child window can never
+        // be the weak one.
         overrideBrowserWindowOptions: {
           webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
         },
@@ -147,6 +173,12 @@ function applyNavigationPolicy(contents, origin) {
   });
 
   contents.on("will-navigate", (event, url) => {
+    const fileId = storedPdfFileId(url);
+    if (fileId !== null) {
+      event.preventDefault();
+      void openStoredPdf(fileId);
+      return;
+    }
     if (isAppUrl(url)) return;
     event.preventDefault();
     try {
@@ -157,8 +189,9 @@ function applyNavigationPolicy(contents, origin) {
     // A window that has never shown anything of its own has nothing to fall back
     // to once its one navigation goes to the browser instead — leaving it up
     // strands a blank, chrome-less, address-bar-less window whose only use is
-    // being closed. That is exactly the shape of the popup openPaper() opens
-    // synchronously in the click handler before it knows the destination.
+    // being closed. Nothing opens one today — the handler above denies the
+    // blank popup openPaper() asks for — but any same-origin window.open that
+    // then redirected off-origin would be exactly that shape.
     //
     // The main window is never blank here: will-navigate isn't emitted for
     // loadURL, so by the time any navigation reaches this handler it is already
@@ -169,6 +202,39 @@ function applyNavigationPolicy(contents, origin) {
 
   // Nothing in the client uses <webview>; refuse to be the first.
   contents.on("will-attach-webview", (event) => event.preventDefault());
+}
+
+/**
+ * Set once the server is listening: the in-process server's way to check a
+ * stored PDF out for an external viewer. Held rather than imported at the
+ * click, because importing the server bundle is the thing that must not happen
+ * before configureServer() has set the environment it reads — see main().
+ */
+let checkOutForExternalOpen = null;
+
+/**
+ * Hand a stored PDF to whatever this machine already opens PDFs with, rather
+ * than drawing a window of our own around Chromium's viewer: that is one
+ * chrome-less frame per paper, which is a poor way to read one and a worse way
+ * to keep three of them open at once.
+ *
+ * What the OS is given is a copy of the blob under the paper's real name,
+ * watched so anything the viewer saves comes back into the library.
+ * server/src/external-open.ts has the whole of why it is a copy.
+ */
+async function openStoredPdf(fileId) {
+  try {
+    if (!checkOutForExternalOpen) throw new Error("The library is still starting up.");
+    const copy = await checkOutForExternalOpen(fileId);
+    // openPath reports failure by resolving with a message rather than by
+    // rejecting, and the empty string is the success case. "There is no
+    // application associated with .pdf" arrives here, and is worth a dialog:
+    // the click did nothing at all otherwise.
+    const failure = await shell.openPath(copy);
+    if (failure) throw new Error(failure);
+  } catch (err) {
+    dialog.showErrorBox("Scibrarian could not open that PDF", String(err?.message || err));
+  }
 }
 
 /**
@@ -268,8 +334,9 @@ async function main() {
   let port;
   try {
     // Imported only now, so it reads the environment configureServer() just set.
-    const { start } = await import("./bundle/server.mjs");
-    ({ port } = await start({ onRestart: relaunchApp }));
+    const server = await import("./bundle/server.mjs");
+    checkOutForExternalOpen = server.checkOutForExternalOpen;
+    ({ port } = await server.start({ onRestart: relaunchApp }));
   } catch (err) {
     dialog.showErrorBox(
       "Scibrarian could not start",
@@ -283,7 +350,8 @@ async function main() {
   // can resolve to ::1 first and fail to connect.
   const origin = `http://127.0.0.1:${port}`;
 
-  // Covers child windows (the PDF viewer) as well as the main one.
+  // Covers child windows as well as the main one, and before either can
+  // navigate: the policy is what decides that a PDF never gets a window.
   app.on("web-contents-created", (_event, contents) => applyNavigationPolicy(contents, origin));
 
   appOrigin = origin;

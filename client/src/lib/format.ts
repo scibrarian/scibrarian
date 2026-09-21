@@ -1,6 +1,6 @@
 // Small formatting helpers shared across components.
 
-import type { LibraryStats, ProPushResult } from "../types";
+import type { ClearedCache, LibraryStats, ProPushResult } from "../types";
 
 /**
  * One copy-up sweep's counts, as a sentence.
@@ -142,6 +142,37 @@ export function describeResetDone(s: LibraryStats): string {
 }
 
 /**
+ * What emptying the viewer cache did — including what it deliberately did not.
+ *
+ * What stayed behind has to be said out loud, or a reader who asked for the
+ * cache to be empty finds it is not, concludes the button is broken, and
+ * deletes the directory by hand — which is the one action here that loses work.
+ *
+ * `unsaved` and `blocked` get their own sentences because only the first is
+ * about their work. A copy the library has already read and merely could not
+ * unlink is an ordinary consequence of having a paper open, and telling someone
+ * their changes are at risk every time they leave one open is how the sentence
+ * stops being read by the time it matters.
+ */
+export function describeCacheCleared(c: ClearedCache): string {
+  const said: string[] = [];
+  if (c.files > 0) said.push(`Cleared ${plural(c.files, "cached file")}, freeing ${formatBytes(c.bytes)}.`);
+  if (c.unsaved > 0) {
+    said.push(
+      `Kept ${plural(c.unsaved, "cached file")} holding changes the library could not take — ` +
+        "those changes exist nowhere else."
+    );
+  }
+  if (c.blocked > 0) {
+    said.push(
+      `${plural(c.blocked, "cached file")} could not be removed, most likely still open in a ` +
+        "viewer. The library already has what is in them, so nothing is at risk."
+    );
+  }
+  return said.length === 0 ? "There was nothing cached." : said.join(" ");
+}
+
+/**
  * The contents themselves, as a list, or "" for an empty library.
  *
  * Zero counts are dropped rather than printed. "0 collections" spends a clause
@@ -194,6 +225,24 @@ export function formatAuthors(authors: string[], max: number): string {
   if (authors.length === 0) return "—";
   if (authors.length <= max) return authors.join(", ");
   return authors.slice(0, max).join(", ") + ", et al.";
+}
+
+// A size for someone deciding whether it is worth reclaiming, so it is rounded
+// hard: what the reader wants from "34 MB" is the order of magnitude, and a
+// second decimal is noise between them and that. Binary units, because that is
+// what every file manager they might cross-check against reports.
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return plural(bytes, "byte");
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = bytes / 1024;
+  let unit = 0;
+  while (n >= 1024 && unit < units.length - 1) {
+    n /= 1024;
+    unit++;
+  }
+  // One decimal below ten, none above: "3.4 MB", but "512 MB" rather than
+  // "512.4 MB", where the tenth is both unhelpful and unstable between reads.
+  return `${n < 10 ? round1(n) : Math.round(n)} ${units[unit]}`;
 }
 
 export function errorMessage(err: unknown): string {

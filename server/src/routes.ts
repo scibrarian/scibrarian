@@ -81,6 +81,7 @@ import {
   IS_DESKTOP,
   UPLOAD_TMP_DIR,
 } from "./config.js";
+import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
 import { splitRefs } from "./citation-ref.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
@@ -1021,11 +1022,18 @@ api.put("/collections/:id", (req, res) => {
   res.json(getCollection(id));
 });
 
-api.delete("/collections/:id", (req, res) => {
-  // Rows cascade and orphaned blobs are GC'd inside deleteCollection.
-  deleteCollection(Number(req.params.id));
-  res.status(204).end();
-});
+api.delete(
+  "/collections/:id",
+  asyncHandler(async (req, res) => {
+    // Rows cascade and orphaned blobs are GC'd inside deleteCollection. The
+    // checked-out copies of those rows are the half it cannot reach — see
+    // discardOrphanedCheckouts, and the note on the dialog that promises "any
+    // stored PDF copies are deleted".
+    deleteCollection(Number(req.params.id));
+    await discardOrphanedCheckouts();
+    res.status(204).end();
+  })
+);
 
 // The API shape of a collection file: the DB row minus the server-internal
 // content_hash (the blob-store key, which also feeds the share-link MAC), plus
@@ -1275,12 +1283,16 @@ api.post(
   })
 );
 
-api.delete("/collections/files/:fileId", (req, res) => {
-  // The row's blob is GC'd inside deleteCollectionFile if this was the last
-  // reference.
-  deleteCollectionFile(Number(req.params.fileId));
-  res.status(204).end();
-});
+api.delete(
+  "/collections/files/:fileId",
+  asyncHandler(async (req, res) => {
+    // The row's blob is GC'd inside deleteCollectionFile if this was the last
+    // reference; its checked-out copy is swept here, for the same reason.
+    deleteCollectionFile(Number(req.params.fileId));
+    await discardOrphanedCheckouts();
+    res.status(204).end();
+  })
+);
 
 // Remove papers from a collection — the table's "Delete selected".
 //
@@ -1293,24 +1305,29 @@ api.delete("/collections/files/:fileId", (req, res) => {
 // one decision, so it either happens or it doesn't, and a paper the collection
 // holds twice has to go entirely rather than half-way. See
 // removeCollectionPapers for how a file-id loop gets that wrong.
-api.post("/collections/:id/papers/remove", (req, res) => {
-  const id = Number(req.params.id);
-  if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  const body = req.body as { pmids?: unknown };
-  if (!Array.isArray(body?.pmids)) return res.status(400).json({ error: "'pmids' must be an array." });
-  // Bounded by the same cap as a bulk bookmark save: this is the other route
-  // that takes "everything currently filtered" and it should not be the one
-  // place an unbounded list gets through.
-  if (body.pmids.length > MAX_BULK_BOOKMARK_PMIDS) {
-    return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
-  }
-  const pmids = body.pmids.map((p) => String(p).trim()).filter(Boolean);
-  // Both counts, because they differ in both directions — a doubled article
-  // removes more files than papers, and a paper something else already took
-  // removes fewer papers than were asked for. The notice reports what happened,
-  // which needs the pair; see removeCollectionPapers.
-  res.json(removeCollectionPapers(id, pmids));
-});
+api.post(
+  "/collections/:id/papers/remove",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
+    const body = req.body as { pmids?: unknown };
+    if (!Array.isArray(body?.pmids)) return res.status(400).json({ error: "'pmids' must be an array." });
+    // Bounded by the same cap as a bulk bookmark save: this is the other route
+    // that takes "everything currently filtered" and it should not be the one
+    // place an unbounded list gets through.
+    if (body.pmids.length > MAX_BULK_BOOKMARK_PMIDS) {
+      return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
+    }
+    const pmids = body.pmids.map((p) => String(p).trim()).filter(Boolean);
+    // Both counts, because they differ in both directions — a doubled article
+    // removes more files than papers, and a paper something else already took
+    // removes fewer papers than were asked for. The notice reports what happened,
+    // which needs the pair; see removeCollectionPapers.
+    const removal = removeCollectionPapers(id, pmids);
+    await discardOrphanedCheckouts();
+    res.json(removal);
+  })
+);
 
 // ---------- refresh / status ----------
 
@@ -1494,6 +1511,35 @@ function noWorkspaces(res: Response): boolean {
   return true;
 }
 
+// The same, for the viewer cache, and 404 for the same reason: there is no
+// cache on a server build, because a browser renders a PDF rather than being
+// handed a file to open. external-open.ts refuses there too; this is the outer
+// of the two.
+function noViewerCache(res: Response): boolean {
+  if (IS_DESKTOP) return false;
+  res.status(404).json({ error: "The viewer cache only exists in the desktop app." });
+  return true;
+}
+
+// What the desktop build's viewer cache holds.
+//
+// Admin-only rather than open: the file count is a reading history, and on a
+// shared instance that is the owner's, not every viewer's.
+api.get("/cache", (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
+  if (noViewerCache(res)) return;
+  res.json(checkoutCacheStats());
+});
+
+// Emptying it. POST, so no bare URL can do it; admin comes from the mutation gate.
+api.post(
+  "/cache/clear",
+  asyncHandler(async (_req, res) => {
+    if (noViewerCache(res)) return;
+    res.json(await clearCheckouts());
+  })
+);
+
 api.get("/workspaces", (req, res) => {
   if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
   // Deliberately not noWorkspaces(): an empty list is the honest answer for a
@@ -1661,9 +1707,34 @@ api.post(
       return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
     }
     // After the deletion, never before it: each of these is tidying up around a
-    // wipe that has already happened, and neither is allowed to prevent one.
+    // wipe that has already happened, and none is allowed to prevent one.
     clearImportJobs();
     resetProContent();
+    // The checked-out copies, which are the one part of a stored PDF that
+    // resetLibrary cannot reach. It deletes the blobs and the rows; a copy is
+    // neither, and it is a plaintext PDF under the paper's own name sitting in
+    // a directory the reader can open. Leaving those behind would make "and
+    // every stored PDF" false in the sentence the button is asking about, for
+    // every paper opened in a viewer — which is exactly the set someone
+    // resetting a library to get rid of sensitive papers has been reading.
+    //
+    // Here rather than in resetLibrary, for the reason resetProContent is here:
+    // external-open.ts is built on db.ts, so db.ts cannot call into it, and the
+    // route is where the halves of a reset are already put together.
+    //
+    // Every row is gone by now, so each copy is an orphan and clearCheckouts
+    // takes it — its one refusal, a save that was never finished, cannot arise
+    // when there is no row left to hold the changes for.
+    //
+    // Allowed to fail, like the blob sweep inside resetLibrary and for the same
+    // reason: the wipe has committed, nothing rolls it back, and a directory
+    // that could not be removed must not be reported as a reset that did not
+    // happen.
+    try {
+      await clearCheckouts();
+    } catch (err) {
+      console.warn(`[routes] clearing checked-out copies after reset failed: ${errMessage(err)}`);
+    }
     // The schedule survives (poll_cron and poll_enabled are settings, not
     // contents), and with no topics left there is nothing for it to poll — but
     // it is still armed, so nothing needs rescheduling here.

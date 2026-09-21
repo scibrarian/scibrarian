@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  describeCacheCleared,
   describeRemoval,
   describeResetDone,
   describeSweep,
@@ -252,5 +253,53 @@ describe("describeRemoval", () => {
         }
       }
     }
+  });
+});
+
+describe("describeCacheCleared", () => {
+  const nothingLeft = { files: 3, bytes: 2048, unsaved: 0, blocked: 0 };
+
+  it("reports what went", () => {
+    expect(describeCacheCleared(nothingLeft)).toBe("Cleared 3 cached files, freeing 2 KB.");
+  });
+
+  it("says so when there was nothing to clear", () => {
+    expect(describeCacheCleared({ files: 0, bytes: 0, unsaved: 0, blocked: 0 })).toBe(
+      "There was nothing cached."
+    );
+  });
+
+  // The two ways a copy survives a clear are not the same news, and the whole
+  // point of counting them apart is that they are not worded the same. A reader
+  // told their changes are at risk every time they leave a paper open in a
+  // viewer is a reader who has stopped reading the sentence by the time it is
+  // true — so the one that means "nothing is at stake" must never borrow the
+  // language of the one that means "these bytes exist nowhere else".
+  it("warns about changes the library could not take", () => {
+    const said = describeCacheCleared({ ...nothingLeft, unsaved: 1 });
+    expect(said).toContain("Kept 1 cached file holding changes the library could not take");
+    expect(said).toContain("exist nowhere else");
+  });
+
+  it("reassures about a copy it merely could not remove", () => {
+    const said = describeCacheCleared({ ...nothingLeft, blocked: 2 });
+    expect(said).toContain("2 cached files could not be removed");
+    expect(said).toContain("nothing is at risk");
+    expect(said).not.toContain("nowhere else");
+  });
+
+  it("keeps them apart when both happened at once", () => {
+    const said = describeCacheCleared({ files: 1, bytes: 1024, unsaved: 1, blocked: 1 });
+    expect(said).toContain("Cleared 1 cached file");
+    expect(said).toContain("exist nowhere else");
+    expect(said).toContain("nothing is at risk");
+  });
+
+  // A clear that freed nothing but is holding something back has to lead with
+  // the reason, not with a sentence saying there was nothing cached.
+  it("does not claim an empty cache when it kept something", () => {
+    const said = describeCacheCleared({ files: 0, bytes: 0, unsaved: 1, blocked: 0 });
+    expect(said).not.toContain("nothing cached");
+    expect(said).toContain("could not take");
   });
 });

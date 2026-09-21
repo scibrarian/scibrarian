@@ -1876,6 +1876,32 @@ export function gcBlobsIfOrphaned(hashes: string[]): void {
   deleteBlobs(orphaned);
 }
 
+/**
+ * Point one file row at different bytes, and clean up after the ones it left.
+ *
+ * The only thing that changes a row's content_hash after it is written: the
+ * desktop build hands a stored PDF to the machine's own viewer, which can save
+ * annotations back over it (external-open.ts). The bytes are already in the
+ * store by the time this runs — a row must never name a blob that isn't there.
+ *
+ * False when nothing moved, which is either of two things. The hash is already
+ * the row's, or the collection holds another row for exactly these bytes and
+ * the UNIQUE (collection_id, content_hash) would refuse the update: the
+ * annotated copy *is* that other file, and merging the two is not a decision
+ * to make from under a file watch.
+ */
+export function repointFileBlob(fileId: number, newHash: string): boolean {
+  const file = getCollectionFile(fileId);
+  if (!file || file.content_hash === newHash) return false;
+  const clash = db
+    .prepare("SELECT 1 FROM collection_files WHERE collection_id = ? AND content_hash = ?")
+    .get(file.collection_id, newHash);
+  if (clash) return false;
+  db.prepare("UPDATE collection_files SET content_hash = ? WHERE id = ?").run(newHash, fileId);
+  gcBlobsIfOrphaned([file.content_hash]);
+  return true;
+}
+
 // The blobs a collection's rows reference, captured before deletion for GC.
 function hashesForCollection(collectionId: number): string[] {
   return (

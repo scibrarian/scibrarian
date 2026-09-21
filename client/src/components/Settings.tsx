@@ -2,7 +2,14 @@ import { FormEvent, useEffect, useState } from "react";
 import { Search, Share2, Check, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { describeResetDone, errorMessage, round1 } from "../lib/format";
+import {
+  describeCacheCleared,
+  describeResetDone,
+  errorMessage,
+  formatBytes,
+  plural,
+  round1,
+} from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
@@ -11,6 +18,7 @@ import { Typeahead } from "./Typeahead";
 import { ProPanel } from "./ProPanel";
 import type {
   AppSettings,
+  CacheStats,
   Topic,
   Journal,
   MeshSearchResult,
@@ -116,6 +124,25 @@ export function Settings({
     kind: "info" | "error";
     message: string;
   } | null>(null);
+  // The last reading of the desktop viewer cache. Three states rather than two:
+  // null while the first fetch is in flight, "unreadable" when it failed, and
+  // the stats when it worked.
+  //
+  // The middle one used to be spelled the same as the first. Since the section
+  // is drawn on settings.desktop rather than on this fetch, a failed read left
+  // it showing no size beside a button greyed out for good — a control the
+  // reader could neither press nor account for, with nothing that would try
+  // again while the panel stayed open.
+  const [cache, setCache] = useState<CacheStats | "unreadable" | null>(null);
+  const [clearingCache, setClearingCache] = useState(false);
+  // Reported in this panel rather than through savedMsg or the shell's notice,
+  // for the reason resetResult is: both of those draw far from the button that
+  // caused them — savedMsg under the Polling heading, three panels up — and a
+  // result the reader never sees reads as a click that did nothing.
+  const [cacheResult, setCacheResult] = useState<{
+    kind: "info" | "error";
+    message: string;
+  } | null>(null);
 
   function reload() {
     Promise.all([
@@ -144,6 +171,14 @@ export function Settings({
   }
 
   useEffect(reload, []);
+
+  // Once the settings say this is the desktop build, and not before: the route
+  // 404s everywhere else, and asking anyway would put a failed request in the
+  // console of every server deployment on every visit to this page.
+  useEffect(() => {
+    if (settings?.desktop === true) reloadCache();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.desktop]);
 
   // `name` is a MeSH heading — picked from the autocomplete, or typed and
   // submitted (the server validates it and rejects anything that isn't a real
@@ -189,6 +224,35 @@ export function Settings({
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
+    }
+  }
+
+  // Its own fetch rather than a member of reload()'s Promise.all: that one
+  // runs on every deployment, and this route is not there to answer on most of
+  // them. Called from the effect below once the settings say which build this
+  // is, and again after a clear.
+  function reloadCache() {
+    api
+      .cacheStats()
+      .then(setCache)
+      .catch(() => setCache("unreadable"));
+  }
+
+  async function clearCache() {
+    setCacheResult(null);
+    setClearingCache(true);
+    try {
+      const cleared = await api.clearCache();
+      // Re-read rather than assuming empty. A copy whose changes the library
+      // could not take is still there, and so are its bytes — writing zeroes in
+      // here would tell the reader the cache is empty while the section's own
+      // message says it is not.
+      reloadCache();
+      setCacheResult({ kind: "info", message: describeCacheCleared(cleared) });
+    } catch (err) {
+      setCacheResult({ kind: "error", message: errorMessage(err) });
+    } finally {
+      setClearingCache(false);
     }
   }
 
@@ -297,6 +361,14 @@ export function Settings({
   // a free build, where nothing ever sets proReady, and reading it
   // unconditionally would leave the whole page skeletal forever.
   const ready = loaded && (pro == null || proReady);
+
+  // The reading itself, or null when there is not one — in flight, or failed.
+  const cacheStats = cache === null || cache === "unreadable" ? null : cache;
+  // Pressable when there is something to clear, and when we cannot tell whether
+  // there is: an unreadable cache is exactly the case where the press is how
+  // the reader finds out, since clearing reports what it did. Not while the
+  // first reading is still in flight, which settles in a moment on its own.
+  const somethingToClear = cache === "unreadable" || (cacheStats !== null && cacheStats.files > 0);
 
   return (
     <div className="settings">
@@ -599,6 +671,69 @@ export function Settings({
                 </label>
               </>
             ))}
+        </section>
+      )}
+
+      {/* Desktop only, and drawn on the flag rather than on whether the fetch
+          worked: a server build has no such cache, and a section that appeared
+          only when a request failed would be a section nobody could explain.
+          Above "Delete all data" because it is the harmless half of the same
+          errand — reclaiming disk — and the destructive control stays last. */}
+      {settings?.desktop === true && (
+        <section className="panel">
+          <h2>Cached copies</h2>
+          <p className="hint">
+            The cache allows anything you annotate and save to go back into the library.
+            If you clear the cache, you will have to reopen files before editing them again.
+            {cacheStats !== null && cacheStats.files > 0 && (
+              <> Currently {plural(cacheStats.files, "file")}, {formatBytes(cacheStats.bytes)}.</>
+            )}
+            {cacheStats !== null && cacheStats.files === 0 && <> Nothing is cached right now.</>}
+            {/* Said rather than left blank. A reader who cannot see a size and
+                cannot press the button has no way to tell a cache that is empty
+                from one this panel failed to ask about. */}
+            {cache === "unreadable" && (
+              <> The cache could not be read just now — clearing it still works, and reports what it did.</>
+            )}
+          </p>
+          {/* The one thing in this section a reader may have to act on, so it
+              is a warning rather than another clause of the hint above. A
+              check-in can fail — a full disk, a file the viewer still holds, a
+              save the viewer never finished — and until now that was a console
+              warning in an app with no console: the paper was annotated, the
+              viewer reported the save, and the library went on serving the
+              older document with every search answering from the older text.
+              Reopening the paper is what takes the changes, and the next launch
+              tries again on its own. */}
+          {cacheStats !== null && cacheStats.unsaved > 0 && (
+            <p className="hint warn">
+              {plural(cacheStats.unsaved, "cached file")}{" "}
+              {cacheStats.unsaved === 1 ? "holds" : "hold"} changes that are not in the library.
+              Scibrarian tries again when you reopen the paper and on every launch. Clearing the
+              cache is what would lose them.
+            </p>
+          )}
+          <button
+            type="button"
+            className="accent-btn icon-btn"
+            onClick={clearCache}
+            disabled={!ready || clearingCache || !somethingToClear}
+          >
+            {clearingCache ? (
+              <span className="btn-spinner" aria-hidden="true" />
+            ) : (
+              <Trash2 size={12} aria-hidden />
+            )}
+            {clearingCache ? "Clearing…" : "Clear cached copies"}
+          </button>
+          {/* After the button, like the reset's report and for the same reason:
+              a message inserted above would push the control out from under the
+              pointer that just pressed it. */}
+          <Banner
+            kind={cacheResult?.kind ?? "info"}
+            message={cacheResult?.message ?? null}
+            onDismiss={() => setCacheResult(null)}
+          />
         </section>
       )}
 

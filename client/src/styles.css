@@ -1149,6 +1149,13 @@ body {
   margin: 0 0 12px;
 }
 
+/* A hint the reader may have to act on. Muted is right for "here is how this
+   works" and wrong for "something of yours is not where you think it is", so
+   this keeps the size and takes the warning colour. */
+.hint.warn {
+  color: var(--warn);
+}
+
 .inline-form {
   display: flex;
   gap: 8px;
@@ -1398,6 +1405,26 @@ input:focus {
   cursor: default;
 }
 
+/* The same, for the accent buttons that live outside a form. "Clear cached
+   copies" spends most of its life disabled — an empty cache is the ordinary
+   state — so without this it is a button that looks pressable and is not. */
+.accent-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Composed onto a button that carries an icon and the spinner it swaps for, so
+   the two sit on the label's centre line and the label doesn't shift when the
+   request starts. Separate from .accent-btn rather than folded into it because
+   the buttons that wear that class alone have no icon, and giving them a flex
+   box would be changing something to no end. The gap matches .danger-btn's,
+   which documents the same arrangement. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* "Delete all data", at the foot of Settings.
 
    .accent-btn's shape in --danger rather than --accent, because it is a peer of
@@ -1441,7 +1468,8 @@ input:focus {
    for the stack of content it normally heads, and here there is nothing under
    it but the panel's own padding, which would read as a banner that missed its
    edge. The top margin it never needed is what it needs now. */
-.danger-btn + .banner {
+.danger-btn + .banner,
+.accent-btn + .banner {
   margin-top: 14px;
   margin-bottom: 0;
 }
@@ -1451,7 +1479,8 @@ input:focus {
    two classes, so the tie goes to source order and the rule above — later in
    the file than the collapse — keeps its margin. Without this the report
    collapses to a 14px empty gap that drops in one frame on unmount. */
-.danger-btn + .banner.leaving {
+.danger-btn + .banner.leaving,
+.accent-btn + .banner.leaving {
   margin-top: 0;
 }
 

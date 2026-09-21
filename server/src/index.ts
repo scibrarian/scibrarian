@@ -30,6 +30,7 @@ import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
 import { onRestartRequested } from "./workspaces.js";
+import { collectPendingCheckins } from "./external-open.js";
 import { errMessage, GENERIC_CLIENT_ERROR, GENERIC_SERVER_ERROR } from "./util.js";
 import { MAX_BULK_BOOKMARK_BYTES } from "../../shared/limits.js";
 
@@ -354,8 +355,21 @@ export async function start(options: StartOptions = {}): Promise<{ port: number;
   void refreshCatalogIfStale(); // warm (or refresh a stale) journal catalog in the background
   void ensureMeshLoaded(); // warm the MeSH descriptor list in the background
   void backfillArticleMesh(); // files stored papers under their MeSH headings, under the poll lock
+  // Anything an external viewer saved after the last quit: the watch that would
+  // have caught it went with that process. Desktop only — and the function
+  // refuses off the desktop too, rather than trusting this line to be the only
+  // caller forever. See external-open.ts.
+  if (IS_DESKTOP) void collectPendingCheckins();
   return { port, url };
 }
+
+// Hand a stored PDF to the machine's own PDF viewer, and take back whatever it
+// saves. Not a route, and never to become one: the only caller is the Electron
+// main process, which imports this module to run the server in-process and
+// reaches for this when a click would otherwise have opened a window of
+// Chromium's own (main.mjs). What a route here would mean is in
+// stored-pdf-immutable.test.ts.
+export { checkOutForExternalOpen } from "./external-open.js";
 
 // Start automatically only when this file is the process entry (`tsx
 // src/index.ts`, the Dockerfile's CMD). When Electron imports it for `start()`
