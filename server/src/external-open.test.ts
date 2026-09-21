@@ -122,6 +122,24 @@ function dropFragment(copy: string): void {
 }
 
 /**
+ * How long a save may take to come back, and how long a test that waits for one
+ * must be allowed to run.
+ *
+ * Two numbers rather than one because they are two different budgets, and
+ * getting them the wrong way round is silent. A save is noticed by a 2-second
+ * stat poll and then hashed, copied, stored and re-indexed through pdfjs, which
+ * is comfortable inside COLLECTED on a developer's machine and a good deal less
+ * comfortable on a CI runner with two cores and fifty other test files in
+ * flight. But vitest's own default test timeout is 5s, under COLLECTED — so a
+ * test that only sets the wait gets killed while the wait is still running,
+ * which is not a failure of the thing under test and does not say so either.
+ * Three tests here were written that way and passed for weeks, because the poll
+ * usually lands in two seconds and only CI was ever slow enough to find out.
+ */
+const COLLECTED = { timeout: 10_000, interval: 50 };
+const OUTLASTS_THE_POLL = 20_000;
+
+/**
  * Empty the cache, and say so, for a test whose subject is what one sweep does
  * to one copy.
  *
@@ -279,7 +297,7 @@ describe("taking back what the viewer saved", () => {
     const copy = await checkOutForExternalOpen(id);
 
     fs.writeFileSync(copy, minimalPdf("after highlighting"));
-    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), { timeout: 10_000, interval: 50 });
+    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), COLLECTED);
 
     expect(fs.existsSync(blobPath(hashOf(id)))).toBe(true);
     expect(indexedText(id)).toContain("after highlighting");
@@ -287,7 +305,7 @@ describe("taking back what the viewer saved", () => {
     // text extracted from them would otherwise keep answering searches.
     expect(fs.existsSync(blobPath(before))).toBe(false);
     expect(isIndexed(before)).toBe(false);
-  });
+  }, OUTLASTS_THE_POLL);
 
   it("leaves a save still in progress alone", async () => {
     const id = store("Halfway.pdf");
@@ -301,8 +319,7 @@ describe("taking back what the viewer saved", () => {
     await new Promise((r) => setTimeout(r, 5_000));
     expect(hashOf(id)).toBe(before);
     dropFragment(copy);
-    // Past vitest's default: this one has to outlast the poll to mean anything.
-  }, 15_000);
+  }, OUTLASTS_THE_POLL);
 
   it("follows the copy when it comes back under a different name", async () => {
     const id = store("Renamed by the reader.pdf", "before the rename");
@@ -320,9 +337,9 @@ describe("taking back what the viewer saved", () => {
     expect(again).toBe(renamed);
 
     fs.writeFileSync(renamed, minimalPdf("saved under the new name"));
-    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), { timeout: 10_000, interval: 50 });
+    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), COLLECTED);
     expect(indexedText(id)).toContain("saved under the new name");
-  });
+  }, OUTLASTS_THE_POLL);
 
   it("collects a save the app was not running for, at the next open", async () => {
     const id = store("Offline.pdf", "before the quit");
@@ -643,7 +660,7 @@ describe("the cache the reader controls", () => {
 
     const before = hashOf(id);
     fs.writeFileSync(again, minimalPdf("annotated after a clear"));
-    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), { timeout: 10_000, interval: 50 });
+    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), COLLECTED);
     expect(indexedText(id)).toContain("annotated after a clear");
-  });
+  }, OUTLASTS_THE_POLL);
 });
