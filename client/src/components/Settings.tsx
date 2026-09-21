@@ -124,10 +124,16 @@ export function Settings({
     kind: "info" | "error";
     message: string;
   } | null>(null);
-  // The desktop viewer cache. Null until the fetch lands, and on a server build
-  // it stays null for good — the section is drawn on settings.desktop, and the
-  // route 404s anywhere else.
-  const [cache, setCache] = useState<CacheStats | null>(null);
+  // The last reading of the desktop viewer cache. Three states rather than two:
+  // null while the first fetch is in flight, "unreadable" when it failed, and
+  // the stats when it worked.
+  //
+  // The middle one used to be spelled the same as the first. Since the section
+  // is drawn on settings.desktop rather than on this fetch, a failed read left
+  // it showing no size beside a button greyed out for good — a control the
+  // reader could neither press nor account for, with nothing that would try
+  // again while the panel stayed open.
+  const [cache, setCache] = useState<CacheStats | "unreadable" | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
   // Reported in this panel rather than through savedMsg or the shell's notice,
   // for the reason resetResult is: both of those draw far from the button that
@@ -229,7 +235,7 @@ export function Settings({
     api
       .cacheStats()
       .then(setCache)
-      .catch(() => setCache(null)); // advisory; the section simply says nothing
+      .catch(() => setCache("unreadable"));
   }
 
   async function clearCache() {
@@ -355,6 +361,14 @@ export function Settings({
   // a free build, where nothing ever sets proReady, and reading it
   // unconditionally would leave the whole page skeletal forever.
   const ready = loaded && (pro == null || proReady);
+
+  // The reading itself, or null when there is not one — in flight, or failed.
+  const cacheStats = cache === null || cache === "unreadable" ? null : cache;
+  // Pressable when there is something to clear, and when we cannot tell whether
+  // there is: an unreadable cache is exactly the case where the press is how
+  // the reader finds out, since clearing reports what it did. Not while the
+  // first reading is still in flight, which settles in a moment on its own.
+  const somethingToClear = cache === "unreadable" || (cacheStats !== null && cacheStats.files > 0);
 
   return (
     <div className="settings">
@@ -671,10 +685,16 @@ export function Settings({
           <p className="hint">
             The cache allows anything you annotate and save to go back into the library.
             If you clear the cache, you will have to reopen files before editing them again.
-            {cache !== null && cache.files > 0 && (
-              <> Currently {plural(cache.files, "file")}, {formatBytes(cache.bytes)}.</>
+            {cacheStats !== null && cacheStats.files > 0 && (
+              <> Currently {plural(cacheStats.files, "file")}, {formatBytes(cacheStats.bytes)}.</>
             )}
-            {cache !== null && cache.files === 0 && <> Nothing is cached right now.</>}
+            {cacheStats !== null && cacheStats.files === 0 && <> Nothing is cached right now.</>}
+            {/* Said rather than left blank. A reader who cannot see a size and
+                cannot press the button has no way to tell a cache that is empty
+                from one this panel failed to ask about. */}
+            {cache === "unreadable" && (
+              <> The cache could not be read just now — clearing it still works, and reports what it did.</>
+            )}
           </p>
           {/* The one thing in this section a reader may have to act on, so it
               is a warning rather than another clause of the hint above. A
@@ -685,10 +705,10 @@ export function Settings({
               older document with every search answering from the older text.
               Reopening the paper is what takes the changes, and the next launch
               tries again on its own. */}
-          {cache !== null && cache.unsaved > 0 && (
+          {cacheStats !== null && cacheStats.unsaved > 0 && (
             <p className="hint warn">
-              {plural(cache.unsaved, "cached file")}{" "}
-              {cache.unsaved === 1 ? "holds" : "hold"} changes that are not in the library.
+              {plural(cacheStats.unsaved, "cached file")}{" "}
+              {cacheStats.unsaved === 1 ? "holds" : "hold"} changes that are not in the library.
               Scibrarian tries again when you reopen the paper and on every launch. Clearing the
               cache is what would lose them.
             </p>
@@ -697,7 +717,7 @@ export function Settings({
             type="button"
             className="accent-btn icon-btn"
             onClick={clearCache}
-            disabled={!ready || clearingCache || cache === null || cache.files === 0}
+            disabled={!ready || clearingCache || !somethingToClear}
           >
             {clearingCache ? (
               <span className="btn-spinner" aria-hidden="true" />

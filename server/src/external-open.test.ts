@@ -582,6 +582,54 @@ describe("the cache the reader controls", () => {
     dropFragment(copy);
   });
 
+  it("keeps a copy it could not remove, and does not call that a lost change", async () => {
+    await onlyCopyInCache();
+    const id = store("Still open in a viewer.pdf");
+    const copy = await checkOutForExternalOpen(id);
+
+    // Windows refuses to unlink a file a viewer is still holding, where POSIX
+    // allows it — so on the machine running this suite the branch is
+    // unreachable and the failure is injected rather than provoked. Narrowed to
+    // this one path, because clearCheckouts calls rm on the directory and on
+    // the cache root too, and those have to go on working.
+    const realRm = fs.promises.rm;
+    const rm = vi
+      .spyOn(fs.promises, "rm")
+      .mockImplementation((target, options) =>
+        target === copy
+          ? Promise.reject(Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }))
+          : realRm(target, options)
+      );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    let cleared;
+    // Read before the restore, not after: mockRestore drops the call history
+    // along with the implementation, so asserting on the spy afterwards asserts
+    // against an empty one and passes for a clear that warned about nothing.
+    let warnings = 0;
+    try {
+      cleared = await clearCheckouts();
+      warnings = warn.mock.calls.length;
+    } finally {
+      rm.mockRestore();
+      warn.mockRestore();
+    }
+
+    // Blocked, never unsaved. The check-in ran first and found the library
+    // already holding these bytes, so only the removal failed and nothing of
+    // the reader's is at stake — which is the whole reason the two are counted
+    // apart, and why the panel tells them so in different words.
+    expect(cleared).toEqual({ files: 0, bytes: 0, unsaved: 0, blocked: 1 });
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(checkoutCacheStats().unsaved).toBe(0);
+    // Logged for whoever can see a console, since the reader's own report says
+    // only that it could not be removed.
+    expect(warnings).toBeGreaterThan(0);
+
+    // The real rm is back, so this is the ordinary path again.
+    fs.rmSync(copy, { force: true });
+  });
+
   it("leaves the library able to open the paper again afterwards", async () => {
     const id = store("Reopened after clearing.pdf");
     await checkOutForExternalOpen(id);
