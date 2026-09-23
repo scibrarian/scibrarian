@@ -154,6 +154,29 @@ const COLLECTED = { timeout: 30_000, interval: 50 };
 const OUTLASTS_THE_POLL = 60_000;
 
 /**
+ * Wait until a save is all the way in: the row repointed at the new bytes and
+ * the new text indexed.
+ *
+ * Waiting on the hash is what these tests used to do, and it lets go too early.
+ * checkIn stores the blob, repoints the row — which is where the hash changes —
+ * and only then awaits pdfjs to re-extract, so in between there is a row naming
+ * bytes that have no text yet. A test that waited for the hash and then read
+ * indexedText could land in that window and get undefined, which vitest reports
+ * as an invalid combination of arguments to toContain rather than as the timing
+ * fact it is. The window is too small to hit on a developer machine and a CI
+ * runner with two cores and fifty test files in flight hits it.
+ *
+ * The text alone is the whole condition, not one of two, because it can only be
+ * the *new* text once the row already names the new bytes: indexedText reads
+ * pdf_text for whichever hash the row holds when it is called. So this waits
+ * through both steps, which is also why it wants COLLECTED rather than a
+ * shorter budget — the extraction is now inside the wait rather than after it.
+ */
+async function collected(fileId: number, text: string): Promise<void> {
+  await vi.waitFor(() => expect(indexedText(fileId)).toContain(text), COLLECTED);
+}
+
+/**
  * Empty the cache, and say so, for a test whose subject is what one sweep does
  * to one copy.
  *
@@ -311,10 +334,10 @@ describe("taking back what the viewer saved", () => {
     const copy = await checkOutForExternalOpen(id);
 
     fs.writeFileSync(copy, minimalPdf("after highlighting"));
-    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), COLLECTED);
+    await collected(id, "after highlighting");
 
+    expect(hashOf(id)).not.toBe(before);
     expect(fs.existsSync(blobPath(hashOf(id)))).toBe(true);
-    expect(indexedText(id)).toContain("after highlighting");
     // The bytes the row used to name are referenced by nothing now, and the
     // text extracted from them would otherwise keep answering searches.
     expect(fs.existsSync(blobPath(before))).toBe(false);
@@ -351,8 +374,8 @@ describe("taking back what the viewer saved", () => {
     expect(again).toBe(renamed);
 
     fs.writeFileSync(renamed, minimalPdf("saved under the new name"));
-    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), COLLECTED);
-    expect(indexedText(id)).toContain("saved under the new name");
+    await collected(id, "saved under the new name");
+    expect(hashOf(id)).not.toBe(before);
   }, OUTLASTS_THE_POLL);
 
   it("collects a save the app was not running for, at the next open", async () => {
@@ -674,7 +697,7 @@ describe("the cache the reader controls", () => {
 
     const before = hashOf(id);
     fs.writeFileSync(again, minimalPdf("annotated after a clear"));
-    await vi.waitFor(() => expect(hashOf(id)).not.toBe(before), COLLECTED);
-    expect(indexedText(id)).toContain("annotated after a clear");
+    await collected(id, "annotated after a clear");
+    expect(hashOf(id)).not.toBe(before);
   }, OUTLASTS_THE_POLL);
 });
