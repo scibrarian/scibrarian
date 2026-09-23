@@ -135,9 +135,23 @@ function dropFragment(copy: string): void {
  * which is not a failure of the thing under test and does not say so either.
  * Three tests here were written that way and passed for weeks, because the poll
  * usually lands in two seconds and only CI was ever slow enough to find out.
+ *
+ * The first pass at this set 10s and 20s, which fixed the shape of the failure
+ * without fixing the failure. CI stopped reporting a test timeout and started
+ * exhausting the 10s wait instead, which surfaces as the last assertion the
+ * wait tried: `expected <hash> not to be <hash>`. That reads like the watch
+ * never collecting the save, and sent the next reader looking at the watch —
+ * the same misdirection in a new spelling. The test takes ~2s on a developer
+ * machine, so both numbers are now far past what the work needs. A larger
+ * budget costs only how long a real breakage takes to report: the collection
+ * either happens or it does not, and no passing run waits for the timeout.
+ *
+ * Keep COLLECTED under OUTLASTS_THE_POLL. That way the wait is what runs out,
+ * and the failure at least names the hash that never changed; the other way
+ * round vitest kills the test first and says only that it timed out.
  */
-const COLLECTED = { timeout: 10_000, interval: 50 };
-const OUTLASTS_THE_POLL = 20_000;
+const COLLECTED = { timeout: 30_000, interval: 50 };
+const OUTLASTS_THE_POLL = 60_000;
 
 /**
  * Empty the cache, and say so, for a test whose subject is what one sweep does
