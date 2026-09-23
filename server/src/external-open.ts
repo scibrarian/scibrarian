@@ -233,6 +233,38 @@ function watchForSaves(fileId: number, copy: string): void {
   });
   watcher.unref(); // never a reason for the process to stay up
   watches.set(fileId, copy);
+  reconcileOnce(fileId, copy);
+}
+
+/**
+ * One check a tick after arming, because fs.watchFile's baseline stat is not
+ * taken before watchFile returns.
+ *
+ * A write landing between the arm and that stat is folded into the baseline, so
+ * the watch has nothing to compare against and never fires at all: the save is
+ * collected by nothing, and no error anywhere says so. Measured on a Linux CI
+ * runner, a write in the same tick as the arm is missed about one time in five;
+ * ten milliseconds of gap closed it, and Windows never missed one, which is why
+ * this only ever showed up as two tests failing on CI.
+ *
+ * What makes it worth covering rather than calling unreachable is reuse. A
+ * checkout that hands back a copy a viewer already has open arms the watch
+ * while that viewer may be part way through a save — the one case where the
+ * writer is not waiting on us to return the path first.
+ *
+ * checkInIfWhole is the gate the poll goes through too, and answers
+ * "unchanged" when there is nothing to take, which is the ordinary case. The
+ * cost is one hash of the copy per checkout.
+ */
+function reconcileOnce(fileId: number, copy: string): void {
+  const settle = setTimeout(() => {
+    // Gone or replaced meanwhile: a clear took the copy, or a second checkout
+    // re-armed on a different name. Either way this is no longer the watch that
+    // answers for this file, and collect would be hashing someone else's.
+    if (watches.get(fileId) !== copy) return;
+    void collect(fileId, copy);
+  }, POLL_MS);
+  settle.unref(); // never a reason for the process to stay up
 }
 
 /** Stop polling one copy. Unrefing the watcher does not do this: it only says
