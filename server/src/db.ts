@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs, existingBlobHashes } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
-import { toFtsQuery } from "./fts-query.js";
+import { FTS_TOKENIZE, toFtsQuery } from "./fts-query.js";
 import { searchIdentifiers } from "./identifiers.js";
 import {
   MESH_SETTLED_STATUSES,
@@ -58,6 +58,17 @@ export function transaction<A extends unknown[], R>(fn: (...args: A) => R): (...
     }
   };
 }
+
+// Named because it is run twice: by the schema below, and again by the rebuild
+// in migrations when an existing index was built with another tokenizer. The
+// tokenizer, and why it doesn't stem, is FTS_TOKENIZE in fts-query.ts.
+const PDF_TEXT_FTS = `
+  CREATE VIRTUAL TABLE IF NOT EXISTS pdf_text_fts USING fts5(
+    text,
+    content='pdf_text',
+    content_rowid='rowid',
+    tokenize='${FTS_TOKENIZE}'
+  );`;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS topics (
@@ -280,15 +291,7 @@ db.exec(`
   -- isn't duplicated. That makes pdf_text the single writable copy and the
   -- triggers below the only thing keeping the two in step -- an INSERT/UPDATE/
   -- DELETE on pdf_text that bypassed them would leave the index lying.
-  --
-  -- porter stemming so "resistance" answers a search for "resist"; unicode61 so
-  -- accented author names and Greek letters tokenize as words.
-  CREATE VIRTUAL TABLE IF NOT EXISTS pdf_text_fts USING fts5(
-    text,
-    content='pdf_text',
-    content_rowid='rowid',
-    tokenize='porter unicode61'
-  );
+  ${PDF_TEXT_FTS}
 
   CREATE TRIGGER IF NOT EXISTS pdf_text_ai AFTER INSERT ON pdf_text BEGIN
     INSERT INTO pdf_text_fts(rowid, text) VALUES (new.rowid, new.text);
@@ -369,6 +372,26 @@ addColumnIfMissing("journals", "medline_indexed", "INTEGER");
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_articles_mesh_status ON articles(mesh_status);
 `);
+
+// The body-text index is rebuilt, not altered, when its tokenizer changes. FTS5
+// fixes a table's tokenizer when it is created, and CREATE ... IF NOT EXISTS is
+// a no-op against an existing one, so without this a library would go on
+// searching with whatever it was first built with. Dropping it loses nothing:
+// the index is external-content, a structure derived from pdf_text, and
+// 'rebuild' re-reads every row from there. The pdf_text triggers only name the
+// table in their bodies, so they survive the drop and resume on the new one.
+const ftsDdl = db
+  .prepare("SELECT sql FROM sqlite_master WHERE name = 'pdf_text_fts'")
+  .get() as { sql: string };
+if (!ftsDdl.sql.includes(`tokenize='${FTS_TOKENIZE}'`)) {
+  const started = Date.now();
+  transaction(() => {
+    db.exec("DROP TABLE pdf_text_fts");
+    db.exec(PDF_TEXT_FTS);
+    db.exec("INSERT INTO pdf_text_fts(pdf_text_fts) VALUES ('rebuild')");
+  })();
+  console.log(`[db] rebuilt pdf_text_fts (tokenize='${FTS_TOKENIZE}') in ${Date.now() - started} ms`);
+}
 
 // ---------- what "held" means ----------
 
