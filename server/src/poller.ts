@@ -6,6 +6,7 @@ import {
   getLastPollAttemptAt,
   getTopic,
   getSettings,
+  journalsWidenedSince,
   listTopics,
   listJournals,
   saveArticles,
@@ -66,6 +67,11 @@ export async function pollTopic(id: number): Promise<PollResult> {
   }
   const result: PollResult = { topicId: id, topicName: topic.name, found: 0, added: 0 };
   try {
+    // Read before the journal list, and stored as the watermark below in place
+    // of the finish time. A journal list that widens while this poll is in
+    // flight then postdates the watermark, so the next poll re-seeds for it
+    // rather than this one stamping over the change.
+    const startedAt = new Date().toISOString();
     const journals = listJournals().map((j) => j.name);
     const term = buildTerm(topic.term, journals);
 
@@ -76,8 +82,11 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // everything to seed the topic. If the term or a future per-topic fetch
     // filter ever becomes editable, widening it must clear last_polled_at to
     // force such a re-seed — topic deletion relies on the links being complete
-    // (see DELETABLE_TOPIC_ARTICLES in db.ts).
-    const mhdaSince = topic.last_polled_at ? mhdaWindowStart(topic.last_polled_at) : undefined;
+    // (see DELETABLE_TOPIC_ARTICLES in db.ts). Adding a journal, or removing
+    // the last one, widens every topic, and is caught here by comparing against
+    // when that happened.
+    const since = topic.last_polled_at;
+    const mhdaSince = since && !journalsWidenedSince(since) ? mhdaWindowStart(since) : undefined;
     const { ids: pmids, total } = await searchWithTotal(term, mhdaSince);
     result.found = pmids.length;
 
@@ -120,7 +129,7 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // 14-day staleness refresh stays lazy there too.
     await warmCitations(savedPmids, topic.name);
 
-    setTopicLastPolled(id, new Date().toISOString());
+    setTopicLastPolled(id, startedAt);
   } catch (err) {
     // Goes back to the client in /refresh's response body, so it gets the same
     // treatment as an HTTP error body: real cause to the log, authored message

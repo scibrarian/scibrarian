@@ -493,7 +493,8 @@ export function createTopic(name: string, term: string): Topic {
 // CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
 // topic's *current* match criteria — every stored paper that matches a topic
 // is linked to it. The poller guarantees this today (all-time first poll,
-// contiguous MeSH-date windows, cross-linking of known pmids). If per-topic
+// contiguous MeSH-date windows, cross-linking of known pmids, a full re-scan
+// after the journal list widens — see journalsWidenedSince). If per-topic
 // fetch filters are ever added (e.g. "papers since 2000"), *widening* a
 // topic's criteria must clear its last_polled_at so the next poll re-seeds
 // all-time under the new filter and relinks older papers — otherwise this
@@ -599,6 +600,28 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
   return row ? toJournal(row) : undefined;
 }
 
+// Whether the journal list has widened at or after `iso` (a topic's
+// last_polled_at): a journal was added, or the last one was removed, which
+// takes every topic from those journals to all of PubMed. Either widens every
+// topic's search, and an incremental poll only asks for papers indexed since
+// the last one, so the newly covered back catalogue would never arrive without
+// a full re-scan (see pollTopic). Removing and re-adding a journal is an add.
+// Both timestamps are SQLite's second-resolution UTC text and datetime()
+// truncates `iso` to match, so a change in the same second as a poll counts as
+// newer: at worst one needless re-scan, never a missed one. Binds `iso` twice.
+export function journalsWidenedSince(iso: string): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM journals WHERE created_at >= datetime(?)
+         UNION ALL
+         SELECT 1 FROM settings WHERE key = 'journals_emptied_at' AND value >= datetime(?)
+         LIMIT 1`
+      )
+      .get(iso, iso) !== undefined
+  );
+}
+
 // Which of a journal's articles a removal would permanently delete: the
 // journal's articles minus anything the user has saved — a collection file
 // (library copies) or a bookmark, the same pinning rule the topic predicate
@@ -656,6 +679,15 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
     );
   }
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
+  // With none left every topic searches all of PubMed — see
+  // journalsWidenedSince. Internal, like last_poll_attempt_at: kept out of
+  // SETTING_DEFAULTS and never shown in the UI.
+  if (db.prepare("SELECT 1 FROM journals LIMIT 1").get() === undefined) {
+    db.prepare(
+      `INSERT INTO settings (key, value) VALUES ('journals_emptied_at', datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run();
+  }
   return { deletedArticles, removedFromInterests };
 });
 
