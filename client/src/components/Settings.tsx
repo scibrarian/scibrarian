@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Search, Share2, Check, Plus, Trash2 } from "lucide-react";
+import { Search, Share2, Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -29,6 +29,10 @@ import type {
 
 // What the library's own filing suggests watching, when it has anything to say.
 const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
+
+// One option in the topic search: a MeSH hit while typing, or, with the box
+// empty, a heading the Library's filing suggests, which carries its counts.
+type TopicOption = MeshSearchResult & { papers?: number; majorPapers?: number };
 
 // What "Delete all data" is asking about, in the terms the app is navigated in.
 //
@@ -362,6 +366,27 @@ export function Settings({
   // unconditionally would leave the whole page skeletal forever.
   const ready = loaded && (pro == null || proReady);
 
+  // Topics the Library's own filing points at, so the first topic doesn't have
+  // to be guessed cold. Drawn from papers the user holds files for rather than
+  // from the topic feeds, which would mostly recommend the topics that put those
+  // papers there. Ranked by how many held papers each heading is a *main*
+  // subject of; the count shown is how many carry it at all.
+  //
+  // Offered by the topic search when its box is empty, not as chips above the
+  // list: they can only arrive with the rest of the page, and their height
+  // depends on how many there are and how they wrap, so wherever they sat in
+  // the flow they pushed the panels below down when loading finished.
+  const libraryPicks: TopicOption[] = suggested.results.map((s) => ({ ...s, synonym: null }));
+  const libraryNote =
+    libraryPicks.length > 0
+      ? `From your Library (${plural(suggested.heldPapers, "filed paper")})`
+      : // The one case worth explaining rather than leaving blank: there are
+        // held papers, but their headings haven't been fetched yet.
+        suggested.unchecked > 0
+        ? `Still reading MeSH headings for ${plural(suggested.unchecked, "paper")} in your ` +
+          "Library — suggestions will appear here once that finishes."
+        : undefined;
+
   // The reading itself, or null when there is not one — in flight, or failed.
   const cacheStats = cache === null || cache === "unreadable" ? null : cache;
   // Pressable when there is something to clear, and when we cannot tell whether
@@ -390,67 +415,52 @@ export function Settings({
             addTopic(topicQuery);
           }}
         >
-          <Typeahead<MeshSearchResult>
+          <Typeahead<TopicOption>
             value={topicQuery}
             onChange={setTopicQuery}
             search={(q) => api.searchMesh(q).then((r) => r.results)}
             onSelect={(m) => addTopic(m.name)}
             getKey={(m) => m.ui}
-            placeholder="Search MeSH terms (e.g. type 2 diabetes)…"
+            idleItems={libraryPicks}
+            idleLabel={libraryNote}
+            placeholder={
+              libraryPicks.length > 0
+                ? "Search MeSH terms, or click for suggestions from your Library…"
+                : "Search MeSH terms (e.g. type 2 diabetes)…"
+            }
             id="topic-typeahead"
-            renderItem={(m) => <span className="ta-title">{m.name}</span>}
+            renderItem={(m) => (
+              <>
+                <span className="ta-title">{m.name}</span>
+                {m.synonym && (
+                  <span className="ta-synonym">
+                    <span className="sr-only">, matched synonym </span>
+                    {m.synonym}
+                  </span>
+                )}
+                {m.papers != null && (
+                  <span
+                    className="ta-count"
+                    title={`${m.majorPapers} of ${m.papers} are mainly about this`}
+                  >
+                    <span className="sr-only">, filed papers: </span>
+                    {m.papers}
+                  </span>
+                )}
+              </>
+            )}
           />
           <button type="submit">Add</button>
         </form>
 
-        {/* Topics the Library's own filing points at, so the first topic doesn't
-            have to be guessed cold. Drawn from papers the user holds files for
-            rather than from the topic feeds, which would mostly recommend the
-            topics that put those papers there. Ranked by how many held papers
-            each heading is a *main* subject of; the count shown is how many
-            carry it at all. */}
-        {ready && suggested.results.length > 0 && (
-          <div className="topic-suggest">
-            <span className="hint">
-              From your Library ({suggested.heldPapers} filed paper
-              {suggested.heldPapers === 1 ? "" : "s"}):
-            </span>
-            <div className="topic-suggest-chips">
-              {suggested.results.map((s) => (
-                <button
-                  key={s.ui}
-                  type="button"
-                  className="suggest-chip"
-                  onClick={() => addTopic(s.name)}
-                  title={`${s.majorPapers} of ${s.papers} are mainly about this`}
-                >
-                  <Plus size={13} className="inline-icon" aria-hidden />
-                  {s.name}
-                  <span className="suggest-count">{s.papers}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {/* The one case worth explaining rather than leaving blank: there are
-            held papers, but their headings haven't been fetched yet. */}
-        {ready && suggested.results.length === 0 && suggested.unchecked > 0 && (
-          <p className="hint">
-            Still reading MeSH headings for {suggested.unchecked} paper
-            {suggested.unchecked === 1 ? "" : "s"} in your Library — suggestions will appear
-            here once that finishes.
-          </p>
-        )}
-
-        <ul className="list">
+        <ul className="list scroll-list topic-list">
           {!ready ? (
-            // One row, which is the shortest this list ever is: "No topics yet."
-            // is a single li, so a two-row stand-in shrinks the panel by a row
-            // on the handoff and drags everything below it up. A list with
-            // topics in it grows instead, which is the direction that has to
-            // stay — there is no way to know the count before the answer lands,
-            // and reserving for a guess is what produced the shrink.
-            <ListRowSkeleton w="55%" />
+            // A fixed box, as the journal list below has, so the panel is the
+            // same height however many topics arrive and nothing under it moves
+            // on the handoff. Four rows is as many as fit whole.
+            ["42%", "30%", "36%", "26%"].map((w, i) => (
+              <ListRowSkeleton key={i} w={w} sub={["24%", "20%", "22%", "18%"][i]} />
+            ))
           ) : (
             <>
               {topics.map((d) => (

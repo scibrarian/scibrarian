@@ -190,7 +190,7 @@ describe("deleting all data", () => {
     expect(db.journalCatalogCount()).toBe(1);
     expect(db.meshDescriptorCount()).toBe(1);
     expect(db.searchMesh("NIDDM")).toEqual([
-      { ui: "D003924", name: "Diabetes Mellitus, Type 2", rank: 1 },
+      { ui: "D003924", name: "Diabetes Mellitus, Type 2", synonym: "NIDDM", rank: 1 },
     ]);
     // And the timestamps that say they are loaded, or the next start re-fetches
     // both anyway and the sparing was for nothing.

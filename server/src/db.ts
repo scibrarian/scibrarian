@@ -2329,33 +2329,55 @@ export const replaceMeshData = transaction((rows: MeshSeed[], version: string) =
   setMeshVersion(version);
 });
 
+// A topic-autocomplete hit. `synonym` is the entry term that matched when it
+// isn't the heading itself, so the picker can say why a heading is offered:
+// "cush" finds Denture Liners through "Cushion Liner", which otherwise reads
+// as a bug.
+export interface MeshSearchHit extends MeshDescriptor {
+  synonym: string | null;
+  rank: number;
+}
+
 // Topic autocomplete: match any entry term (the heading is stored as one too),
 // dedupe to one row per descriptor, and rank so the query's relevance to the
 // heading wins over an obscure-synonym match — heading-prefix, then
 // synonym-prefix, then heading-substring, then synonym-only — and shortest
 // heading breaks ties. Without this, searching "diabetes" surfaces descriptors
 // like Hemochromatosis (synonym "Bronze Diabetes") above "Diabetes Mellitus".
-export function searchMesh(q: string, limit = 10): MeshDescriptor[] {
+//
+// Each row is ranked by its own term, the heading's row being the one whose
+// term is the heading (parseDescriptorRecord stores it first, so the dedupe
+// keeps it verbatim). A descriptor's rank comes out the same as ranking on the
+// heading directly, since that row always matches when the heading does. It is
+// ranked this way so the winning row is also the one to show: the composite
+// score adds the term's length as a tie-break (entry terms run far short of
+// the 1,000 that would spill into the next rank), and it is the query's only
+// MIN(), so SQLite fills the bare et.term from the row that produced it.
+export function searchMesh(q: string, limit = 10): MeshSearchHit[] {
   const esc = escapeLike(q);
   const like = `%${esc}%`;
   const prefix = `${esc}%`;
   return db
     .prepare(
-      `SELECT d.ui AS ui, d.name AS name,
-         MIN(CASE
-           WHEN d.name LIKE ? ESCAPE '\\' THEN 0
-           WHEN et.term LIKE ? ESCAPE '\\' THEN 1
-           WHEN d.name LIKE ? ESCAPE '\\' THEN 2
-           ELSE 3
-         END) AS rank
-       FROM mesh_descriptors d
-       JOIN mesh_entry_terms et ON et.ui = d.ui
-       WHERE et.term LIKE ? ESCAPE '\\'
-       GROUP BY d.ui, d.name
-       ORDER BY rank, length(d.name)
+      `SELECT ui, name, CASE WHEN term = name THEN NULL ELSE term END AS synonym,
+         score / 1000 AS rank
+       FROM (
+         SELECT d.ui AS ui, d.name AS name, et.term AS term,
+           MIN(CASE
+             WHEN et.term = d.name AND d.name LIKE ? ESCAPE '\\' THEN 0
+             WHEN et.term LIKE ? ESCAPE '\\' THEN 1
+             WHEN et.term = d.name THEN 2
+             ELSE 3
+           END * 1000 + length(et.term)) AS score
+         FROM mesh_descriptors d
+         JOIN mesh_entry_terms et ON et.ui = d.ui
+         WHERE et.term LIKE ? ESCAPE '\\'
+         GROUP BY d.ui, d.name
+       )
+       ORDER BY rank, length(name)
        LIMIT ?`
     )
-    .all(prefix, prefix, like, like, limit) as unknown as MeshDescriptor[];
+    .all(prefix, prefix, like, limit) as unknown as MeshSearchHit[];
 }
 
 // Validation: exact (case-insensitive) match on the canonical heading. Used by

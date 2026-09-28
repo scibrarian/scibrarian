@@ -401,7 +401,9 @@ api.get(
     const q = String(req.query.q ?? "").trim();
     if (q.length < 2) return res.json({ results: [] });
     await ensureMeshLoaded();
-    res.json({ results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name })) });
+    res.json({
+      results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name, synonym: m.synonym })),
+    });
   })
 );
 

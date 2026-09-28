@@ -142,6 +142,7 @@ export interface JournalSuggestResponse {
 export interface MeshSearchResult {
   ui: string; // MeSH descriptor id, e.g. D003924
   name: string; // canonical heading
+  synonym: string | null; // the entry term that matched, when it isn't the heading
 }
 
 export interface MeshSearchResponse {
