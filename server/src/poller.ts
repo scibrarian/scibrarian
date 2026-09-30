@@ -1,12 +1,12 @@
 import cron, { ScheduledTask } from "node-cron";
 import { DEFAULT_POLL_CRON } from "./config.js";
 import {
-  db,
   existingPmids,
   getLastPollAttemptAt,
   getTopic,
   getSettings,
   listTopics,
+  linkToTopic,
   listJournals,
   markJournalsScanned,
   saveArticles,
@@ -28,15 +28,12 @@ import { chunk, errMessage, safeMessage } from "./util.js";
 const BATCH_SIZE = 100;
 
 // Link existing articles to a topic without refetching them from PubMed.
-// Returns how many links were newly created — INSERT OR IGNORE reports 0
-// changes for a (pmid, topic) row that already existed — so a poll can count
-// these toward its "added" delta.
-const linkStmt = db.prepare(
-  "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
-);
-const linkKnown = transaction((pmids: string[], topicId: number): number => {
+// Returns how many links were newly created — a (pmid, topic) link that
+// already existed isn't one — so a poll can count these toward its "added"
+// delta.
+const linkKnown = transaction((pmids: string[], topicId: number, allPubmed: boolean): number => {
   let linked = 0;
-  for (const pmid of pmids) linked += Number(linkStmt.run(pmid, topicId).changes);
+  for (const pmid of pmids) linked += Number(linkToTopic(pmid, topicId, allPubmed));
   return linked;
 });
 
@@ -85,7 +82,9 @@ export async function pollTopic(id: number): Promise<PollResult> {
       result.error = blocked;
       return result;
     }
-    // Can't change mid-poll: turning it on or off takes the poll lock.
+    // Read once, and this poll keeps to it. Turning the setting off takes the
+    // poll lock, so it can't go off mid-poll; it can go on, which leaves this
+    // poll a journal poll to the end, recording its links and watermark as one.
     const allPubmed = searchesAllPubmed();
     const journals = allPubmed ? [] : listJournals();
 
@@ -153,7 +152,7 @@ export async function pollTopic(id: number): Promise<PollResult> {
     const savedPmids: string[] = [];
     for (const batch of chunk(newPmids, BATCH_SIZE)) {
       const articles = await fetchArticles(batch);
-      saveArticles(articles, id);
+      saveArticles(articles, id, allPubmed);
       savedPmids.push(...articles.map((a) => a.pmid));
       result.added += articles.length;
     }
@@ -164,7 +163,7 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // it wasn't fetched from PubMed. Without this the banner shows "Added 0"
     // while the feed grew.
     const alreadyKnown = pmids.filter((p) => known.has(p));
-    result.added += linkKnown(alreadyKnown, id);
+    result.added += linkKnown(alreadyKnown, id, allPubmed);
 
     // Warm the citation cache for just-added papers (brand new, so always
     // missing) so their graph opens instantly. Best-effort: a failure must not

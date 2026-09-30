@@ -26,6 +26,10 @@ const HEADERS = { "x-admin-token": "all-pubmed-token", "content-type": "applicat
 
 const ncbi = vi.hoisted(() => ({
   calls: [] as { term: string; since: string | undefined }[],
+  ids: [] as string[],
+  // What adding a journal waits on for its MEDLINE check, and whether it has.
+  indexing: Promise.resolve(),
+  indexingAsked: false,
 }));
 vi.mock("./pubmed.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pubmed.js")>();
@@ -33,7 +37,12 @@ vi.mock("./pubmed.js", async (importOriginal) => {
     ...actual,
     searchWithTotal: async (term: string, mhdaSince?: string) => {
       ncbi.calls.push({ term, since: mhdaSince });
-      return { ids: [], total: 0 };
+      return { ids: ncbi.ids, total: ncbi.ids.length };
+    },
+    isMedlineIndexed: async () => {
+      ncbi.indexingAsked = true;
+      await ncbi.indexing;
+      return true;
     },
   };
 });
@@ -54,7 +63,11 @@ const LATER_SINCE = "2026/02/28";
 
 const search = (journals: string[], since?: string) => ({ term: buildTerm(TERM, journals), since });
 
-function article(pmid: string, nlmId: string) {
+// saveArticles' last argument: saved as an all-PubMed poll saves them, so the
+// links it makes are recorded as that mode's (see topic_pubmed_links).
+const ALL_PUBMED = true;
+
+function article(pmid: string, nlmId: string | null) {
   return {
     pmid,
     title: `Paper ${pmid}`,
@@ -75,6 +88,8 @@ const topicsOf = (pmid: string) =>
   (db.db.prepare("SELECT topic_id FROM article_topics WHERE pmid = ?").all(pmid) as {
     topic_id: number;
   }[]).map((r) => r.topic_id);
+const pubmedLinks = () =>
+  (db.db.prepare("SELECT COUNT(*) AS c FROM topic_pubmed_links").get() as { c: number }).c;
 
 const request = (method: string, path: string, body?: unknown) =>
   fetch(`${base}/api${path}`, {
@@ -122,6 +137,9 @@ beforeEach(() => {
   }
   db.db.exec("DELETE FROM settings WHERE key = 'search_all_pubmed'");
   ncbi.calls = [];
+  ncbi.ids = [];
+  ncbi.indexing = Promise.resolve();
+  ncbi.indexingAsked = false;
 });
 
 describe("polling while every topic searches all of PubMed", () => {
@@ -199,7 +217,8 @@ describe("turning the setting off", () => {
         article("3", ELSEWHERE), // held in the library
         article("4", ELSEWHERE), // bookmarked
       ],
-      t
+      t,
+      ALL_PUBMED
     );
     // In no feed at all, so nothing the all-PubMed polls brought in.
     db.upsertArticles([article("5", ELSEWHERE)]);
@@ -222,6 +241,74 @@ describe("turning the setting off", () => {
     expect([topicsOf("1"), topicsOf("3"), topicsOf("4")]).toEqual([[t], [], []]);
     // Out of Interests, still in its folder.
     expect(db.listBookmarks().map((b) => b.pmid)).toEqual(["4"]);
+  });
+
+  it("takes out what an all-PubMed poll linked", async () => {
+    db.createJournal("Lancet", LANCET, true);
+    const t = db.createTopic("Adipose Tissue", TERM).id;
+    // Stored already, in no feed, so the poll links it without fetching it.
+    db.upsertArticles([article("2", ELSEWHERE)]);
+    db.setSearchAllPubmed(true);
+    ncbi.ids = ["2"];
+    await pollTopic(t);
+    expect(topicsOf("2")).toEqual([t]);
+
+    expect(db.setSearchAllPubmed(false)).toEqual({ deletedArticles: 1, removedFromInterests: 1 });
+  });
+
+  it("keeps what a journal poll found, whatever journal PubMed files it under", () => {
+    // A journal poll searches by name, and a name can match papers another
+    // serial files under its own nlm_id, so a listed journal's feed can hold a
+    // paper whose nlm_id isn't on the list.
+    db.createJournal("Lancet", LANCET, true);
+    const t = db.createTopic("Adipose Tissue", TERM).id;
+    db.saveArticles([article("2", ELSEWHERE), article("3", null)], t);
+    db.setSearchAllPubmed(true);
+    // Found again across all of PubMed: the link was already there, so it
+    // stays the journal poll's.
+    db.saveArticles([article("2", ELSEWHERE), article("3", null)], t, ALL_PUBMED);
+
+    expect(db.countOffListArticles()).toBe(0);
+    expect(db.setSearchAllPubmed(false)).toEqual({ deletedArticles: 0, removedFromInterests: 0 });
+    expect([topicsOf("2"), topicsOf("3")]).toEqual([[t], [t]]);
+  });
+
+  it("takes out a paper PubMed gave no journal id, with journals on the list", () => {
+    db.createJournal("Lancet", LANCET, true);
+    const t = db.createTopic("Adipose Tissue", TERM).id;
+    db.setSearchAllPubmed(true);
+    db.saveArticles([article("2", null)], t, ALL_PUBMED);
+
+    expect(db.countOffListArticles()).toBe(1);
+    expect(db.setSearchAllPubmed(false)).toEqual({ deletedArticles: 1, removedFromInterests: 1 });
+    expect(exists("2")).toBe(false);
+  });
+
+  it("takes a paper out of only the feeds an all-PubMed poll put it in", () => {
+    db.createJournal("Lancet", LANCET, true);
+    const kept = db.createTopic("Adipose Tissue", TERM).id;
+    const left = db.createTopic("Obesity", '"Obesity"[MeSH]').id;
+    db.saveArticles([article("2", ELSEWHERE)], kept);
+    db.setSearchAllPubmed(true);
+    db.saveArticles([article("2", ELSEWHERE)], left, ALL_PUBMED);
+
+    // Still in a feed, so it doesn't leave Interests, and isn't deleted.
+    expect(db.countOffListArticles()).toBe(0);
+    expect(db.setSearchAllPubmed(false)).toEqual({ deletedArticles: 0, removedFromInterests: 0 });
+    expect(topicsOf("2")).toEqual([kept]);
+  });
+
+  it("leaves a listed journal's papers in the feeds an all-PubMed poll put them in", () => {
+    // The journal polls find them too, so they stay rather than being deleted
+    // and fetched again, and their links become the journal polls' own.
+    db.createJournal("Lancet", LANCET, true);
+    const t = db.createTopic("Adipose Tissue", TERM).id;
+    db.setSearchAllPubmed(true);
+    db.saveArticles([article("1", LANCET)], t, ALL_PUBMED);
+
+    expect(db.setSearchAllPubmed(false)).toEqual({ deletedArticles: 0, removedFromInterests: 0 });
+    expect(topicsOf("1")).toEqual([t]);
+    expect(pubmedLinks()).toBe(0);
   });
 
   it("deletes nothing when the setting was already off", () => {
@@ -253,10 +340,38 @@ describe("the routes", () => {
     expect(db.listJournals().map((x) => x.id)).toEqual([j.id]);
   });
 
+  it("refuse an add the setting went on during", async () => {
+    db.bulkUpsertCatalog([
+      {
+        nlm_id: LANCET,
+        title: "The Lancet",
+        med_abbr: "Lancet",
+        iso_abbr: "Lancet",
+        issn_print: "",
+        issn_online: "",
+      },
+    ]);
+    let release!: () => void;
+    ncbi.indexing = new Promise<void>((r) => (release = r));
+    const adding = request("POST", "/journals", { nlmId: LANCET });
+    try {
+      // Past the route's first look at the setting, waiting on NCBI.
+      await vi.waitFor(() => expect(ncbi.indexingAsked).toBe(true));
+      const on = await request("PUT", "/journals/all-pubmed", { on: true });
+      expect(on.status).toBe(200);
+    } finally {
+      release();
+    }
+    const add = await adding;
+    expect(add.status).toBe(409);
+    expect((await add.json()).error).toMatch(/Search all PubMed journals/);
+    expect(db.listJournals()).toEqual([]);
+  });
+
   it("turn it off with the count the confirm showed", async () => {
     const t = db.createTopic("Adipose Tissue", TERM).id;
     db.setSearchAllPubmed(true);
-    db.saveArticles([article("2", ELSEWHERE)], t);
+    db.saveArticles([article("2", ELSEWHERE)], t, ALL_PUBMED);
 
     const counted = await request("GET", "/journals/all-pubmed/article-count");
     expect(await counted.json()).toEqual({ count: 1 });
@@ -270,7 +385,7 @@ describe("the routes", () => {
   it("refuse to turn it off while a poll holds the lock, and delete nothing", async () => {
     const t = db.createTopic("Adipose Tissue", TERM).id;
     db.setSearchAllPubmed(true);
-    db.saveArticles([article("2", ELSEWHERE)], t);
+    db.saveArticles([article("2", ELSEWHERE)], t, ALL_PUBMED);
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
     const holding = withPollLock(async () => {
@@ -284,6 +399,26 @@ describe("the routes", () => {
 
     release();
     await holding;
+  });
+
+  it("turn it on while something holds the poll lock", async () => {
+    // Turning it on stores nothing, so a poll or the MeSH backfill running
+    // is no reason to refuse it.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const holding = withPollLock(async () => {
+      await held;
+    });
+
+    try {
+      const res = await request("PUT", "/journals/all-pubmed", { on: true });
+      expect(res.status).toBe(200);
+      expect(db.searchesAllPubmed()).toBe(true);
+    } finally {
+      // Whatever happened, or the lock outlives this test and fails the next.
+      release();
+      await holding;
+    }
   });
 
   it("reject a value that isn't true or false", async () => {

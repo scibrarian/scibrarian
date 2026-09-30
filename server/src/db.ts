@@ -199,6 +199,17 @@ db.exec(`
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
   );
 
+  -- The topic links an all-PubMed poll made, so that turning the setting off
+  -- can take out those links and no others (see OFF_LIST_LINKS). Only links a
+  -- poll in that mode created: one a journal poll had already made gets no row,
+  -- and stays. A row goes with its link, and all of them with the setting.
+  CREATE TABLE IF NOT EXISTS topic_pubmed_links (
+    pmid TEXT NOT NULL,
+    topic_id INTEGER NOT NULL,
+    PRIMARY KEY (pmid, topic_id),
+    FOREIGN KEY (pmid, topic_id) REFERENCES article_topics(pmid, topic_id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -284,7 +295,7 @@ db.exec(`
   -- a dangling row would be meaningless. Deleting a folder takes its bookmarks
   -- with it; the articles themselves stay (they may be in a topic feed too).
   -- Topic and journal removals deliberately never delete a bookmarked article —
-  -- see DELETABLE_TOPIC_ARTICLES / DELETABLE_JOURNAL_ARTICLES.
+  -- see UNSAVED_ARTICLES.
   CREATE TABLE IF NOT EXISTS bookmarks (
     folder_id INTEGER NOT NULL,
     pmid TEXT NOT NULL,
@@ -463,6 +474,14 @@ export const heldFileSql = (alias = "") => `${alias}pmid IS NOT NULL`;
 // custody positioning means it.
 const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFileSql()})`;
 
+// The pinning rule every removal that deletes papers applies (a topic, a
+// journal, "Search all PubMed journals" going off): a paper the user holds a
+// file for or has bookmarked is theirs, and outlives the feed it was found in.
+// One fragment, so a new way of saving a paper can't be honoured by one removal
+// and missed by another.
+const UNSAVED_ARTICLES = `pmid NOT IN ${HELD_PAPERS}
+   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+
 // ---------- settings ----------
 
 const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
@@ -554,8 +573,7 @@ export function createTopic(name: string, term: string): Topic {
 // Narrowing is safe by default: stale links merely keep papers alive.
 const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
    AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
-   AND pmid NOT IN ${HELD_PAPERS}
-   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+   AND ${UNSAVED_ARTICLES}`;
 
 // How many stored articles a topic removal would permanently delete (for the
 // confirmation).
@@ -690,8 +708,7 @@ export const markJournalsScanned = transaction((topicId: number, journalIds: num
 // pinning rule ever changes, both move together, so the dialog can't promise
 // one thing and the delete do another.
 const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
-   AND pmid NOT IN ${HELD_PAPERS}
-   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+   AND ${UNSAVED_ARTICLES}`;
 
 function journalNlmId(id: number): string | null {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
@@ -754,21 +771,30 @@ export function searchesAllPubmed(): boolean {
   return row?.value === "1";
 }
 
-// The papers turning the setting off takes out of the topic feeds: those from
-// journals the list doesn't have. The list is locked while the setting is on,
-// so these are what the all-PubMed polls brought in. Told apart by nlm_id, as
-// journal removal tells a journal's papers apart, with the same blind spots: a
-// paper PubMed gave no journal id (nlm_id NULL) never compares as off the list
-// and stays, while a legacy journal row with no nlm_id can't claim its papers,
-// so they count as off the list.
-const OFF_LIST_IN_FEEDS = `pmid IN (SELECT pmid FROM article_topics)
-   AND nlm_id NOT IN (SELECT nlm_id FROM journals WHERE nlm_id IS NOT NULL)`;
+// The links turning the setting off takes out of the topic feeds: those an
+// all-PubMed poll made (see topic_pubmed_links) to a paper from a journal the
+// list doesn't have. Recorded when made rather than told apart by nlm_id
+// afterwards, because a journal poll searches by name, and a name can match
+// papers another serial files under its own nlm_id: only the record knows a
+// journal poll found those. The nlm_id test here only ever keeps a link: a paper
+// from a listed journal is one that journal's polls find too, so it stays
+// rather than being deleted and fetched again. A paper PubMed gave no journal
+// id is off the list. Rows of (pmid, topic_id).
+const OFF_LIST_LINKS = `SELECT l.pmid, l.topic_id FROM topic_pubmed_links l
+   JOIN articles a ON a.pmid = l.pmid
+   WHERE a.nlm_id IS NULL
+      OR a.nlm_id NOT IN (SELECT nlm_id FROM journals WHERE nlm_id IS NOT NULL)`;
 
-// Of those, the ones deleted outright: everything the user hasn't saved — the
-// pinning rule DELETABLE_JOURNAL_ARTICLES applies.
+// The papers those links take out of Interests: the ones in no feed but
+// through them. A paper a journal poll linked to another topic stays in that
+// topic's feed.
+const OFF_LIST_IN_FEEDS = `pmid IN (SELECT pmid FROM (${OFF_LIST_LINKS}))
+   AND pmid NOT IN (SELECT pmid FROM article_topics
+                    WHERE (pmid, topic_id) NOT IN (${OFF_LIST_LINKS}))`;
+
+// Of those, the ones deleted outright: everything the user hasn't saved.
 const DELETABLE_OFF_LIST_ARTICLES = `${OFF_LIST_IN_FEEDS}
-   AND pmid NOT IN ${HELD_PAPERS}
-   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+   AND ${UNSAVED_ARTICLES}`;
 
 // How many papers turning the setting off would take out of Interests (for the
 // confirm, and what the turn-off reports as removedFromInterests). All of them,
@@ -783,25 +809,27 @@ export function countOffListArticles(): number {
 }
 
 // Turning it on changes nothing stored: the next poll of each topic lists its
-// history across all of PubMed. Turning it off is a journal removal for every
-// journal outside the list — their papers leave every topic feed, and those
-// nothing saved points at are deleted — and forgets the all-PubMed watermarks,
-// because what they vouched for is gone: turning the setting on again lists
-// history afresh. Only on an actual change, so a repeated "off" can't delete.
+// history across all of PubMed. Turning it off takes out what those polls
+// brought in from journals outside the list — the links leave the topic feeds,
+// and the papers left in no feed that nothing saved points at are deleted — and
+// forgets the all-PubMed watermarks, because what they vouched for is gone:
+// turning the setting on again lists history afresh. Only on an actual change,
+// so a repeated "off" can't delete.
 export const setSearchAllPubmed = transaction((on: boolean): JournalRemovalResult => {
   let deletedArticles = 0;
   let removedFromInterests = 0;
   if (!on && searchesAllPubmed()) {
     removedFromInterests = countOffListArticles();
-    // Deleted first, while "in a feed" still holds for them (their
-    // article_topics rows cascade); then the saved papers left over are unlinked.
+    // Deleted first, while the links that mark them are still there (theirs
+    // cascade); then the links left over are removed — to saved papers, and to
+    // papers a journal poll keeps in another topic's feed.
     deletedArticles = Number(
       db.prepare(`DELETE FROM articles WHERE ${DELETABLE_OFF_LIST_ARTICLES}`).run().changes
     );
-    db.prepare(
-      `DELETE FROM article_topics
-       WHERE pmid IN (SELECT pmid FROM articles WHERE ${OFF_LIST_IN_FEEDS})`
-    ).run();
+    db.prepare(`DELETE FROM article_topics WHERE (pmid, topic_id) IN (${OFF_LIST_LINKS})`).run();
+    // What's left are links to papers from listed journals, the journal polls'
+    // own from here on.
+    db.prepare("DELETE FROM topic_pubmed_links").run();
     db.prepare("DELETE FROM topic_pubmed_scans").run();
   }
   setSettingStmt.run("search_all_pubmed", on ? "1" : "0");
@@ -879,6 +907,19 @@ const upsertArticleStmt = db.prepare(`
 const linkArticleStmt = db.prepare(
   "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
 );
+const recordPubmedLinkStmt = db.prepare(
+  "INSERT INTO topic_pubmed_links (pmid, topic_id) VALUES (?, ?)"
+);
+
+// Link a paper to a topic, and say whether the link is new. `allPubmed` says
+// the poll that found it searched all of PubMed, and a new link it made is
+// recorded as one (see topic_pubmed_links); a link that already existed keeps
+// what it had. Not a transaction wrapper: both callers run inside one.
+export function linkToTopic(pmid: string, topicId: number, allPubmed: boolean): boolean {
+  const created = Number(linkArticleStmt.run(pmid, topicId).changes) > 0;
+  if (created && allPubmed) recordPubmedLinkStmt.run(pmid, topicId);
+  return created;
+}
 
 export type ArticleInsert = Omit<Article, "authors" | "first_seen_at" | "mesh_status"> & {
   authors: string[];
@@ -967,11 +1008,12 @@ function upsertArticle(a: ArticleInsert): void {
 }
 
 // Insert/refresh a batch of articles and link them to a topic, atomically.
-export const saveArticles = transaction((articles: ArticleInsert[], topicId: number) => {
+// `allPubmed` as for linkToTopic.
+export const saveArticles = transaction((articles: ArticleInsert[], topicId: number, allPubmed: boolean = false) => {
   for (const a of articles) {
     upsertArticle(a);
     setArticleXmlFacts(a);
-    linkArticleStmt.run(a.pmid, topicId);
+    linkToTopic(a.pmid, topicId, allPubmed);
   }
 });
 
@@ -2522,8 +2564,9 @@ function libraryStats(): LibraryStats {
 // The tables a reset empties. Deleting a parent is enough for everything that
 // hangs off it — foreign_keys is ON and the schema's cascades do the rest — so
 // article_mesh, article_pub_types, article_topics, topic_journal_scans,
-// topic_pubmed_scans, bookmarks and collection_files are absent from this list
-// because they are already covered, not because they survive.
+// topic_pubmed_scans, topic_pubmed_links, bookmarks and collection_files are
+// absent from this list because they are already covered, not because they
+// survive.
 //
 // paper_citations and pdf_text are here because nothing cascades to them:
 // neither carries a foreign key (both are keyed by something they only softly

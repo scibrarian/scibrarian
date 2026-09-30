@@ -546,6 +546,9 @@ api.post(
       // that journal just quietly never yields a paper. An NCBI hiccup answers
       // null, which stores as "not established yet" and the backfill retries.
       const indexed = await isMedlineIndexed(resolved.nlmId);
+      // Asked again, after the awaits: the setting can go on while this waits
+      // on the catalog or NCBI. Nothing awaits between here and the insert.
+      if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
       res.status(201).json(createJournal(resolved.name, resolved.nlmId, indexed));
     } catch (err) {
       // The one error this route reads: a race against another add of the same
@@ -574,10 +577,13 @@ api.put(
     if (typeof on !== "boolean") {
       return res.status(400).json({ error: "'on' must be true or false." });
     }
-    // Under the poll lock, like a reset. An all-PubMed poll still running after
-    // the setting went off would store papers the deletion had just taken out,
-    // and record the watermark it had just forgotten.
-    const result = await withPollLock(async () => setSearchAllPubmed(on));
+    // Turning it on stores nothing, so it waits on nothing: a poll already
+    // running read the setting when it started, and finishes the way it began.
+    if (on) return res.json(setSearchAllPubmed(true));
+    // Turning it off is under the poll lock, like a reset. An all-PubMed poll
+    // still running after the setting went off would store papers the deletion
+    // had just taken out, and record the watermark it had just forgotten.
+    const result = await withPollLock(async () => setSearchAllPubmed(false));
     if (result === null) {
       return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
     }
