@@ -392,13 +392,15 @@ describe("the routes", () => {
       await held;
     });
 
-    const res = await request("PUT", "/journals/all-pubmed", { on: false });
-    expect(res.status).toBe(409);
-    expect(db.searchesAllPubmed()).toBe(true);
-    expect(exists("2")).toBe(true);
-
-    release();
-    await holding;
+    try {
+      const res = await request("PUT", "/journals/all-pubmed", { on: false });
+      expect(res.status).toBe(409);
+      expect(db.searchesAllPubmed()).toBe(true);
+      expect(exists("2")).toBe(true);
+    } finally {
+      release();
+      await holding;
+    }
   });
 
   it("turn it on while something holds the poll lock", async () => {

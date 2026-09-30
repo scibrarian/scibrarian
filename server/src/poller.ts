@@ -122,27 +122,29 @@ export async function pollTopic(id: number): Promise<PollResult> {
       }
     }
 
-    let total = 0;
-    const matched = new Set<string>();
-    for (const search of searches) {
-      const found = await searchWithTotal(buildTerm(topic.term, search.journals), search.mhdaSince);
-      total += found.total;
-      for (const pmid of found.ids) matched.add(pmid);
-    }
-    const pmids = [...matched];
-    result.found = pmids.length;
-
     // PubMed serves at most the first 9,999 records for a query (see
     // MAX_RESULTS), so a topic broad enough to exceed that gets a partial feed
     // from any history scan — most recent first, since the search is sorted by
     // publication date. Reported rather than swallowed: the feed would
     // otherwise look complete, and the fix is the user's to make (narrow the
-    // topic, or watch fewer journals), not ours to guess at.
-    if (total > pmids.length) {
-      result.truncated = total - pmids.length;
+    // topic, or watch fewer journals), not ours to guess at. Counted per
+    // search, as what that search matched and didn't return: a paper two
+    // searches both return is one paper, not a shortfall.
+    let skipped = 0;
+    const matched = new Set<string>();
+    for (const search of searches) {
+      const found = await searchWithTotal(buildTerm(topic.term, search.journals), search.mhdaSince);
+      skipped += Math.max(0, found.total - found.ids.length);
+      for (const pmid of found.ids) matched.add(pmid);
+    }
+    const pmids = [...matched];
+    result.found = pmids.length;
+
+    if (skipped > 0) {
+      result.truncated = skipped;
       console.warn(
-        `[poll] ${topic.name}: matched ${total} papers, but PubMed caps what one query returns — ` +
-          `took the most recent, skipped ${result.truncated}.`
+        `[poll] ${topic.name}: PubMed caps what one query returns — ` +
+          `took the most recent, skipped ${skipped} older.`
       );
     }
 

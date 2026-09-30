@@ -25,6 +25,8 @@ const ncbi = vi.hoisted(() => ({
   calls: [] as { term: string; since: string | undefined }[],
   park: null as Promise<unknown> | null,
   fail: false,
+  // What a search answers, by its term, where a test needs more than nothing.
+  answers: new Map<string, { ids: string[]; total: number }>(),
 }));
 vi.mock("./pubmed.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pubmed.js")>();
@@ -34,7 +36,7 @@ vi.mock("./pubmed.js", async (importOriginal) => {
       ncbi.calls.push({ term, since: mhdaSince });
       if (ncbi.fail) throw new Error("NCBI unreachable");
       if (ncbi.park) await ncbi.park;
-      return { ids: [], total: 0 };
+      return ncbi.answers.get(term) ?? { ids: [], total: 0 };
     },
   };
 });
@@ -72,9 +74,11 @@ beforeEach(() => {
   db.db.exec(
     "DELETE FROM topics; DELETE FROM journals; DELETE FROM settings WHERE key = 'search_all_pubmed';"
   );
+  db.db.exec("DELETE FROM articles");
   ncbi.calls = [];
   ncbi.park = null;
   ncbi.fail = false;
+  ncbi.answers.clear();
 });
 
 describe("which history a poll lists", () => {
@@ -164,6 +168,56 @@ describe("which history a poll lists", () => {
     ncbi.calls = [];
     await pollTopic(t.id);
     expect(ncbi.calls).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
+  });
+});
+
+describe("what a poll reports PubMed left out", () => {
+  // Stored already, so a poll that finds them links them without a fetch.
+  function stored(...pmids: string[]) {
+    db.upsertArticles(
+      pmids.map((pmid) => ({
+        pmid,
+        title: `Paper ${pmid}`,
+        abstract: "",
+        journal_name: "",
+        nlm_id: null,
+        authors: [],
+        pub_date: "2026-01-01",
+        pub_date_display: "2026",
+        doi: "",
+        url: "",
+      }))
+    );
+  }
+
+  it("counts what each search matched and didn't return", async () => {
+    db.createJournal("Lancet", "2985213R", true);
+    const t = await seededTopic();
+    db.createJournal("BMJ", "8900488", true);
+    stored("1", "2", "3");
+    // BMJ's history is capped; the incremental Lancet search isn't.
+    ncbi.answers.set(search(["BMJ"]).term, { ids: ["1", "2"], total: 5 });
+    ncbi.answers.set(search(["Lancet"]).term, { ids: ["3"], total: 1 });
+
+    const result = await pollTopic(t.id);
+    expect(ncbi.calls).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
+    expect({ found: result.found, truncated: result.truncated }).toEqual({ found: 3, truncated: 3 });
+  });
+
+  it("doesn't count a paper two searches both return as left out", async () => {
+    // A journal poll searches by name, and one paper can match two names.
+    db.createJournal("Lancet", "2985213R", true);
+    const t = await seededTopic();
+    db.createJournal("BMJ", "8900488", true);
+    stored("1");
+    ncbi.answers.set(search(["BMJ"]).term, { ids: ["1"], total: 1 });
+    ncbi.answers.set(search(["Lancet"]).term, { ids: ["1"], total: 1 });
+
+    const result = await pollTopic(t.id);
+    expect({ found: result.found, truncated: result.truncated }).toEqual({
+      found: 1,
+      truncated: undefined,
+    });
   });
 });
 

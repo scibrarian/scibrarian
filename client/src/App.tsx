@@ -623,7 +623,7 @@ export default function App() {
       const capped = res.results.filter((r) => r.truncated);
       const narrow = res.allPubmed ? "Narrow the topic" : "Narrow the topic or watch fewer journals";
       for (const r of capped) {
-        msg += ` “${r.topicName}” matches more papers than PubMed will return — kept the ${r.found.toLocaleString()} most recent, skipped ${r.truncated!.toLocaleString()}. ${narrow} for full coverage.`;
+        msg += ` “${r.topicName}” matches more papers than PubMed will return — ${r.truncated!.toLocaleString()} older ones were left out. ${narrow} for full coverage.`;
       }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
       // Which channel this lands in is decided by whether there is anything to
