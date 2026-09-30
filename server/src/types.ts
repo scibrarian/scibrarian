@@ -25,6 +25,8 @@ export type {
   MeshFiling,
   MeshHeading,
   MeshHeadingsResponse,
+  MeshSearchResponse,
+  MeshSearchResult,
   Paper,
   PaperProvenance,
   PapersResponse,

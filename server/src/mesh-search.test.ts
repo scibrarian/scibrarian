@@ -62,6 +62,18 @@ describe("searchMesh", () => {
     ]);
   });
 
+  it("names none for a heading that contains the query, even when a synonym matches closer", () => {
+    // "Syndrome, Cushing" is a prefix match and the heading only a substring
+    // one, so the synonym row wins the ranking — rank 1, as before — but the
+    // heading is still offered in its own right.
+    expect(db.searchMesh("syndrome")).toEqual([
+      { ui: "D003480", name: "Cushing Syndrome", synonym: null, rank: 1 },
+    ]);
+    expect(db.searchMesh("liner")).toEqual([
+      { ui: "D003772", name: "Denture Liners", synonym: null, rank: 1 },
+    ]);
+  });
+
   it("still ranks a heading match above a synonym-only one", () => {
     expect(db.searchMesh("diabetes")).toEqual([
       { ui: "D003920", name: "Diabetes Mellitus", synonym: null, rank: 0 },

@@ -105,6 +105,11 @@ export function Settings({
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   // Journal add/remove lives in the JournalManager dialog.
   const [managingJournals, setManagingJournals] = useState(false);
+  // Turning "Search all PubMed journals" off deletes papers, so, like a topic
+  // removal, the confirm's message is built from a count fetched before it
+  // opens. Null when no confirm is showing.
+  const [allPubmedOffMessage, setAllPubmedOffMessage] = useState<string | null>(null);
+  const [switchingAllPubmed, setSwitchingAllPubmed] = useState(false);
   // The topic warning depends on an article count fetched *before* the dialog
   // opens, so the pending removal carries its message along.
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
@@ -228,6 +233,50 @@ export function Settings({
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
+    }
+  }
+
+  // Turning it on stores nothing, so it just happens. Turning it off takes the
+  // papers from journals outside the list out of Interests, so it asks first,
+  // with the count.
+  async function toggleAllPubmed(on: boolean) {
+    setError(null);
+    if (on) return applyAllPubmed(true);
+    let count: number | null = null;
+    try {
+      count = (await api.offListArticleCount()).count;
+    } catch {
+      /* if the count lookup fails, fall through without the number */
+    }
+    const back = "Topics will go back to searching only your added journals.";
+    const kept = "will be removed from Interests, but your bookmarks will be kept.";
+    setAllPubmedOffMessage(
+      count === null
+        ? `${back} Papers in non-added journals ${kept}`
+        : count > 0
+          ? `${back} ${count.toLocaleString()} of your papers (the ones in non-added journals) ${kept}`
+          : back
+    );
+  }
+
+  async function applyAllPubmed(on: boolean) {
+    setAllPubmedOffMessage(null);
+    setSwitchingAllPubmed(true);
+    try {
+      const res = await api.setSearchAllPubmed(on);
+      // Only this key, for the reason toggleOpenLibrary gives: the whole object
+      // would clobber unsaved edits in the settings form.
+      setSettings((s) => (s ? { ...s, search_all_pubmed: on } : s));
+      setBaseline((b) => (b ? { ...b, search_all_pubmed: on } : b));
+      // Turning it on changes nothing the shell shows until the next check.
+      if (!on) {
+        onDataChanged();
+        if (res.removedFromInterests > 0) onPapersRemoved(res.removedFromInterests);
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSwitchingAllPubmed(false);
     }
   }
 
@@ -366,6 +415,8 @@ export function Settings({
   // unconditionally would leave the whole page skeletal forever.
   const ready = loaded && (pro == null || proReady);
 
+  const allPubmed = settings?.search_all_pubmed === true;
+
   // Topics the Library's own filing points at, so the first topic doesn't have
   // to be guessed cold. Drawn from papers the user holds files for rather than
   // from the topic feeds, which would mostly recommend the topics that put those
@@ -466,8 +517,8 @@ export function Settings({
               {topics.map((d) => (
                 <li key={d.id}>
                   <span>
-                    <strong>{d.name}</strong>
-                    <code className="term">{d.term}</code>
+                    <strong title={d.name}>{d.name}</strong>
+                    <code className="term" title={d.term}>{d.term}</code>
                   </span>
                   <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
                     Remove
@@ -486,10 +537,18 @@ export function Settings({
           Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
           citations per article — an open stand-in for impact factor.
         </p>
-        <button type="button" className="accent-btn" onClick={() => setManagingJournals(true)}>
+        {/* Locked, not just dimmed, while every topic searches all of PubMed:
+            removing a journal deletes its papers, which that search still
+            covers. The server refuses too. */}
+        <button
+          type="button"
+          className="accent-btn"
+          onClick={() => setManagingJournals(true)}
+          disabled={allPubmed}
+        >
           Manage journals…
         </button>
-        <ul className="list scroll-list">
+        <ul className={`list scroll-list${allPubmed ? " set-aside" : ""}`}>
           {!ready ? (
             // Six rows to match the fixed height, so the panel doesn't resize on load.
             ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
@@ -519,6 +578,28 @@ export function Settings({
             </>
           )}
         </ul>
+        {/* Drawn before the settings arrive, disabled and off, rather than
+            appearing with them: text landing late would push nothing, but a
+            whole row landing late pushes every panel below it. */}
+        <label className="all-pubmed">
+          Search all PubMed journals
+          <span className="switch-row">
+            <input
+              type="checkbox"
+              role="switch"
+              className="switch"
+              checked={allPubmed}
+              onChange={(e) => toggleAllPubmed(e.target.checked)}
+              disabled={!ready || !settings || switchingAllPubmed}
+            />
+            <span className="hint">
+              Topics search every journal in PubMed instead of the list above. PubMed returns at
+              most 9,999 papers per search, so the next check keeps each topic’s most recent
+              9,999. Turning this off removes papers from other journals in your interests,
+              but your bookmarks are kept.
+            </span>
+          </span>
+        </label>
       </section>
 
       <section className="panel">
@@ -538,8 +619,9 @@ export function Settings({
                   onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
                 />
                 <span className="hint">
-                  When on, every topic is checked for new papers on the schedule below.
-                  “Check for new papers” works either way.
+                  When on, every topic is checked for new papers on the schedule below;
+                  “Check for new papers” works either way. Nothing is checked while no
+                  journals are watched, unless “Search all PubMed journals” is on.
                 </span>
               </span>
             </label>
@@ -801,6 +883,15 @@ export function Settings({
           onDataChanged();
           if (removalsHappened) onPapersRemoved(papersRemoved);
         }}
+      />
+      <ConfirmDialog
+        open={allPubmedOffMessage != null}
+        title="Stop searching all of PubMed?"
+        message={allPubmedOffMessage ?? ""}
+        confirmLabel="Turn off"
+        danger
+        onConfirm={() => applyAllPubmed(false)}
+        onCancel={() => setAllPubmedOffMessage(null)}
       />
       <ConfirmDialog
         open={topicToRemove != null}

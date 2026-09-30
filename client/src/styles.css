@@ -1393,8 +1393,10 @@ input:disabled {
   cursor: not-allowed;
 }
 
-/* Open Library switch in the Sharing panel — mirrors .stacked-form label. */
-.open-library {
+/* Open Library switch in the Sharing panel, and "Search all PubMed journals"
+   under the journal list — mirrors .stacked-form label. */
+.open-library,
+.all-pubmed {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1404,7 +1406,8 @@ input:disabled {
   color: var(--text);
 }
 
-.open-library .hint {
+.open-library .hint,
+.all-pubmed .hint {
   font-weight: 400;
   margin: 0;
 }
@@ -1560,6 +1563,26 @@ input:focus {
    instead reads as a rendering fault. */
 .scroll-list.topic-list {
   height: 315px;
+}
+
+/* ...and held to that height. Each of the two lines is cut with an ellipsis
+   rather than wrapped, so a long heading or a narrow window can't make a row
+   taller and move the cut into a heading. The full text is in the title. */
+.topic-list li > span {
+  min-width: 0;
+}
+
+.topic-list li > span > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The journal list while "Search all PubMed journals" is on: kept in view, so
+   turning the setting off shows what topics will go back to, but visibly not
+   what they search now. */
+.list.set-aside {
+  opacity: 0.5;
 }
 
 .list li span:not(.mesh-warn) {

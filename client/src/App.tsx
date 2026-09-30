@@ -313,6 +313,14 @@ export default function App() {
   }, []);
 
   const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
+  // The later of the topic's two watermarks — one per search mode, see
+  // topic_pubmed_scans — since either is a poll that updated this feed. Both
+  // are toISOString() output, so they compare as strings.
+  const topicUpdatedAt =
+    [activeTopic?.last_polled_at, activeTopic?.pubmed_polled_at]
+      .filter((t): t is string => !!t)
+      .sort()
+      .pop() ?? null;
   const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
@@ -613,8 +621,9 @@ export default function App() {
       // would otherwise look complete, and only the user can decide whether to
       // narrow the topic or watch fewer journals.
       const capped = res.results.filter((r) => r.truncated);
+      const narrow = res.allPubmed ? "Narrow the topic" : "Narrow the topic or watch fewer journals";
       for (const r of capped) {
-        msg += ` “${r.topicName}” matches more papers than PubMed will return — kept the ${r.found.toLocaleString()} most recent, skipped ${r.truncated!.toLocaleString()}. Narrow the topic or watch fewer journals for full coverage.`;
+        msg += ` “${r.topicName}” matches more papers than PubMed will return — kept the ${r.found.toLocaleString()} most recent, skipped ${r.truncated!.toLocaleString()}. ${narrow} for full coverage.`;
       }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
       // Which channel this lands in is decided by whether there is anything to
@@ -1125,8 +1134,8 @@ export default function App() {
           <div className="source-view">
             <div className="source-head">
               <div className="source-actions">
-                {activeTopic?.last_polled_at && (
-                  <span className="updated">Updated {timeAgo(activeTopic.last_polled_at)}</span>
+                {topicUpdatedAt && (
+                  <span className="updated">Updated {timeAgo(topicUpdatedAt)}</span>
                 )}
                 {isAdmin && (
                   <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>

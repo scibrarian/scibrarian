@@ -10,6 +10,8 @@ on your laptop or on a server you control.
   (reverse-chronological), and **Graph** — switched from the header.
 - You specify the journals and the topics in **Settings** (the gear icon in the
   header). Each topic is a MeSH heading, so PubMed is searched by that heading.
+  **Search all PubMed journals** sets the journal list aside and searches every
+  journal instead; turning it back off removes the papers from other journals.
 - **Check for new papers** polls on demand; optional scheduled polling (off by
   default) runs on a cron expression you set in Settings. A cron only fires while
   the process is up, so if a schedule was missed while it was down — a closed

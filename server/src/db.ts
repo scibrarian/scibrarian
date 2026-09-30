@@ -29,6 +29,7 @@ import type {
   MeshFacet,
   MeshFiling,
   MeshHeading,
+  MeshSearchResult,
   Paper,
   Settings,
   TopicSuggestion,
@@ -167,6 +168,34 @@ db.exec(`
     topic_id INTEGER NOT NULL,
     PRIMARY KEY (pmid, topic_id),
     FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE,
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
+  );
+
+  -- The journals whose whole history a topic has been searched for. Polls are
+  -- incremental (papers MeSH-indexed since the topic's last one), which only
+  -- reaches a journal's back catalogue if the topic was already searching it,
+  -- so a journal with no row here has its history listed on the topic's next
+  -- poll (see pollTopic). Rows go with either side: a journal removed and
+  -- added back is a new id and is scanned again, which it needs, because the
+  -- removal deleted its papers.
+  CREATE TABLE IF NOT EXISTS topic_journal_scans (
+    topic_id INTEGER NOT NULL,
+    journal_id INTEGER NOT NULL,
+    PRIMARY KEY (topic_id, journal_id),
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (journal_id) REFERENCES journals(id) ON DELETE CASCADE
+  );
+
+  -- The same record for "Search all PubMed journals" (see searchesAllPubmed):
+  -- a row once a topic's history across all of PubMed has been listed, holding
+  -- the watermark its incremental polls in that mode continue from. Kept apart
+  -- from topics.last_polled_at, which the journal polls continue from, because
+  -- an all-PubMed search is capped at PubMed's 9,999 and so can't vouch for
+  -- having covered the watched journals. Emptied when the setting is turned
+  -- off, since that deletes papers these scans had covered.
+  CREATE TABLE IF NOT EXISTS topic_pubmed_scans (
+    topic_id INTEGER PRIMARY KEY,
+    polled_at TEXT NOT NULL,
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
   );
 
@@ -475,27 +504,27 @@ for (const [key, value] of Object.entries(SETTING_DEFAULTS)) {
 
 // ---------- topics ----------
 
+// pubmed_polled_at is the topic's all-PubMed watermark, NULL until it has one
+// (see topic_pubmed_scans).
+const TOPIC_SELECT = `SELECT t.id, t.name, t.term, t.last_polled_at, t.created_at,
+     s.polled_at AS pubmed_polled_at
+   FROM topics t LEFT JOIN topic_pubmed_scans s ON s.topic_id = t.id`;
+
 export function listTopics(): Topic[] {
-  return db
-    .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics ORDER BY id ASC")
-    .all() as unknown as Topic[];
+  return db.prepare(`${TOPIC_SELECT} ORDER BY t.id ASC`).all() as unknown as Topic[];
 }
 
 export function getTopic(id: number): Topic | undefined {
-  return db
-    .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics WHERE id = ?")
-    .get(id) as Topic | undefined;
+  return db.prepare(`${TOPIC_SELECT} WHERE t.id = ?`).get(id) as Topic | undefined;
 }
 
 // Used to reject adding the same topic twice. Identity is the PubMed term, which
 // is built deterministically from the MeSH heading, so the same heading always
 // yields the same term; NOCASE also catches an equivalent legacy/seed term.
 export function topicByTerm(term: string): Topic | undefined {
-  return db
-    .prepare(
-      "SELECT id, name, term, last_polled_at, created_at FROM topics WHERE term = ? COLLATE NOCASE"
-    )
-    .get(term) as Topic | undefined;
+  return db.prepare(`${TOPIC_SELECT} WHERE t.term = ? COLLATE NOCASE`).get(term) as
+    | Topic
+    | undefined;
 }
 
 export function createTopic(name: string, term: string): Topic {
@@ -516,8 +545,8 @@ export function createTopic(name: string, term: string): Topic {
 // CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
 // topic's *current* match criteria — every stored paper that matches a topic
 // is linked to it. The poller guarantees this today (all-time first poll,
-// contiguous MeSH-date windows, cross-linking of known pmids, a full re-scan
-// after the journal list widens — see journalsWidenedSince). If per-topic
+// contiguous MeSH-date windows, cross-linking of known pmids, a history scan
+// of each journal new to a topic — see topic_journal_scans). If per-topic
 // fetch filters are ever added (e.g. "papers since 2000"), *widening* a
 // topic's criteria must clear its last_polled_at so the next poll re-seeds
 // all-time under the new filter and relinks older papers — otherwise this
@@ -553,6 +582,16 @@ export const removeTopicWithArticles = transaction((id: number): TopicRemovalRes
 
 export function setTopicLastPolled(id: number, iso: string): void {
   db.prepare("UPDATE topics SET last_polled_at = ? WHERE id = ?").run(iso, id);
+}
+
+// Through a SELECT from topics, so a topic removed while its poll ran is
+// skipped instead of failing the foreign key. (The WHERE is also what SQLite
+// needs to parse an upsert after a SELECT.)
+export function setTopicPubmedPolled(id: number, iso: string): void {
+  db.prepare(
+    `INSERT INTO topic_pubmed_scans (topic_id, polled_at) SELECT id, ? FROM topics WHERE id = ?
+     ON CONFLICT(topic_id) DO UPDATE SET polled_at = excluded.polled_at`
+  ).run(iso, id);
 }
 
 // When a poll of every topic was last *attempted* (ISO timestamp; "" if never).
@@ -623,27 +662,25 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
   return row ? toJournal(row) : undefined;
 }
 
-// Whether the journal list has widened at or after `iso` (a topic's
-// last_polled_at): a journal was added, or the last one was removed, which
-// takes every topic from those journals to all of PubMed. Either widens every
-// topic's search, and an incremental poll only asks for papers indexed since
-// the last one, so the newly covered back catalogue would never arrive without
-// a full re-scan (see pollTopic). Removing and re-adding a journal is an add.
-// Both timestamps are SQLite's second-resolution UTC text and datetime()
-// truncates `iso` to match, so a change in the same second as a poll counts as
-// newer: at worst one needless re-scan, never a missed one. Binds `iso` twice.
-export function journalsWidenedSince(iso: string): boolean {
-  return (
-    db
-      .prepare(
-        `SELECT 1 FROM journals WHERE created_at >= datetime(?)
-         UNION ALL
-         SELECT 1 FROM settings WHERE key = 'journals_emptied_at' AND value >= datetime(?)
-         LIMIT 1`
-      )
-      .get(iso, iso) !== undefined
-  );
+// The journals whose whole history a topic has been searched for — see
+// topic_journal_scans.
+export function scannedJournalIds(topicId: number): Set<number> {
+  const rows = db
+    .prepare("SELECT journal_id FROM topic_journal_scans WHERE topic_id = ?")
+    .all(topicId) as { journal_id: number }[];
+  return new Set(rows.map((r) => r.journal_id));
 }
+
+// Through a join rather than a plain VALUES insert, so a topic or journal
+// removed while the poll ran is skipped instead of failing its foreign key.
+const markScannedStmt = db.prepare(
+  `INSERT OR IGNORE INTO topic_journal_scans (topic_id, journal_id)
+   SELECT t.id, j.id FROM topics t, journals j WHERE t.id = ? AND j.id = ?`
+);
+
+export const markJournalsScanned = transaction((topicId: number, journalIds: number[]) => {
+  for (const journalId of journalIds) markScannedStmt.run(topicId, journalId);
+});
 
 // Which of a journal's articles a removal would permanently delete: the
 // journal's articles minus anything the user has saved — a collection file
@@ -702,15 +739,72 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
     );
   }
   db.prepare("DELETE FROM journals WHERE id = ?").run(id);
-  // With none left every topic searches all of PubMed — see
-  // journalsWidenedSince. Internal, like last_poll_attempt_at: kept out of
-  // SETTING_DEFAULTS and never shown in the UI.
-  if (db.prepare("SELECT 1 FROM journals LIMIT 1").get() === undefined) {
+  return { deletedArticles, removedFromInterests };
+});
+
+// ---------- searching all of PubMed ----------
+
+// "Search all PubMed journals": every topic searches all of PubMed instead of
+// the journal list, which is set aside and locked meanwhile (see the journal
+// routes). Internal, like last_poll_attempt_at — kept out of SETTING_DEFAULTS
+// so that PUT /settings can't flip it, because turning it off deletes papers.
+// It changes only through setSearchAllPubmed.
+export function searchesAllPubmed(): boolean {
+  const row = getSettingStmt.get("search_all_pubmed") as { value: string } | undefined;
+  return row?.value === "1";
+}
+
+// The papers turning the setting off takes out of the topic feeds: those from
+// journals the list doesn't have. The list is locked while the setting is on,
+// so these are what the all-PubMed polls brought in. Told apart by nlm_id, as
+// journal removal tells a journal's papers apart, with the same blind spots: a
+// paper PubMed gave no journal id (nlm_id NULL) never compares as off the list
+// and stays, while a legacy journal row with no nlm_id can't claim its papers,
+// so they count as off the list.
+const OFF_LIST_IN_FEEDS = `pmid IN (SELECT pmid FROM article_topics)
+   AND nlm_id NOT IN (SELECT nlm_id FROM journals WHERE nlm_id IS NOT NULL)`;
+
+// Of those, the ones deleted outright: everything the user hasn't saved — the
+// pinning rule DELETABLE_JOURNAL_ARTICLES applies.
+const DELETABLE_OFF_LIST_ARTICLES = `${OFF_LIST_IN_FEEDS}
+   AND pmid NOT IN ${HELD_PAPERS}
+   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+
+// How many papers turning the setting off would take out of Interests (for the
+// confirm, and what the turn-off reports as removedFromInterests). All of them,
+// saved or not: the confirm says how many leave Interests, and that saved ones
+// stay where they're saved, rather than counting deletions.
+export function countOffListArticles(): number {
+  return (
+    db.prepare(`SELECT COUNT(*) AS c FROM articles WHERE ${OFF_LIST_IN_FEEDS}`).get() as {
+      c: number;
+    }
+  ).c;
+}
+
+// Turning it on changes nothing stored: the next poll of each topic lists its
+// history across all of PubMed. Turning it off is a journal removal for every
+// journal outside the list — their papers leave every topic feed, and those
+// nothing saved points at are deleted — and forgets the all-PubMed watermarks,
+// because what they vouched for is gone: turning the setting on again lists
+// history afresh. Only on an actual change, so a repeated "off" can't delete.
+export const setSearchAllPubmed = transaction((on: boolean): JournalRemovalResult => {
+  let deletedArticles = 0;
+  let removedFromInterests = 0;
+  if (!on && searchesAllPubmed()) {
+    removedFromInterests = countOffListArticles();
+    // Deleted first, while "in a feed" still holds for them (their
+    // article_topics rows cascade); then the saved papers left over are unlinked.
+    deletedArticles = Number(
+      db.prepare(`DELETE FROM articles WHERE ${DELETABLE_OFF_LIST_ARTICLES}`).run().changes
+    );
     db.prepare(
-      `INSERT INTO settings (key, value) VALUES ('journals_emptied_at', datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      `DELETE FROM article_topics
+       WHERE pmid IN (SELECT pmid FROM articles WHERE ${OFF_LIST_IN_FEEDS})`
     ).run();
+    db.prepare("DELETE FROM topic_pubmed_scans").run();
   }
+  setSettingStmt.run("search_all_pubmed", on ? "1" : "0");
   return { deletedArticles, removedFromInterests };
 });
 
@@ -2329,12 +2423,9 @@ export const replaceMeshData = transaction((rows: MeshSeed[], version: string) =
   setMeshVersion(version);
 });
 
-// A topic-autocomplete hit. `synonym` is the entry term that matched when it
-// isn't the heading itself, so the picker can say why a heading is offered:
-// "cush" finds Denture Liners through "Cushion Liner", which otherwise reads
-// as a bug.
-export interface MeshSearchHit extends MeshDescriptor {
-  synonym: string | null;
+// A topic-autocomplete hit as GET /mesh/search sends it (see MeshSearchResult
+// for what `synonym` is), plus the rank it was ordered by.
+export interface MeshSearchHit extends MeshSearchResult {
   rank: number;
 }
 
@@ -2353,13 +2444,19 @@ export interface MeshSearchHit extends MeshDescriptor {
 // score adds the term's length as a tie-break (entry terms run far short of
 // the 1,000 that would spill into the next rank), and it is the query's only
 // MIN(), so SQLite fills the bare et.term from the row that produced it.
+//
+// Except that a heading containing the query is its own reason to be offered,
+// and names no synonym whichever row won. MeSH lists inverted permutations of
+// nearly every multi-word heading, so "syndrome" prefix-matches "Syndrome,
+// Cushing" ahead of Cushing Syndrome's own substring match — which ranks it
+// right, and would otherwise label it with its own words turned around.
 export function searchMesh(q: string, limit = 10): MeshSearchHit[] {
   const esc = escapeLike(q);
   const like = `%${esc}%`;
   const prefix = `${esc}%`;
   return db
     .prepare(
-      `SELECT ui, name, CASE WHEN term = name THEN NULL ELSE term END AS synonym,
+      `SELECT ui, name, CASE WHEN name LIKE ? ESCAPE '\\' THEN NULL ELSE term END AS synonym,
          score / 1000 AS rank
        FROM (
          SELECT d.ui AS ui, d.name AS name, et.term AS term,
@@ -2377,7 +2474,7 @@ export function searchMesh(q: string, limit = 10): MeshSearchHit[] {
        ORDER BY rank, length(name)
        LIMIT ?`
     )
-    .all(prefix, prefix, like, limit) as unknown as MeshSearchHit[];
+    .all(like, prefix, prefix, like, limit) as unknown as MeshSearchHit[];
 }
 
 // Validation: exact (case-insensitive) match on the canonical heading. Used by
@@ -2424,9 +2521,9 @@ function libraryStats(): LibraryStats {
 
 // The tables a reset empties. Deleting a parent is enough for everything that
 // hangs off it — foreign_keys is ON and the schema's cascades do the rest — so
-// article_mesh, article_pub_types, article_topics, bookmarks and
-// collection_files are absent from this list because they are already covered,
-// not because they survive.
+// article_mesh, article_pub_types, article_topics, topic_journal_scans,
+// topic_pubmed_scans, bookmarks and collection_files are absent from this list
+// because they are already covered, not because they survive.
 //
 // paper_citations and pdf_text are here because nothing cascades to them:
 // neither carries a foreign key (both are keyed by something they only softly

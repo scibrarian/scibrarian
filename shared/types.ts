@@ -10,6 +10,10 @@ export interface Topic {
   term: string;
   last_polled_at: string | null;
   created_at: string;
+  // The watermark while "Search all PubMed journals" is on, kept apart from
+  // last_polled_at (the journal list's). Null until the topic has been polled
+  // in that mode, and again once the setting is turned off.
+  pubmed_polled_at: string | null;
 }
 
 export interface TopicRemovalResult {
@@ -99,6 +103,18 @@ export interface TopicSuggestResponse {
   results: TopicSuggestion[];
   heldPapers: number; // distinct papers in the Library the ranking drew on
   unchecked: number; // held papers whose headings haven't been fetched yet
+}
+
+// A topic-autocomplete hit (GET /mesh/search). `synonym` is the entry term that
+// matched when the heading itself doesn't contain the query, so the picker can
+// say why a heading is offered: "cush" finds Denture Liners through "Cushion
+// Liner", which otherwise reads as a bug.
+export interface MeshSearchResult extends MeshDescriptorRef {
+  synonym: string | null;
+}
+
+export interface MeshSearchResponse {
+  results: MeshSearchResult[];
 }
 
 // A user-created bookmark folder: the Bookmarks section's counterpart to a

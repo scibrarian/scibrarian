@@ -12,6 +12,7 @@ import {
   collectionByName,
   collectionCounts,
   countJournalArticles,
+  countOffListArticles,
   createBookmarkFolder,
   createCollection,
   countTopicArticles,
@@ -55,7 +56,9 @@ import {
   resetLibrary,
   searchCatalog,
   searchMesh,
+  searchesAllPubmed,
   setFileMatched,
+  setSearchAllPubmed,
   setSetting,
   sourceHasFiles,
   suggestTopicsFromLibrary,
@@ -98,6 +101,7 @@ import { anyTransferInFlight } from "./pro-storage.js";
 import { fetchArticles, isMedlineIndexed, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
+  nothingToPoll,
   pollAll,
   pollTopic,
   rescheduleFromSettings,
@@ -121,6 +125,7 @@ import type {
   GraphResponse,
   HaveResponse,
   MeshHeadingsResponse,
+  MeshSearchResponse,
   PaperProvenance,
   PapersResponse,
   Settings,
@@ -401,9 +406,11 @@ api.get(
     const q = String(req.query.q ?? "").trim();
     if (q.length < 2) return res.json({ results: [] });
     await ensureMeshLoaded();
-    res.json({
+    // Typed, so the shape the client reads is checked here rather than trusted.
+    const body: MeshSearchResponse = {
       results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name, synonym: m.synonym })),
-    });
+    };
+    res.json(body);
   })
 );
 
@@ -493,9 +500,16 @@ api.get(
   })
 );
 
+// The journal list is set aside while every topic searches all of PubMed, and
+// locked with it. Removing a journal deletes its papers, which that search
+// still covers; adds are refused alongside so the list reads as one thing that
+// is either in use or not.
+const JOURNALS_LOCKED = "Turn off “Search all PubMed journals” to change the journal list.";
+
 api.post(
   "/journals",
   asyncHandler(async (req, res) => {
+    if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
     const raw = String(req.body?.name ?? "").trim();
     const nlmId = String(req.body?.nlmId ?? "").trim();
     if (!raw && !nlmId) return res.status(400).json({ error: "'name' is required." });
@@ -545,12 +559,39 @@ api.post(
   })
 );
 
+// "Search all PubMed journals" (see searchesAllPubmed). Its own route rather
+// than a PUT /settings key because turning it off deletes papers; the confirm
+// counts them first with the GET. Registered ahead of /journals/:id/... so
+// "all-pubmed" can't be read as an id.
+api.get("/journals/all-pubmed/article-count", (_req, res) => {
+  res.json({ count: countOffListArticles() });
+});
+
+api.put(
+  "/journals/all-pubmed",
+  asyncHandler(async (req, res) => {
+    const on = req.body?.on;
+    if (typeof on !== "boolean") {
+      return res.status(400).json({ error: "'on' must be true or false." });
+    }
+    // Under the poll lock, like a reset. An all-PubMed poll still running after
+    // the setting went off would store papers the deletion had just taken out,
+    // and record the watermark it had just forgotten.
+    const result = await withPollLock(async () => setSearchAllPubmed(on));
+    if (result === null) {
+      return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
+    }
+    res.json(result);
+  })
+);
+
 // How many stored papers removing this journal would delete (for the confirm).
 api.get("/journals/:id/article-count", (req, res) => {
   res.json({ count: countJournalArticles(Number(req.params.id)) });
 });
 
 api.delete("/journals/:id", (req, res) => {
+  if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
   res.json(removeJournalWithArticles(Number(req.params.id)));
 });
 
@@ -1337,6 +1378,8 @@ api.post(
   "/refresh",
   asyncHandler(async (req, res) => {
     const topicId = req.query.topic ? Number(req.query.topic) : undefined;
+    const blocked = nothingToPoll();
+    if (blocked) return res.status(409).json({ error: blocked });
     // Share the scheduler's lock so a manual refresh can't run concurrently with
     // a scheduled poll (or another refresh) and double up NCBI traffic.
     const results = await withPollLock(() =>
@@ -1345,7 +1388,9 @@ api.post(
     if (results === null) {
       return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
     }
-    res.json({ results, polledAt: new Date().toISOString() });
+    // allPubmed only picks the advice for a feed PubMed capped: "watch fewer
+    // journals" means nothing while no journal list is in use.
+    res.json({ results, polledAt: new Date().toISOString(), allPubmed: searchesAllPubmed() });
   })
 );
 
@@ -1413,6 +1458,10 @@ function settingsResponse() {
   // rebound via server/.env, the other has no .env to edit — so the UI needs to
   // tell the two apart.
   out.desktop = IS_DESKTOP;
+  // Read here, written only through PUT /journals/all-pubmed: it isn't in
+  // SETTING_RULES, so the PUT below can't flip it past the deletion that
+  // turning it off does.
+  out.search_all_pubmed = searchesAllPubmed();
   return out;
 }
 

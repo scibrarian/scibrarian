@@ -186,6 +186,14 @@ export const api = {
     req<{ count: number }>(`/api/journals/${id}/article-count`),
   deleteJournal: (id: number) =>
     req<JournalRemovalResult>(`/api/journals/${id}`, { method: "DELETE" }),
+  // "Search all PubMed journals". Turning it off deletes the papers from
+  // journals outside the list, which the count is for.
+  offListArticleCount: () => req<{ count: number }>("/api/journals/all-pubmed/article-count"),
+  setSearchAllPubmed: (on: boolean) =>
+    req<JournalRemovalResult>("/api/journals/all-pubmed", {
+      method: "PUT",
+      body: JSON.stringify({ on }),
+    }),
 
   getPapers: (source: PaperSource, filter?: PaperQuery) =>
     req<PapersResponse>(`/api/papers?${sourceQuery(source)}${filterQuery(filter)}`),

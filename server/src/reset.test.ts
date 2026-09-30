@@ -78,7 +78,8 @@ beforeAll(async () => {
   // Contents — the half that has to go. Everything below is something a person
   // put here.
   const topic = db.createTopic("Diabetes Mellitus, Type 2", "diabetes").id;
-  db.createJournal("The Lancet", "0053266", true);
+  const journal = db.createJournal("The Lancet", "0053266", true).id;
+  db.markJournalsScanned(topic, [journal]);
   db.saveArticles([article("11111111", "Metformin in cohort A")], topic);
   db.upsertArticles([article("22222222", "A paper held as a file")]);
   db.saveArticleMesh([
@@ -153,6 +154,7 @@ describe("deleting all data", () => {
       "article_mesh",
       "article_pub_types",
       "article_topics",
+      "topic_journal_scans",
       "bookmarks",
     ]) {
       expect({ table, rows: count(table) }).toEqual({ table, rows: 0 });
