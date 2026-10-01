@@ -501,7 +501,6 @@ export function Settings({
               </>
             )}
           />
-          <button type="submit">Add</button>
         </form>
 
         <ul className="list scroll-list topic-list">

@@ -1194,7 +1194,6 @@ body {
   overflow-y: auto;
 }
 
-/* Scoped under .typeahead-list to outweigh the generic .inline-form button style. */
 .typeahead-list .typeahead-item {
   display: flex;
   align-items: center;
@@ -1428,7 +1427,6 @@ input:focus {
 }
 
 .stacked-form button,
-.inline-form button,
 .accent-btn {
   align-self: flex-start;
   background: var(--accent);
