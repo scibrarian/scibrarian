@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { BookmarkCheck, Check, TriangleAlert } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, formatAuthors, plural, titleCaseJournal } from "../lib/format";
@@ -44,6 +44,21 @@ export function AddLinks({
   const [skipped, setSkipped] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  // Whether the dialog is still on screen. The folder view is keyed by folder,
+  // so leaving the folder mid-paste unmounts this: the batch in flight still
+  // lands, since the server saves it whether or not anyone waits for the
+  // answer, but the ones after it are never sent — rather than going on saving
+  // into a folder no longer on screen, with nowhere left to say what happened.
+  // Set on mount as well as cleared on unmount, for StrictMode's
+  // mount-unmount-mount.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const lines = text
     .split(/[\r\n]+/)
     .map((l) => l.trim())
@@ -60,6 +75,7 @@ export function AddLinks({
     const capped = lines.slice(0, MAX_LINKS);
     const done: LinkAnswer[] = [];
     let over = lines.length - capped.length;
+    let added = false;
     setError(null);
     setAnswers(null);
     setSkipped(over);
@@ -67,15 +83,15 @@ export function AddLinks({
       for (let i = 0; i < capped.length; i += MAX_LINKS_PER_REQUEST) {
         setProgress({ done: i, total: capped.length });
         const res = await api.addBookmarkLinks(folderId, capped.slice(i, i + MAX_LINKS_PER_REQUEST));
+        if (res.results.some((a) => a.outcome === "added")) added = true;
+        if (!mounted.current) return;
         done.push(...res.results);
         over += res.truncated;
         setAnswers([...done]);
         setSkipped(over);
-        // Per batch rather than once at the end, so the folder behind the
-        // modal fills in as the paste goes rather than all at once.
-        if (res.results.some((a) => a.outcome === "added")) onAdded();
       }
     } catch (err) {
+      if (!mounted.current) return;
       const left = capped.length - done.length;
       setError(
         done.length > 0
@@ -83,7 +99,12 @@ export function AddLinks({
           : errorMessage(err)
       );
     } finally {
-      setProgress(null);
+      // Once per paste: after the last batch, the one that failed, or the one
+      // in flight when the dialog went away. Called per batch, the reloads it
+      // starts overlapped, and an older one landing last showed papers just
+      // saved as unsaved.
+      if (added) onAdded();
+      if (mounted.current) setProgress(null);
     }
   }
 
