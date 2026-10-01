@@ -146,9 +146,13 @@ afterEach(() => {
 const check = (refs: string[], opts = {}) =>
   have.checkHoldings(refs, { lookUpIdentifiers: false, ...opts });
 
+// A paper's PubMed link, which is how a pasted line names a PMID — a bare
+// number is refused (see citation-ref.ts).
+const link = (pmid: string) => `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`;
+
 describe("org verdict", () => {
   it("is absent in a free build, and says so rather than saying no", async () => {
-    const [answer] = await check([OWNED.pmid]);
+    const [answer] = await check([link(OWNED.pmid)]);
     expect(answer.held).toBe(false);
     expect(answer.org).toBeNull();
     // The distinction the whole feature rests on: not "the org doesn't have
@@ -165,7 +169,7 @@ describe("org verdict", () => {
     orgAnswer = holds(OWNED.pmid);
     hooks.registerPro(stub);
 
-    const [answer] = await check([OWNED.pmid]);
+    const [answer] = await check([link(OWNED.pmid)]);
     expect(answer.held).toBe(false); // still not held *by you*
     expect(answer.orgChecked).toBe(true);
     expect(answer.org).toEqual({ pmid: OWNED.pmid, node: "Acme Medical" });
@@ -175,7 +179,7 @@ describe("org verdict", () => {
     orgAnswer = holds(); // master answered, and holds nothing
     hooks.registerPro(stub);
 
-    const [answer] = await check([SEEN.pmid]);
+    const [answer] = await check([link(SEEN.pmid)]);
     expect(answer.orgChecked).toBe(true);
     expect(answer.org).toBeNull();
   });
@@ -186,7 +190,7 @@ describe("org verdict", () => {
     orgAnswer = () => Promise.reject(new Error("fetch failed"));
     hooks.registerPro(stub);
 
-    const [answer] = await check([OWNED.pmid]);
+    const [answer] = await check([link(OWNED.pmid)]);
     expect(answer.held).toBe(false);
     expect(answer.org).toBeNull();
     expect(answer.orgChecked).toBe(false);
@@ -201,7 +205,7 @@ describe("org verdict", () => {
     orgAnswer = () => Promise.reject(new Error("master answered 401"));
     hooks.registerPro(stub);
 
-    const [answer] = await check([OWNED.pmid]);
+    const [answer] = await check([link(OWNED.pmid)]);
     expect(answer.orgChecked).toBe(false);
     expect(answer.org).toBeNull();
   });
@@ -212,7 +216,7 @@ describe("org verdict", () => {
     orgAnswer = () => Promise.reject(new Error("fetch failed"));
     hooks.registerPro(stub);
 
-    const [answer] = await check([LOCAL.pmid]);
+    const [answer] = await check([link(LOCAL.pmid)]);
     expect(answer.held).toBe(true);
     expect(answer.match?.file_name).toBe("local.pdf");
   });
@@ -223,7 +227,7 @@ describe("what the master is asked", () => {
     orgAnswer = holds();
     hooks.registerPro(stub);
 
-    await check([LOCAL.pmid, OWNED.pmid]);
+    await check([link(LOCAL.pmid), link(OWNED.pmid)]);
     expect(asked).toEqual([[OWNED.pmid]]);
   });
 
@@ -245,7 +249,7 @@ describe("what the master is asked", () => {
     orgAnswer = holds(OWNED.pmid);
     hooks.registerPro(stub);
 
-    const [answer] = await check([OWNED.pmid], { checkOrg: false });
+    const [answer] = await check([link(OWNED.pmid)], { checkOrg: false });
     expect(asked).toEqual([]);
     expect(answer.orgChecked).toBe(false);
   });
@@ -270,7 +274,7 @@ describe("what the master is asked", () => {
       orgAnswer = () => new Promise(() => {}); // never settles, never rejects
       hooks.registerPro(stub);
 
-      const pending = check([OWNED.pmid, LOCAL.pmid]);
+      const pending = check([link(OWNED.pmid), link(LOCAL.pmid)]);
       await vi.advanceTimersByTimeAsync(30_000);
       const [owned, local] = await pending;
 
@@ -291,7 +295,7 @@ describe("what the master is asked", () => {
     orgAnswer = holds(OWNED.pmid);
     hooks.registerPro(stub);
 
-    const [unreadable, owned] = await check(["not a reference at all", OWNED.pmid]);
+    const [unreadable, owned] = await check(["not a reference at all", link(OWNED.pmid)]);
     expect(asked).toEqual([[OWNED.pmid]]);
     expect(unreadable.orgChecked).toBe(false);
     expect(unreadable.org).toBeNull();
@@ -312,7 +316,7 @@ describe("interaction with the identifier lookup", () => {
     orgAnswer = holds(OWNED.pmid);
     hooks.registerPro(stub);
 
-    const [answer] = await have.checkHoldings([OWNED.pmid], { lookUpIdentifiers: true });
+    const [answer] = await have.checkHoldings([link(OWNED.pmid)], { lookUpIdentifiers: true });
     expect(answer.org).not.toBeNull();
     expect(answer.identifierChecked).toBe(false);
     // Directly: the batch was never assembled, so OpenAlex was never called.

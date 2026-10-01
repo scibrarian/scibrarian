@@ -44,6 +44,18 @@ export const MAX_REFS_PER_HAVE_REQUEST = 50;
 // of a whole document from becoming a hundred round-trips.
 export const MAX_HAVE_REFS = 300;
 
+// Lines one "Add links" request may carry (a bookmark folder's paste box).
+//
+// Smaller than a /have batch because each DOI here is a PubMed search of its
+// own, and those go through the eutils throttle — 400ms apart without an NCBI
+// API key. 25 keeps one request to about ten seconds, and the client reports
+// its progress between them, so a long paste never sits silent for minutes.
+export const MAX_LINKS_PER_REQUEST = 25;
+
+// Most lines one paste adds in total, across those requests. The same bound as
+// a holdings check, for the same reason: a reading list is tens of papers.
+export const MAX_LINKS = MAX_HAVE_REFS;
+
 // The body size that many PMIDs needs. An 8-digit id serializes to
 // `"12345678",` — 11 bytes — so this is doubled headroom for longer ids and
 // the JSON around them. Derived rather than written out separately: a cap

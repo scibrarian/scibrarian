@@ -2,6 +2,7 @@
 // server-private types are defined here.
 export type {
   AbstractsResponse,
+  AddLinksResponse,
   Article,
   BookmarkEntry,
   BookmarkFolder,
@@ -21,6 +22,8 @@ export type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  LinkAnswer,
+  LinkedPaper,
   MeshFacet,
   MeshFiling,
   MeshHeading,

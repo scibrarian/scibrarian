@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
+import { Link as LinkIcon } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
+import { AddLinks, ADD_LINKS_TITLE } from "./AddLinks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { MAX_NAME_CHARS } from "../../../shared/limits";
@@ -13,21 +15,26 @@ import { MAX_NAME_CHARS } from "../../../shared/limits";
 // It stays much smaller than CollectionView because a folder owns nothing: no
 // uploads, no import job, no files to reconcile. Its papers come from
 // /api/papers?folder=<id> like any other source, so there is no listing to
-// fetch here.
+// fetch here. "Add links" stands where "Add files" does in a collection: the
+// way in for a paper found outside Interests.
 export function BookmarkFolderView({
   folderId,
   isAdmin,
   onChanged,
+  onPapersAdded,
   onDeleted,
   children,
 }: {
   folderId: number;
   isAdmin: boolean;
   onChanged: () => void;
+  /** "Add links" saved papers into this folder. */
+  onPapersAdded: () => void;
   onDeleted: () => void;
   children: ReactNode;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [addingLinks, setAddingLinks] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -59,6 +66,9 @@ export function BookmarkFolderView({
       <div className="source-head">
         {isAdmin && (
           <div className="source-actions">
+            <button onClick={() => setAddingLinks(true)}>
+              <LinkIcon size={14} className="inline-icon" aria-hidden /> {ADD_LINKS_TITLE}
+            </button>
             <button className="link-btn" onClick={() => setRenaming(true)}>
               Rename
             </button>
@@ -73,6 +83,12 @@ export function BookmarkFolderView({
 
       {children}
 
+      <AddLinks
+        open={addingLinks}
+        onClose={() => setAddingLinks(false)}
+        folderId={folderId}
+        onAdded={onPapersAdded}
+      />
       <PromptDialog
         open={renaming}
         title="Rename folder"

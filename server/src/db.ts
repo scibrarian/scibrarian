@@ -879,6 +879,22 @@ export function existingPmids(pmids: string[]): Set<string> {
   return new Set(rows.map((r) => r.pmid));
 }
 
+// The stored paper each DOI names, keyed by the lowercased DOI — compared
+// lowercased for the reason holdingsByDois gives. A DOI two stored records
+// share is left out rather than resolved to either, so the caller asks PubMed,
+// which declines to pick between them too (see resolveDoiToPmid).
+export function pmidsByDois(dois: string[]): Map<string, string> {
+  const rows = queryByIds<{ pmid: string; doi: string }>(
+    dois.map((d) => d.toLowerCase()),
+    (ph) => `SELECT pmid, lower(doi) AS doi FROM articles WHERE doi <> '' AND lower(doi) IN (${ph})`
+  );
+  const named = new Map<string, Set<string>>();
+  for (const r of rows) named.set(r.doi, (named.get(r.doi) ?? new Set()).add(r.pmid));
+  const out = new Map<string, string>();
+  for (const [doi, pmids] of named) if (pmids.size === 1) out.set(doi, [...pmids][0]);
+  return out;
+}
+
 // The papers list omits abstracts (they dominate its size); the timeline
 // fetches them on demand, a rendered chunk at a time rather than a card at a
 // time. Unknown pmids are simply absent from the result.
@@ -1942,6 +1958,17 @@ export const addBookmarks = transaction((folderId: number, pmids: string[]): num
   for (const pmid of pmids) added += Number(insertBookmarkStmt.run(folderId, pmid).changes);
   return added;
 });
+
+// Which of these papers a folder already holds. Read just before a save by the
+// caller that has to say which papers were new, not only how many.
+export function bookmarkedIn(folderId: number, pmids: string[]): Set<string> {
+  const rows = queryByIds<{ pmid: string }>(
+    pmids,
+    (ph) => `SELECT pmid FROM bookmarks WHERE pmid IN (${ph}) AND folder_id = ?`,
+    [folderId]
+  );
+  return new Set(rows.map((r) => r.pmid));
+}
 
 // Un-saving something that isn't saved is likewise a no-op, so the toggle can
 // be driven from a possibly-stale client view without erroring.

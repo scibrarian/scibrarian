@@ -39,6 +39,10 @@ const MINE = { pmid: "40000002", hash: "b".repeat(64), doi: "10.1000/mine" };
 // it wrong is precisely the re-buy this feature exists to prevent.
 const STRANGER = { pmid: "40000003", hash: "c".repeat(64), doi: "10.1000/stranger" };
 
+// A paper's PubMed link, which is how a pasted line names a PMID — a bare
+// number is refused (see citation-ref.ts).
+const link = (pmid: string) => `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`;
+
 // OpenAlex, controllable and offline — the same stub shape have.test.ts uses.
 const oa = vi.hoisted(() => ({
   works: { byDoi: new Map<string, unknown>(), byPmid: new Map<string, unknown>() },
@@ -257,7 +261,7 @@ describe("workspaceContents", () => {
 
 describe("/have, with another workspace on the machine", () => {
   it("still answers held for a paper in this workspace, with no elsewhere line", async () => {
-    const [answer] = await have.checkHoldings([MINE.pmid], { lookUpIdentifiers: false });
+    const [answer] = await have.checkHoldings([link(MINE.pmid)], { lookUpIdentifiers: false });
     expect(answer.held).toBe(true);
     expect(answer.elsewhere).toBeNull();
   });
@@ -266,7 +270,7 @@ describe("/have, with another workspace on the machine", () => {
   // store and this session has no route to it — but the writer is told they
   // already own it, which is the answer that stops the purchase.
   it("tells a writer they already own a paper filed in another workspace", async () => {
-    const [answer] = await have.checkHoldings([THEIRS.pmid], {
+    const [answer] = await have.checkHoldings([link(THEIRS.pmid)], {
       lookUpIdentifiers: false,
       nameWorkspaces: true,
     });
@@ -281,7 +285,7 @@ describe("/have, with another workspace on the machine", () => {
   // for, which is what GET /workspaces is admin-gated to protect. Withheld by
   // default, so a caller that forgets to ask leaks nothing.
   it("withholds where it was found from a caller that is not the owner", async () => {
-    const [answer] = await have.checkHoldings([THEIRS.pmid], { lookUpIdentifiers: false });
+    const [answer] = await have.checkHoldings([link(THEIRS.pmid)], { lookUpIdentifiers: false });
     expect(answer.held).toBe(false);
     expect(answer.elsewhereChecked).toBe(true);
     expect(answer.elsewhere).toEqual({ workspace: null, collection: null });
@@ -295,7 +299,7 @@ describe("/have, with another workspace on the machine", () => {
   it("will not report a settled no when a workspace could not be read", async () => {
     fs.writeFileSync(otherDb, "not a database");
 
-    const [answer] = await have.checkHoldings([THEIRS.pmid], { lookUpIdentifiers: false });
+    const [answer] = await have.checkHoldings([link(THEIRS.pmid)], { lookUpIdentifiers: false });
     expect(answer.held).toBe(false);
     expect(answer.elsewhere).toBeNull();
     expect(answer.elsewhereChecked).toBe(false);
@@ -303,7 +307,7 @@ describe("/have, with another workspace on the machine", () => {
   });
 
   it("says so plainly when no other workspace has it", async () => {
-    const [answer] = await have.checkHoldings(["40009999"], { lookUpIdentifiers: false });
+    const [answer] = await have.checkHoldings([link("40009999")], { lookUpIdentifiers: false });
     expect(answer.elsewhereChecked).toBe(true);
     expect(answer.elsewhere).toBeNull();
   });
@@ -338,7 +342,7 @@ describe("/have, with another workspace on the machine", () => {
       year: 2024,
     });
 
-    const [answer] = await have.checkHoldings([THEIRS.pmid], { nameWorkspaces: true });
+    const [answer] = await have.checkHoldings([link(THEIRS.pmid)], { nameWorkspaces: true });
     expect(answer.elsewhere).toEqual({ workspace: "Acme", collection: "Acme papers" });
     expect(answer.identifierChecked).toBe(true);
   });

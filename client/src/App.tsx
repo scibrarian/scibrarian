@@ -974,7 +974,7 @@ export default function App() {
               <button
                 className={`have-btn ${checkingHave ? "active" : ""}`}
                 onClick={() => setCheckingHave(true)}
-                title="Check whether these are already held — paste PMIDs, DOIs or PubMed links, one per line"
+                title="Check whether these are already held — paste DOIs or PubMed links, one per line"
               >
                 <SearchCheck size={16} aria-hidden />
                 <span className="have-btn-label">{HAVE_CHECK_TITLE}</span>
@@ -1181,6 +1181,13 @@ export default function App() {
             folderId={activeFolderId!}
             isAdmin={isAdmin}
             onChanged={handleFolderChanged}
+            // The saved-papers map as well as the folder's list and count, the
+            // same three a bulk save refreshes: a paper added here may be on
+            // screen elsewhere, and its bookmark icon has to fill in.
+            onPapersAdded={async () => {
+              await Promise.all([loadBookmarks(), loadFolders()]);
+              if (activeFolderId != null) reloadSource({ folder: activeFolderId });
+            }}
             onDeleted={async () => {
               // The folder's bookmarks are deleted with it (the rows cascade),
               // so the map of what's saved has to come back from the server

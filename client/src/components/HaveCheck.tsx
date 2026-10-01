@@ -18,16 +18,15 @@ export const HAVE_CHECK_TITLE = "Check holdings";
 // "Check holdings" — the check a writer is required to run before asking a
 // project manager to approve buying an article.
 //
-// It answers on identifiers only: a PMID, a DOI, or a PubMed link, alone on the
-// line or buried in a full reference. A line carrying none is reported as such
-// rather than guessed at from its author and year — see citation-ref.ts for why
-// that guess was removed.
+// It answers on identifiers only: a DOI or a PubMed link, alone on the line or
+// buried in a full reference. A line carrying none is reported as such rather
+// than guessed at from its author and year, and a PMID on its own is refused
+// with a pointer to its link — see citation-ref.ts for both.
 //
 // Answers keep the input's order and there is always exactly one per line, so a
 // pasted reference list can be read straight down beside the original.
 
 const PLACEHOLDER = `10.1056/NEJMoa2035389
-PMID: 33301246
 https://pubmed.ncbi.nlm.nih.gov/33301246/`;
 
 export function HaveCheck({
@@ -189,7 +188,7 @@ export function HaveCheck({
     <ModalShell open={open} onClose={onClose} title={HAVE_CHECK_TITLE} wide>
       <form className="have-form" onSubmit={check}>
         <label htmlFor="have-input" className="hint">
-          Paste PMIDs, DOIs, or PubMed links — one per line. Up to {MAX_HAVE_REFS} at a time.
+          Paste DOIs or PubMed links — one per line. Up to {MAX_HAVE_REFS} at a time.
         </label>
         <textarea
           id="have-input"

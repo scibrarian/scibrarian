@@ -3,6 +3,7 @@
 // to its responses.
 import type {
   AbstractsResponse,
+  AddLinksResponse,
   BookmarkEntry,
   BookmarkFolder as BookmarkFolderRow,
   CacheStats,
@@ -24,6 +25,9 @@ import type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  LinkAnswer,
+  LinkOutcome,
+  LinkedPaper,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
@@ -66,6 +70,7 @@ export type {
 
 export type {
   AbstractsResponse,
+  AddLinksResponse,
   BookmarkEntry,
   CacheStats,
   ClearedCache,
@@ -83,6 +88,9 @@ export type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  LinkAnswer,
+  LinkOutcome,
+  LinkedPaper,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,

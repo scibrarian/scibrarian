@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barePmid, findDoi, labelledPmid, searchIdentifiers } from "./identifiers.js";
+import { barePmid, findDoi, labelledPmid, pubmedLinkPmid, searchIdentifiers } from "./identifiers.js";
 
 describe("labelledPmid", () => {
   it("reads the shapes that say 'this number is a PMID'", () => {
@@ -7,6 +7,7 @@ describe("labelledPmid", () => {
     expect(labelledPmid("pmid 33301246")).toBe("33301246");
     expect(labelledPmid("PMID.33301246")).toBe("33301246");
     expect(labelledPmid("https://pubmed.ncbi.nlm.nih.gov/33301246/")).toBe("33301246");
+    expect(labelledPmid("https://www.ncbi.nlm.nih.gov/pubmed/33301246")).toBe("33301246");
   });
 
   it("finds one inside a longer reference", () => {
@@ -17,6 +18,20 @@ describe("labelledPmid", () => {
     // That is barePmid's job, and the two callers disagree about whether to do
     // it — so this function must not decide for them.
     expect(labelledPmid("33301246")).toBeNull();
+  });
+});
+
+describe("pubmedLinkPmid", () => {
+  it("reads both PubMed URL shapes", () => {
+    expect(pubmedLinkPmid("https://pubmed.ncbi.nlm.nih.gov/33301246/")).toBe("33301246");
+    expect(pubmedLinkPmid("http://www.ncbi.nlm.nih.gov/pubmed/33301246")).toBe("33301246");
+  });
+
+  it("takes a PMID from nothing but a link", () => {
+    expect(pubmedLinkPmid("PMID: 33301246")).toBeNull();
+    expect(pubmedLinkPmid("33301246")).toBeNull();
+    // A PMC article is not a PubMed record, and its number is not a PMID.
+    expect(pubmedLinkPmid("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7745181/")).toBeNull();
   });
 });
 

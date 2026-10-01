@@ -14,9 +14,11 @@
 import { findDois } from "./pdf-match.js";
 
 // An explicit label or a PubMed URL. Both say "this number is a PMID", which a
-// bare number on a line crowded with other numbers cannot.
+// bare number on a line crowded with other numbers cannot. The URL takes the
+// legacy www.ncbi.nlm.nih.gov/pubmed/<id> form too: older reference lists are
+// full of it, and it still redirects to the same record.
 export const PMID_LABEL_RE = /\bPMID\s*[:.]?\s*(\d{1,8})\b/i;
-export const PUBMED_URL_RE = /pubmed\.ncbi\.nlm\.nih\.gov\/(\d{1,8})/i;
+export const PUBMED_URL_RE = /(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\/(\d{1,8})/i;
 // A string that is nothing but a number.
 export const BARE_PMID_RE = /^(\d{1,8})$/;
 
@@ -33,6 +35,12 @@ export interface Identifiers {
 /** A PMID the text *labelled* as one: "PMID: 123", or a pubmed.ncbi.nlm.nih.gov URL. */
 export function labelledPmid(text: string): string | null {
   const m = PMID_LABEL_RE.exec(text) ?? PUBMED_URL_RE.exec(text);
+  return m ? m[1] : null;
+}
+
+/** A PMID carried by a PubMed link, and only by one — never a label or a bare number. */
+export function pubmedLinkPmid(text: string): string | null {
+  const m = PUBMED_URL_RE.exec(text);
   return m ? m[1] : null;
 }
 

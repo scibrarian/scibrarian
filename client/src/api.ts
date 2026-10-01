@@ -1,5 +1,6 @@
 import type {
   AbstractsResponse,
+  AddLinksResponse,
   AppSettings,
   AuthStatus,
   BookmarkEntry,
@@ -260,6 +261,15 @@ export const api = {
     ),
   removeBookmark: (folderId: number, pmid: string) =>
     req<void>(`/api/bookmark-folders/${folderId}/papers/${pmid}`, { method: "DELETE" }),
+  // One request of "Add links" — at most MAX_LINKS_PER_REQUEST lines. Unlike
+  // checkHave this does not split a long paste itself: the dialog sends the
+  // batches, so it can show its progress and keep the answers of the batches
+  // that landed when a later one fails.
+  addBookmarkLinks: (folderId: number, lines: string[]) =>
+    req<AddLinksResponse>(`/api/bookmark-folders/${folderId}/links`, {
+      method: "POST",
+      body: JSON.stringify({ lines }),
+    }),
 
   getCollections: () => req<Collection[]>("/api/collections"),
   createCollection: (name: string) =>

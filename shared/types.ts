@@ -413,6 +413,40 @@ export interface HaveResponse {
   truncated: number;
 }
 
+// What a bookmark folder's "Add links" did with one pasted line.
+//   added          saved into the folder by this paste
+//   already-saved  the folder already held it — before this paste, or from an
+//                  earlier line of it naming the same paper
+//   not-in-pubmed  a DOI or PubMed link was read, but PubMed has no single
+//                  record it names, and only a PubMed record can be saved
+//   unreadable     no DOI or PubMed link in the line; parsed.reason says why
+export type LinkOutcome = "added" | "already-saved" | "not-in-pubmed" | "unreadable";
+
+// The paper a line named, as the answer row draws it.
+export interface LinkedPaper {
+  pmid: string;
+  title: string;
+  authors: string[];
+  journal_name: string;
+  pub_date_display: string;
+  url: string;
+}
+
+// One answer per pasted line, in the order pasted — the same contract as
+// HaveAnswer, so the list can be read beside the original.
+export interface LinkAnswer {
+  parsed: ParsedRefView;
+  outcome: LinkOutcome;
+  // Set for added and already-saved; null when no stored paper was named.
+  paper: LinkedPaper | null;
+}
+
+export interface AddLinksResponse {
+  results: LinkAnswer[];
+  // Lines past the per-request cap, which this request did not touch.
+  truncated: number;
+}
+
 // A minted expiring download link for one stored PDF. `path` is relative so
 // the client can prepend whichever origin it reached the server on.
 export interface ShareLinkResponse {

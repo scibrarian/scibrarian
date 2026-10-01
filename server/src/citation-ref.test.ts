@@ -16,6 +16,13 @@ describe("parseRef — identifiers", () => {
     expect(parseRef("doi: 10.1000/xyz123").doi).toBe("10.1000/xyz123");
   });
 
+  it("reads a DOI out of a publisher's article URL", () => {
+    expect(parseRef("https://www.nejm.org/doi/full/10.1056/NEJMoa2035389")).toMatchObject({
+      kind: "doi",
+      doi: "10.1056/nejmoa2035389",
+    });
+  });
+
   it("keeps a parenthesised Elsevier DOI whole", () => {
     // The Lancet's house style. Truncating at the "(" produced a shorter DOI
     // that OpenAlex still resolved — to a completely different paper.
@@ -38,18 +45,22 @@ describe("parseRef — identifiers", () => {
     expect(ref.doi).toBe("10.1056/nejmoa1");
   });
 
-  it("reads a labelled PMID", () => {
-    expect(parseRef("PMID: 31234567")).toMatchObject({ kind: "pmid", pmid: "31234567" });
-    expect(parseRef("pmid 999").pmid).toBe("999");
-  });
-
   it("reads a PMID out of a PubMed URL", () => {
-    expect(parseRef("https://pubmed.ncbi.nlm.nih.gov/31234567/").pmid).toBe("31234567");
+    expect(parseRef("https://pubmed.ncbi.nlm.nih.gov/31234567/")).toMatchObject({
+      kind: "pmid",
+      pmid: "31234567",
+    });
   });
 
-  it("treats a line that is only a number as a PMID", () => {
-    // Pasting a column of ids out of a spreadsheet.
-    expect(parseRef("31234567")).toMatchObject({ kind: "pmid", pmid: "31234567" });
+  it("reads the legacy ncbi.nlm.nih.gov/pubmed URL too", () => {
+    expect(parseRef("https://www.ncbi.nlm.nih.gov/pubmed/31234567").pmid).toBe("31234567");
+  });
+
+  it("finds a PubMed link at the end of a full reference", () => {
+    const ref = parseRef(
+      "Smith J. Effects of foo. Lancet. 2019;380:1699. https://pubmed.ncbi.nlm.nih.gov/31234567/"
+    );
+    expect(ref).toMatchObject({ kind: "pmid", pmid: "31234567" });
   });
 
   it("does not treat a number inside prose as a PMID", () => {
@@ -72,7 +83,23 @@ describe("parseRef — what it refuses to guess", () => {
       "Smith J, Jones AB, Lee C. Effects of foo on bar. N Engl J Med. 2019;380(4):1699-710."
     );
     expect(ref.kind).toBe("unknown");
-    expect(ref.reason).toMatch(/PMID or DOI/i);
+    expect(ref.reason).toMatch(/DOI or PubMed link/i);
+  });
+
+  it("refuses a PMID on its own, and says to paste the link", () => {
+    // Only a PubMed link may carry one — see the note above parseRef.
+    for (const line of ["31234567", "PMID: 31234567", "pmid 999", "2019"]) {
+      const ref = parseRef(line);
+      expect(ref.kind).toBe("unknown");
+      expect(ref.pmid).toBeUndefined();
+      expect(ref.reason).toMatch(/PubMed link/);
+    }
+  });
+
+  it("refuses a labelled PMID inside a reference that has no DOI or link", () => {
+    const ref = parseRef("Smith J. Effects of foo. Lancet. 2019;380:1699. PMID: 31234567");
+    expect(ref.kind).toBe("unknown");
+    expect(ref.reason).toMatch(/PMIDs on their own/);
   });
 
   it("refuses the client locator format", () => {
@@ -81,12 +108,6 @@ describe("parseRef — what it refuses to guess", () => {
 
   it("refuses an in-text citation", () => {
     expect(parseRef("(Smith et al., 2019)").kind).toBe("unknown");
-  });
-
-  it("reads a lone number as a PMID even when it looks like a year", () => {
-    // Documented ambiguity: short PMIDs are real, so the paste-a-column-of-ids
-    // case wins. Search makes the opposite call, and says why.
-    expect(parseRef("2019")).toMatchObject({ kind: "pmid", pmid: "2019" });
   });
 
   it("always echoes the input back", () => {

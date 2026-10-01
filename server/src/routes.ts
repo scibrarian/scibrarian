@@ -85,6 +85,7 @@ import {
   UPLOAD_TMP_DIR,
 } from "./config.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
+import { addLinksToFolder } from "./bookmark-links.js";
 import { splitRefs } from "./citation-ref.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
@@ -119,6 +120,7 @@ import {
 } from "./signing.js";
 import type {
   AbstractsResponse,
+  AddLinksResponse,
   CollectionFile,
   GraphEdge,
   GraphNode,
@@ -149,7 +151,13 @@ import {
   type WorkspaceRecord,
 } from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
-import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
+import {
+  MAX_BULK_BOOKMARK_PMIDS,
+  MAX_LINKS_PER_REQUEST,
+  MAX_NAME_CHARS,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_FILES,
+} from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -737,9 +745,11 @@ api.get("/abstracts", (req, res) => {
 // ---------- "do I already have this?" ----------
 
 // The purchase-avoidance check. `?q=` is a block of pasted lines, one reference
-// per line, and `?pmid=` / `?doi=` are the explicit single-identifier form the
-// roadmap names. All three funnel into the same parser, so a bare identifier
-// and one buried in a full reference are answered by one code path.
+// per line, and `?doi=` is the explicit single-identifier form the roadmap
+// names. Both funnel into the same parser, so a bare identifier and one buried
+// in a full reference are answered by one code path. There is no `?pmid=`: a
+// PMID is read only from a PubMed link (see citation-ref.ts), so a bare one
+// sent there could only ever come back refused.
 //
 // Newline is the only separator. `;` was tried as a URL-friendlier alternative
 // and is wrong: every Vancouver reference contains one (`2014;383:1699-710`),
@@ -766,14 +776,12 @@ api.get(
   asyncHandler(async (req, res) => {
     const lines = [
       ...splitRefs(String(req.query.q ?? "")),
-      // PMIDs are digits, so a comma between them is unambiguously a separator.
-      // DOIs are not: the suffix is publisher-chosen and may legitimately
-      // contain a comma, so those are only ever taken one per repeated param.
-      ...toList(req.query.pmid, true),
-      ...toList(req.query.doi, false),
+      // One DOI per repeated param, never comma-separated: the suffix is
+      // publisher-chosen and may legitimately contain a comma.
+      ...toList(req.query.doi),
     ];
     if (lines.length === 0) {
-      return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
+      return res.status(400).json({ error: "Paste a DOI or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
     const offline = req.query.online === "0";
@@ -798,14 +806,10 @@ api.get(
   })
 );
 
-// A query param that may be sent once or repeated, and — when its values can't
-// themselves contain one — comma-separated.
-function toList(raw: unknown, splitCommas: boolean): string[] {
+// A query param that may be sent once or repeated.
+function toList(raw: unknown): string[] {
   const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
-  return values
-    .flatMap((v) => (splitCommas ? String(v).split(",") : [String(v)]))
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return values.map((v) => String(v).trim()).filter(Boolean);
 }
 
 // ---------- citation graph ----------
@@ -997,6 +1001,34 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
   const asked = new Set(pmids).size;
   res.json({ added, alreadySaved: storable.length - added, missing: asked - storable.length });
 });
+
+// Save papers into a folder from pasted DOIs and PubMed links — the way into a
+// folder for a paper found outside Interests. One answer per line, in order,
+// like /have; see bookmark-links.ts. A POST, so admin-only like every other
+// change to a folder.
+//
+// The client splits a long paste across requests of MAX_LINKS_PER_REQUEST and
+// reports its progress between them; `truncated` counts any lines one request
+// had to leave out, so a hand-made request is told rather than silently cut.
+api.post(
+  "/bookmark-folders/:id/links",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const raw: unknown = req.body?.lines;
+    const lines = Array.isArray(raw) ? raw.map((l) => String(l).trim()).filter(Boolean) : [];
+    if (lines.length === 0) {
+      return res.status(400).json({ error: "Paste a DOI or PubMed link to add." });
+    }
+    if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+    const batch = lines.slice(0, MAX_LINKS_PER_REQUEST);
+    const results = await addLinksToFolder(id, batch);
+    if (!results) {
+      return res.status(404).json({ error: "This folder was deleted while the links were being looked up." });
+    }
+    const body: AddLinksResponse = { results, truncated: lines.length - batch.length };
+    res.json(body);
+  })
+);
 
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
   removeBookmark(Number(req.params.id), String(req.params.pmid));
