@@ -1,16 +1,17 @@
 import { parseRef, type ParsedRef } from "./citation-ref.js";
 import {
   addBookmarks,
-  bookmarkedIn,
   existingPmids,
   getBookmarkFolder,
-  holdingsByPmids,
+  linkedPapersByPmids,
+  missingOrStaleCitations,
   pmidsByDois,
   safeParseAuthors,
   upsertArticles,
   type ArticleInsert,
-  type HoldingRow,
+  type LinkedPaperRow,
 } from "./db.js";
+import { warmCitations } from "./poller.js";
 import { fetchArticles, pmidsForDoi } from "./pubmed.js";
 import { chunk, errMessage, httpError } from "./util.js";
 import type { LinkAnswer, LinkedPaper } from "./types.js";
@@ -58,29 +59,20 @@ export async function addLinksToFolder(
   // PubMed link would save it.
   const ambiguous = new Set<string>();
 
-  const fetched: ArticleInsert[] = [];
+  // One at a time: each is its own esearch, and they share the eutils
+  // throttle whichever order they go in.
+  for (const doi of dois) {
+    if (byDoi.has(doi)) continue;
+    const pmids = await fromPubmed(pmidsForDoi(doi));
+    if (pmids.length === 1) byDoi.set(doi, pmids[0]);
+    else if (pmids.length > 1) ambiguous.add(doi);
+  }
   // Every PMID a line names, once DOIs have been resolved.
-  let named: string[] = [];
-  try {
-    // One at a time: each is its own esearch, and they share the eutils
-    // throttle whichever order they go in.
-    for (const doi of dois) {
-      if (byDoi.has(doi)) continue;
-      const pmids = await pmidsForDoi(doi);
-      if (pmids.length === 1) byDoi.set(doi, pmids[0]);
-      else if (pmids.length > 1) ambiguous.add(doi);
-    }
-    named = [...new Set(refs.flatMap((r) => pmidOf(r) ?? []))];
-    const stored = existingPmids(named);
-    for (const batch of chunk(named.filter((p) => !stored.has(p)), FETCH_BATCH)) {
-      fetched.push(...(await fetchArticles(batch)));
-    }
-  } catch (err) {
-    console.warn(`[links] PubMed lookup failed: ${errMessage(err)}`);
-    throw httpError(
-      503,
-      "Couldn’t reach PubMed to look these links up, so none of them were added. Try again in a minute."
-    );
+  const named = [...new Set(refs.flatMap((r) => pmidOf(r) ?? []))];
+  const stored = existingPmids(named);
+  const fetched: ArticleInsert[] = [];
+  for (const batch of chunk(named.filter((p) => !stored.has(p)), FETCH_BATCH)) {
+    fetched.push(...(await fromPubmed(fetchArticles(batch))));
   }
 
   // --- writes: nothing is awaited from here on ---
@@ -90,10 +82,17 @@ export async function addLinksToFolder(
   // the lookups could have been deleted during them (its journal removed in
   // Settings, say), and saving it now would fail the bookmark's foreign key.
   const present = [...existingPmids(named)];
-  const before = bookmarkedIn(folderId, present);
-  addBookmarks(folderId, present.filter((p) => !before.has(p)));
+  const added = new Set(addBookmarks(folderId, present));
 
-  const papers = new Map(holdingsByPmids(present).map((row) => [row.pmid, toPaper(row)]));
+  // Citation counts for the papers just saved, as a poll and an import fetch
+  // them for the papers they store. Left to the folder's next load, they were
+  // fetched there, with the folder waiting on iCite before it could show. Not
+  // awaited: no answer depends on them, and a slow or failing iCite mustn't
+  // hold up a save that has already happened.
+  const uncited = missingOrStaleCitations([...added]);
+  if (uncited.length > 0) void warmCitations(uncited, "links");
+
+  const papers = new Map(linkedPapersByPmids(present).map((row) => [row.pmid, toPaper(row)]));
   // A paper named twice in one paste is added by its first line; the second
   // finds it already saved, which by then it is.
   const seen = new Set<string>();
@@ -105,13 +104,29 @@ export async function addLinksToFolder(
       const several = parsed.kind === "doi" && !!parsed.doi && ambiguous.has(parsed.doi);
       return { parsed, outcome: several ? "ambiguous-doi" : "not-in-pubmed", paper: null };
     }
-    const outcome = before.has(pmid) || seen.has(pmid) ? "already-saved" : "added";
+    const outcome = added.has(pmid) && !seen.has(pmid) ? "added" : "already-saved";
     seen.add(pmid);
     return { parsed, outcome, paper };
   });
 }
 
-function toPaper(row: HoldingRow): LinkedPaper {
+// Await one PubMed request, and report its failure as PubMed's. Only the
+// requests go through here: a local read between them failing is a database
+// fault, and "couldn't reach PubMed, try again in a minute" would send the
+// reader to retry what retrying won't fix.
+async function fromPubmed<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request;
+  } catch (err) {
+    console.warn(`[links] PubMed lookup failed: ${errMessage(err)}`);
+    throw httpError(
+      503,
+      "Couldn’t reach PubMed to look these links up, so none of them were added. Try again in a minute."
+    );
+  }
+}
+
+function toPaper(row: LinkedPaperRow): LinkedPaper {
   return {
     pmid: row.pmid,
     title: row.title,

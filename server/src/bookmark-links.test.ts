@@ -3,7 +3,8 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 // "Add links" — saving papers into a bookmark folder from pasted DOIs and
 // PubMed links. PubMed is mocked: a DOI's PMIDs are in `pubmed.dois`, and a
-// PMID's record exists only if it is in `pubmed.records`. Nothing here touches
+// PMID's record exists only if it is in `pubmed.records`. Citation warm-ups are
+// recorded in `local.warmed` rather than sent to iCite. Nothing here touches
 // the network.
 
 const pubmed = vi.hoisted(() => ({
@@ -16,6 +17,31 @@ const pubmed = vi.hoisted(() => ({
   // while one is in flight.
   during: null as (() => void) | null,
 }));
+
+const local = vi.hoisted(() => ({
+  // The PMIDs each citation warm-up was started for.
+  warmed: [] as string[][],
+  // Makes the library's read of which papers it stores fail, as SQLite does
+  // when the database is locked.
+  dbFault: false,
+}));
+
+vi.mock("./poller.js", () => ({
+  warmCitations: async (pmids: string[]) => {
+    local.warmed.push(pmids);
+  },
+}));
+
+vi.mock("./db.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./db.js")>();
+  return {
+    ...actual,
+    existingPmids: (pmids: string[]) => {
+      if (local.dbFault) throw new Error("SQLITE_BUSY: database is locked");
+      return actual.existingPmids(pmids);
+    },
+  };
+});
 
 vi.mock("./pubmed.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pubmed.js")>();
@@ -81,6 +107,8 @@ beforeEach(() => {
   pubmed.fetched = [];
   pubmed.fail = false;
   pubmed.during = null;
+  local.warmed = [];
+  local.dbFault = false;
 });
 
 const saved = () => db.listBookmarks().filter((b) => b.folder_id === folder).map((b) => b.pmid);
@@ -185,6 +213,30 @@ describe("addLinksToFolder", () => {
     // is all or nothing, so the answer the reader gets is true of every line.
     expect(saved()).toEqual([]);
     expect(db.existingPmids([REMOTE.pmid]).size).toBe(0);
+  });
+
+  it("reports a database fault as itself, not as PubMed being unreachable", async () => {
+    // A 503 saying "couldn't reach PubMed, try again in a minute" sends the
+    // reader to retry something that isn't a network problem.
+    local.dbFault = true;
+    const attempt = addLinksToFolder(folder, [link(REMOTE.pmid)]);
+    await expect(attempt).rejects.toThrow(/SQLITE_BUSY/);
+    await expect(attempt).rejects.not.toMatchObject({ status: 503 });
+  });
+
+  it("starts citation counts for the papers it saved, and only those", async () => {
+    await addLinksToFolder(folder, [link(STORED.pmid)]);
+    local.warmed = [];
+    const answers = (await addLinksToFolder(folder, [link(REMOTE.pmid), link(STORED.pmid)]))!;
+    expect(answers.map((a) => a.outcome)).toEqual(["added", "already-saved"]);
+    expect(local.warmed).toEqual([[REMOTE.pmid]]);
+  });
+
+  it("starts no citation counts when nothing new was saved", async () => {
+    await addLinksToFolder(folder, [link(STORED.pmid)]);
+    local.warmed = [];
+    await addLinksToFolder(folder, [link(STORED.pmid), "10.1000/nowhere"]);
+    expect(local.warmed).toEqual([]);
   });
 
   it("writes nothing into a folder deleted while PubMed was being asked", async () => {

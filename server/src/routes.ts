@@ -995,7 +995,7 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
           : "None of those papers are stored any more.",
     });
   }
-  const added = addBookmarks(id, storable);
+  const added = addBookmarks(id, storable).length;
   // Counted against the de-duplicated request: `storable` is a Set, so a pmid
   // sent twice would otherwise be reported as a paper that isn't stored.
   const asked = new Set(pmids).size;

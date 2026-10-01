@@ -1947,27 +1947,42 @@ const insertBookmarkStmt = db.prepare(
 // Save papers into a folder, atomically. Saving one that's already there is a
 // no-op rather than an error — the primary key already says a paper is in a
 // folder once, so a double-click, or a bulk save overlapping an earlier one, is
-// harmless. Returns how many rows were actually new, so the caller can report
-// what changed rather than claiming it saved papers it didn't.
+// harmless. Returns the papers that were actually new, so the caller can report
+// what changed rather than claiming it saved papers it didn't — and say which,
+// where Add links has a line to answer for each.
 //
 // One function for both the single-paper toggle and the bulk save: a bulk save
 // of a filtered set is thousands of these, and a per-row transaction each would
 // be thousands of fsyncs.
-export const addBookmarks = transaction((folderId: number, pmids: string[]): number => {
-  let added = 0;
-  for (const pmid of pmids) added += Number(insertBookmarkStmt.run(folderId, pmid).changes);
+export const addBookmarks = transaction((folderId: number, pmids: string[]): string[] => {
+  const added: string[] = [];
+  for (const pmid of pmids) {
+    if (Number(insertBookmarkStmt.run(folderId, pmid).changes) > 0) added.push(pmid);
+  }
   return added;
 });
 
-// Which of these papers a folder already holds. Read just before a save by the
-// caller that has to say which papers were new, not only how many.
-export function bookmarkedIn(folderId: number, pmids: string[]): Set<string> {
-  const rows = queryByIds<{ pmid: string }>(
+// What an Add links answer row draws for the paper a line named, and nothing
+// more. Not holdingsByPmids, which also finds each paper's held copy — a
+// grouped scan over every collection file, for columns a folder never shows.
+export interface LinkedPaperRow {
+  pmid: string;
+  title: string;
+  authors: string; // JSON array, parsed by the caller
+  journal_name: string;
+  pub_date_display: string;
+  url: string;
+}
+
+export function linkedPapersByPmids(pmids: string[]): LinkedPaperRow[] {
+  return queryByIds<LinkedPaperRow>(
     pmids,
-    (ph) => `SELECT pmid FROM bookmarks WHERE pmid IN (${ph}) AND folder_id = ?`,
-    [folderId]
+    (ph) => `SELECT a.pmid, a.title, a.authors, ${JOURNAL_DISPLAY} AS journal_name,
+                    a.pub_date_display, a.url
+             FROM articles a
+             ${JOURNAL_LOOKUP}
+             WHERE a.pmid IN (${ph})`
   );
-  return new Set(rows.map((r) => r.pmid));
 }
 
 // Un-saving something that isn't saved is likewise a no-op, so the toggle can
