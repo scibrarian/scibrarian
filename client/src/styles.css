@@ -1194,7 +1194,6 @@ body {
   overflow-y: auto;
 }
 
-/* Scoped under .typeahead-list to outweigh the generic .inline-form button style. */
 .typeahead-list .typeahead-item {
   display: flex;
   align-items: center;
@@ -1229,13 +1228,52 @@ body {
 }
 
 .ta-title {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 13px;
   font-weight: 500;
+}
+
+/* The entry term a MeSH suggestion matched on, when it isn't the heading:
+   "cush" offering Denture Liners is only explicable as "Cushion Liner". It gets
+   only the room the heading leaves — the heading keeps its content width and
+   this grows from zero — so on a narrow row the synonym truncates, or goes,
+   before the heading that is being picked loses a letter. */
+.ta-synonym {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+}
+
+/* How many held papers carry a Library-suggested heading. */
+.ta-count {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+/* Heads the options a typeahead offers before anything is typed, or stands
+   alone as a note when it has none to offer. Not an option: no hover, no
+   pointer, and it wraps where an option would truncate. */
+.typeahead-heading {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.typeahead-heading:last-child {
+  border-bottom: none;
 }
 
 .ta-meta {
@@ -1354,8 +1392,10 @@ input:disabled {
   cursor: not-allowed;
 }
 
-/* Open Library switch in the Sharing panel — mirrors .stacked-form label. */
-.open-library {
+/* Open Library switch in the Sharing panel, and "Search all PubMed journals"
+   under the journal list — mirrors .stacked-form label. */
+.open-library,
+.all-pubmed {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1365,7 +1405,8 @@ input:disabled {
   color: var(--text);
 }
 
-.open-library .hint {
+.open-library .hint,
+.all-pubmed .hint {
   font-weight: 400;
   margin: 0;
 }
@@ -1386,7 +1427,6 @@ input:focus {
 }
 
 .stacked-form button,
-.inline-form button,
 .accent-btn {
   align-self: flex-start;
   background: var(--accent);
@@ -1515,6 +1555,34 @@ input:focus {
   scrollbar-gutter: stable;
 }
 
+/* Topic rows stand two lines tall (the heading over its PubMed term), 62px
+   each and 71px apart. Four whole rows and a fifth cut below its heading: the
+   cut-off row is what says the list scrolls, and cutting through the heading
+   instead reads as a rendering fault. */
+.scroll-list.topic-list {
+  height: 315px;
+}
+
+/* ...and held to that height. Each of the two lines is cut with an ellipsis
+   rather than wrapped, so a long heading or a narrow window can't make a row
+   taller and move the cut into a heading. The full text is in the title. */
+.topic-list li > span {
+  min-width: 0;
+}
+
+.topic-list li > span > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The journal list while "Search all PubMed journals" is on: kept in view, so
+   turning the setting off shows what topics will go back to, but visibly not
+   what they search now. */
+.list.set-aside {
+  opacity: 0.5;
+}
+
 .list li span:not(.mesh-warn) {
   display: flex;
   flex-direction: column;
@@ -1537,56 +1605,6 @@ input:focus {
   font-size: 12px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-/* topics the Library's own MeSH filing suggests watching */
-
-.topic-suggest {
-  margin: 12px 0 4px;
-}
-
-.topic-suggest-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-/* Chips, not list rows: these are a menu of one-click adds, and stacking a
-   dozen of them vertically would push the topics they'd join off the panel. */
-.suggest-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--panel);
-  border: 1px dashed var(--border);
-  border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
-  /* border-style dashed→solid is discrete and jumps either way; the colours
-     either side of it are what carry the change. */
-  transition:
-    border-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.suggest-chip:hover {
-  border-style: solid;
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.suggest-count {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  transition: color var(--dur-fast) var(--ease);
-}
-
-.suggest-chip:hover .suggest-count {
-  color: inherit;
 }
 
 code {

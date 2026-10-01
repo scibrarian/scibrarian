@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs, existingBlobHashes } from "./blobstore.js";
 import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
-import { toFtsQuery } from "./fts-query.js";
+import { FTS_TOKENIZE, toFtsQuery } from "./fts-query.js";
 import { searchIdentifiers } from "./identifiers.js";
 import {
   MESH_SETTLED_STATUSES,
@@ -29,6 +29,7 @@ import type {
   MeshFacet,
   MeshFiling,
   MeshHeading,
+  MeshSearchResult,
   Paper,
   Settings,
   TopicSuggestion,
@@ -58,6 +59,17 @@ export function transaction<A extends unknown[], R>(fn: (...args: A) => R): (...
     }
   };
 }
+
+// Named because it is run twice: by the schema below, and again by the rebuild
+// in migrations when an existing index was built with another tokenizer. The
+// tokenizer, and why it doesn't stem, is FTS_TOKENIZE in fts-query.ts.
+const PDF_TEXT_FTS = `
+  CREATE VIRTUAL TABLE IF NOT EXISTS pdf_text_fts USING fts5(
+    text,
+    content='pdf_text',
+    content_rowid='rowid',
+    tokenize='${FTS_TOKENIZE}'
+  );`;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS topics (
@@ -159,6 +171,45 @@ db.exec(`
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
   );
 
+  -- The journals whose whole history a topic has been searched for. Polls are
+  -- incremental (papers MeSH-indexed since the topic's last one), which only
+  -- reaches a journal's back catalogue if the topic was already searching it,
+  -- so a journal with no row here has its history listed on the topic's next
+  -- poll (see pollTopic). Rows go with either side: a journal removed and
+  -- added back is a new id and is scanned again, which it needs, because the
+  -- removal deleted its papers.
+  CREATE TABLE IF NOT EXISTS topic_journal_scans (
+    topic_id INTEGER NOT NULL,
+    journal_id INTEGER NOT NULL,
+    PRIMARY KEY (topic_id, journal_id),
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (journal_id) REFERENCES journals(id) ON DELETE CASCADE
+  );
+
+  -- The same record for "Search all PubMed journals" (see searchesAllPubmed):
+  -- a row once a topic's history across all of PubMed has been listed, holding
+  -- the watermark its incremental polls in that mode continue from. Kept apart
+  -- from topics.last_polled_at, which the journal polls continue from, because
+  -- an all-PubMed search is capped at PubMed's 9,999 and so can't vouch for
+  -- having covered the watched journals. Emptied when the setting is turned
+  -- off, since that deletes papers these scans had covered.
+  CREATE TABLE IF NOT EXISTS topic_pubmed_scans (
+    topic_id INTEGER PRIMARY KEY,
+    polled_at TEXT NOT NULL,
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
+  );
+
+  -- The topic links an all-PubMed poll made, so that turning the setting off
+  -- can take out those links and no others (see OFF_LIST_LINKS). Only links a
+  -- poll in that mode created: one a journal poll had already made gets no row,
+  -- and stays. A row goes with its link, and all of them with the setting.
+  CREATE TABLE IF NOT EXISTS topic_pubmed_links (
+    pmid TEXT NOT NULL,
+    topic_id INTEGER NOT NULL,
+    PRIMARY KEY (pmid, topic_id),
+    FOREIGN KEY (pmid, topic_id) REFERENCES article_topics(pmid, topic_id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -244,7 +295,7 @@ db.exec(`
   -- a dangling row would be meaningless. Deleting a folder takes its bookmarks
   -- with it; the articles themselves stay (they may be in a topic feed too).
   -- Topic and journal removals deliberately never delete a bookmarked article —
-  -- see DELETABLE_TOPIC_ARTICLES / DELETABLE_JOURNAL_ARTICLES.
+  -- see UNSAVED_ARTICLES.
   CREATE TABLE IF NOT EXISTS bookmarks (
     folder_id INTEGER NOT NULL,
     pmid TEXT NOT NULL,
@@ -280,15 +331,7 @@ db.exec(`
   -- isn't duplicated. That makes pdf_text the single writable copy and the
   -- triggers below the only thing keeping the two in step -- an INSERT/UPDATE/
   -- DELETE on pdf_text that bypassed them would leave the index lying.
-  --
-  -- porter stemming so "resistance" answers a search for "resist"; unicode61 so
-  -- accented author names and Greek letters tokenize as words.
-  CREATE VIRTUAL TABLE IF NOT EXISTS pdf_text_fts USING fts5(
-    text,
-    content='pdf_text',
-    content_rowid='rowid',
-    tokenize='porter unicode61'
-  );
+  ${PDF_TEXT_FTS}
 
   CREATE TRIGGER IF NOT EXISTS pdf_text_ai AFTER INSERT ON pdf_text BEGIN
     INSERT INTO pdf_text_fts(rowid, text) VALUES (new.rowid, new.text);
@@ -370,6 +413,26 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_articles_mesh_status ON articles(mesh_status);
 `);
 
+// The body-text index is rebuilt, not altered, when its tokenizer changes. FTS5
+// fixes a table's tokenizer when it is created, and CREATE ... IF NOT EXISTS is
+// a no-op against an existing one, so without this a library would go on
+// searching with whatever it was first built with. Dropping it loses nothing:
+// the index is external-content, a structure derived from pdf_text, and
+// 'rebuild' re-reads every row from there. The pdf_text triggers only name the
+// table in their bodies, so they survive the drop and resume on the new one.
+const ftsDdl = db
+  .prepare("SELECT sql FROM sqlite_master WHERE name = 'pdf_text_fts'")
+  .get() as { sql: string };
+if (!ftsDdl.sql.includes(`tokenize='${FTS_TOKENIZE}'`)) {
+  const started = Date.now();
+  transaction(() => {
+    db.exec("DROP TABLE pdf_text_fts");
+    db.exec(PDF_TEXT_FTS);
+    db.exec("INSERT INTO pdf_text_fts(pdf_text_fts) VALUES ('rebuild')");
+  })();
+  console.log(`[db] rebuilt pdf_text_fts (tokenize='${FTS_TOKENIZE}') in ${Date.now() - started} ms`);
+}
+
 // ---------- what "held" means ----------
 
 // A collection_files row is a held copy exactly when it carries a pmid.
@@ -410,6 +473,14 @@ export const heldFileSql = (alias = "") => `${alias}pmid IS NOT NULL`;
 // The distinct papers the user actually holds a file for — the Library, as the
 // custody positioning means it.
 const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFileSql()})`;
+
+// The pinning rule every removal that deletes papers applies (a topic, a
+// journal, "Search all PubMed journals" going off): a paper the user holds a
+// file for or has bookmarked is theirs, and outlives the feed it was found in.
+// One fragment, so a new way of saving a paper can't be honoured by one removal
+// and missed by another.
+const UNSAVED_ARTICLES = `pmid NOT IN ${HELD_PAPERS}
+   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
 // ---------- settings ----------
 
@@ -452,27 +523,27 @@ for (const [key, value] of Object.entries(SETTING_DEFAULTS)) {
 
 // ---------- topics ----------
 
+// pubmed_polled_at is the topic's all-PubMed watermark, NULL until it has one
+// (see topic_pubmed_scans).
+const TOPIC_SELECT = `SELECT t.id, t.name, t.term, t.last_polled_at, t.created_at,
+     s.polled_at AS pubmed_polled_at
+   FROM topics t LEFT JOIN topic_pubmed_scans s ON s.topic_id = t.id`;
+
 export function listTopics(): Topic[] {
-  return db
-    .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics ORDER BY id ASC")
-    .all() as unknown as Topic[];
+  return db.prepare(`${TOPIC_SELECT} ORDER BY t.id ASC`).all() as unknown as Topic[];
 }
 
 export function getTopic(id: number): Topic | undefined {
-  return db
-    .prepare("SELECT id, name, term, last_polled_at, created_at FROM topics WHERE id = ?")
-    .get(id) as Topic | undefined;
+  return db.prepare(`${TOPIC_SELECT} WHERE t.id = ?`).get(id) as Topic | undefined;
 }
 
 // Used to reject adding the same topic twice. Identity is the PubMed term, which
 // is built deterministically from the MeSH heading, so the same heading always
 // yields the same term; NOCASE also catches an equivalent legacy/seed term.
 export function topicByTerm(term: string): Topic | undefined {
-  return db
-    .prepare(
-      "SELECT id, name, term, last_polled_at, created_at FROM topics WHERE term = ? COLLATE NOCASE"
-    )
-    .get(term) as Topic | undefined;
+  return db.prepare(`${TOPIC_SELECT} WHERE t.term = ? COLLATE NOCASE`).get(term) as
+    | Topic
+    | undefined;
 }
 
 export function createTopic(name: string, term: string): Topic {
@@ -493,7 +564,8 @@ export function createTopic(name: string, term: string): Topic {
 // CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
 // topic's *current* match criteria — every stored paper that matches a topic
 // is linked to it. The poller guarantees this today (all-time first poll,
-// contiguous MeSH-date windows, cross-linking of known pmids). If per-topic
+// contiguous MeSH-date windows, cross-linking of known pmids, a history scan
+// of each journal new to a topic — see topic_journal_scans). If per-topic
 // fetch filters are ever added (e.g. "papers since 2000"), *widening* a
 // topic's criteria must clear its last_polled_at so the next poll re-seeds
 // all-time under the new filter and relinks older papers — otherwise this
@@ -501,8 +573,7 @@ export function createTopic(name: string, term: string): Topic {
 // Narrowing is safe by default: stale links merely keep papers alive.
 const DELETABLE_TOPIC_ARTICLES = `pmid IN (SELECT pmid FROM article_topics WHERE topic_id = ?)
    AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
-   AND pmid NOT IN ${HELD_PAPERS}
-   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+   AND ${UNSAVED_ARTICLES}`;
 
 // How many stored articles a topic removal would permanently delete (for the
 // confirmation).
@@ -529,6 +600,16 @@ export const removeTopicWithArticles = transaction((id: number): TopicRemovalRes
 
 export function setTopicLastPolled(id: number, iso: string): void {
   db.prepare("UPDATE topics SET last_polled_at = ? WHERE id = ?").run(iso, id);
+}
+
+// Through a SELECT from topics, so a topic removed while its poll ran is
+// skipped instead of failing the foreign key. (The WHERE is also what SQLite
+// needs to parse an upsert after a SELECT.)
+export function setTopicPubmedPolled(id: number, iso: string): void {
+  db.prepare(
+    `INSERT INTO topic_pubmed_scans (topic_id, polled_at) SELECT id, ? FROM topics WHERE id = ?
+     ON CONFLICT(topic_id) DO UPDATE SET polled_at = excluded.polled_at`
+  ).run(iso, id);
 }
 
 // When a poll of every topic was last *attempted* (ISO timestamp; "" if never).
@@ -599,6 +680,26 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
   return row ? toJournal(row) : undefined;
 }
 
+// The journals whose whole history a topic has been searched for — see
+// topic_journal_scans.
+export function scannedJournalIds(topicId: number): Set<number> {
+  const rows = db
+    .prepare("SELECT journal_id FROM topic_journal_scans WHERE topic_id = ?")
+    .all(topicId) as { journal_id: number }[];
+  return new Set(rows.map((r) => r.journal_id));
+}
+
+// Through a join rather than a plain VALUES insert, so a topic or journal
+// removed while the poll ran is skipped instead of failing its foreign key.
+const markScannedStmt = db.prepare(
+  `INSERT OR IGNORE INTO topic_journal_scans (topic_id, journal_id)
+   SELECT t.id, j.id FROM topics t, journals j WHERE t.id = ? AND j.id = ?`
+);
+
+export const markJournalsScanned = transaction((topicId: number, journalIds: number[]) => {
+  for (const journalId of journalIds) markScannedStmt.run(topicId, journalId);
+});
+
 // Which of a journal's articles a removal would permanently delete: the
 // journal's articles minus anything the user has saved — a collection file
 // (library copies) or a bookmark, the same pinning rule the topic predicate
@@ -607,8 +708,7 @@ export function journalByNlmId(nlmId: string): Journal | undefined {
 // pinning rule ever changes, both move together, so the dialog can't promise
 // one thing and the delete do another.
 const DELETABLE_JOURNAL_ARTICLES = `nlm_id = ?
-   AND pmid NOT IN ${HELD_PAPERS}
-   AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+   AND ${UNSAVED_ARTICLES}`;
 
 function journalNlmId(id: number): string | null {
   const j = db.prepare("SELECT nlm_id FROM journals WHERE id = ?").get(id) as
@@ -659,6 +759,83 @@ export const removeJournalWithArticles = transaction((id: number): JournalRemova
   return { deletedArticles, removedFromInterests };
 });
 
+// ---------- searching all of PubMed ----------
+
+// "Search all PubMed journals": every topic searches all of PubMed instead of
+// the journal list, which is set aside and locked meanwhile (see the journal
+// routes). Internal, like last_poll_attempt_at — kept out of SETTING_DEFAULTS
+// so that PUT /settings can't flip it, because turning it off deletes papers.
+// It changes only through setSearchAllPubmed.
+export function searchesAllPubmed(): boolean {
+  const row = getSettingStmt.get("search_all_pubmed") as { value: string } | undefined;
+  return row?.value === "1";
+}
+
+// The links turning the setting off takes out of the topic feeds: those an
+// all-PubMed poll made (see topic_pubmed_links) to a paper from a journal the
+// list doesn't have. Recorded when made rather than told apart by nlm_id
+// afterwards, because a journal poll searches by name, and a name can match
+// papers another serial files under its own nlm_id: only the record knows a
+// journal poll found those. The nlm_id test here only ever keeps a link: a paper
+// from a listed journal is one that journal's polls find too, so it stays
+// rather than being deleted and fetched again. A paper PubMed gave no journal
+// id is off the list. Rows of (pmid, topic_id).
+const OFF_LIST_LINKS = `SELECT l.pmid, l.topic_id FROM topic_pubmed_links l
+   JOIN articles a ON a.pmid = l.pmid
+   WHERE a.nlm_id IS NULL
+      OR a.nlm_id NOT IN (SELECT nlm_id FROM journals WHERE nlm_id IS NOT NULL)`;
+
+// The papers those links take out of Interests: the ones in no feed but
+// through them. A paper a journal poll linked to another topic stays in that
+// topic's feed.
+const OFF_LIST_IN_FEEDS = `pmid IN (SELECT pmid FROM (${OFF_LIST_LINKS}))
+   AND pmid NOT IN (SELECT pmid FROM article_topics
+                    WHERE (pmid, topic_id) NOT IN (${OFF_LIST_LINKS}))`;
+
+// Of those, the ones deleted outright: everything the user hasn't saved.
+const DELETABLE_OFF_LIST_ARTICLES = `${OFF_LIST_IN_FEEDS}
+   AND ${UNSAVED_ARTICLES}`;
+
+// How many papers turning the setting off would take out of Interests (for the
+// confirm, and what the turn-off reports as removedFromInterests). All of them,
+// saved or not: the confirm says how many leave Interests, and that saved ones
+// stay where they're saved, rather than counting deletions.
+export function countOffListArticles(): number {
+  return (
+    db.prepare(`SELECT COUNT(*) AS c FROM articles WHERE ${OFF_LIST_IN_FEEDS}`).get() as {
+      c: number;
+    }
+  ).c;
+}
+
+// Turning it on changes nothing stored: the next poll of each topic lists its
+// history across all of PubMed. Turning it off takes out what those polls
+// brought in from journals outside the list — the links leave the topic feeds,
+// and the papers left in no feed that nothing saved points at are deleted — and
+// forgets the all-PubMed watermarks, because what they vouched for is gone:
+// turning the setting on again lists history afresh. Only on an actual change,
+// so a repeated "off" can't delete.
+export const setSearchAllPubmed = transaction((on: boolean): JournalRemovalResult => {
+  let deletedArticles = 0;
+  let removedFromInterests = 0;
+  if (!on && searchesAllPubmed()) {
+    removedFromInterests = countOffListArticles();
+    // Deleted first, while the links that mark them are still there (theirs
+    // cascade); then the links left over are removed — to saved papers, and to
+    // papers a journal poll keeps in another topic's feed.
+    deletedArticles = Number(
+      db.prepare(`DELETE FROM articles WHERE ${DELETABLE_OFF_LIST_ARTICLES}`).run().changes
+    );
+    db.prepare(`DELETE FROM article_topics WHERE (pmid, topic_id) IN (${OFF_LIST_LINKS})`).run();
+    // What's left are links to papers from listed journals, the journal polls'
+    // own from here on.
+    db.prepare("DELETE FROM topic_pubmed_links").run();
+    db.prepare("DELETE FROM topic_pubmed_scans").run();
+  }
+  setSettingStmt.run("search_all_pubmed", on ? "1" : "0");
+  return { deletedArticles, removedFromInterests };
+});
+
 // ---------- articles ----------
 
 // An IN (...) query over the chunks, with the rows concatenated.
@@ -702,6 +879,22 @@ export function existingPmids(pmids: string[]): Set<string> {
   return new Set(rows.map((r) => r.pmid));
 }
 
+// The stored paper each DOI names, keyed by the lowercased DOI — compared
+// lowercased for the reason holdingsByDois gives. A DOI two stored records
+// share is left out rather than resolved to either, so the caller asks PubMed,
+// which declines to pick between them too (see resolveDoiToPmid).
+export function pmidsByDois(dois: string[]): Map<string, string> {
+  const rows = queryByIds<{ pmid: string; doi: string }>(
+    dois.map((d) => d.toLowerCase()),
+    (ph) => `SELECT pmid, lower(doi) AS doi FROM articles WHERE doi <> '' AND lower(doi) IN (${ph})`
+  );
+  const named = new Map<string, Set<string>>();
+  for (const r of rows) named.set(r.doi, (named.get(r.doi) ?? new Set()).add(r.pmid));
+  const out = new Map<string, string>();
+  for (const [doi, pmids] of named) if (pmids.size === 1) out.set(doi, [...pmids][0]);
+  return out;
+}
+
 // The papers list omits abstracts (they dominate its size); the timeline
 // fetches them on demand, a rendered chunk at a time rather than a card at a
 // time. Unknown pmids are simply absent from the result.
@@ -730,6 +923,19 @@ const upsertArticleStmt = db.prepare(`
 const linkArticleStmt = db.prepare(
   "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
 );
+const recordPubmedLinkStmt = db.prepare(
+  "INSERT INTO topic_pubmed_links (pmid, topic_id) VALUES (?, ?)"
+);
+
+// Link a paper to a topic, and say whether the link is new. `allPubmed` says
+// the poll that found it searched all of PubMed, and a new link it made is
+// recorded as one (see topic_pubmed_links); a link that already existed keeps
+// what it had. Not a transaction wrapper: both callers run inside one.
+export function linkToTopic(pmid: string, topicId: number, allPubmed: boolean): boolean {
+  const created = Number(linkArticleStmt.run(pmid, topicId).changes) > 0;
+  if (created && allPubmed) recordPubmedLinkStmt.run(pmid, topicId);
+  return created;
+}
 
 export type ArticleInsert = Omit<Article, "authors" | "first_seen_at" | "mesh_status"> & {
   authors: string[];
@@ -818,11 +1024,12 @@ function upsertArticle(a: ArticleInsert): void {
 }
 
 // Insert/refresh a batch of articles and link them to a topic, atomically.
-export const saveArticles = transaction((articles: ArticleInsert[], topicId: number) => {
+// `allPubmed` as for linkToTopic.
+export const saveArticles = transaction((articles: ArticleInsert[], topicId: number, allPubmed: boolean = false) => {
   for (const a of articles) {
     upsertArticle(a);
     setArticleXmlFacts(a);
-    linkArticleStmt.run(a.pmid, topicId);
+    linkToTopic(a.pmid, topicId, allPubmed);
   }
 });
 
@@ -1740,17 +1947,43 @@ const insertBookmarkStmt = db.prepare(
 // Save papers into a folder, atomically. Saving one that's already there is a
 // no-op rather than an error — the primary key already says a paper is in a
 // folder once, so a double-click, or a bulk save overlapping an earlier one, is
-// harmless. Returns how many rows were actually new, so the caller can report
-// what changed rather than claiming it saved papers it didn't.
+// harmless. Returns the papers that were actually new, so the caller can report
+// what changed rather than claiming it saved papers it didn't — and say which,
+// where Add links has a line to answer for each.
 //
 // One function for both the single-paper toggle and the bulk save: a bulk save
 // of a filtered set is thousands of these, and a per-row transaction each would
 // be thousands of fsyncs.
-export const addBookmarks = transaction((folderId: number, pmids: string[]): number => {
-  let added = 0;
-  for (const pmid of pmids) added += Number(insertBookmarkStmt.run(folderId, pmid).changes);
+export const addBookmarks = transaction((folderId: number, pmids: string[]): string[] => {
+  const added: string[] = [];
+  for (const pmid of pmids) {
+    if (Number(insertBookmarkStmt.run(folderId, pmid).changes) > 0) added.push(pmid);
+  }
   return added;
 });
+
+// What an Add links answer row draws for the paper a line named, and nothing
+// more. Not holdingsByPmids, which also finds each paper's held copy — a
+// grouped scan over every collection file, for columns a folder never shows.
+export interface LinkedPaperRow {
+  pmid: string;
+  title: string;
+  authors: string; // JSON array, parsed by the caller
+  journal_name: string;
+  pub_date_display: string;
+  url: string;
+}
+
+export function linkedPapersByPmids(pmids: string[]): LinkedPaperRow[] {
+  return queryByIds<LinkedPaperRow>(
+    pmids,
+    (ph) => `SELECT a.pmid, a.title, a.authors, ${JOURNAL_DISPLAY} AS journal_name,
+                    a.pub_date_display, a.url
+             FROM articles a
+             ${JOURNAL_LOOKUP}
+             WHERE a.pmid IN (${ph})`
+  );
+}
 
 // Un-saving something that isn't saved is likewise a no-op, so the toggle can
 // be driven from a possibly-stale client view without erroring.
@@ -2274,33 +2507,58 @@ export const replaceMeshData = transaction((rows: MeshSeed[], version: string) =
   setMeshVersion(version);
 });
 
+// A topic-autocomplete hit as GET /mesh/search sends it (see MeshSearchResult
+// for what `synonym` is), plus the rank it was ordered by.
+export interface MeshSearchHit extends MeshSearchResult {
+  rank: number;
+}
+
 // Topic autocomplete: match any entry term (the heading is stored as one too),
 // dedupe to one row per descriptor, and rank so the query's relevance to the
 // heading wins over an obscure-synonym match — heading-prefix, then
 // synonym-prefix, then heading-substring, then synonym-only — and shortest
 // heading breaks ties. Without this, searching "diabetes" surfaces descriptors
 // like Hemochromatosis (synonym "Bronze Diabetes") above "Diabetes Mellitus".
-export function searchMesh(q: string, limit = 10): MeshDescriptor[] {
+//
+// Each row is ranked by its own term, the heading's row being the one whose
+// term is the heading (parseDescriptorRecord stores it first, so the dedupe
+// keeps it verbatim). A descriptor's rank comes out the same as ranking on the
+// heading directly, since that row always matches when the heading does. It is
+// ranked this way so the winning row is also the one to show: the composite
+// score adds the term's length as a tie-break (entry terms run far short of
+// the 1,000 that would spill into the next rank), and it is the query's only
+// MIN(), so SQLite fills the bare et.term from the row that produced it.
+//
+// Except that a heading containing the query is its own reason to be offered,
+// and names no synonym whichever row won. MeSH lists inverted permutations of
+// nearly every multi-word heading, so "syndrome" prefix-matches "Syndrome,
+// Cushing" ahead of Cushing Syndrome's own substring match — which ranks it
+// right, and would otherwise label it with its own words turned around.
+export function searchMesh(q: string, limit = 10): MeshSearchHit[] {
   const esc = escapeLike(q);
   const like = `%${esc}%`;
   const prefix = `${esc}%`;
   return db
     .prepare(
-      `SELECT d.ui AS ui, d.name AS name,
-         MIN(CASE
-           WHEN d.name LIKE ? ESCAPE '\\' THEN 0
-           WHEN et.term LIKE ? ESCAPE '\\' THEN 1
-           WHEN d.name LIKE ? ESCAPE '\\' THEN 2
-           ELSE 3
-         END) AS rank
-       FROM mesh_descriptors d
-       JOIN mesh_entry_terms et ON et.ui = d.ui
-       WHERE et.term LIKE ? ESCAPE '\\'
-       GROUP BY d.ui, d.name
-       ORDER BY rank, length(d.name)
+      `SELECT ui, name, CASE WHEN name LIKE ? ESCAPE '\\' THEN NULL ELSE term END AS synonym,
+         score / 1000 AS rank
+       FROM (
+         SELECT d.ui AS ui, d.name AS name, et.term AS term,
+           MIN(CASE
+             WHEN et.term = d.name AND d.name LIKE ? ESCAPE '\\' THEN 0
+             WHEN et.term LIKE ? ESCAPE '\\' THEN 1
+             WHEN et.term = d.name THEN 2
+             ELSE 3
+           END * 1000 + length(et.term)) AS score
+         FROM mesh_descriptors d
+         JOIN mesh_entry_terms et ON et.ui = d.ui
+         WHERE et.term LIKE ? ESCAPE '\\'
+         GROUP BY d.ui, d.name
+       )
+       ORDER BY rank, length(name)
        LIMIT ?`
     )
-    .all(prefix, prefix, like, like, limit) as unknown as MeshDescriptor[];
+    .all(like, prefix, prefix, like, limit) as unknown as MeshSearchHit[];
 }
 
 // Validation: exact (case-insensitive) match on the canonical heading. Used by
@@ -2347,9 +2605,10 @@ function libraryStats(): LibraryStats {
 
 // The tables a reset empties. Deleting a parent is enough for everything that
 // hangs off it — foreign_keys is ON and the schema's cascades do the rest — so
-// article_mesh, article_pub_types, article_topics, bookmarks and
-// collection_files are absent from this list because they are already covered,
-// not because they survive.
+// article_mesh, article_pub_types, article_topics, topic_journal_scans,
+// topic_pubmed_scans, topic_pubmed_links, bookmarks and collection_files are
+// absent from this list because they are already covered, not because they
+// survive.
 //
 // paper_citations and pdf_text are here because nothing cascades to them:
 // neither carries a foreign key (both are keyed by something they only softly

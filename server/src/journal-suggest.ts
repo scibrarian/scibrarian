@@ -8,7 +8,7 @@ import {
   type Candidate,
   type JournalSuggestion,
 } from "./journal-rank.js";
-import { fetchJournalIds, searchRecent } from "./pubmed.js";
+import { EUTILS_BATCH, fetchJournalIds, searchRecent } from "./pubmed.js";
 import { chunk, errMessage, httpError } from "./util.js";
 
 // "Auto" journal suggestions: for each topic, sample its most recent PubMed
@@ -20,7 +20,6 @@ import { chunk, errMessage, httpError } from "./util.js";
 
 const WINDOW_YEARS = 5; // rank where the field publishes now, not historically
 const SAMPLE = 300; // recent papers per topic; enough to separate the top venues
-const SUMMARY_BATCH = 100; // matches the poller's esummary batch size
 const CANDIDATE_POOL = 30; // volume-ranked pool that the impact ranking then cuts
 
 export interface SuggestResult {
@@ -56,7 +55,7 @@ export async function suggestJournals(
       const term = `"${t.name.replace(/"/g, "")}"[majr]`;
       const pmids = await searchRecent(term, SAMPLE, mindate);
       const ids: string[] = [];
-      for (const batch of chunk(pmids, SUMMARY_BATCH)) {
+      for (const batch of chunk(pmids, EUTILS_BATCH)) {
         ids.push(...(await fetchJournalIds(batch)));
       }
       const cands: Candidate[] = [];

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { barePmid, findDoi, labelledPmid, searchIdentifiers } from "./identifiers.js";
+import {
+  barePmid,
+  findDoi,
+  hasPubmedLink,
+  labelledPmid,
+  pubmedLinkPmid,
+  searchIdentifiers,
+} from "./identifiers.js";
 
 describe("labelledPmid", () => {
   it("reads the shapes that say 'this number is a PMID'", () => {
@@ -7,6 +14,7 @@ describe("labelledPmid", () => {
     expect(labelledPmid("pmid 33301246")).toBe("33301246");
     expect(labelledPmid("PMID.33301246")).toBe("33301246");
     expect(labelledPmid("https://pubmed.ncbi.nlm.nih.gov/33301246/")).toBe("33301246");
+    expect(labelledPmid("https://www.ncbi.nlm.nih.gov/pubmed/33301246")).toBe("33301246");
   });
 
   it("finds one inside a longer reference", () => {
@@ -14,9 +22,57 @@ describe("labelledPmid", () => {
   });
 
   it("does not invent one from a bare number", () => {
-    // That is barePmid's job, and the two callers disagree about whether to do
-    // it — so this function must not decide for them.
+    // That is barePmid's job: search takes a bare number as a PMID and
+    // citation-ref.ts refuses one, so this function must not decide for either.
     expect(labelledPmid("33301246")).toBeNull();
+  });
+});
+
+describe("pubmedLinkPmid", () => {
+  it("reads both PubMed URL shapes", () => {
+    expect(pubmedLinkPmid("https://pubmed.ncbi.nlm.nih.gov/33301246/")).toBe("33301246");
+    expect(pubmedLinkPmid("http://www.ncbi.nlm.nih.gov/pubmed/33301246")).toBe("33301246");
+  });
+
+  it("takes a PMID from nothing but a link", () => {
+    expect(pubmedLinkPmid("PMID: 33301246")).toBeNull();
+    expect(pubmedLinkPmid("33301246")).toBeNull();
+    // A PMC article is not a PubMed record, and its number is not a PMID.
+    expect(pubmedLinkPmid("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7745181/")).toBeNull();
+  });
+
+  it("refuses a link whose number runs past eight digits, rather than cutting it short", () => {
+    // Read as its first eight digits, this is PMID 33301246 — a different paper
+    // that really exists.
+    expect(pubmedLinkPmid("https://pubmed.ncbi.nlm.nih.gov/333012461/")).toBeNull();
+    expect(pubmedLinkPmid("https://www.ncbi.nlm.nih.gov/pubmed/333012461")).toBeNull();
+  });
+
+  it("reads a search link whose whole term is one PMID", () => {
+    expect(pubmedLinkPmid("https://www.ncbi.nlm.nih.gov/pubmed/?term=33301246")).toBe("33301246");
+    expect(pubmedLinkPmid("http://www.ncbi.nlm.nih.gov/pubmed?term=33301246")).toBe("33301246");
+    expect(pubmedLinkPmid("https://pubmed.ncbi.nlm.nih.gov/?term=33301246")).toBe("33301246");
+    expect(pubmedLinkPmid("https://pubmed.ncbi.nlm.nih.gov/?term=33301246&sort=date")).toBe("33301246");
+    expect(pubmedLinkPmid("Smith J. Foo. 2020. www.ncbi.nlm.nih.gov/pubmed/?term=33301246.")).toBe("33301246");
+  });
+
+  it("refuses a search link that is a search, not one paper", () => {
+    for (const term of ["2019+cancer", "33301246+AND+smith", "33301246,33301247", "33301246[pmid]", "333012461"]) {
+      expect(pubmedLinkPmid(`https://www.ncbi.nlm.nih.gov/pubmed/?term=${term}`)).toBeNull();
+    }
+  });
+});
+
+describe("hasPubmedLink", () => {
+  it("sees a PubMed address whether or not a PMID can be read from it", () => {
+    expect(hasPubmedLink("https://pubmed.ncbi.nlm.nih.gov/33301246/")).toBe(true);
+    expect(hasPubmedLink("https://pubmed.ncbi.nlm.nih.gov/333012461/")).toBe(true);
+    expect(hasPubmedLink("https://www.ncbi.nlm.nih.gov/pubmed/?term=smith")).toBe(true);
+  });
+
+  it("does not count other NCBI pages", () => {
+    expect(hasPubmedLink("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7745181/")).toBe(false);
+    expect(hasPubmedLink("PMID: 33301246")).toBe(false);
   });
 });
 
@@ -55,7 +111,7 @@ describe("findDoi", () => {
 describe("searchIdentifiers", () => {
   it("extracts both, with no precedence between them", () => {
     // A pasted reference carrying both should match on either, so unlike
-    // parseRef this does not let the DOI win and discard the PMID.
+    // parseRef this does not take one and discard the other.
     const { pmid, doi } = searchIdentifiers("Smith J. Foo. doi:10.1056/NEJMoa1 PMID: 31234567");
     expect(doi).toBe("10.1056/nejmoa1");
     expect(pmid).toBe("31234567");
@@ -66,9 +122,8 @@ describe("searchIdentifiers", () => {
   });
 
   it("does not take a bare four-digit year as a PMID", () => {
-    // The one deliberate divergence from citation-ref.ts. Typing a year into a
-    // search box is an ordinary query; quietly adding whichever 1970s paper
-    // holds PMID 2019 is noise in a result list.
+    // Typing a year into a search box is an ordinary query; quietly adding
+    // whichever 1970s paper holds PMID 2019 is noise in a result list.
     expect(searchIdentifiers("2019").pmid).toBeNull();
     expect(searchIdentifiers("1985").pmid).toBeNull();
   });

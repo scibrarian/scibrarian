@@ -78,8 +78,12 @@ beforeAll(async () => {
   // Contents — the half that has to go. Everything below is something a person
   // put here.
   const topic = db.createTopic("Diabetes Mellitus, Type 2", "diabetes").id;
-  db.createJournal("The Lancet", "0053266", true);
-  db.saveArticles([article("11111111", "Metformin in cohort A")], topic);
+  const journal = db.createJournal("The Lancet", "0053266", true).id;
+  db.markJournalsScanned(topic, [journal]);
+  db.setTopicPubmedPolled(topic, "2026-01-01T00:00:00.000Z");
+  // As an all-PubMed poll saves it, so the link's topic_pubmed_links row is
+  // there for the cascade to take too.
+  db.saveArticles([article("11111111", "Metformin in cohort A")], topic, true);
   db.upsertArticles([article("22222222", "A paper held as a file")]);
   db.saveArticleMesh([
     {
@@ -153,6 +157,9 @@ describe("deleting all data", () => {
       "article_mesh",
       "article_pub_types",
       "article_topics",
+      "topic_journal_scans",
+      "topic_pubmed_scans",
+      "topic_pubmed_links",
       "bookmarks",
     ]) {
       expect({ table, rows: count(table) }).toEqual({ table, rows: 0 });
@@ -190,7 +197,7 @@ describe("deleting all data", () => {
     expect(db.journalCatalogCount()).toBe(1);
     expect(db.meshDescriptorCount()).toBe(1);
     expect(db.searchMesh("NIDDM")).toEqual([
-      { ui: "D003924", name: "Diabetes Mellitus, Type 2", rank: 1 },
+      { ui: "D003924", name: "Diabetes Mellitus, Type 2", synonym: "NIDDM", rank: 1 },
     ]);
     // And the timestamps that say they are loaded, or the next start re-fetches
     // both anyway and the sparing was for nothing.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { toFtsQuery } from "./fts-query.js";
+import { FTS_TOKENIZE, toFtsQuery } from "./fts-query.js";
 
 describe("toFtsQuery", () => {
   it("prefix-matches each word so a half-typed query still hits", () => {
@@ -47,7 +47,7 @@ describe("toFtsQuery", () => {
 // contract is checked against a real FTS5 table rather than asserted in prose.
 describe("toFtsQuery output is always executable", () => {
   const db = new DatabaseSync(":memory:");
-  db.exec(`CREATE VIRTUAL TABLE t USING fts5(text, tokenize='porter unicode61')`);
+  db.exec(`CREATE VIRTUAL TABLE t USING fts5(text, tokenize='${FTS_TOKENIZE}')`);
   db.prepare("INSERT INTO t(text) VALUES (?)").run(
     "Tumors developing pembrolizumab resistance showed loss of B2M in 100% of cases (COVID-19 era)."
   );
@@ -74,5 +74,28 @@ describe("toFtsQuery output is always executable", () => {
     expect(run('"developing pembrolizumab"')).toBe(1); // phrase
     expect(run("100%")).toBe(1);
     expect(run("pembrolizumab nonexistentword")).toBe(0); // AND, not OR
+  });
+});
+
+// Every prefix rather than a sample, because the failures were scattered through
+// the middle of words: FTS5 tokenizes a query like the text, prefixes included,
+// and under porter "hepatocy" stemmed to `hepatoci*` while "resistan" overshot
+// `resist`. Each word is its own row so one can't be found in another's place.
+describe("toFtsQuery finds a word from every prefix of it", () => {
+  const words = ["hepatocytes", "resistance", "phosphorylation", "developing"];
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE VIRTUAL TABLE t USING fts5(text, tokenize='${FTS_TOKENIZE}')`);
+  const insert = db.prepare("INSERT INTO t(text) VALUES (?)");
+  for (const word of words) insert.run(word);
+  const find = db.prepare("SELECT text FROM t WHERE t MATCH ?");
+
+  it("while the word is still being typed", () => {
+    const missed = words.flatMap((word) =>
+      Array.from({ length: word.length }, (_, i) => word.slice(0, i + 1)).filter(
+        (prefix) =>
+          !(find.all(toFtsQuery(prefix)!) as { text: string }[]).some((r) => r.text === word)
+      )
+    );
+    expect(missed).toEqual([]);
   });
 });

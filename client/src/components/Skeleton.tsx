@@ -149,18 +149,33 @@ export function FilterSkeleton({ label }: { label: string }) {
 // One placeholder row for the settings lists and the journal-manager panes: a
 // name bar plus an optional pill bar where a metric badge would sit. Flex
 // layout and padding come from the surrounding list's li styling.
+//
+// `sub` stacks a second, shorter bar under the name, for rows that carry one
+// (a topic's PubMed term). The list's span rule stacks the pair the way it
+// stacks the real text, and each bar is padded out to the box it stands in for
+// — the 24px line of 16px type, and the 20px <code> (an 18px line plus its 1px
+// padding) — so the row is as tall as the one that replaces it.
 export function ListRowSkeleton({
   w,
+  sub,
   pill = false,
   className,
 }: {
   w: number | string;
+  sub?: number | string;
   pill?: boolean;
   className?: string;
 }) {
   return (
     <li className={className} aria-hidden="true" style={{ pointerEvents: "none" }}>
-      <SkeletonBar w={w} h={14} />
+      {sub == null ? (
+        <SkeletonBar w={w} h={14} />
+      ) : (
+        <span style={{ flex: 1 }}>
+          <SkeletonBar w={w} h={14} style={{ margin: "5px 0" }} />
+          <SkeletonBar w={sub} h={12} style={{ margin: "4px 0" }} />
+        </span>
+      )}
       {pill && <SkeletonBar w={40} h={20} style={{ borderRadius: 999 }} />}
     </li>
   );

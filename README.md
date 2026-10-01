@@ -10,14 +10,18 @@ on your laptop or on a server you control.
   (reverse-chronological), and **Graph** — switched from the header.
 - You specify the journals and the topics in **Settings** (the gear icon in the
   header). Each topic is a MeSH heading, so PubMed is searched by that heading.
+  **Search all PubMed journals** sets the journal list aside and searches every
+  journal instead; turning it back off removes the papers from other journals.
 - **Check for new papers** polls on demand; optional scheduled polling (off by
   default) runs on a cron expression you set in Settings. A cron only fires while
   the process is up, so if a schedule was missed while it was down — a closed
   desktop app, a stopped container, a rebooted host — the next startup runs that
   poll a few seconds in. How long counts as "missed" comes from your own cron, so
   a weekly schedule stays weekly.
-- Reference data (the NLM journal catalog, OpenAlex impact metrics, and the MeSH
-  vocabulary) refreshes itself on startup and on a daily background check.
+- Reference data keeps itself current. The NLM journal catalog (re-downloaded
+  every 30 days) and the MeSH vocabulary are checked on startup and once a day.
+  OpenAlex impact metrics are fetched for a journal when it appears in journal
+  search or suggestions, and kept for 180 days.
 - Papers (title, authors, journal, date, abstract, PubMed/DOI link) are stored locally
   in SQLite, so the timeline persists.
 - **Collections**: upload PDFs of papers you already have; they're matched against

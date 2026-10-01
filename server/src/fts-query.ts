@@ -18,6 +18,23 @@
 //     rather than two AND-ed prefixes, because a writer hunting a specific claim
 //     types the phrase they remember.
 
+// The tokenizer the body-text index (pdf_text_fts) is built with. It lives here
+// rather than beside the schema because it is half of this module's contract:
+// the prefix `*` above only holds for an index that stores words as written.
+//
+// No stemming, deliberately. FTS5 runs a query through the same tokenizer as
+// the text, prefixes included, and a half-typed word stems badly. Under porter,
+// "hepatocy" became `hepatoci*` (a final y turns to i) and "resistan" ran past
+// `resist`, the stem "resistance" was stored as, so body-text results vanished
+// for a keystroke and came back on the next — about one prefix in seven across
+// a sample of medical vocabulary. What stemming added on top of the prefix was
+// a longer form finding a shorter one ("hepatocytes" finding "hepatocyte"), and
+// losing that is the accepted cost. The metadata half of the same search box is
+// a plain LIKE and never stemmed either.
+//
+// unicode61 so accented author names and Greek letters tokenize as words.
+export const FTS_TOKENIZE = "unicode61";
+
 // Unicode-aware, so accented author names and Greek letters in chemical names
 // survive tokenization instead of splitting the word around them.
 const TOKEN = /[\p{L}\p{N}]+/gu;

@@ -1,5 +1,6 @@
 import type {
   AbstractsResponse,
+  AddLinksResponse,
   AppSettings,
   AuthStatus,
   BookmarkEntry,
@@ -186,6 +187,14 @@ export const api = {
     req<{ count: number }>(`/api/journals/${id}/article-count`),
   deleteJournal: (id: number) =>
     req<JournalRemovalResult>(`/api/journals/${id}`, { method: "DELETE" }),
+  // "Search all PubMed journals". Turning it off deletes the papers from
+  // journals outside the list, which the count is for.
+  offListArticleCount: () => req<{ count: number }>("/api/journals/all-pubmed/article-count"),
+  setSearchAllPubmed: (on: boolean) =>
+    req<JournalRemovalResult>("/api/journals/all-pubmed", {
+      method: "PUT",
+      body: JSON.stringify({ on }),
+    }),
 
   getPapers: (source: PaperSource, filter?: PaperQuery) =>
     req<PapersResponse>(`/api/papers?${sourceQuery(source)}${filterQuery(filter)}`),
@@ -252,6 +261,15 @@ export const api = {
     ),
   removeBookmark: (folderId: number, pmid: string) =>
     req<void>(`/api/bookmark-folders/${folderId}/papers/${pmid}`, { method: "DELETE" }),
+  // One request of "Add links" — at most MAX_LINKS_PER_REQUEST lines. Unlike
+  // checkHave this does not split a long paste itself: the dialog sends the
+  // batches, so it can show its progress and keep the answers of the batches
+  // that landed when a later one fails.
+  addBookmarkLinks: (folderId: number, lines: string[]) =>
+    req<AddLinksResponse>(`/api/bookmark-folders/${folderId}/links`, {
+      method: "POST",
+      body: JSON.stringify({ lines }),
+    }),
 
   getCollections: () => req<Collection[]>("/api/collections"),
   createCollection: (name: string) =>

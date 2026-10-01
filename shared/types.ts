@@ -10,6 +10,10 @@ export interface Topic {
   term: string;
   last_polled_at: string | null;
   created_at: string;
+  // The watermark while "Search all PubMed journals" is on, kept apart from
+  // last_polled_at (the journal list's). Null until the topic has been polled
+  // in that mode, and again once the setting is turned off.
+  pubmed_polled_at: string | null;
 }
 
 export interface TopicRemovalResult {
@@ -99,6 +103,18 @@ export interface TopicSuggestResponse {
   results: TopicSuggestion[];
   heldPapers: number; // distinct papers in the Library the ranking drew on
   unchecked: number; // held papers whose headings haven't been fetched yet
+}
+
+// A topic-autocomplete hit (GET /mesh/search). `synonym` is the entry term that
+// matched when the heading itself doesn't contain the query, so the picker can
+// say why a heading is offered: "cush" finds Denture Liners through "Cushion
+// Liner", which otherwise reads as a bug.
+export interface MeshSearchResult extends MeshDescriptorRef {
+  synonym: string | null;
+}
+
+export interface MeshSearchResponse {
+  results: MeshSearchResult[];
 }
 
 // A user-created bookmark folder: the Bookmarks section's counterpart to a
@@ -394,6 +410,42 @@ export interface HaveResponse {
   results: HaveAnswer[];
   // How many pasted lines were dropped because the request exceeded the
   // per-request cap; the client re-sends those in another batch.
+  truncated: number;
+}
+
+// What a bookmark folder's "Add links" did with one pasted line.
+//   added          saved into the folder by this paste
+//   already-saved  the folder already held it — before this paste, or from an
+//                  earlier line of it naming the same paper
+//   not-in-pubmed  a DOI or PubMed link was read, but PubMed has no record it
+//                  names, and only a PubMed record can be saved
+//   ambiguous-doi  PubMed files the DOI under more than one record, so it names
+//                  no one paper; the paper's PubMed link would
+//   unreadable     no DOI or PubMed link in the line; parsed.reason says why
+export type LinkOutcome = "added" | "already-saved" | "not-in-pubmed" | "ambiguous-doi" | "unreadable";
+
+// The paper a line named, as the answer row draws it.
+export interface LinkedPaper {
+  pmid: string;
+  title: string;
+  authors: string[];
+  journal_name: string;
+  pub_date_display: string;
+  url: string;
+}
+
+// One answer per pasted line, in the order pasted — the same contract as
+// HaveAnswer, so the list can be read beside the original.
+export interface LinkAnswer {
+  parsed: ParsedRefView;
+  outcome: LinkOutcome;
+  // Set for added and already-saved; null when no stored paper was named.
+  paper: LinkedPaper | null;
+}
+
+export interface AddLinksResponse {
+  results: LinkAnswer[];
+  // Lines past the per-request cap, which this request did not touch.
   truncated: number;
 }
 

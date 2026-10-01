@@ -34,6 +34,7 @@ const DESKTOP: AppSettings = {
   has_api_key: false,
   share_urls: [],
   desktop: true,
+  search_all_pubmed: false,
 };
 
 function renderSettings() {

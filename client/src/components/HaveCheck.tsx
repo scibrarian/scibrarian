@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { Boxes, Check, FileText, Minus, TriangleAlert, Users } from "lucide-react";
 import { api } from "../api";
-import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
+import { describeRef, errorMessage, paperMeta } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { MAX_HAVE_REFS, MAX_NAME_CHARS } from "../../../shared/limits";
-import type { Collection, HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../types";
+import type { Collection, HaveAnswer, HaveMatch, HaveResponse } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
@@ -18,16 +18,15 @@ export const HAVE_CHECK_TITLE = "Check holdings";
 // "Check holdings" — the check a writer is required to run before asking a
 // project manager to approve buying an article.
 //
-// It answers on identifiers only: a PMID, a DOI, or a PubMed link, alone on the
-// line or buried in a full reference. A line carrying none is reported as such
-// rather than guessed at from its author and year — see citation-ref.ts for why
-// that guess was removed.
+// It answers on identifiers only: a DOI or a PubMed link, alone on the line or
+// buried in a full reference. A line carrying none is reported as such rather
+// than guessed at from its author and year, and a PMID on its own is refused
+// with a pointer to its link — see citation-ref.ts for both.
 //
 // Answers keep the input's order and there is always exactly one per line, so a
 // pasted reference list can be read straight down beside the original.
 
 const PLACEHOLDER = `10.1056/NEJMoa2035389
-PMID: 33301246
 https://pubmed.ncbi.nlm.nih.gov/33301246/`;
 
 export function HaveCheck({
@@ -189,7 +188,7 @@ export function HaveCheck({
     <ModalShell open={open} onClose={onClose} title={HAVE_CHECK_TITLE} wide>
       <form className="have-form" onSubmit={check}>
         <label htmlFor="have-input" className="hint">
-          Paste PMIDs, DOIs, or PubMed links — one per line. Up to {MAX_HAVE_REFS} at a time.
+          Paste DOIs or PubMed links — one per line. Up to {MAX_HAVE_REFS} at a time.
         </label>
         <textarea
           id="have-input"
@@ -384,7 +383,7 @@ function AnswerRow({
           one row where the copy is most worth offering. */}
       {!match && !org && !elsewhere && parsed.kind !== "unknown" && (
         <p className="have-nothing">
-          Nothing found for {describe(parsed)}
+          Nothing found for {describeRef(parsed)}
           {identifierChecked ? "" : " (identifier lookup skipped)"}.
         </p>
       )}
@@ -732,11 +731,7 @@ function PaperLine({
   match: HaveMatch;
   onOpen: (p: HaveMatch) => void;
 }) {
-  const meta = [
-    formatAuthors(match.authors, 3),
-    match.journal_name && titleCaseJournal(match.journal_name),
-    match.pub_date_display,
-  ].filter((s) => s && s !== "—");
+  const meta = paperMeta(match);
   const label = match.title || match.doi || (match.pmid && `PMID ${match.pmid}`) || "Untitled";
   // A paper OpenAlex knew nothing about beyond its identifier can have neither a
   // stored file nor a landing page. Drawing that as a link would open a blank
@@ -751,7 +746,7 @@ function PaperLine({
       ) : (
         <span className="have-title plain">{label}</span>
       )}
-      {meta.length > 0 && <div className="have-meta">{meta.join(" · ")}</div>}
+      {meta && <div className="have-meta">{meta}</div>}
       {match.held && match.collection_name && (
         <div className="have-where">
           <FileText size={13} className="inline-icon" aria-hidden />
@@ -761,13 +756,4 @@ function PaperLine({
       )}
     </div>
   );
-}
-
-// How the app read a line, in the reader's terms. Shown wherever an answer has
-// to name what it searched for, so a wrong parse is visible rather than showing
-// up as a mysteriously empty result.
-function describe(parsed: ParsedRefView): string {
-  if (parsed.kind === "pmid") return `PMID ${parsed.pmid}`;
-  if (parsed.kind === "doi") return `DOI ${parsed.doi}`;
-  return parsed.input;
 }

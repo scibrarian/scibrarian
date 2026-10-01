@@ -53,3 +53,16 @@ edit you made.
 
 Run both in `pro/` as well. It is a separate repository, so a `git diff` at the
 top level says nothing about it.
+
+## No Claude co-author trailer on commits
+
+Don't end a commit message here with `Co-Authored-By: Claude …`, even where your
+default commit convention adds one, and leave the "Generated with Claude Code"
+line out of PR descriptions. The repo takes contributions under a CLA, and the
+CLA bot treats the trailer as a contributor who never signed, so it flags every
+PR carrying one. On `main` it also puts @claude in the Contributors list.
+
+The `attribution` setting that turns both off lives in `.claude/settings.json`,
+which is gitignored, so a worktree or cloud checkout never has it. This file is
+the one every session reads. Taking a trailer back out after it reaches `main`
+means rewriting published history and force-pushing, which has been done twice.

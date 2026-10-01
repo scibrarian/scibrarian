@@ -3,6 +3,7 @@
 // to its responses.
 import type {
   AbstractsResponse,
+  AddLinksResponse,
   BookmarkEntry,
   BookmarkFolder as BookmarkFolderRow,
   CacheStats,
@@ -24,10 +25,15 @@ import type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  LinkAnswer,
+  LinkOutcome,
+  LinkedPaper,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
   MeshHeadingsResponse,
+  MeshSearchResponse,
+  MeshSearchResult,
   Paper,
   PaperProvenance,
   PapersResponse,
@@ -64,6 +70,7 @@ export type {
 
 export type {
   AbstractsResponse,
+  AddLinksResponse,
   BookmarkEntry,
   CacheStats,
   ClearedCache,
@@ -81,10 +88,15 @@ export type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  LinkAnswer,
+  LinkOutcome,
+  LinkedPaper,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
   MeshHeadingsResponse,
+  MeshSearchResponse,
+  MeshSearchResult,
   Paper,
   PaperProvenance,
   PapersResponse,
@@ -139,18 +151,13 @@ export interface JournalSuggestResponse {
   failed: string[]; // topics whose PubMed lookup failed (results are partial)
 }
 
-export interface MeshSearchResult {
-  ui: string; // MeSH descriptor id, e.g. D003924
-  name: string; // canonical heading
-}
-
-export interface MeshSearchResponse {
-  results: MeshSearchResult[];
-}
-
 export interface RefreshResponse {
   results: PollResult[];
   polledAt: string;
+  // Whether topics searched all of PubMed rather than the journal list. Picks
+  // the advice for a feed PubMed capped, which can't be "watch fewer journals"
+  // while no list is in use.
+  allPubmed: boolean;
 }
 
 // What /api/auth reports: whether this browser's requests count as admin,
@@ -179,6 +186,9 @@ export interface AppSettings {
   // True in the desktop build, which is loopback-only by construction — so
   // share_urls is always empty there and can never be filled in.
   desktop: boolean;
+  // "Search all PubMed journals". Read-only here: updateSettings can't change
+  // it, because turning it off deletes papers — see api.setSearchAllPubmed.
+  search_all_pubmed: boolean;
 }
 
 export interface BookmarkFolder extends BookmarkFolderRow {

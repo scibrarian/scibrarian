@@ -12,6 +12,7 @@ import {
   collectionByName,
   collectionCounts,
   countJournalArticles,
+  countOffListArticles,
   createBookmarkFolder,
   createCollection,
   countTopicArticles,
@@ -55,7 +56,9 @@ import {
   resetLibrary,
   searchCatalog,
   searchMesh,
+  searchesAllPubmed,
   setFileMatched,
+  setSearchAllPubmed,
   setSetting,
   sourceHasFiles,
   suggestTopicsFromLibrary,
@@ -82,6 +85,7 @@ import {
   UPLOAD_TMP_DIR,
 } from "./config.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
+import { addLinksToFolder } from "./bookmark-links.js";
 import { splitRefs } from "./citation-ref.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
@@ -98,6 +102,7 @@ import { anyTransferInFlight } from "./pro-storage.js";
 import { fetchArticles, isMedlineIndexed, resolveJournal } from "./pubmed.js";
 import {
   isValidCron,
+  nothingToPoll,
   pollAll,
   pollTopic,
   rescheduleFromSettings,
@@ -115,12 +120,14 @@ import {
 } from "./signing.js";
 import type {
   AbstractsResponse,
+  AddLinksResponse,
   CollectionFile,
   GraphEdge,
   GraphNode,
   GraphResponse,
   HaveResponse,
   MeshHeadingsResponse,
+  MeshSearchResponse,
   PaperProvenance,
   PapersResponse,
   Settings,
@@ -144,7 +151,13 @@ import {
   type WorkspaceRecord,
 } from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
-import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../shared/limits.js";
+import {
+  MAX_BULK_BOOKMARK_PMIDS,
+  MAX_LINKS_PER_REQUEST,
+  MAX_NAME_CHARS,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_FILES,
+} from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -401,7 +414,11 @@ api.get(
     const q = String(req.query.q ?? "").trim();
     if (q.length < 2) return res.json({ results: [] });
     await ensureMeshLoaded();
-    res.json({ results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name })) });
+    // Typed, so the shape the client reads is checked here rather than trusted.
+    const body: MeshSearchResponse = {
+      results: searchMesh(q, 10).map((m) => ({ ui: m.ui, name: m.name, synonym: m.synonym })),
+    };
+    res.json(body);
   })
 );
 
@@ -491,9 +508,16 @@ api.get(
   })
 );
 
+// The journal list is set aside while every topic searches all of PubMed, and
+// locked with it. Removing a journal deletes its papers, which that search
+// still covers; adds are refused alongside so the list reads as one thing that
+// is either in use or not.
+const JOURNALS_LOCKED = "Turn off “Search all PubMed journals” to change the journal list.";
+
 api.post(
   "/journals",
   asyncHandler(async (req, res) => {
+    if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
     const raw = String(req.body?.name ?? "").trim();
     const nlmId = String(req.body?.nlmId ?? "").trim();
     if (!raw && !nlmId) return res.status(400).json({ error: "'name' is required." });
@@ -530,6 +554,9 @@ api.post(
       // that journal just quietly never yields a paper. An NCBI hiccup answers
       // null, which stores as "not established yet" and the backfill retries.
       const indexed = await isMedlineIndexed(resolved.nlmId);
+      // Asked again, after the awaits: the setting can go on while this waits
+      // on the catalog or NCBI. Nothing awaits between here and the insert.
+      if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
       res.status(201).json(createJournal(resolved.name, resolved.nlmId, indexed));
     } catch (err) {
       // The one error this route reads: a race against another add of the same
@@ -543,12 +570,42 @@ api.post(
   })
 );
 
+// "Search all PubMed journals" (see searchesAllPubmed). Its own route rather
+// than a PUT /settings key because turning it off deletes papers; the confirm
+// counts them first with the GET. Registered ahead of /journals/:id/... so
+// "all-pubmed" can't be read as an id.
+api.get("/journals/all-pubmed/article-count", (_req, res) => {
+  res.json({ count: countOffListArticles() });
+});
+
+api.put(
+  "/journals/all-pubmed",
+  asyncHandler(async (req, res) => {
+    const on = req.body?.on;
+    if (typeof on !== "boolean") {
+      return res.status(400).json({ error: "'on' must be true or false." });
+    }
+    // Turning it on stores nothing, so it waits on nothing: a poll already
+    // running read the setting when it started, and finishes the way it began.
+    if (on) return res.json(setSearchAllPubmed(true));
+    // Turning it off is under the poll lock, like a reset. An all-PubMed poll
+    // still running after the setting went off would store papers the deletion
+    // had just taken out, and record the watermark it had just forgotten.
+    const result = await withPollLock(async () => setSearchAllPubmed(false));
+    if (result === null) {
+      return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
+    }
+    res.json(result);
+  })
+);
+
 // How many stored papers removing this journal would delete (for the confirm).
 api.get("/journals/:id/article-count", (req, res) => {
   res.json({ count: countJournalArticles(Number(req.params.id)) });
 });
 
 api.delete("/journals/:id", (req, res) => {
+  if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
   res.json(removeJournalWithArticles(Number(req.params.id)));
 });
 
@@ -688,9 +745,11 @@ api.get("/abstracts", (req, res) => {
 // ---------- "do I already have this?" ----------
 
 // The purchase-avoidance check. `?q=` is a block of pasted lines, one reference
-// per line, and `?pmid=` / `?doi=` are the explicit single-identifier form the
-// roadmap names. All three funnel into the same parser, so a bare identifier
-// and one buried in a full reference are answered by one code path.
+// per line, and `?doi=` is the explicit single-identifier form the roadmap
+// names. Both funnel into the same parser, so a bare identifier and one buried
+// in a full reference are answered by one code path. There is no `?pmid=`: a
+// PMID is read only from a PubMed link (see citation-ref.ts), so a bare one
+// sent there could only ever come back refused.
 //
 // Newline is the only separator. `;` was tried as a URL-friendlier alternative
 // and is wrong: every Vancouver reference contains one (`2014;383:1699-710`),
@@ -717,14 +776,12 @@ api.get(
   asyncHandler(async (req, res) => {
     const lines = [
       ...splitRefs(String(req.query.q ?? "")),
-      // PMIDs are digits, so a comma between them is unambiguously a separator.
-      // DOIs are not: the suffix is publisher-chosen and may legitimately
-      // contain a comma, so those are only ever taken one per repeated param.
-      ...toList(req.query.pmid, true),
-      ...toList(req.query.doi, false),
+      // One DOI per repeated param, never comma-separated: the suffix is
+      // publisher-chosen and may legitimately contain a comma.
+      ...toList(req.query.doi),
     ];
     if (lines.length === 0) {
-      return res.status(400).json({ error: "Paste a PMID, DOI, or PubMed link to check." });
+      return res.status(400).json({ error: "Paste a DOI or PubMed link to check." });
     }
     const batch = lines.slice(0, MAX_REFS_PER_REQUEST);
     const offline = req.query.online === "0";
@@ -749,14 +806,10 @@ api.get(
   })
 );
 
-// A query param that may be sent once or repeated, and — when its values can't
-// themselves contain one — comma-separated.
-function toList(raw: unknown, splitCommas: boolean): string[] {
+// A query param that may be sent once or repeated.
+function toList(raw: unknown): string[] {
   const values = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
-  return values
-    .flatMap((v) => (splitCommas ? String(v).split(",") : [String(v)]))
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return values.map((v) => String(v).trim()).filter(Boolean);
 }
 
 // ---------- citation graph ----------
@@ -942,12 +995,40 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
           : "None of those papers are stored any more.",
     });
   }
-  const added = addBookmarks(id, storable);
+  const added = addBookmarks(id, storable).length;
   // Counted against the de-duplicated request: `storable` is a Set, so a pmid
   // sent twice would otherwise be reported as a paper that isn't stored.
   const asked = new Set(pmids).size;
   res.json({ added, alreadySaved: storable.length - added, missing: asked - storable.length });
 });
+
+// Save papers into a folder from pasted DOIs and PubMed links — the way into a
+// folder for a paper found outside Interests. One answer per line, in order,
+// like /have; see bookmark-links.ts. A POST, so admin-only like every other
+// change to a folder.
+//
+// The client splits a long paste across requests of MAX_LINKS_PER_REQUEST and
+// reports its progress between them; `truncated` counts any lines one request
+// had to leave out, so a hand-made request is told rather than silently cut.
+api.post(
+  "/bookmark-folders/:id/links",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const raw: unknown = req.body?.lines;
+    const lines = Array.isArray(raw) ? raw.map((l) => String(l).trim()).filter(Boolean) : [];
+    if (lines.length === 0) {
+      return res.status(400).json({ error: "Paste a DOI or PubMed link to add." });
+    }
+    if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+    const batch = lines.slice(0, MAX_LINKS_PER_REQUEST);
+    const results = await addLinksToFolder(id, batch);
+    if (!results) {
+      return res.status(404).json({ error: "This folder was deleted while the links were being looked up." });
+    }
+    const body: AddLinksResponse = { results, truncated: lines.length - batch.length };
+    res.json(body);
+  })
+);
 
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
   removeBookmark(Number(req.params.id), String(req.params.pmid));
@@ -1335,6 +1416,8 @@ api.post(
   "/refresh",
   asyncHandler(async (req, res) => {
     const topicId = req.query.topic ? Number(req.query.topic) : undefined;
+    const blocked = nothingToPoll();
+    if (blocked) return res.status(409).json({ error: blocked });
     // Share the scheduler's lock so a manual refresh can't run concurrently with
     // a scheduled poll (or another refresh) and double up NCBI traffic.
     const results = await withPollLock(() =>
@@ -1343,7 +1426,9 @@ api.post(
     if (results === null) {
       return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
     }
-    res.json({ results, polledAt: new Date().toISOString() });
+    // allPubmed only picks the advice for a feed PubMed capped: "watch fewer
+    // journals" means nothing while no journal list is in use.
+    res.json({ results, polledAt: new Date().toISOString(), allPubmed: searchesAllPubmed() });
   })
 );
 
@@ -1411,6 +1496,10 @@ function settingsResponse() {
   // rebound via server/.env, the other has no .env to edit — so the UI needs to
   // tell the two apart.
   out.desktop = IS_DESKTOP;
+  // Read here, written only through PUT /journals/all-pubmed: it isn't in
+  // SETTING_RULES, so the PUT below can't flip it past the deletion that
+  // turning it off does.
+  out.search_all_pubmed = searchesAllPubmed();
   return out;
 }
 

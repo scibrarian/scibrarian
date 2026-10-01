@@ -1,6 +1,6 @@
 // Small formatting helpers shared across components.
 
-import type { ClearedCache, LibraryStats, ProPushResult } from "../types";
+import type { ClearedCache, LibraryStats, ParsedRefView, ProPushResult } from "../types";
 
 /**
  * One copy-up sweep's counts, as a sentence.
@@ -225,6 +225,32 @@ export function formatAuthors(authors: string[], max: number): string {
   if (authors.length === 0) return "—";
   if (authors.length <= max) return authors.join(", ");
   return authors.slice(0, max).join(", ") + ", et al.";
+}
+
+// Who and where, under a paper's title in Check holdings and Add links: up to
+// three authors, the journal, the date. A part that's blank or the "—"
+// placeholder is left out rather than shown as a gap. "" when none is left.
+export function paperMeta(p: {
+  authors: string[];
+  journal_name: string;
+  pub_date_display: string;
+}): string {
+  return [
+    formatAuthors(p.authors, 3),
+    p.journal_name && titleCaseJournal(p.journal_name),
+    p.pub_date_display,
+  ]
+    .filter((s) => s && s !== "—")
+    .join(" · ");
+}
+
+// How the app read a pasted line, in the reader's terms. Shown wherever an
+// answer has to name what it searched for, so a wrong parse is visible rather
+// than showing up as a mysteriously empty result.
+export function describeRef(parsed: ParsedRefView): string {
+  if (parsed.kind === "pmid") return `PMID ${parsed.pmid}`;
+  if (parsed.kind === "doi") return `DOI ${parsed.doi}`;
+  return parsed.input;
 }
 
 // A size for someone deciding whether it is worth reclaiming, so it is rounded

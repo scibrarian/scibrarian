@@ -1,38 +1,37 @@
 import cron, { ScheduledTask } from "node-cron";
 import { DEFAULT_POLL_CRON } from "./config.js";
 import {
-  db,
   existingPmids,
   getLastPollAttemptAt,
   getTopic,
   getSettings,
   listTopics,
+  linkToTopic,
   listJournals,
+  markJournalsScanned,
   saveArticles,
+  scannedJournalIds,
+  searchesAllPubmed,
   setLastPollAttemptAt,
   setTopicLastPolled,
+  setTopicPubmedPolled,
   transaction,
 } from "./db.js";
 import { ensureCitations } from "./icite.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
-import { buildTerm, fetchArticles, searchWithTotal } from "./pubmed.js";
+import { buildTerm, EUTILS_BATCH, fetchArticles, searchWithTotal } from "./pubmed.js";
 import type { PollResult } from "./types.js";
 import { chunk, errMessage, safeMessage } from "./util.js";
 
-const BATCH_SIZE = 100;
-
 // Link existing articles to a topic without refetching them from PubMed.
-// Returns how many links were newly created — INSERT OR IGNORE reports 0
-// changes for a (pmid, topic) row that already existed — so a poll can count
-// these toward its "added" delta.
-const linkStmt = db.prepare(
-  "INSERT OR IGNORE INTO article_topics (pmid, topic_id) VALUES (?, ?)"
-);
-const linkKnown = transaction((pmids: string[], topicId: number): number => {
+// Returns how many links were newly created — a (pmid, topic) link that
+// already existed isn't one — so a poll can count these toward its "added"
+// delta.
+const linkKnown = transaction((pmids: string[], topicId: number, allPubmed: boolean): number => {
   let linked = 0;
-  for (const pmid of pmids) linked += Number(linkStmt.run(pmid, topicId).changes);
+  for (const pmid of pmids) linked += Number(linkToTopic(pmid, topicId, allPubmed));
   return linked;
 });
 
@@ -59,6 +58,16 @@ function mhdaWindowStart(lastPolledIso: string): string {
   return d.toISOString().slice(0, 10).replace(/-/g, "/");
 }
 
+// Why nothing can be polled right now, or null when something can. Searching
+// the journal list with nothing in it would be the bare term — all of PubMed,
+// which is the "Search all PubMed journals" setting's job and nobody else's.
+// Checked by /refresh (which says so) and runPoll (which skips quietly) before
+// either takes the lock; pollTopic checks again for a list emptied since.
+export function nothingToPoll(): string | null {
+  if (searchesAllPubmed() || listJournals().length > 0) return null;
+  return "No journals are watched. Add one, or turn on “Search all PubMed journals” in Settings.";
+}
+
 export async function pollTopic(id: number): Promise<PollResult> {
   const topic = getTopic(id);
   if (!topic) {
@@ -66,32 +75,74 @@ export async function pollTopic(id: number): Promise<PollResult> {
   }
   const result: PollResult = { topicId: id, topicName: topic.name, found: 0, added: 0 };
   try {
-    const journals = listJournals().map((j) => j.name);
-    const term = buildTerm(topic.term, journals);
+    const blocked = nothingToPoll();
+    if (blocked) {
+      result.error = blocked;
+      return result;
+    }
+    // Read once, and this poll keeps to it. Turning the setting off takes the
+    // poll lock, so it can't go off mid-poll; it can go on, which leaves this
+    // poll a journal poll to the end, recording its links and watermark as one.
+    const allPubmed = searchesAllPubmed();
+    const journals = allPubmed ? [] : listJournals();
 
     // Incremental poll: ask PubMed only for papers whose MeSH Date lands since
     // the last successful poll, instead of re-listing the topic's whole history
     // every time. That still catches older papers PubMed only just indexed with
-    // MeSH (see search). The first poll (no watermark) omits the bound and scans
-    // everything to seed the topic. If the term or a future per-topic fetch
-    // filter ever becomes editable, widening it must clear last_polled_at to
-    // force such a re-seed — topic deletion relies on the links being complete
-    // (see DELETABLE_TOPIC_ARTICLES in db.ts).
-    const mhdaSince = topic.last_polled_at ? mhdaWindowStart(topic.last_polled_at) : undefined;
-    const { ids: pmids, total } = await searchWithTotal(term, mhdaSince);
-    result.found = pmids.length;
+    // MeSH (see search). It only reaches the back catalogue of a journal the
+    // topic was already searching, though, so a journal it hasn't scanned yet
+    // (see topic_journal_scans) has its whole history listed first — and only
+    // that journal's: re-listing the rest would re-fetch what is stored, and
+    // could push a broad topic past PubMed's cap for nothing. The first poll
+    // (no watermark) scans every journal to seed the topic. If the term or a
+    // future per-topic fetch filter ever becomes editable, widening it must
+    // clear last_polled_at to force such a re-seed — topic deletion relies on
+    // the links being complete (see DELETABLE_TOPIC_ARTICLES in db.ts).
+    //
+    // Searching all of PubMed is one search, continuing from its own watermark
+    // and never from last_polled_at: each mode vouches only for what its own
+    // polls covered (see topic_pubmed_scans).
+    const searches: { journals: string[]; mhdaSince?: string }[] = [];
+    if (allPubmed) {
+      const since = topic.pubmed_polled_at;
+      searches.push({ journals: [], mhdaSince: since ? mhdaWindowStart(since) : undefined });
+    } else {
+      const since = topic.last_polled_at;
+      const scanned = scannedJournalIds(id);
+      const unscanned = since ? journals.filter((j) => !scanned.has(j.id)) : journals;
+      const caughtUp = journals.filter((j) => !unscanned.includes(j));
+      if (unscanned.length > 0) searches.push({ journals: unscanned.map((j) => j.name) });
+      if (caughtUp.length > 0) {
+        searches.push({
+          journals: caughtUp.map((j) => j.name),
+          mhdaSince: since ? mhdaWindowStart(since) : undefined,
+        });
+      }
+    }
 
     // PubMed serves at most the first 9,999 records for a query (see
     // MAX_RESULTS), so a topic broad enough to exceed that gets a partial feed
-    // on its first poll — most recent first, since the search is sorted by
+    // from any history scan — most recent first, since the search is sorted by
     // publication date. Reported rather than swallowed: the feed would
     // otherwise look complete, and the fix is the user's to make (narrow the
-    // topic, or watch fewer journals), not ours to guess at.
-    if (total > pmids.length) {
-      result.truncated = total - pmids.length;
+    // topic, or watch fewer journals), not ours to guess at. Counted per
+    // search, as what that search matched and didn't return: a paper two
+    // searches both return is one paper, not a shortfall.
+    let skipped = 0;
+    const matched = new Set<string>();
+    for (const search of searches) {
+      const found = await searchWithTotal(buildTerm(topic.term, search.journals), search.mhdaSince);
+      skipped += Math.max(0, found.total - found.ids.length);
+      for (const pmid of found.ids) matched.add(pmid);
+    }
+    const pmids = [...matched];
+    result.found = pmids.length;
+
+    if (skipped > 0) {
+      result.truncated = skipped;
       console.warn(
-        `[poll] ${topic.name}: matched ${total} papers, but PubMed serves at most ${pmids.length} per query — ` +
-          `took the most recent, skipped ${result.truncated}.`
+        `[poll] ${topic.name}: PubMed caps what one query returns — ` +
+          `took the most recent, skipped ${skipped} older.`
       );
     }
 
@@ -99,9 +150,9 @@ export async function pollTopic(id: number): Promise<PollResult> {
     const newPmids = pmids.filter((p) => !known.has(p));
 
     const savedPmids: string[] = [];
-    for (const batch of chunk(newPmids, BATCH_SIZE)) {
+    for (const batch of chunk(newPmids, EUTILS_BATCH)) {
       const articles = await fetchArticles(batch);
-      saveArticles(articles, id);
+      saveArticles(articles, id, allPubmed);
       savedPmids.push(...articles.map((a) => a.pmid));
       result.added += articles.length;
     }
@@ -112,7 +163,7 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // it wasn't fetched from PubMed. Without this the banner shows "Added 0"
     // while the feed grew.
     const alreadyKnown = pmids.filter((p) => known.has(p));
-    result.added += linkKnown(alreadyKnown, id);
+    result.added += linkKnown(alreadyKnown, id, allPubmed);
 
     // Warm the citation cache for just-added papers (brand new, so always
     // missing) so their graph opens instantly. Best-effort: a failure must not
@@ -120,7 +171,19 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // 14-day staleness refresh stays lazy there too.
     await warmCitations(savedPmids, topic.name);
 
-    setTopicLastPolled(id, new Date().toISOString());
+    // Only once everything above has landed: a poll that fails partway leaves
+    // its journals unscanned, and the next one lists their history again. A
+    // journal added while this one ran isn't in `journals`, so it waits for the
+    // next poll the same way. An all-PubMed poll marks no journal scanned, and
+    // leaves last_polled_at alone: its search was capped, so it can't stand in
+    // for the journal polls when the setting is turned off.
+    const polledAt = new Date().toISOString();
+    if (allPubmed) {
+      setTopicPubmedPolled(id, polledAt);
+    } else {
+      markJournalsScanned(id, journals.map((j) => j.id));
+      setTopicLastPolled(id, polledAt);
+    }
   } catch (err) {
     // Goes back to the client in /refresh's response body, so it gets the same
     // treatment as an HTTP error body: real cause to the log, authored message
@@ -285,10 +348,16 @@ function isStale(watermark: string | null, now: number, windowMs: number): boole
 // by hand, from catching up on top of it. One overdue topic is enough: pollAll
 // covers every topic, and the per-topic MeSH-date window keeps the ones already
 // current cheap.
+//
+// Judged on the watermark of whichever search is on. The other one stops
+// moving while its mode is off, and would read as overdue on every start.
 function catchUpIsDue(windowMs: number): boolean {
   const now = Date.now();
   if (!isStale(getLastPollAttemptAt(), now, windowMs)) return false;
-  return listTopics().some((t) => isStale(t.last_polled_at, now, windowMs));
+  const allPubmed = searchesAllPubmed();
+  return listTopics().some((t) =>
+    isStale(allPubmed ? t.pubmed_polled_at : t.last_polled_at, now, windowMs)
+  );
 }
 
 function scheduleLaunchCatchUp(): void {
@@ -349,8 +418,16 @@ function runScheduled(): Promise<void> {
 // listTopics() in pollAll and getTopic() in pollTopic both read the database
 // outside it, and withPollLock rethrows, so a locked or unreadable DB arrives
 // as a rejection rather than a per-topic result.error.
-async function runPoll(label: string): Promise<void> {
+//
+// Exported for the tests of its no-journals skip.
+export async function runPoll(label: string): Promise<void> {
   try {
+    // No journals, and not searching all of PubMed: there is nothing to search
+    // (see nothingToPoll). A manual check is told so; a timer just skips.
+    if (nothingToPoll()) {
+      console.log(`[scheduler] ${label} poll skipped: no journals are watched`);
+      return;
+    }
     const results = await withPollLock(() => {
       console.log(`[scheduler] running ${label} poll...`);
       return pollAll();

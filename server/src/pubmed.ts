@@ -258,11 +258,12 @@ export async function searchRecent(
   return data.esearchresult?.idlist ?? [];
 }
 
-// Resolve a DOI to its PMID via a field-tagged esearch (covers all of PubMed,
-// unlike the PMC-only idconv service, and inherits the shared throttle/retry/
-// API-key plumbing). Returns null unless PubMed has exactly one match — 0 or
-// 2+ hits mean the id can't be trusted.
-export async function resolveDoiToPmid(doi: string): Promise<string | null> {
+// The PMIDs PubMed files a DOI under, via a field-tagged esearch (covers all of
+// PubMed, unlike the PMC-only idconv service, and inherits the shared throttle/
+// retry/API-key plumbing). At most two: one is an answer, and a second is all it
+// takes to show there isn't one — which a caller telling the reader *why* a DOI
+// went unresolved needs to know apart from no record at all.
+export async function pmidsForDoi(doi: string): Promise<string[]> {
   const params = new URLSearchParams({
     db: "pubmed",
     retmode: "json",
@@ -273,11 +274,23 @@ export async function resolveDoiToPmid(doi: string): Promise<string | null> {
     "esearch.fcgi",
     params
   );
-  const ids = data.esearchresult?.idlist ?? [];
+  return data.esearchresult?.idlist ?? [];
+}
+
+// Resolve a DOI to its PMID. Returns null unless PubMed has exactly one match —
+// 0 or 2+ hits mean the id can't be trusted.
+export async function resolveDoiToPmid(doi: string): Promise<string | null> {
+  const ids = await pmidsForDoi(doi);
   return ids.length === 1 ? ids[0] : null;
 }
 
 // ---------- esummary (metadata) ----------
+
+// PMIDs per esummary/efetch request, for every caller that works through a
+// list a batch at a time: the poller, the PDF importer, Add links, journal
+// suggestions and the MeSH backfill. Each used to keep its own 100, with a
+// comment saying it matched the poller's.
+export const EUTILS_BATCH = 100;
 
 export async function fetchSummaries(pmids: string[]): Promise<Map<string, ArticleMeta>> {
   if (pmids.length === 0) return new Map();
