@@ -164,6 +164,7 @@ function Summary({ answers }: { answers: LinkAnswer[] }) {
   const count = (o: LinkOutcome) => answers.filter((a) => a.outcome === o).length;
   const already = count("already-saved");
   const missing = count("not-in-pubmed");
+  const ambiguous = count("ambiguous-doi");
   const unreadable = count("unreadable");
   return (
     <p className="have-summary">
@@ -173,6 +174,8 @@ function Summary({ answers }: { answers: LinkAnswer[] }) {
       added to this folder.
       {already > 0 && ` ${already} ${already === 1 ? "was" : "were"} already in it.`}
       {missing > 0 && ` ${missing} ${missing === 1 ? "isn’t" : "aren’t"} in PubMed.`}
+      {ambiguous > 0 &&
+        ` ${plural(ambiguous, "DOI")} ${ambiguous === 1 ? "matches" : "match"} more than one PubMed record.`}
       {unreadable > 0 && ` ${plural(unreadable, "line")} couldn’t be read.`}
     </p>
   );
@@ -185,6 +188,7 @@ const ROW_CLASS: Record<LinkOutcome, string> = {
   added: "held",
   "already-saved": "",
   "not-in-pubmed": "unreadable",
+  "ambiguous-doi": "unreadable",
   unreadable: "unreadable",
 };
 
@@ -198,6 +202,12 @@ function AnswerRow({ answer }: { answer: LinkAnswer }) {
       {paper && <PaperLine paper={paper} />}
       {outcome === "not-in-pubmed" && (
         <p className="have-nothing">PubMed has no record for {describe(parsed)}.</p>
+      )}
+      {outcome === "ambiguous-doi" && (
+        <p className="have-nothing">
+          PubMed has more than one record for {describe(parsed)} — paste the paper’s PubMed link
+          instead.
+        </p>
       )}
       {outcome === "unreadable" && <p className="have-nothing">{parsed.reason}</p>}
       <code className="have-input-echo">{parsed.input}</code>
@@ -223,7 +233,11 @@ function Outcome({ outcome }: { outcome: LinkOutcome }) {
   return (
     <span className="have-pill unreadable">
       <TriangleAlert size={13} className="inline-icon" aria-hidden />{" "}
-      {outcome === "not-in-pubmed" ? "Not in PubMed" : "Couldn’t read this"}
+      {outcome === "not-in-pubmed"
+        ? "Not in PubMed"
+        : outcome === "ambiguous-doi"
+          ? "Several in PubMed"
+          : "Couldn’t read this"}
     </span>
   );
 }

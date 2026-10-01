@@ -11,7 +11,7 @@ import {
   type ArticleInsert,
   type HoldingRow,
 } from "./db.js";
-import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
+import { fetchArticles, pmidsForDoi } from "./pubmed.js";
 import { chunk, errMessage, httpError } from "./util.js";
 import type { LinkAnswer, LinkedPaper } from "./types.js";
 
@@ -53,6 +53,10 @@ export async function addLinksToFolder(
   const byDoi = pmidsByDois(dois);
   const pmidOf = (r: ParsedRef): string | null =>
     r.kind === "pmid" ? (r.pmid ?? null) : r.kind === "doi" && r.doi ? (byDoi.get(r.doi) ?? null) : null;
+  // DOIs PubMed files under more than one record. Unresolved like a DOI it has
+  // never heard of, but told apart from one: the paper is in PubMed, and its
+  // PubMed link would save it.
+  const ambiguous = new Set<string>();
 
   const fetched: ArticleInsert[] = [];
   // Every PMID a line names, once DOIs have been resolved.
@@ -62,8 +66,9 @@ export async function addLinksToFolder(
     // throttle whichever order they go in.
     for (const doi of dois) {
       if (byDoi.has(doi)) continue;
-      const pmid = await resolveDoiToPmid(doi);
-      if (pmid) byDoi.set(doi, pmid);
+      const pmids = await pmidsForDoi(doi);
+      if (pmids.length === 1) byDoi.set(doi, pmids[0]);
+      else if (pmids.length > 1) ambiguous.add(doi);
     }
     named = [...new Set(refs.flatMap((r) => pmidOf(r) ?? []))];
     const stored = existingPmids(named);
@@ -96,7 +101,10 @@ export async function addLinksToFolder(
     if (parsed.kind === "unknown") return { parsed, outcome: "unreadable", paper: null };
     const pmid = pmidOf(parsed);
     const paper = pmid ? papers.get(pmid) : undefined;
-    if (!pmid || !paper) return { parsed, outcome: "not-in-pubmed", paper: null };
+    if (!pmid || !paper) {
+      const several = parsed.kind === "doi" && !!parsed.doi && ambiguous.has(parsed.doi);
+      return { parsed, outcome: several ? "ambiguous-doi" : "not-in-pubmed", paper: null };
+    }
     const outcome = before.has(pmid) || seen.has(pmid) ? "already-saved" : "added";
     seen.add(pmid);
     return { parsed, outcome, paper };

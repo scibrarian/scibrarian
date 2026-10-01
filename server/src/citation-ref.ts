@@ -57,11 +57,15 @@ export function parseRef(raw: string): ParsedRef {
   const input = raw.trim();
   if (!input) return { kind: "unknown", input, reason: "Blank line." };
 
-  // A DOI is the most specific thing a line can carry, and a full reference
-  // that has one usually ends with it — so it wins, including over a PMID on
-  // the same line. Either would answer; taking the DOI first means one rule
-  // rather than a tie-break that depends on where in the line each one sits.
-  //
+  // A PubMed link wins over a DOI on the same line. It names the record itself,
+  // where a DOI has to be looked up — one throttled search per line in Add
+  // links — and PubMed files some DOIs under two records, so the lookup can end
+  // with no answer for a line whose link gave the one it needed. Taking the
+  // link first is still one rule, not a tie-break on where in the line each
+  // sits.
+  const pmid = pubmedLinkPmid(input);
+  if (pmid) return { kind: "pmid", input, pmid };
+
   // Extraction is shared with the PDF importer rather than re-specified here:
   // DOI syntax is fiddly (Elsevier's parenthesised PII DOIs above all), and two
   // regexes drifting apart would mean a paper matched on import and then
@@ -69,12 +73,10 @@ export function parseRef(raw: string): ParsedRef {
   const doi = findDoi(input);
   if (doi) return { kind: "doi", input, doi };
 
-  const pmid = pubmedLinkPmid(input);
-  if (pmid) return { kind: "pmid", input, pmid };
-
   // A PubMed link that names no one paper: a search, or a number too long to be
   // a PMID. Not "no PubMed link" — the reader pasted one, and needs telling
-  // that it's the wrong page, not that it's missing.
+  // that it's the wrong page, not that it's missing. Asked after the DOI, so a
+  // reference carrying both a DOI and a search link is still answered.
   if (hasPubmedLink(input)) {
     return {
       kind: "unknown",

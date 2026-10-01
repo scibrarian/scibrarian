@@ -417,10 +417,12 @@ export interface HaveResponse {
 //   added          saved into the folder by this paste
 //   already-saved  the folder already held it — before this paste, or from an
 //                  earlier line of it naming the same paper
-//   not-in-pubmed  a DOI or PubMed link was read, but PubMed has no single
-//                  record it names, and only a PubMed record can be saved
+//   not-in-pubmed  a DOI or PubMed link was read, but PubMed has no record it
+//                  names, and only a PubMed record can be saved
+//   ambiguous-doi  PubMed files the DOI under more than one record, so it names
+//                  no one paper; the paper's PubMed link would
 //   unreadable     no DOI or PubMed link in the line; parsed.reason says why
-export type LinkOutcome = "added" | "already-saved" | "not-in-pubmed" | "unreadable";
+export type LinkOutcome = "added" | "already-saved" | "not-in-pubmed" | "ambiguous-doi" | "unreadable";
 
 // The paper a line named, as the answer row draws it.
 export interface LinkedPaper {

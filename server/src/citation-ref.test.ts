@@ -81,6 +81,20 @@ describe("parseRef — identifiers", () => {
     expect(ref).toMatchObject({ kind: "pmid", pmid: "31234567" });
   });
 
+  it("takes the PubMed link over a DOI on the same line", () => {
+    // The link names the record; the DOI would need looking up.
+    const ref = parseRef(
+      "Smith J. Foo. Lancet. 2019;380:1699. doi:10.1056/NEJMoa1. https://pubmed.ncbi.nlm.nih.gov/31234567/"
+    );
+    expect(ref).toMatchObject({ kind: "pmid", pmid: "31234567" });
+    expect(ref.doi).toBeUndefined();
+  });
+
+  it("still reads the DOI when the PubMed link beside it names no paper", () => {
+    const ref = parseRef("doi:10.1056/NEJMoa1 https://www.ncbi.nlm.nih.gov/pubmed/?term=smith+2019");
+    expect(ref).toMatchObject({ kind: "doi", doi: "10.1056/nejmoa1" });
+  });
+
   it("does not treat a number inside prose as a PMID", () => {
     // Without a label there is nothing to say which number this is.
     expect(parseRef("we enrolled 31234567 patients").kind).toBe("unknown");

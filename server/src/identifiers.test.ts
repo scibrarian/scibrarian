@@ -111,7 +111,7 @@ describe("findDoi", () => {
 describe("searchIdentifiers", () => {
   it("extracts both, with no precedence between them", () => {
     // A pasted reference carrying both should match on either, so unlike
-    // parseRef this does not let the DOI win and discard the PMID.
+    // parseRef this does not take one and discard the other.
     const { pmid, doi } = searchIdentifiers("Smith J. Foo. doi:10.1056/NEJMoa1 PMID: 31234567");
     expect(doi).toBe("10.1056/nejmoa1");
     expect(pmid).toBe("31234567");

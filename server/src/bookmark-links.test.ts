@@ -2,12 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 // "Add links" — saving papers into a bookmark folder from pasted DOIs and
-// PubMed links. PubMed is mocked: a DOI resolves through `pubmed.dois`, and a
+// PubMed links. PubMed is mocked: a DOI's PMIDs are in `pubmed.dois`, and a
 // PMID's record exists only if it is in `pubmed.records`. Nothing here touches
 // the network.
 
 const pubmed = vi.hoisted(() => ({
-  dois: new Map<string, string>(),
+  dois: new Map<string, string[]>(),
   records: new Map<string, unknown>(),
   searched: [] as string[],
   fetched: [] as string[][],
@@ -21,11 +21,11 @@ vi.mock("./pubmed.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pubmed.js")>();
   return {
     ...actual,
-    resolveDoiToPmid: async (doi: string) => {
+    pmidsForDoi: async (doi: string) => {
       pubmed.searched.push(doi);
       pubmed.during?.();
       if (pubmed.fail) throw new Error("NCBI unreachable");
-      return pubmed.dois.get(doi) ?? null;
+      return pubmed.dois.get(doi) ?? [];
     },
     fetchArticles: async (pmids: string[]) => {
       pubmed.fetched.push(pmids);
@@ -75,7 +75,7 @@ beforeEach(() => {
   db.db.exec("DELETE FROM bookmark_folders; DELETE FROM articles;");
   db.upsertArticles([article(STORED)]);
   folder = db.createBookmarkFolder("Reading").id;
-  pubmed.dois = new Map([REMOTE, OTHER].map((p) => [p.doi, p.pmid]));
+  pubmed.dois = new Map([REMOTE, OTHER].map((p) => [p.doi, [p.pmid]]));
   pubmed.records = new Map([REMOTE, OTHER].map((p) => [p.pmid, article(p)]));
   pubmed.searched = [];
   pubmed.fetched = [];
@@ -130,6 +130,28 @@ describe("addLinksToFolder", () => {
     expect(answers.every((a) => a.paper === null)).toBe(true);
     expect(db.existingPmids(["59999999"]).size).toBe(0);
     expect(saved()).toEqual([]);
+  });
+
+  it("tells a DOI PubMed files twice apart from one it has no record of", async () => {
+    pubmed.dois.set("10.1000/shared", [REMOTE.pmid, OTHER.pmid]);
+    const answers = (await addLinksToFolder(folder, ["10.1000/shared", "10.1000/nowhere"]))!;
+    expect(answers.map((a) => a.outcome)).toEqual(["ambiguous-doi", "not-in-pubmed"]);
+    expect(answers.every((a) => a.paper === null)).toBe(true);
+    // Neither record is picked, so neither is stored or saved.
+    expect(pubmed.fetched).toEqual([]);
+    expect(saved()).toEqual([]);
+  });
+
+  it("saves from the PubMed link on a line that also has a DOI, without looking the DOI up", async () => {
+    // Even a DOI PubMed couldn't resolve: the link already named the record.
+    pubmed.dois.set("10.1000/shared", [REMOTE.pmid, OTHER.pmid]);
+    const [answer] = (await addLinksToFolder(folder, [
+      `Smith J. Foo. J Test Med. 2024. doi:10.1000/shared ${link(REMOTE.pmid)}`,
+    ]))!;
+    expect(answer.outcome).toBe("added");
+    expect(answer.paper?.pmid).toBe(REMOTE.pmid);
+    expect(pubmed.searched).toEqual([]);
+    expect(saved()).toEqual([REMOTE.pmid]);
   });
 
   it("refuses a PMID that isn't a PubMed link, as Check holdings does", async () => {
