@@ -23,6 +23,16 @@ describe("parseRef — identifiers", () => {
     });
   });
 
+  it("reads a publisher's DOI without the URL's query, fragment or page", () => {
+    for (const url of [
+      "https://www.nejm.org/doi/full/10.1056/NEJMoa2035389?query=featured_home",
+      "https://www.nejm.org/doi/full/10.1056/NEJMoa2035389#article_references",
+      "https://www.nejm.org/doi/10.1056/NEJMoa2035389/full",
+    ]) {
+      expect(parseRef(url)).toMatchObject({ kind: "doi", doi: "10.1056/nejmoa2035389" });
+    }
+  });
+
   it("keeps a parenthesised Elsevier DOI whole", () => {
     // The Lancet's house style. Truncating at the "(" produced a shorter DOI
     // that OpenAlex still resolved — to a completely different paper.
