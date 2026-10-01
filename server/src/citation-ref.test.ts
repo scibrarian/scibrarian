@@ -56,6 +56,14 @@ describe("parseRef — identifiers", () => {
     expect(parseRef("https://www.ncbi.nlm.nih.gov/pubmed/31234567").pmid).toBe("31234567");
   });
 
+  it("reads a legacy PubMed search link for one PMID", () => {
+    // Common in older reference lists; PubMed opens the record itself for it.
+    expect(parseRef("https://www.ncbi.nlm.nih.gov/pubmed/?term=31234567")).toMatchObject({
+      kind: "pmid",
+      pmid: "31234567",
+    });
+  });
+
   it("finds a PubMed link at the end of a full reference", () => {
     const ref = parseRef(
       "Smith J. Effects of foo. Lancet. 2019;380:1699. https://pubmed.ncbi.nlm.nih.gov/31234567/"
@@ -94,6 +102,20 @@ describe("parseRef — what it refuses to guess", () => {
       expect(ref.pmid).toBeUndefined();
       expect(ref.reason).toMatch(/PubMed link/);
     }
+  });
+
+  it("refuses a PubMed link with a digit too many, and says the link is the problem", () => {
+    // Cutting it to eight digits would name a different paper that exists.
+    const ref = parseRef("https://pubmed.ncbi.nlm.nih.gov/333012461/");
+    expect(ref.kind).toBe("unknown");
+    expect(ref.pmid).toBeUndefined();
+    expect(ref.reason).toMatch(/from this PubMed link/);
+  });
+
+  it("refuses a PubMed search link as a link, not as a line without one", () => {
+    const ref = parseRef("https://www.ncbi.nlm.nih.gov/pubmed/?term=smith+lancet+2019");
+    expect(ref.kind).toBe("unknown");
+    expect(ref.reason).toMatch(/from this PubMed link/);
   });
 
   it("refuses a labelled PMID inside a reference that has no DOI or link", () => {

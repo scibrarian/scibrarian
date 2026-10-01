@@ -19,7 +19,7 @@
 // the expensive answer, delivered silently. Reporting the line as unreadable
 // instead sends them to the manual lookup they would otherwise have done anyway.
 
-import { barePmid, findDoi, labelledPmid, pubmedLinkPmid } from "./identifiers.js";
+import { barePmid, findDoi, hasPubmedLink, labelledPmid, pubmedLinkPmid } from "./identifiers.js";
 
 export type RefKind = "pmid" | "doi" | "unknown";
 
@@ -71,6 +71,17 @@ export function parseRef(raw: string): ParsedRef {
 
   const pmid = pubmedLinkPmid(input);
   if (pmid) return { kind: "pmid", input, pmid };
+
+  // A PubMed link that names no one paper: a search, or a number too long to be
+  // a PMID. Not "no PubMed link" — the reader pasted one, and needs telling
+  // that it's the wrong page, not that it's missing.
+  if (hasPubmedLink(input)) {
+    return {
+      kind: "unknown",
+      input,
+      reason: "Couldn’t read a PMID from this PubMed link — open the paper on PubMed and copy its link again.",
+    };
+  }
 
   // Named for what the reader has to do about it, like the reason below.
   if (labelledPmid(input) ?? barePmid(input)) {

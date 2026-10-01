@@ -17,8 +17,21 @@ import { findDois } from "./pdf-match.js";
 // bare number on a line crowded with other numbers cannot. The URL takes the
 // legacy www.ncbi.nlm.nih.gov/pubmed/<id> form too: older reference lists are
 // full of it, and it still redirects to the same record.
+//
+// The URL's number must end where the digits do. Without that, a link with one
+// digit too many was read as its first eight — a different paper that really
+// exists, which Add links would then have saved.
 export const PMID_LABEL_RE = /\bPMID\s*[:.]?\s*(\d{1,8})\b/i;
-export const PUBMED_URL_RE = /(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\/(\d{1,8})/i;
+export const PUBMED_URL_RE = /(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\/(\d{1,8})(?!\d)/i;
+// A PubMed search link whose whole term is one number: ?term=<pmid>, in the
+// legacy form older reference lists carry and the current one. PubMed opens the
+// record itself for it. The term has to be the number and nothing more — a
+// field tag, a second id or a query word makes it a search, not a paper.
+export const PUBMED_TERM_RE =
+  /(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\/?\?term=(\d{1,8})(?=[&#]|[.,;)\]>"']*(?:\s|$))/i;
+// Any PubMed address at all, read or not — so a link that names no paper can
+// be refused as that, rather than as a line with no link in it.
+const PUBMED_HOST_RE = /(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pubmed)\b/i;
 // A string that is nothing but a number.
 export const BARE_PMID_RE = /^(\d{1,8})$/;
 
@@ -34,14 +47,18 @@ export interface Identifiers {
 
 /** A PMID the text *labelled* as one: "PMID: 123", or a pubmed.ncbi.nlm.nih.gov URL. */
 export function labelledPmid(text: string): string | null {
-  const m = PMID_LABEL_RE.exec(text) ?? PUBMED_URL_RE.exec(text);
-  return m ? m[1] : null;
+  return PMID_LABEL_RE.exec(text)?.[1] ?? pubmedLinkPmid(text);
 }
 
 /** A PMID carried by a PubMed link, and only by one — never a label or a bare number. */
 export function pubmedLinkPmid(text: string): string | null {
-  const m = PUBMED_URL_RE.exec(text);
+  const m = PUBMED_URL_RE.exec(text) ?? PUBMED_TERM_RE.exec(text);
   return m ? m[1] : null;
+}
+
+/** The text has a PubMed address in it, whether or not a PMID could be read from it. */
+export function hasPubmedLink(text: string): boolean {
+  return PUBMED_HOST_RE.test(text);
 }
 
 /** The whole string is a number and nothing else. */
@@ -61,11 +78,14 @@ export function findDoi(text: string): string | null {
  * independently, with no precedence, because a pasted reference carrying a DOI
  * and a PMID should match on either.
  *
- * One deliberate difference from how citation-ref.ts reads the same text: a
- * bare four-digit year is not taken as a PMID. Pasting `2019` into /have is
- * unanswerable however it's read, so treating it as a PMID there costs nothing;
- * typing `2019` into a search box is an ordinary query, and quietly adding
- * whichever 1970s paper happens to hold PMID 2019 is noise in a result list.
+ * Search reads more PMIDs than citation-ref.ts does: a labelled one and a bare
+ * number count here, where /have and Add links take a PMID only from a PubMed
+ * link (see the note above parseRef). A wrong id here costs one extra row in a
+ * result list, not a paper reported as held or saved into a folder.
+ *
+ * A bare four-digit year is still not taken: typing `2019` into a search box is
+ * an ordinary query, and quietly adding whichever 1970s paper happens to hold
+ * PMID 2019 is noise in a result list.
  */
 export function searchIdentifiers(q: string): Identifiers {
   const bare = barePmid(q);
