@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
-import { errorMessage } from "./lib/format";
+import { errorMessage, plural } from "./lib/format";
+import { useReveal } from "./lib/hooks";
 import { showToast } from "./lib/toast";
 import type {
   AuthStatus,
@@ -13,13 +14,14 @@ import type {
   ProStatus,
 } from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
-import { seedEmptySource, sourceKey } from "./lib/papers";
+import { seedEmptySource, sourceKey, warmPapers } from "./lib/papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
 import { SectionNav, MODES, type Mode } from "./components/SectionNav";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { PaperViews } from "./components/PaperViews";
 import { BookmarkFolderView } from "./components/BookmarkFolderView";
 import { CollectionView } from "./components/CollectionView";
+import { warmFacets } from "./components/MeshFilter";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, ToolbarSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
@@ -41,6 +43,14 @@ import { MAX_NAME_CHARS } from "../../shared/limits";
 // could drift from the one the mode switch draws. Aliased because JSX needs a
 // capitalized binding to treat it as a component.
 const LibraryIcon = MODES.papers.icon;
+
+// How long the first reveal waits for the landing source's papers once the
+// bootstrap has answered, so that the shell and the rows can go up together
+// (see the bootstrap effect). Past this the shell goes up on its own and the
+// view skeletons the rest, as every load used to. Short of the ~300ms at
+// which a wait starts to register, and long enough to cover a local answer
+// several times over.
+const REVEAL_CAP_MS = 300;
 
 // Whether two readings of the organisation stamps say the same thing, so an
 // unchanged one can be dropped rather than re-rendering everything drawn from
@@ -93,7 +103,23 @@ export default function App() {
   const [checkingHave, setCheckingHave] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  // Whether the bootstrap has answered, and `loaded`, which is the same fact
+  // one cross-fade later (see useReveal). `loaded` is what everything below
+  // gates on: its flip is the one commit that replaces every stand-in on the
+  // page, and with the bootstrap's warm-up it is usually the only one a load
+  // has.
+  //
+  // Two flags, rather than a fade started by the bootstrap itself, because of
+  // what else has to be in place when the stand-ins go. The bootstrap sets a
+  // dozen pieces of state — its own, and each loader's as it answers — and a
+  // transition commits its callback synchronously and alone, without whatever
+  // React still holds batched. Started from the bootstrap, the reveal could
+  // land ahead of that batch: the page went up as a viewer's, over an empty
+  // Library, and was corrected a frame later. `booted` is set in the batch,
+  // and useReveal starts the fade from an effect, which runs only once the
+  // batch has committed — behind the stand-ins, where it shows nothing.
+  const [booted, setBooted] = useState(false);
+  const loaded = useReveal(booted);
   // Whether this browser's requests count as admin (verified server-side via
   // /api/auth — the stored token alone proves nothing). Viewers get a
   // read-only UI; the server enforces the same split regardless.
@@ -267,13 +293,46 @@ export default function App() {
       setIsAdmin(false);
       applyStamps([]);
     });
-    // Admin state resolves with the same `loaded` flip so the admin controls
-    // don't pop in after the skeletons clear.
+    // Admin state resolves in the commit the `loaded` flip waits on (see
+    // `booted`), so the admin controls don't pop in after the skeletons clear.
     // null rather than a viewer-shaped fallback, so the handler below can tell
     // "the server said you are not admin" from "we couldn't ask it".
     const auth = api.getAuth().catch(() => null);
-    Promise.all([loadTopics(), loadFolders(), loadCollections(), auth, loadBookmarks()]).then(
-      ([ds, fs, cs, status]) => {
+    // Where this load lands — the Library's first collection, if it has one —
+    // asked for its papers and facets before the shell is revealed, so the
+    // view mounts onto a cache hit and the page appears once, with rows in it,
+    // rather than as a shell and then, a moment later, a table. On a local
+    // server the two phases were each tens of milliseconds and read as one
+    // flicker rather than two loads.
+    //
+    // Asked the moment the collections answer, not once everything has. The
+    // collections are all the question depends on, and waiting on the other
+    // four requests first put a whole round trip after them on every load. And
+    // not asked at all of a collection counted at zero: `knownEmpty` takes
+    // that one straight to its empty state, so there are no rows to wait for.
+    //
+    // The token is the one a fresh view reads — nothing has bumped a source
+    // yet, and nothing can, since every control is a stand-in until this
+    // resolves.
+    const collectionsLoad = loadCollections();
+    const warmUp = collectionsLoad.then((cs) => {
+      const landing: PaperSource | null =
+        cs.length > 0 && cs[0].heldCount !== 0 ? { collection: cs[0].id } : null;
+      if (!landing) return null;
+      const token = tokenFor(NO_RELOADS, sourceKey(landing));
+      return Promise.all([warmPapers(landing, token), warmFacets(landing, token)]);
+    });
+    Promise.all([loadTopics(), loadFolders(), collectionsLoad, auth, loadBookmarks()]).then(
+      async ([ds, fs, cs, status]) => {
+        // Whatever of the warm-up is still out, waited for — usually nothing,
+        // since it has been running beside the requests above. Bounded: past
+        // REVEAL_CAP_MS the shell goes up as it always has and the view draws
+        // its own skeleton for the rest. Before the setters below rather than
+        // after, so they still land in the one commit they always did.
+        await Promise.race([
+          warmUp,
+          new Promise<void>((r) => setTimeout(r, REVEAL_CAP_MS)),
+        ]);
         const { admin, token_required, library_open } = status ?? {
           admin: false,
           token_required: true,
@@ -293,20 +352,17 @@ export default function App() {
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
-        // Preselect each section's first entry, then land in the first one
-        // that actually has something in it (nav order: Library, Interests,
-        // Bookmarks) so switching modes never opens on an empty picker.
+        // Preselect each section's first entry so switching modes never opens
+        // on an empty picker. The load itself always lands in the Library,
+        // where `mode` starts, even when it is empty. It used to fall through
+        // to the first section with anything in it, which made where the app
+        // opened depend on what you happened to have filed.
         if (fs.length > 0) setActiveFolderId(fs[0].id);
         if (ds.length > 0) setActiveTopicId(ds[0].id);
-        if (cs.length > 0) {
-          setMode("papers");
-          setActiveCollectionId(cs[0].id);
-        } else if (ds.length > 0) {
-          setMode("interests");
-        } else if (fs.length > 0) {
-          setMode("bookmarks");
-        }
-        setLoaded(true);
+        if (cs.length > 0) setActiveCollectionId(cs[0].id);
+        // In the batch with everything above, and with whatever a loader set
+        // on its way here. `loaded` follows once that has committed.
+        setBooted(true);
       }
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -715,6 +771,35 @@ export default function App() {
         ? collections.every((c) => c.heldCount === 0)
         : activeCollection?.heldCount === 0
       : activeFolder?.paperCount === 0;
+  // What the action row says about the source on its left, in every section:
+  // the picker badge's count, written out, and for a collection its files
+  // where those outnumber its papers. The row is held open for the actions on
+  // its right (see .source-head), and for a viewer — or for every collection
+  // at once — nothing lands there, which left it a blank band between the
+  // section bar and the search box on every page. A line that is always
+  // present gives the band a reason to be the height it is. "All
+  // collections" counts collections, not papers: summing the badges would
+  // count a paper filed in two of them twice (see SectionNav's lead).
+  //
+  // A topic whose count is absent gets no line, rather than "0 papers". It is
+  // the same absent count `knownEmpty` above refuses to read as zero, and for
+  // the same reason: the line would claim emptiness over a table that may be
+  // full. The row keeps its height either way (see .source-head).
+  const sourceSummary: string | null = inInterests
+    ? activeTopic?.articleCount != null
+      ? plural(activeTopic.articleCount, "paper")
+      : null
+    : inLibrary
+      ? activeCollectionId === "all"
+        ? collections.length > 0
+          ? plural(collections.length, "collection")
+          : null
+        : activeCollection &&
+          plural(activeCollection.heldCount, "paper") +
+            (activeCollection.fileCount > activeCollection.heldCount
+              ? ` · ${plural(activeCollection.fileCount, "file")}`
+              : "")
+      : activeFolder && plural(activeFolder.paperCount, "paper");
   const showViewControls = !showSettings && source != null;
   const sourceId = source ? sourceKey(source) : null;
   // The token every cached fetch under this source is stamped with; a bump to
@@ -917,9 +1002,9 @@ export default function App() {
             // control along it — which is what two guessed bars did here.
             //
             // What's reserved is what the load is about to produce. The view
-            // switch: `source` is null until then, but the load lands in the
-            // first section that holds anything (see the effect above), so it
-            // appears for everyone past an empty app. "Check holdings" is
+            // switch: `source` is null until then, but the load lands on the
+            // Library's first collection (see the effect above), so it appears
+            // for everyone with one. "Check holdings" is
             // ungated and always does. The icon buttons are one or two — a
             // viewer's padlock, or an admin's gear beside the one that locks
             // again — and a stored token is what tells the two apart, which is
@@ -1053,7 +1138,7 @@ export default function App() {
           // (mirrors the header). And the toolbar, because both paper views
           // open with the same <PaperFilters> (see ToolbarSkeleton).
           //
-          // A first run with nothing filed is the exception, and is left as
+          // An empty Library is the exception, and is left as
           // one. No source means no action row and no toolbar, so what lands is
           // the centred empty state and this stand-in reserved a row and a
           // toolbar it does not use. Over-reserving on the single load where
@@ -1062,10 +1147,10 @@ export default function App() {
           // empty before the bootstrap has said.
           //
           // The body is deliberately absent. This used to reserve a whole
-          // TimelineSkeleton, which was a guess it had no way to make: the
-          // section this lands in is not settled until the bootstrap resolves
-          // — the effect above sets `mode` in the same batch as `loaded` — and
-          // it guessed timeline while the initial `viewMode` says table. With a
+          // TimelineSkeleton, which was a guess it had no way to make: whether
+          // this lands on a source at all is not settled until the bootstrap
+          // resolves, and it guessed timeline while the initial `viewMode` says
+          // table. With a
           // collection present it reserved 708px of timeline and the answer came
           // back as 400px of table: a 308px collapse, ~170ms in, measured at
           // 1440x900.
@@ -1133,6 +1218,11 @@ export default function App() {
           // running it now.
           <div className="source-view">
             <div className="source-head">
+              {sourceSummary && (
+                <div className="source-meta">
+                  <span className="source-summary">{sourceSummary}</span>
+                </div>
+              )}
               <div className="source-actions">
                 {topicUpdatedAt && (
                   <span className="updated">Updated {timeAgo(topicUpdatedAt)}</span>
@@ -1154,6 +1244,7 @@ export default function App() {
             // chrome inside the view — see CollectionView's collectionId.
             collectionId={typeof activeCollectionId === "number" ? activeCollectionId : null}
             isAdmin={isAdmin}
+            summary={sourceSummary}
             // Nothing for the all-collections view: the badge is a statement
             // about one collection, and the aggregate is a mix of them.
             stamp={
@@ -1180,6 +1271,7 @@ export default function App() {
             key={activeFolderId}
             folderId={activeFolderId!}
             isAdmin={isAdmin}
+            summary={sourceSummary}
             onChanged={handleFolderChanged}
             // The saved-papers map as well as the folder's list and count, the
             // same three a bulk save refreshes: a paper added here may be on

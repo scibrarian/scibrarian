@@ -20,6 +20,7 @@ import { MAX_NAME_CHARS } from "../../../shared/limits";
 export function BookmarkFolderView({
   folderId,
   isAdmin,
+  summary,
   onChanged,
   onPapersAdded,
   onDeleted,
@@ -27,6 +28,8 @@ export function BookmarkFolderView({
 }: {
   folderId: number;
   isAdmin: boolean;
+  /** The folder counted out, for the row's left half — see App's sourceSummary. */
+  summary: string | null;
   onChanged: () => void;
   /** "Add links" saved papers into this folder. */
   onPapersAdded: () => void;
@@ -62,8 +65,14 @@ export function BookmarkFolderView({
     <div className="source-view">
       {/* The row is always here, because the papers below it start at one
           height in every section; only the management chrome inside it is
-          admin-only, so a viewer gets the reserved space and nothing in it. */}
+          admin-only, so a viewer gets the reserved space with the summary in
+          it and nothing else. */}
       <div className="source-head">
+        {summary && (
+          <div className="source-meta">
+            <span className="source-summary">{summary}</span>
+          </div>
+        )}
         {isAdmin && (
           <div className="source-actions">
             <button onClick={() => setAddingLinks(true)}>

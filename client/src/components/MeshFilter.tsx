@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown } from "lucide-react";
 import { api } from "../api";
-import { useCachedFetch, type FetchCache } from "../lib/hooks";
+import { useCachedFetch, useRecent, warmCache, type FetchCache } from "../lib/hooks";
 import { sourceKey } from "../lib/papers";
 import type { MeshDescriptorRef, MeshFiling, MeshHeadingsResponse, PaperSource } from "../types";
 
@@ -10,6 +10,25 @@ import type { MeshDescriptorRef, MeshFiling, MeshHeadingsResponse, PaperSource }
 // reopening the dropdown — or flipping between Papers, Timeline and Graph —
 // paints from memory instead of refetching a list that hasn't changed.
 const facetCache: FetchCache<MeshHeadingsResponse> = new Map();
+
+// The cache key for one source's facet list under one search of it. A single
+// builder for the reason lib/papers keeps papersKey: the hook below and the
+// warm-up beside it have to agree, and a drift between them wouldn't fail —
+// the warm-up would file an answer nothing reads, and the subject slot would
+// quietly go back to landing a moment after the rows.
+function facetKey(source: string, search: string): string {
+  return `${source}:${search}`;
+}
+
+// The facets' counterpart of lib/papers' warmPapers: the unsearched list for a
+// source, fetched ahead of the view and filed under the key a fresh
+// useMeshFacets reads, so the subject slot lands with the rows rather than a
+// moment after them. Resolves on failure too, with nothing filed.
+export function warmFacets(source: PaperSource, reloadToken: number): Promise<void> {
+  return warmCache(facetCache, facetKey(sourceKey(source), ""), reloadToken, () =>
+    api.getMeshHeadings(source, undefined)
+  );
+}
 
 // The papers a subject filter can't reach, and why — the second half of "no
 // papers match".
@@ -63,7 +82,7 @@ export function useMeshFacets(source: PaperSource, reloadToken: number) {
     return () => clearTimeout(t);
   }, [query]);
 
-  const { data, loading } = useCachedFetch(facetCache, `${key}:${search}`, reloadToken, () =>
+  const { data, loading } = useCachedFetch(facetCache, facetKey(key, search), reloadToken, () =>
     api.getMeshHeadings(source, search || undefined)
   );
 
@@ -95,6 +114,25 @@ export function useMeshFacets(source: PaperSource, reloadToken: number) {
 }
 
 export type MeshFacets = ReturnType<typeof useMeshFacets>;
+
+// How long a view's first paint may wait for the facets once its papers are in.
+const FACET_HOLD_MS = 300;
+
+// Whether a view should keep its first paint for this source back for the
+// facets. The papers and the facet list are two requests, and a row that
+// shows the journals before the subjects — or rows before either — settles
+// in two steps; held together they settle in one (see useReveal, which the
+// views hand the answer to). Only a paint that started as a stand-in is held:
+// papers already cached when the source was switched to are drawn at once,
+// facets or no facets, as they always were. Bounded by FACET_HOLD_MS, past
+// which the row shows what it has and the subject slot keeps its own stand-in
+// until the list lands, as it did before.
+export function useFacetHold(fetchKey: string, papersLoading: boolean, facets: MeshFacets): boolean {
+  const started = useRef<{ key: string; pending: boolean } | null>(null);
+  if (started.current?.key !== fetchKey) started.current = { key: fetchKey, pending: papersLoading };
+  const recent = useRecent(fetchKey, FACET_HOLD_MS);
+  return started.current.pending && facets.loading && recent;
+}
 
 // The unfiltered trigger text, which is what a first load resolves to and so
 // what the loading stand-in measures itself against (see FilterSkeleton).

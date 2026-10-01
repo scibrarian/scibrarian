@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
-import { useCachedFetch, type FetchCache } from "./hooks";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import {
+  useCachedFetch,
+  useMediaQuery,
+  useRecent,
+  useReveal,
+  warmCache,
+  type FetchCache,
+} from "./hooks";
 
 afterEach(cleanup);
 
@@ -198,5 +205,317 @@ describe("useCachedFetch", () => {
 
     expect(cache.has("k0")).toBe(true);
     expect(cache.has("k1")).toBe(false);
+  });
+});
+
+describe("warmCache", () => {
+  // A request the test settles by hand, so a view can be stood up while it is
+  // still out.
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("files the answer where a view's first render finds it", async () => {
+    const cache = emptyCache();
+    await warmCache(cache, "a", 0, async () => "warmed");
+
+    const fetcher = vi.fn(async () => "fetched");
+    const { result } = mount(cache, fetcher, { key: "a", token: 0 });
+    expect(result.current).toEqual({ data: "warmed", loading: false, error: null });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("is waited on by a view that mounts before it lands, not asked again", async () => {
+    // The slow case, which is the one a warm-up is for: its caller has stopped
+    // waiting and put the view up. The view used to miss the cache, ask the
+    // server for the same thing, and then ignore the warm answer when it came.
+    const cache = emptyCache();
+    const out = deferred<string>();
+    const warm = vi.fn(() => out.promise);
+    void warmCache(cache, "a", 0, warm);
+
+    const fetcher = vi.fn(async () => "fetched");
+    const { result } = mount(cache, fetcher, { key: "a", token: 0 });
+    expect(result.current).toEqual({ data: null, loading: true, error: null });
+
+    out.resolve("warmed");
+    await waitFor(() => expect(result.current.data).toBe("warmed"));
+    expect(result.current.loading).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(warm).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the view to ask for itself when it fails", async () => {
+    const cache = emptyCache();
+    const out = deferred<string>();
+    const warmed = warmCache(cache, "a", 0, () => out.promise);
+    const fetcher = vi.fn(async () => "fetched");
+    const { result } = mount(cache, fetcher, { key: "a", token: 0 });
+
+    out.reject(new Error("Couldn't load."));
+    // Resolves either way, with nothing filed.
+    await warmed;
+    expect(cache.has("a")).toBe(false);
+
+    await waitFor(() => expect(result.current.data).toBe("fetched"));
+    expect(result.current.error).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not waited on by a view reading another token", async () => {
+    // The source was bumped after the warm-up went out, so its answer is the
+    // previous token's and the view has to ask for this one.
+    const cache = emptyCache();
+    void warmCache(cache, "a", 0, () => new Promise<string>(() => {}));
+
+    const fetcher = vi.fn(async () => "fetched");
+    const { result } = mount(cache, fetcher, { key: "a", token: 1 });
+    await waitFor(() => expect(result.current.data).toBe("fetched"));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks once for two warm-ups of the same key", async () => {
+    const cache = emptyCache();
+    const out = deferred<string>();
+    const fetcher = vi.fn(() => out.promise);
+    const first = warmCache(cache, "a", 0, fetcher);
+    const second = warmCache(cache, "a", 0, fetcher);
+
+    out.resolve("warmed");
+    await Promise.all([first, second]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(cache.get("a")).toEqual({ token: 0, data: "warmed" });
+  });
+
+  it("asks again after a failure, rather than handing on the dead request", async () => {
+    const cache = emptyCache();
+    const fetcher = vi.fn<() => Promise<string>>();
+    fetcher.mockRejectedValueOnce(new Error("Couldn't load.")).mockResolvedValueOnce("warmed");
+
+    await warmCache(cache, "a", 0, fetcher);
+    expect(cache.has("a")).toBe(false);
+    await warmCache(cache, "a", 0, fetcher);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(cache.get("a")).toEqual({ token: 0, data: "warmed" });
+  });
+});
+
+// The three hooks below answer for an input that can change under them, and
+// each used to answer for the previous one on the render that first saw the
+// change. A test of what the hook settles on can't see that — the effect has
+// corrected it by the time the assertion runs — so these keep every render.
+function watch<P, R>(hook: (props: P) => R, initial: P) {
+  const seen: { props: P; value: R }[] = [];
+  const view = renderHook(
+    (props: P) => {
+      const value = hook(props);
+      seen.push({ props, value });
+      return value;
+    },
+    { initialProps: initial }
+  );
+  return { ...view, seen };
+}
+
+// jsdom has no matchMedia. This stands one up: the queries passed in match,
+// and `set` moves one in or out and tells its listeners, as a resize across
+// the breakpoint would.
+function stubMatchMedia(...initial: string[]) {
+  const matching = new Set(initial);
+  const listeners = new Map<string, Set<() => void>>();
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({
+      get matches() {
+        return matching.has(query);
+      },
+      addEventListener: (_: string, fn: () => void) => {
+        if (!listeners.has(query)) listeners.set(query, new Set());
+        listeners.get(query)!.add(fn);
+      },
+      removeEventListener: (_: string, fn: () => void) => {
+        listeners.get(query)?.delete(fn);
+      },
+    }),
+  });
+  return {
+    set(query: string, on: boolean) {
+      if (on) matching.add(query);
+      else matching.delete(query);
+      listeners.get(query)?.forEach((fn) => fn());
+    },
+  };
+}
+
+describe("useMediaQuery", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  const NARROW = "(max-width: 780px)";
+  const MEDIUM = "(max-width: 1024px)";
+  const media = (query: string) =>
+    watch((p: { query: string }) => useMediaQuery(p.query), { query });
+
+  it("is false where there is no matchMedia", () => {
+    expect(media(NARROW).result.current).toBe(false);
+  });
+
+  it("follows the query as the viewport crosses it", () => {
+    const viewport = stubMatchMedia();
+    const { result } = media(NARROW);
+    expect(result.current).toBe(false);
+
+    act(() => viewport.set(NARROW, true));
+    expect(result.current).toBe(true);
+    act(() => viewport.set(NARROW, false));
+    expect(result.current).toBe(false);
+  });
+
+  it("answers for the query it has now, not the one it mounted with", () => {
+    // A 900px viewport: past the first breakpoint, inside the second. The
+    // answer used to stay the first query's until a resize crossed the second.
+    stubMatchMedia(MEDIUM);
+    const { rerender, seen } = media(NARROW);
+    const from = seen.length;
+
+    rerender({ query: MEDIUM });
+    expect(seen.slice(from).map((s) => s.value)).not.toContain(false);
+  });
+});
+
+describe("useRecent", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const recent = (key: string) => watch((p: { key: string }) => useRecent(p.key, 300), { key });
+  const pass = (ms: number) => act(() => void vi.advanceTimersByTime(ms));
+
+  it("is true from mount until the window has passed", () => {
+    const { result } = recent("a");
+    expect(result.current).toBe(true);
+    pass(299);
+    expect(result.current).toBe(true);
+    pass(1);
+    expect(result.current).toBe(false);
+  });
+
+  it("answers for a new key on the render that first sees it", () => {
+    // The clock restarts in an effect, a commit after the key changes; the
+    // render in between used to get the previous key's expired answer.
+    const { result, rerender, seen } = recent("a");
+    pass(300);
+    const from = seen.length;
+
+    rerender({ key: "b" });
+    expect(seen.slice(from).map((s) => s.value)).not.toContain(false);
+    pass(300);
+    expect(result.current).toBe(false);
+  });
+
+  it("is recent again on a return to a key whose window had passed", () => {
+    // What keeping the key beside the flag has to get right: `a` expired once,
+    // and coming back to it is a change of key like any other.
+    const { result, rerender, seen } = recent("a");
+    pass(300);
+    rerender({ key: "b" });
+    const from = seen.length;
+
+    rerender({ key: "a" });
+    expect(seen.slice(from).map((s) => s.value)).not.toContain(false);
+    pass(300);
+    expect(result.current).toBe(false);
+  });
+});
+
+describe("useReveal", () => {
+  type Props = { ready: boolean; key: string };
+  const reveal = (initial: Props) => watch((p: Props) => useReveal(p.ready, p.key), initial);
+
+  // No View Transition API in jsdom, so the swap is committed plainly (see
+  // commitWithFade) — except where a test stands the API up to hold a
+  // transition's callback back, as the browser does for a frame.
+  function holdTransitions() {
+    stubMatchMedia();
+    const held: (() => void)[] = [];
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      value: (run: () => void) => void held.push(run),
+    });
+    return { runNext: () => act(() => held.shift()!()) };
+  }
+  afterEach(() => {
+    Reflect.deleteProperty(document, "startViewTransition");
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  it("paints at once what is ready when it mounts", () => {
+    const { seen } = reveal({ ready: true, key: "a" });
+    expect(seen.map((s) => s.value)).not.toContain(false);
+  });
+
+  it("holds the stand-in for the render that first sees ready, then swaps", () => {
+    const { result, rerender, seen } = reveal({ ready: false, key: "a" });
+    const from = seen.length;
+
+    rerender({ ready: true, key: "a" });
+    expect(seen[from].value).toBe(false);
+    expect(result.current).toBe(true);
+  });
+
+  it("answers a fall on the same render", () => {
+    const { rerender, seen } = reveal({ ready: true, key: "a" });
+    const from = seen.length;
+
+    rerender({ ready: false, key: "a" });
+    expect(seen.slice(from).map((s) => s.value)).not.toContain(true);
+  });
+
+  it("paints at once a key that is ready when it is switched to", () => {
+    // Leaving a source still on its stand-in for one that is cached, or known
+    // to be empty. The lag in hand was the first source's, and the second used
+    // to be drawn as a stand-in and faded in because of it.
+    const { rerender, seen } = reveal({ ready: false, key: "a" });
+    const from = seen.length;
+
+    rerender({ ready: true, key: "b" });
+    expect(seen.slice(from).map((s) => s.value)).not.toContain(false);
+  });
+
+  it("still lags the rise of a key that was not ready when switched to", () => {
+    const { result, rerender, seen } = reveal({ ready: true, key: "a" });
+    rerender({ ready: false, key: "b" });
+    const from = seen.length;
+
+    rerender({ ready: true, key: "b" });
+    expect(seen[from].value).toBe(false);
+    expect(result.current).toBe(true);
+  });
+
+  it("drops a fade that lands after its key was left", () => {
+    // `a` turns ready and its transition is queued; before the browser runs
+    // it the view has moved to `b`, which then turns ready as well. The late
+    // callback must not reveal `b` with a cut, ahead of the fade `b` queued.
+    const transitions = holdTransitions();
+    const { result, rerender } = reveal({ ready: false, key: "a" });
+    rerender({ ready: true, key: "a" });
+    rerender({ ready: false, key: "b" });
+    rerender({ ready: true, key: "b" });
+    expect(result.current).toBe(false);
+
+    transitions.runNext();
+    expect(result.current).toBe(false);
+    transitions.runNext();
+    expect(result.current).toBe(true);
   });
 });

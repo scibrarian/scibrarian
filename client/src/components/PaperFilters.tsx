@@ -7,8 +7,8 @@ import {
 } from "../lib/papers";
 import type { PaperSource } from "../types";
 import { ALL_JOURNALS_LABEL, JournalFilter } from "./JournalFilter";
-import { ALL_SUBJECTS_LABEL, MeshFilter, useMeshFacets } from "./MeshFilter";
-import { FilterSkeleton } from "./Skeleton";
+import { ALL_SUBJECTS_LABEL, MeshFilter, type MeshFacets } from "./MeshFilter";
+import { CitationFilterSkeleton, FilterSkeleton, YearFilterSkeleton } from "./Skeleton";
 
 // One end of the year range. Holds its own text so a 4-digit year can be typed
 // without each keystroke re-filtering (and without "19" clamping to the first
@@ -57,26 +57,26 @@ function YearBox({
 //                  to the far end so it reads as "…and do this with it" rather
 //                  than as one more control that narrows
 //
-// The subject filter is the exception: it fetches its own facet list per source
-// rather than being handed one, because unlike journals the list is too large to
-// derive from the papers payload (see MeshFilter). It therefore needs the source
-// and its reload token.
+// The subject filter is the exception: its facet list is fetched per source
+// rather than derived from the papers payload, which is too small to carry it
+// (see MeshFilter). The view fetches it (useMeshFacets) and hands it down, so
+// the view can hold its first paint for it — see `settling`.
 export function PaperFilters({
   filters,
   source,
-  reloadToken,
   searchable = true,
   journals,
   maxCitations,
   yearBounds,
   loading = false,
   knownEmpty = false,
+  facets,
+  settling = false,
   children,
   action,
 }: {
   filters: PaperFilterState;
   source: PaperSource;
-  reloadToken: number;
   searchable?: boolean;
   journals?: string[];
   maxCitations?: number;
@@ -84,18 +84,26 @@ export function PaperFilters({
   loading?: boolean;
   /**
    * The source was counted at zero before its papers were asked for, so no
-   * control is coming and neither slot below reserves space for one. Distinct
-   * from `loading` because the subject slot waits on useMeshFacets, a fetch
-   * this component starts itself — a caller cannot reach it by lying about
+   * control is coming and no slot below reserves space for one. Distinct from
+   * `loading` because the subject slot waits on the facets, a fetch with a
+   * loading state of its own — a caller cannot reach it by lying about
    * `loading`. Absent on the graph, which has a loading state of its own (see
    * PaperViews).
    */
   knownEmpty?: boolean;
+  facets: MeshFacets;
+  /**
+   * The view is still holding its first paint, papers in hand or not (see
+   * useFacetHold and useReveal). Every slot keeps its stand-in while this is
+   * set, including the ones whose control has answered: a row that showed the
+   * journals before the subjects would settle in two steps, which is the
+   * thing the hold exists to prevent.
+   */
+  settling?: boolean;
   children?: ReactNode;
   action?: ReactNode;
 }) {
   const { minCitations, setMinCitations, minText, setMinText } = filters;
-  const facets = useMeshFacets(source, reloadToken);
 
   // Collections also search the body text of the PDFs they hold; topics and
   // bookmark folders have no files behind their papers. Only the placeholder
@@ -138,16 +146,28 @@ export function PaperFilters({
     set(Math.min(Math.max(v, yearBounds.min), yearBounds.max));
   };
 
+  // Nothing settled yet: the papers are out, or the view is holding its first
+  // paint. Every control-or-stand-in choice below reads this rather than
+  // `loading` alone, so the row settles in one commit (see `settling`).
+  const pending = loading || settling;
+
   // The journal slot holds its space during the first load (skeleton) so the
   // row doesn't grow a line once journals arrive; an empty source shows none.
   //
   // Not while knownEmpty, though. A source counted at zero has no journals to
   // arrive, so the slot would shimmer and then be removed — reserving a line
   // against nothing, which is the one thing the stand-in is not for.
-  const showJournals = journals != null && (journals.length > 0 || (loading && !knownEmpty));
+  const showJournals = journals != null && (journals.length > 0 || (pending && !knownEmpty));
   const showCitations = maxCitations != null && maxCitations > 0;
   // A single-year source has no range to pick, so the control would be inert.
   const showYears = yearBounds != null && yearBounds.min < yearBounds.max;
+  // The citation and year stand-ins. Reserved on a first load, where the
+  // journal slot already is, because nearly every source lands both — any
+  // citation above zero, any span of years — and a row that reserved one
+  // control and then grew two more had moved on the handoff. A single-year or
+  // uncited source sees a stand-in go instead, which is the cheap direction to
+  // be wrong in (see ProPanelSkeleton).
+  const reserve = pending && !knownEmpty;
   // Whether anything *narrows*, which is now a question in its own right: the
   // controls that do go in their own wrapping box, and the action sits outside
   // it (see .filter-row). Rendering that box empty would cost the row a gap
@@ -158,6 +178,7 @@ export function PaperFilters({
     facets.loading ||
     showCitations ||
     showYears ||
+    reserve ||
     Boolean(children);
 
   // The action counts: a source with nothing to filter by still needs the row
@@ -192,7 +213,7 @@ export function PaperFilters({
           {hasControls && (
             <div className="filter-controls">
               {showJournals &&
-                (journals.length > 0 ? (
+                (journals.length > 0 && !pending ? (
                   <JournalFilter
                     journals={journals}
                     deselected={filters.deselected}
@@ -207,7 +228,7 @@ export function PaperFilters({
                   arrive. A source with nothing filed still drops the slot — the
                   skeleton says "a control may land here", not "one will", and
                   under knownEmpty the answer to that is already no. */}
-              {facets.available ? (
+              {facets.available && !pending ? (
                 <MeshFilter
                   facets={facets}
                   selected={filters.subjects}
@@ -216,10 +237,11 @@ export function PaperFilters({
                   onMajorOnlyChange={filters.setMajorOnly}
                 />
               ) : (
-                facets.loading && !knownEmpty && <FilterSkeleton label={ALL_SUBJECTS_LABEL} />
+                (facets.loading || pending) &&
+                !knownEmpty && <FilterSkeleton label={ALL_SUBJECTS_LABEL} />
               )}
 
-              {showCitations && (
+              {showCitations && !pending ? (
                 <div className="citation-filter">
                   <span>Min citations:</span>
                   <input
@@ -240,9 +262,11 @@ export function PaperFilters({
                     aria-label="Minimum citations"
                   />
                 </div>
+              ) : (
+                reserve && <CitationFilterSkeleton />
               )}
 
-              {showYears && (
+              {showYears && !pending ? (
                 <div className="year-filter">
                   <span>Years:</span>
                   <YearBox
@@ -259,6 +283,8 @@ export function PaperFilters({
                     onCommit={(raw) => commitYear(raw, filters.setYearTo)}
                   />
                 </div>
+              ) : (
+                reserve && <YearFilterSkeleton />
               )}
 
               {children}
