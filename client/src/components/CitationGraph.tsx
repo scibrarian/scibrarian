@@ -21,6 +21,7 @@ import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
 import { ModalFrame } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
+import { useMeshFacets } from "./MeshFilter";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 
@@ -137,6 +138,10 @@ export function CitationGraph({
     loading,
     error,
   } = useCachedFetch(graphCache, fetchKey, reloadToken, () => api.getGraph(source, serverQuery));
+  // The subject facets, for the filter row (see PaperFilters). Not held for:
+  // this view has a loading state of its own, and its first paint is a
+  // simulation settling rather than rows landing.
+  const facets = useMeshFacets(source, reloadToken);
 
   // Keep the last result for THIS source on screen while a search refetch is in
   // flight, so typing narrows the graph in place instead of blanking the canvas
@@ -455,15 +460,17 @@ export function CitationGraph({
   return (
     <div className="graph-wrap">
       {/* Full filter row: /api/graph now takes the same `q` as /api/papers and
-          returns journal names, so all three views filter identically. */}
+          returns journal names, so all three views filter identically.
+          `showLoading`, not `loading`: the row swaps every control for its
+          stand-in while loading, and a refetch must not close an open menu. */}
       <PaperFilters
         filters={filters}
         source={source}
-        reloadToken={reloadToken}
         journals={data?.journals ?? []}
         maxCitations={maxCitations}
         yearBounds={yearBounds}
-        loading={loading}
+        loading={showLoading}
+        facets={facets}
         action={
           bookmarking && (
             // visiblePmids, not the filter row's set: in this view clusters can

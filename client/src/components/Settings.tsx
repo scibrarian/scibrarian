@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Search, Share2, Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useReveal } from "../lib/hooks";
 import {
   describeCacheCleared,
   describeResetDone,
@@ -413,7 +414,12 @@ export function Settings({
   // The Pro half is only waited on when there is a Pro panel. `pro` is null in
   // a free build, where nothing ever sets proReady, and reading it
   // unconditionally would leave the whole page skeletal forever.
-  const ready = loaded && (pro == null || proReady);
+  //
+  // Read through useReveal, so the stand-ins cross-fade into the panels the way
+  // the paper views' do. Everything below takes this one lagged flag, the
+  // disabled buttons and the Pro panel included, so the whole page changes in
+  // that single faded commit rather than a button enabling a frame ahead of it.
+  const ready = useReveal(loaded && (pro == null || proReady));
 
   const allPubmed = settings?.search_all_pubmed === true;
 

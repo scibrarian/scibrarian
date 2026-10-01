@@ -1,13 +1,14 @@
 import { useState, type ReactNode } from "react";
 import { useAbstracts } from "../lib/abstracts";
 import type { Bookmarking } from "../lib/bookmarking";
-import { useIncrementalList } from "../lib/hooks";
+import { useIncrementalList, useReveal } from "../lib/hooks";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers, type PaperFilterState } from "../lib/papers";
 import type { Paper, PaperSource } from "../types";
 import { ArticleCard } from "./ArticleCard";
 import { Banner } from "./Banner";
 import { NewFolderDialog } from "./FolderMenu";
+import { useFacetHold, useMeshFacets } from "./MeshFilter";
 import { PaperFilters } from "./PaperFilters";
 import { SaveAllButton } from "./SaveAllButton";
 import { TimelineSkeleton } from "./Skeleton";
@@ -50,6 +51,7 @@ export function Timeline({
   // timeline rather than one behind every card (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
   const {
+    key,
     fetchKey,
     visible,
     journals,
@@ -61,6 +63,12 @@ export function Timeline({
     filtered,
     total,
   } = usePapers(source, reloadToken, filters);
+  const facets = useMeshFacets(source, reloadToken);
+  // As in PapersTable: the first paint waits for the facets too (bounded), and
+  // the swap to cards is committed behind a cross-fade. See useFacetHold and
+  // useReveal.
+  const held = useFacetHold(fetchKey, loading, facets);
+  const revealed = useReveal(knownEmpty || !(loading || held), key);
   // A new source or query starts from the top.
   const { shown, hasMore, sentinelRef } = useIncrementalList(
     visible,
@@ -85,12 +93,13 @@ export function Timeline({
       <PaperFilters
         filters={filters}
         source={source}
-        reloadToken={reloadToken}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
         knownEmpty={knownEmpty}
+        facets={facets}
+        settling={!revealed}
         action={
           bookmarking && (
             // The full filtered list; the timeline renders it a chunk at a time.
@@ -119,7 +128,7 @@ export function Timeline({
       />
       <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
-      {loading && !knownEmpty ? (
+      {!revealed ? (
         <TimelineSkeleton />
       ) : visible.length === 0 ? (
         <div className="empty">

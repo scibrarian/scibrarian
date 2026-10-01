@@ -263,3 +263,107 @@ describe("a source the picker has already counted at zero", () => {
     expect(screen.getByText("No papers yet.")).toBeTruthy();
   });
 });
+
+describe("a viewport too narrow for the Authors column", () => {
+  // jsdom has no matchMedia, so the table is wide unless a test says otherwise.
+  // One switch for every query rather than a set of matching ones: the table
+  // asks a single question, and answering it by its text would mean writing
+  // the width here that the table is the one place for.
+  function stubViewport(narrow: boolean) {
+    const listeners = new Set<() => void>();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: () => ({
+        get matches() {
+          return narrow;
+        },
+        addEventListener: (_: string, fn: () => void) => void listeners.add(fn),
+        removeEventListener: (_: string, fn: () => void) => void listeners.delete(fn),
+      }),
+    });
+    return {
+      resize: (to: "narrow" | "wide") =>
+        act(() => {
+          narrow = to === "narrow";
+          listeners.forEach((fn) => fn());
+        }),
+    };
+  }
+
+  // Three papers whose three orders all differ: by year descending 1, 2, 3; by
+  // first author 2, 3, 1; by year ascending 3, 2, 1.
+  const SORTABLE = {
+    papers: [
+      { ...paper("1"), authors: ["Zed"], pub_date: "2024-01-01" },
+      { ...paper("2"), authors: ["Adams"], pub_date: "2023-01-01" },
+      { ...paper("3"), authors: ["Moss"], pub_date: "2022-01-01" },
+    ],
+    journals: ["Lancet"],
+  };
+  const order = (c: HTMLElement) =>
+    [...c.querySelectorAll("tbody.paper-rows")].map((r) => r.textContent!.match(/Paper (\d)/)![1]);
+  const header = (name: string) =>
+    [...document.querySelectorAll("thead th")].find((th) => th.textContent === name) ?? null;
+  const sortedBy = () => document.querySelector("thead th .sort-arrow")?.closest("th")?.textContent;
+
+  beforeEach(() => {
+    api.getPapers.mockResolvedValue(SORTABLE);
+  });
+  afterEach(() => {
+    api.getPapers.mockReset();
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  it("drops the column, and says so to the stylesheet", async () => {
+    // The class is the stylesheet's half of the layout: it tightens the headers
+    // and lets Links wrap on `.narrow`, and has no breakpoint of its own.
+    const viewport = stubViewport(true);
+    const { container } = render(<Host source={source} />);
+    await screen.findByText("Paper 1");
+
+    expect(header("Authors")).toBeNull();
+    expect(container.querySelector("table")!.className).toBe("papers-table narrow");
+
+    viewport.resize("wide");
+    expect(header("Authors")).not.toBeNull();
+    expect(container.querySelector("table")!.className).toBe("papers-table");
+  });
+
+  it("goes back to the opening order while the column it was sorted by is away", async () => {
+    // Sorted by Authors, then narrowed. The rows used to stay in author order
+    // with no arrow anywhere and no Authors header to click to change it.
+    const viewport = stubViewport(false);
+    const { container } = render(<Host source={source} />);
+    await screen.findByText("Paper 1");
+    fireEvent.click(header("Authors")!);
+    expect(order(container)).toEqual(["2", "3", "1"]);
+
+    viewport.resize("narrow");
+    expect(order(container)).toEqual(["1", "2", "3"]);
+    expect(sortedBy()).toBe("Year");
+
+    // Not forgotten: the sort comes back with the header that shows it.
+    viewport.resize("wide");
+    expect(order(container)).toEqual(["2", "3", "1"]);
+    expect(sortedBy()).toBe("Authors");
+  });
+
+  it("flips the order on screen when its header is clicked meanwhile", async () => {
+    // The arrow is on Year while the pick is still Authors, and a click on
+    // Year has to act on what the arrow shows.
+    const viewport = stubViewport(false);
+    const { container } = render(<Host source={source} />);
+    await screen.findByText("Paper 1");
+    fireEvent.click(header("Authors")!);
+    viewport.resize("narrow");
+
+    fireEvent.click(header("Year")!);
+    expect(order(container)).toEqual(["3", "2", "1"]);
+    expect(sortedBy()).toBe("Year");
+
+    // And that click was a pick of its own, so widening no longer undoes it.
+    viewport.resize("wide");
+    expect(order(container)).toEqual(["3", "2", "1"]);
+    expect(sortedBy()).toBe("Year");
+  });
+});

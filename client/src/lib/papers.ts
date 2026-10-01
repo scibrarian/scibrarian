@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { MeshDescriptorRef, Paper, PaperQuery, PaperSource, PapersResponse } from "../types";
 import { sourceHasFiles, sourceKey } from "../../../shared/source";
-import { useCachedFetch, type FetchCache } from "./hooks";
+import { useCachedFetch, warmCache, type FetchCache } from "./hooks";
 
 // Both live in shared/source.ts now, beside the type they switch on and the
 // server that switches on it too. Re-exported because this is where the client
@@ -301,6 +301,20 @@ export function seedEmptySource(source: PaperSource, reloadToken: number): void 
     token: reloadToken,
     data: { papers: [], journals: [] },
   });
+}
+
+// Ask for a source's unfiltered papers before the view that will show them
+// mounts, so that it mounts onto a cache hit and paints rows on its first
+// render rather than a skeleton. Same key and token as a fresh view's first
+// read (see usePapers, and useCachedFetch's lookup), which is what makes the
+// hit land. A request that fails leaves nothing behind, and the view then
+// fetches as it would have — so this resolves either way, and nothing waits
+// on it for long: App races it against REVEAL_CAP_MS. A view that mounts while
+// it is still out waits on this request rather than asking again (see
+// warmCache).
+export function warmPapers(source: PaperSource, reloadToken: number): Promise<void> {
+  const key = papersKey(sourceKey(source), "", undefined, false);
+  return warmCache(papersCache, key, reloadToken, () => api.getPapers(source, {}));
 }
 
 // The paper list for a source, filtered by the shared state above: the search

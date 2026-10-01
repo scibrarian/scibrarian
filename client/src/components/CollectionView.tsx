@@ -61,6 +61,7 @@ const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 export function CollectionView({
   collectionId,
   isAdmin,
+  summary,
   stamp,
   reloadToken,
   showUnmatched = true,
@@ -77,6 +78,11 @@ export function CollectionView({
   // you switch.
   collectionId: number | null;
   isAdmin: boolean;
+  /**
+   * The collection counted out — or, for every collection at once, the
+   * collections — for the row's left half. See App's sourceSummary.
+   */
+  summary: string | null;
   /**
    * This collection's organisation stamp, or null when it has none (and always
    * in a free build). Where the picker's icon answers "does this sync?", the
@@ -422,11 +428,15 @@ export function CollectionView({
           once empties it the same way: adding files, renaming and deleting all
           name a single collection, and there isn't one. */}
       <div className="source-head">
-        {/* Left of the actions, and outside the isAdmin gate below only because
-            it needs no gate of its own: /auth reports the Pro block to the
-            owner alone, so a viewer's stamps are empty and this never renders
-            for them. Three states, not four — "local" is the ordinary case, and
-            a badge on every unshared collection would mark the majority to
+        {/* The row's left half: the summary, then the stamp. One box for the
+            two (see .source-meta) so the slack between them and the actions
+            is claimed once.
+
+            The stamp sits outside the isAdmin gate below only because it
+            needs no gate of its own: /auth reports the Pro block to the owner
+            alone, so a viewer's stamps are empty and it never renders for
+            them. Three states, not four — "local" is the ordinary case, and a
+            badge on every unshared collection would mark the majority to
             label the minority. Absence carries it, exactly as ProvenanceBadges
             leaves a locally acquired paper unmarked.
 
@@ -435,23 +445,28 @@ export function CollectionView({
             panel in Settings says so at length. Collapsing them would put "not
             the organization this library is paired with now" under the name of
             the organisation it is paired with. */}
-        {stamp && (
-          <span
-            className={stamp.active ? "from-org" : "from-org from-org-faded"}
-            title={
-              stamp.active
-                ? `Papers filed here are copied up to ${stamp.org_name}'s library.`
-                : stamp.ended
-                  ? `${stamp.org_name} has ended this connection, so nothing filed here reaches them. Papers already sent stay there.`
-                  : `Filed for ${stamp.org_name}, which isn't the organization this library is paired with now — nothing here syncs.`
-            }
-          >
-            {stamp.active
-              ? `Shared with ${stamp.org_name}`
-              : stamp.ended
-                ? `Sharing with ${stamp.org_name} ended`
-                : `Was shared with ${stamp.org_name}`}
-          </span>
+        {(summary || stamp) && (
+          <div className="source-meta">
+            {summary && <span className="source-summary">{summary}</span>}
+            {stamp && (
+              <span
+                className={stamp.active ? "from-org" : "from-org from-org-faded"}
+                title={
+                  stamp.active
+                    ? `Papers filed here are copied up to ${stamp.org_name}'s library.`
+                    : stamp.ended
+                      ? `${stamp.org_name} has ended this connection, so nothing filed here reaches them. Papers already sent stay there.`
+                      : `Filed for ${stamp.org_name}, which isn't the organization this library is paired with now — nothing here syncs.`
+                }
+              >
+                {stamp.active
+                  ? `Shared with ${stamp.org_name}`
+                  : stamp.ended
+                    ? `Sharing with ${stamp.org_name} ended`
+                    : `Was shared with ${stamp.org_name}`}
+              </span>
+            )}
+          </div>
         )}
         {isAdmin && collectionId != null && (
           <div className="source-actions">

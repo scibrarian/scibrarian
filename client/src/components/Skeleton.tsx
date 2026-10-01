@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { SEARCH_PLACEHOLDER_FULL_TEXT } from "../lib/papers";
 import { ALL_JOURNALS_LABEL } from "./JournalFilter";
+import { ALL_SUBJECTS_LABEL } from "./MeshFilter";
 
 // Shimmering placeholder bar — the building block for the skeleton screens.
 //
@@ -81,6 +82,15 @@ export function ToolbarSkeleton() {
       <div className="filter-row">
         <div className="filter-controls">
           <FilterSkeleton label={ALL_JOURNALS_LABEL} />
+          {/* The rest of what a loaded source's row holds, for the reason
+              PaperFilters reserves the same three in its own loading row:
+              nearly every source lands a subject list, a citation range and a
+              span of years, and a row that grew by three controls on the
+              handoff moved. A source without one sees a stand-in go instead,
+              which is the cheap direction to be wrong in. */}
+          <FilterSkeleton label={ALL_SUBJECTS_LABEL} />
+          <CitationFilterSkeleton />
+          <YearFilterSkeleton />
         </div>
       </div>
     </div>
@@ -142,6 +152,38 @@ export function FilterSkeleton({ label }: { label: string }) {
           <SkeletonBar w={16} h={16} />
         </span>
       </button>
+    </div>
+  );
+}
+
+// The citation threshold's stand-in: a bar the width of the label, then the
+// real boxes, disabled and empty. The boxes are the real elements for
+// FilterSkeleton's reason — their widths are the stylesheet's (8ch and 180px),
+// and a bar guessed at either would slide the year range after it on the
+// handoff. Empty and disabled they already look like what lands there: a "0"
+// in the box, a thumb at the left end of the track. The slider is given its
+// zero rather than left empty: a range with no value rests its thumb mid-track,
+// and the real one would jump left from there on the handoff.
+export function CitationFilterSkeleton() {
+  return (
+    <div className="citation-filter" aria-hidden="true">
+      <SkeletonBar h={14}>Min citations:</SkeletonBar>
+      <input type="text" className="min-input" disabled readOnly tabIndex={-1} />
+      <input type="range" value={0} disabled tabIndex={-1} />
+    </div>
+  );
+}
+
+// The year range's, built the same way. The dash is the real glyph, as the
+// Pro panel's headings are real text: it never changes, so a bar would be
+// standing in for a character this file already knows.
+export function YearFilterSkeleton() {
+  return (
+    <div className="year-filter" aria-hidden="true">
+      <SkeletonBar h={14}>Years:</SkeletonBar>
+      <input type="text" className="year-input" disabled readOnly tabIndex={-1} />
+      <span className="year-dash">–</span>
+      <input type="text" className="year-input" disabled readOnly tabIndex={-1} />
     </div>
   );
 }
@@ -209,11 +251,16 @@ export function PapersColgroup({
   share = false,
   bookmark = false,
   collections = false,
+  authors = true,
 }: {
   select?: boolean;
   share?: boolean;
   bookmark?: boolean;
   collections?: boolean;
+  // Dropped on a narrow viewport (see PapersTable). The percentages below no
+  // longer sum to 100% then, and fixed layout scales the rest up to fill the
+  // width — which is where the Citations header gets its room back.
+  authors?: boolean;
 }) {
   // Both sets total 100%. The collections column is paid for out of Title,
   // Authors and Journal, which wrap, rather than spread evenly — the table is
@@ -231,7 +278,7 @@ export function PapersColgroup({
     <colgroup>
       {select && <col style={{ width: 36 }} />}
       <col style={{ width: collections ? "25%" : "36%" }} />
-      <col style={{ width: collections ? "13%" : "15%" }} />
+      {authors && <col style={{ width: collections ? "13%" : "15%" }} />}
       <col style={{ width: collections ? "12%" : "15%" }} />
       <col style={{ width: "8%" }} />
       <col style={{ width: "11%" }} />
@@ -243,6 +290,15 @@ export function PapersColgroup({
   );
 }
 
+// The table's class, with its Authors column or without. Without is the narrow
+// layout (see PapersTable), and `narrow` is what styles.css hangs its half of
+// that layout on, so the stylesheet never restates the width the column goes
+// at. Here because both tables take it, as both take PapersColgroup: the
+// stand-in has to be tightened exactly as the table that replaces it is.
+export function papersTableClass(authors: boolean): string {
+  return authors ? "papers-table" : "papers-table narrow";
+}
+
 // Mirrors the collection papers table: real headers, shimmering rows.
 export function PapersTableSkeleton({
   select = false,
@@ -250,22 +306,30 @@ export function PapersTableSkeleton({
   share = false,
   bookmark = false,
   collections = false,
+  authors = true,
 }: {
   rows?: number;
   select?: boolean;
   share?: boolean;
   bookmark?: boolean;
   collections?: boolean;
+  authors?: boolean;
 }) {
   return (
     <div className="papers-table-wrap" aria-busy="true" aria-label="Loading papers">
-      <table className="papers-table">
-        <PapersColgroup select={select} share={share} bookmark={bookmark} collections={collections} />
+      <table className={papersTableClass(authors)}>
+        <PapersColgroup
+          select={select}
+          share={share}
+          bookmark={bookmark}
+          collections={collections}
+          authors={authors}
+        />
         <thead>
           <tr>
             {select && <th className="select-col" aria-label="Select" />}
             <th>Title</th>
-            <th>Authors</th>
+            {authors && <th>Authors</th>}
             <th>Journal</th>
             <th className="num">Year</th>
             <th className="num">Citations</th>
@@ -282,9 +346,11 @@ export function PapersTableSkeleton({
               <td>
                 <SkeletonBar w={["85%", "62%", "75%", "90%", "68%"][i % 5]} h={14} />
               </td>
-              <td>
-                <SkeletonBar w="80%" h={12} />
-              </td>
+              {authors && (
+                <td>
+                  <SkeletonBar w="80%" h={12} />
+                </td>
+              )}
               <td>
                 <SkeletonBar w={90} h={12} />
               </td>

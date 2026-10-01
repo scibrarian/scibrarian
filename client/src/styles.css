@@ -760,6 +760,13 @@ body {
   cursor: default;
 }
 
+/* The citation and year stand-ins' boxes (see CitationFilterSkeleton), which
+   are the real inputs disabled: loading, not refused, so not the not-allowed
+   cursor a disabled input otherwise shows. */
+.filter-controls [aria-hidden="true"] input:disabled {
+  cursor: default;
+}
+
 /* Radix positions the menu (portal + popper), so no position/top/left here;
    the z-index is copied onto Radix's positioning wrapper. */
 .filter-menu {
@@ -1061,6 +1068,14 @@ body {
 .abstract-empty {
   color: var(--muted);
   font-style: italic;
+}
+
+/* An absent abstract sits mid-block. The block keeps the height a real one
+   takes (see .card-abstract), and left at the top the one line read as a note
+   above a gap rather than as the whole of what the block holds. */
+.card-abstract:has(> .abstract-empty) {
+  display: flex;
+  align-items: center;
 }
 
 .card-links {
@@ -3097,13 +3112,33 @@ html {
   min-height: 33px;
 }
 
-/* The sharing badge sits at the far end of a row that is otherwise packed to
-   the right, so it claims the slack rather than being pushed along by it. The
-   margin-left reset undoes the 8px .from-org carries for sitting after a paper
-   title, where it is a suffix; here it starts the row. */
+/* The row's left half — what the row says about the source, before whatever
+   can be done to it: the summary, and in the Library the sharing badge. One
+   box for both so the slack between them and the actions is claimed once, by
+   the box; two occupants each carrying `margin-right: auto` would split the
+   slack and float the second into the middle of the row. */
+.source-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+/* The source counted out — "12 papers", "3 collections" — in the voice of the
+   "Updated …" stamp beside the actions. See App's sourceSummary for what it
+   is there for. */
+.source-summary {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* The margin-left reset undoes the 8px .from-org carries for sitting after a
+   paper title, where it is a suffix; here it follows the summary at the box's
+   own gap, or starts the row. */
 .source-head .from-org {
   margin-left: 0;
-  margin-right: auto;
 }
 
 .source-actions {
@@ -3386,6 +3421,38 @@ html {
   text-decoration: underline;
 }
 
+/* Below the width the columns were measured at (1440px, see PapersColgroup),
+   the nowrap Links cell ran past its 15% and under the share column, and
+   "Citations" no longer fit its header. PapersTable drops the Authors column
+   there, which hands its share to the rest; this lets Links take two lines and
+   tightens the headers and cell padding by what the Citations header still
+   needed on an admin's table, where the select and share columns take their
+   fixed width first. The table stays fixed-layout, so nothing else moves.
+
+   On the class PapersTable puts on the table below that width, not a media
+   query of its own. The two halves are one layout, and with the width written
+   here as well as there, moving either one left a band of viewports with the
+   column gone and the headers untightened, or the reverse. The width is
+   PapersTable's NARROW_TABLE and is written nowhere else.
+
+   :where() so the class adds no specificity. These sit in the cascade exactly
+   where the media query's rules did — under th.share-col, for one, which
+   keeps its own padding. */
+.papers-table:where(.narrow) thead th,
+.papers-table:where(.narrow) tbody td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.papers-table:where(.narrow) thead th {
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+:where(.papers-table.narrow) .links-cell {
+  white-space: normal;
+}
+
 /* An excerpt from a stored PDF's body, shown when that is what the current
    search matched. Quiet by design: it is evidence for the row above it, not a
    second title. The rule on the left is what marks it as quoted material; no
@@ -3614,6 +3681,23 @@ html {
   .bookmark-menu[data-state="closed"] {
     animation: none;
   }
+}
+
+/* ---------- reveal cross-fade ---------- */
+
+/* The stand-in → content swaps — the bootstrap's in App, and each view's
+   through useReveal — are committed inside a View Transition (lib/transition),
+   which snapshots the page, applies the swap and cross-fades the two. That is
+   the fade the .empty note above says a content-only fade cannot be: both
+   sides are on screen, one as a snapshot, so there is no empty frame to dip
+   through. The browser's default is 250ms; this is "something arriving", so
+   it takes --dur-base and --ease-out like the banner and the menus. Under
+   reduced motion no transition is started at all (the JS checks the query
+   itself), so the zeroed tokens are not what this leans on. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-out);
 }
 
 /* ---------- dark mode (follows the OS setting) ---------- */

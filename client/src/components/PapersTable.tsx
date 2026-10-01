@@ -3,7 +3,7 @@ import { ChevronUp, ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Bookmarking } from "../lib/bookmarking";
 import { describeRemoval, errorMessage, formatAuthors } from "../lib/format";
-import { useIncrementalList } from "../lib/hooks";
+import { useIncrementalList, useMediaQuery, useReveal } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import {
   selectionOnScreen,
@@ -16,15 +16,26 @@ import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
 import { ConfirmDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
+import { useFacetHold, useMeshFacets } from "./MeshFilter";
 import { PaperFilters } from "./PaperFilters";
 import { ProvenanceBadges } from "./ProvenanceBadges";
 import { SaveAllButton } from "./SaveAllButton";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { Snippet } from "./Snippet";
-import { PapersColgroup, PapersTableSkeleton } from "./Skeleton";
+import { PapersColgroup, PapersTableSkeleton, papersTableClass } from "./Skeleton";
 
 type SortKey = "title" | "authors" | "journal" | "year" | "citations";
 type SortDir = "asc" | "desc";
+
+// The order a table opens in, and the one it goes back to while the column it
+// was sorted by is off screen (see `sortKey` in PapersTable).
+const DEFAULT_SORT: { key: SortKey; dir: SortDir } = { key: "year", dir: "desc" };
+
+// Where the table goes narrow, and the one place that width is written. The
+// stylesheet's half of the narrow layout hangs on a class the table takes
+// below this width (see papersTableClass), not on a media query of its own
+// that would have to say 780 as well and could be moved without this one.
+const NARROW_TABLE = "(max-width: 780px)";
 
 // The sortable papers table, for either source. Collection rows carry a linked
 // PDF (title click opens it); topic rows have none, so the title opens PubMed.
@@ -68,6 +79,7 @@ export function PapersTable({
   bookmarking: Bookmarking | null;
 }) {
   const {
+    key,
     fetchKey,
     visible,
     journals,
@@ -80,8 +92,34 @@ export function PapersTable({
     filtered,
     total,
   } = usePapers(source, reloadToken, filters);
-  const [sortKey, setSortKey] = useState<SortKey>("year");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const facets = useMeshFacets(source, reloadToken);
+  // The first paint waits for the facets as well as the papers (bounded —
+  // see useFacetHold), and the swap from stand-in to rows is committed behind
+  // a cross-fade (see useReveal). `revealed` is what the stand-in branch
+  // below and the toolbar's `settling` both read, so the filter row and the
+  // rows settle in the one commit. Keyed on the source, not on `fetchKey`: a
+  // source that is ready when it is switched to is drawn at once, whatever the
+  // one before it was doing, while a search within a source is not a new thing
+  // to reveal.
+  const held = useFacetHold(fetchKey, loading, facets);
+  const revealed = useReveal(knownEmpty || !((loading && visible.length === 0) || held), key);
+  // Narrower than the columns were measured for (1440px — see PapersColgroup)
+  // the Authors column goes: the title is what a row is scanned by, and the
+  // author list is the column that gives it back the most room. styles.css's
+  // narrow rules do the rest (Links wraps, the headers tighten), on the class
+  // the table takes with this flag.
+  const showAuthorsCol = !useMediaQuery(NARROW_TABLE);
+  const [pickedSortKey, setSortKey] = useState<SortKey>(DEFAULT_SORT.key);
+  const [pickedSortDir, setSortDir] = useState<SortDir>(DEFAULT_SORT.dir);
+  // The order on screen: the one picked, except while the column it was picked
+  // on is away. A sort by Authors with no Authors header has no arrow to show
+  // it and no header to click to undo it, so the rows would sit in an order
+  // nothing on the page explains; they take the opening order instead. Derived
+  // rather than reset, so widening the window brings the sort back along with
+  // the header that shows it.
+  const sortHidden = pickedSortKey === "authors" && !showAuthorsCol;
+  const sortKey = sortHidden ? DEFAULT_SORT.key : pickedSortKey;
+  const sortDir = sortHidden ? DEFAULT_SORT.dir : pickedSortDir;
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // A removal's message, held back until the rows it is about have gone.
@@ -287,9 +325,12 @@ export function PapersTable({
   }
 
   function toggleSort(next: SortKey) {
-    if (next === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    // From the order on screen rather than the one last picked (see sortKey):
+    // while the two differ, a click on the header carrying the arrow has to
+    // flip what that arrow shows.
+    setSortKey(next);
+    if (next === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
     else {
-      setSortKey(next);
       setSortDir(next === "title" || next === "authors" || next === "journal" ? "asc" : "desc");
     }
   }
@@ -319,7 +360,8 @@ export function PapersTable({
   // can't be added without this following it — the excerpt row below spans the
   // table by count, and a stale number would silently narrow it.
   const columnCount =
-    6 +
+    5 +
+    (showAuthorsCol ? 1 : 0) +
     (showSelectCol ? 1 : 0) +
     (showCollectionsCol ? 1 : 0) +
     (showBookmarkCol ? 1 : 0) +
@@ -330,12 +372,13 @@ export function PapersTable({
       <PaperFilters
         filters={filters}
         source={source}
-        reloadToken={reloadToken}
         journals={journals}
         maxCitations={maxCitations}
         yearBounds={yearBounds}
         loading={loading}
         knownEmpty={knownEmpty}
+        facets={facets}
+        settling={!revealed}
         action={
           showSelectCol ? (
             // Sits where the bulk save does in the sections that have one.
@@ -386,12 +429,13 @@ export function PapersTable({
       />
       <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
 
-      {loading && !knownEmpty && visible.length === 0 ? (
+      {!revealed ? (
         <PapersTableSkeleton
           select={showSelectCol}
           share={showShareCol}
           bookmark={showBookmarkCol}
           collections={showCollectionsCol}
+          authors={showAuthorsCol}
         />
       ) : visible.length === 0 ? (
         <div className="empty">
@@ -404,12 +448,13 @@ export function PapersTable({
       ) : (
         <>
           <div className="papers-table-wrap">
-            <table className="papers-table">
+            <table className={papersTableClass(showAuthorsCol)}>
               <PapersColgroup
                 share={showShareCol}
                 select={showSelectCol}
                 bookmark={showBookmarkCol}
                 collections={showCollectionsCol}
+                authors={showAuthorsCol}
               />
               <thead>
                 <tr>
@@ -433,9 +478,11 @@ export function PapersTable({
                   <th className="sortable" onClick={() => toggleSort("title")}>
                     Title{arrow("title")}
                   </th>
-                  <th className="sortable" onClick={() => toggleSort("authors")}>
-                    Authors{arrow("authors")}
-                  </th>
+                  {showAuthorsCol && (
+                    <th className="sortable" onClick={() => toggleSort("authors")}>
+                      Authors{arrow("authors")}
+                    </th>
+                  )}
                   <th className="sortable" onClick={() => toggleSort("journal")}>
                     Journal{arrow("journal")}
                   </th>
@@ -493,7 +540,9 @@ export function PapersTable({
                           copy is chosen by kind rather than assumed. */}
                       <ProvenanceBadges entries={p.provenance} />
                     </td>
-                    <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>
+                    {showAuthorsCol && (
+                      <td className="authors-cell">{formatAuthors(p.authors, 3)}</td>
+                    )}
                     <td>{p.journal_name}</td>
                     <td className="num">{year(p.pub_date)}</td>
                     <td className="num">{p.citation_count}</td>
