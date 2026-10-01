@@ -21,11 +21,9 @@ import { ensureCitations } from "./icite.js";
 import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
-import { buildTerm, fetchArticles, searchWithTotal } from "./pubmed.js";
+import { buildTerm, EUTILS_BATCH, fetchArticles, searchWithTotal } from "./pubmed.js";
 import type { PollResult } from "./types.js";
 import { chunk, errMessage, safeMessage } from "./util.js";
-
-const BATCH_SIZE = 100;
 
 // Link existing articles to a topic without refetching them from PubMed.
 // Returns how many links were newly created — a (pmid, topic) link that
@@ -152,7 +150,7 @@ export async function pollTopic(id: number): Promise<PollResult> {
     const newPmids = pmids.filter((p) => !known.has(p));
 
     const savedPmids: string[] = [];
-    for (const batch of chunk(newPmids, BATCH_SIZE)) {
+    for (const batch of chunk(newPmids, EUTILS_BATCH)) {
       const articles = await fetchArticles(batch);
       saveArticles(articles, id, allPubmed);
       savedPmids.push(...articles.map((a) => a.pmid));

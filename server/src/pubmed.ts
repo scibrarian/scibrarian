@@ -286,6 +286,12 @@ export async function resolveDoiToPmid(doi: string): Promise<string | null> {
 
 // ---------- esummary (metadata) ----------
 
+// PMIDs per esummary/efetch request, for every caller that works through a
+// list a batch at a time: the poller, the PDF importer, Add links, journal
+// suggestions and the MeSH backfill. Each used to keep its own 100, with a
+// comment saying it matched the poller's.
+export const EUTILS_BATCH = 100;
+
 export async function fetchSummaries(pmids: string[]): Promise<Map<string, ArticleMeta>> {
   if (pmids.length === 0) return new Map();
   const params = new URLSearchParams({

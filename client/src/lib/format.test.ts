@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   describeCacheCleared,
+  describeRef,
   describeRemoval,
   describeResetDone,
   describeSweep,
   formatAuthors,
   errorMessage,
+  paperMeta,
   round1,
   titleCaseJournal,
 } from "./format";
@@ -125,6 +127,45 @@ describe("formatAuthors", () => {
     expect(formatAuthors(["Smith J", "Lee K", "Patel R", "Chen W"], 3)).toBe(
       "Smith J, Lee K, Patel R, et al."
     );
+  });
+});
+
+describe("paperMeta", () => {
+  it("joins authors, journal and date", () => {
+    expect(
+      paperMeta({
+        authors: ["Smith J", "Lee K", "Patel R", "Chen W"],
+        journal_name: "the lancet",
+        pub_date_display: "2024 Mar",
+      })
+    ).toBe("Smith J, Lee K, Patel R, et al. · The Lancet · 2024 Mar");
+  });
+
+  it("leaves out a part that's blank or the dash placeholder", () => {
+    // No authors comes back from formatAuthors as "—", which isn't worth a slot.
+    expect(paperMeta({ authors: [], journal_name: "", pub_date_display: "2024" })).toBe("2024");
+    expect(paperMeta({ authors: ["Smith J"], journal_name: "BMJ", pub_date_display: "—" })).toBe(
+      "Smith J · BMJ"
+    );
+  });
+
+  it("is empty when nothing is left", () => {
+    expect(paperMeta({ authors: [], journal_name: "", pub_date_display: "" })).toBe("");
+  });
+});
+
+describe("describeRef", () => {
+  it("names the identifier the line was read as", () => {
+    expect(describeRef({ kind: "pmid", input: "https://pubmed.ncbi.nlm.nih.gov/1/", pmid: "1" })).toBe(
+      "PMID 1"
+    );
+    expect(describeRef({ kind: "doi", input: "doi:10.1000/ABC", doi: "10.1000/abc" })).toBe(
+      "DOI 10.1000/abc"
+    );
+  });
+
+  it("falls back to the line as pasted", () => {
+    expect(describeRef({ kind: "unknown", input: "Smith 2019" })).toBe("Smith 2019");
   });
 });
 

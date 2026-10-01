@@ -1,7 +1,7 @@
 import { articlesMissingMesh, meshBacklogCount, saveArticleMesh } from "./db.js";
 import { withPollLock } from "./poller.js";
 import { MESH_STATUS_UNAVAILABLE } from "./pubmed-parse.js";
-import { fetchArticleXml } from "./pubmed.js";
+import { EUTILS_BATCH, fetchArticleXml } from "./pubmed.js";
 import { errMessage } from "./util.js";
 
 // The second half of ingestion, not the one-time catch-up the name suggests.
@@ -41,8 +41,6 @@ import { errMessage } from "./util.js";
 // pass, and the 05:30 reference refresh is staggered ahead of the default 06:00
 // poll precisely so the two rarely meet.
 
-const BATCH = 100; // PMIDs per efetch — the poller's batch size
-
 let running = false;
 
 export async function backfillArticleMesh(): Promise<void> {
@@ -60,7 +58,7 @@ async function fileArticleMesh(): Promise<void> {
   let missing = 0;
   try {
     for (;;) {
-      const pmids = articlesMissingMesh(BATCH);
+      const pmids = articlesMissingMesh(EUTILS_BATCH);
       if (pmids.length === 0) break;
       const records = await fetchArticleXml(pmids);
       const rows = pmids.map((pmid) => {

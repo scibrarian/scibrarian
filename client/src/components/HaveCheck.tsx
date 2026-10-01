@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { Boxes, Check, FileText, Minus, TriangleAlert, Users } from "lucide-react";
 import { api } from "../api";
-import { errorMessage, formatAuthors, titleCaseJournal } from "../lib/format";
+import { describeRef, errorMessage, paperMeta } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { MAX_HAVE_REFS, MAX_NAME_CHARS } from "../../../shared/limits";
-import type { Collection, HaveAnswer, HaveMatch, HaveResponse, ParsedRefView } from "../types";
+import type { Collection, HaveAnswer, HaveMatch, HaveResponse } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
@@ -383,7 +383,7 @@ function AnswerRow({
           one row where the copy is most worth offering. */}
       {!match && !org && !elsewhere && parsed.kind !== "unknown" && (
         <p className="have-nothing">
-          Nothing found for {describe(parsed)}
+          Nothing found for {describeRef(parsed)}
           {identifierChecked ? "" : " (identifier lookup skipped)"}.
         </p>
       )}
@@ -731,11 +731,7 @@ function PaperLine({
   match: HaveMatch;
   onOpen: (p: HaveMatch) => void;
 }) {
-  const meta = [
-    formatAuthors(match.authors, 3),
-    match.journal_name && titleCaseJournal(match.journal_name),
-    match.pub_date_display,
-  ].filter((s) => s && s !== "—");
+  const meta = paperMeta(match);
   const label = match.title || match.doi || (match.pmid && `PMID ${match.pmid}`) || "Untitled";
   // A paper OpenAlex knew nothing about beyond its identifier can have neither a
   // stored file nor a landing page. Drawing that as a link would open a blank
@@ -750,7 +746,7 @@ function PaperLine({
       ) : (
         <span className="have-title plain">{label}</span>
       )}
-      {meta.length > 0 && <div className="have-meta">{meta.join(" · ")}</div>}
+      {meta && <div className="have-meta">{meta}</div>}
       {match.held && match.collection_name && (
         <div className="have-where">
           <FileText size={13} className="inline-icon" aria-hidden />
@@ -760,13 +756,4 @@ function PaperLine({
       )}
     </div>
   );
-}
-
-// How the app read a line, in the reader's terms. Shown wherever an answer has
-// to name what it searched for, so a wrong parse is visible rather than showing
-// up as a mysteriously empty result.
-function describe(parsed: ParsedRefView): string {
-  if (parsed.kind === "pmid") return `PMID ${parsed.pmid}`;
-  if (parsed.kind === "doi") return `DOI ${parsed.doi}`;
-  return parsed.input;
 }

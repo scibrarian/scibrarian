@@ -12,7 +12,7 @@ import {
   type LinkedPaperRow,
 } from "./db.js";
 import { warmCitations } from "./poller.js";
-import { fetchArticles, pmidsForDoi } from "./pubmed.js";
+import { EUTILS_BATCH, fetchArticles, pmidsForDoi } from "./pubmed.js";
 import { chunk, errMessage, httpError } from "./util.js";
 import type { LinkAnswer, LinkedPaper } from "./types.js";
 
@@ -25,9 +25,6 @@ import type { LinkAnswer, LinkedPaper } from "./types.js";
 // record is fetched and stored if the library doesn't have it yet. A DOI PubMed
 // has no record for can't be saved — a bookmark is a row keyed on a stored
 // article's PMID, and the app holds nothing that isn't a PubMed paper.
-
-// PMIDs per esummary/efetch call (the importer's and the poller's batch size).
-const FETCH_BATCH = 100;
 
 /**
  * Save the papers these lines name into a folder, and say what happened to
@@ -71,7 +68,7 @@ export async function addLinksToFolder(
   const named = [...new Set(refs.flatMap((r) => pmidOf(r) ?? []))];
   const stored = existingPmids(named);
   const fetched: ArticleInsert[] = [];
-  for (const batch of chunk(named.filter((p) => !stored.has(p)), FETCH_BATCH)) {
+  for (const batch of chunk(named.filter((p) => !stored.has(p)), EUTILS_BATCH)) {
     fetched.push(...(await fromPubmed(fetchArticles(batch))));
   }
 

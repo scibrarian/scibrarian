@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { BookmarkCheck, Check, TriangleAlert } from "lucide-react";
 import { api } from "../api";
-import { errorMessage, formatAuthors, plural, titleCaseJournal } from "../lib/format";
+import { describeRef, errorMessage, paperMeta, plural } from "../lib/format";
 import { MAX_LINKS, MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
-import type { LinkAnswer, LinkOutcome, LinkedPaper, ParsedRefView } from "../types";
+import type { LinkAnswer, LinkOutcome, LinkedPaper } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
@@ -222,11 +222,11 @@ function AnswerRow({ answer }: { answer: LinkAnswer }) {
       </div>
       {paper && <PaperLine paper={paper} />}
       {outcome === "not-in-pubmed" && (
-        <p className="have-nothing">PubMed has no record for {describe(parsed)}.</p>
+        <p className="have-nothing">PubMed has no record for {describeRef(parsed)}.</p>
       )}
       {outcome === "ambiguous-doi" && (
         <p className="have-nothing">
-          PubMed has more than one record for {describe(parsed)} — paste the paper’s PubMed link
+          PubMed has more than one record for {describeRef(parsed)} — paste the paper’s PubMed link
           instead.
         </p>
       )}
@@ -266,11 +266,7 @@ function Outcome({ outcome }: { outcome: LinkOutcome }) {
 // Title (opening the paper on PubMed), then who and where — Check holdings'
 // paper line, for a paper that never has a stored file to open instead.
 function PaperLine({ paper }: { paper: LinkedPaper }) {
-  const meta = [
-    formatAuthors(paper.authors, 3),
-    paper.journal_name && titleCaseJournal(paper.journal_name),
-    paper.pub_date_display,
-  ].filter((s) => s && s !== "—");
+  const meta = paperMeta(paper);
   return (
     <div className="have-paper">
       <button
@@ -280,13 +276,7 @@ function PaperLine({ paper }: { paper: LinkedPaper }) {
       >
         {paper.title || `PMID ${paper.pmid}`}
       </button>
-      {meta.length > 0 && <div className="have-meta">{meta.join(" · ")}</div>}
+      {meta && <div className="have-meta">{meta}</div>}
     </div>
   );
-}
-
-function describe(parsed: ParsedRefView): string {
-  if (parsed.kind === "pmid") return `PMID ${parsed.pmid}`;
-  if (parsed.kind === "doi") return `DOI ${parsed.doi}`;
-  return parsed.input;
 }

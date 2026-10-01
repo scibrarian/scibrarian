@@ -12,7 +12,7 @@ import { blobPath } from "./blobstore.js";
 import { extractPdf, type PdfExtract } from "./pdf-text.js";
 import { findDois, findPmid } from "./pdf-match.js";
 import { hintProSync } from "./pro-hooks.js";
-import { fetchArticles, resolveDoiToPmid } from "./pubmed.js";
+import { EUTILS_BATCH, fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
 import type { CollectionFile, ImportJob } from "./types.js";
 import { chunk, errMessage, safeMessage } from "./util.js";
@@ -61,8 +61,6 @@ export function clearImportJobs(): void {
 // Files per NCBI resolution round: extraction is local and fast, so batching
 // only exists to amortize eutils calls and keep progress moving visibly.
 const RESOLVE_BATCH = 50;
-// PMIDs per esummary/efetch call (matches the poller's batch size).
-const FETCH_BATCH = 100;
 
 export function startImport(collectionId: number, collectionName: string): ImportJob {
   const pending = pendingCollectionFiles(collectionId);
@@ -202,7 +200,7 @@ async function validatePmids(pmids: string[]): Promise<Set<string>> {
   const distinct = [...new Set(pmids)];
   const valid = existingPmids(distinct);
   const unknown = distinct.filter((p) => !valid.has(p));
-  for (const batch of chunk(unknown, FETCH_BATCH)) {
+  for (const batch of chunk(unknown, EUTILS_BATCH)) {
     const articles = await fetchArticles(batch);
     upsertArticles(articles);
     for (const a of articles) valid.add(a.pmid);
