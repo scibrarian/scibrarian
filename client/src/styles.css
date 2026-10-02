@@ -2417,10 +2417,6 @@ code {
   font-family: inherit;
 }
 
-.jm-auto .hint {
-  margin: 0;
-}
-
 .jm-panes {
   display: grid;
   grid-template-columns: 1fr auto 1fr;

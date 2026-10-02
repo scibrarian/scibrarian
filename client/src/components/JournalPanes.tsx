@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, ArrowLeft, TriangleAlert } from "lucide-react";
+import { ArrowRight, ArrowLeft, Info, TriangleAlert } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, round1, titleCaseJournal } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
@@ -36,6 +36,10 @@ const listedFromCatalog = (r: JournalSearchResult): ListedJournal => ({
   metric: r.metric,
   medline_indexed: null,
 });
+
+const AUTO_HELP =
+  "Auto adds the top journals for these headings. The number is OpenAlex 2-yr citations " +
+  "per article — an open stand-in for impact factor.";
 
 // Metric descending, unknown metrics last, alphabetical tie-break.
 function metricSort(rows: ListedJournal[]): ListedJournal[] {
@@ -131,6 +135,12 @@ export function JournalPanes({
   // ----- derived pane contents (computed at render, no synced state) -----
 
   const searching = leftFilter.trim().length >= 2;
+  // No answer yet for what is in the box: the request is out, or the debounce
+  // hasn't let it leave. The second half is the one that is easy to miss — for
+  // those 200ms nothing is loading and nothing has been found, which read as a
+  // search that had finished empty, and "No matches." flashed ahead of
+  // "Searching…" on every keystroke.
+  const awaiting = searchLoading || query !== leftFilter.trim();
   const listed = new Set(value.map((j) => j.nlm_id));
   const stored = new Map(original.map((j) => [j.nlm_id, j]));
 
@@ -283,7 +293,7 @@ export function JournalPanes({
       ? null
       : !searching
         ? "Type to search the NLM catalog (e.g. lancet, n engl j med)…"
-        : searchLoading
+        : awaiting
           ? "Searching…"
           : searchResults.length === 0
             ? "No matches."
@@ -298,10 +308,14 @@ export function JournalPanes({
           type="button"
           onClick={autoSuggest}
           disabled={fetching != null || disabled || headings.length === 0}
-          title="Add the top journals publishing on these headings, ranked by the citation metric"
         >
           {fetching === "auto" ? "Searching PubMed…" : "Auto"}
         </button>
+        {/* What Auto does and what the numbers are, read once and in the way
+            from then on — so beside the button rather than under it. */}
+        <span className="info-tip" role="img" title={AUTO_HELP} aria-label={AUTO_HELP}>
+          <Info size={14} aria-hidden />
+        </span>
         {copyFrom.length > 0 && (
           <select
             aria-label="Copy another topic's journals"
@@ -317,10 +331,6 @@ export function JournalPanes({
             ))}
           </select>
         )}
-        <span className="hint">
-          Auto adds the top journals for these headings. The number is OpenAlex 2-yr citations
-          per article — an open stand-in for impact factor.
-        </span>
       </div>
       <div className="jm-panes">
         <section className="jm-pane" aria-label="Catalog journals">

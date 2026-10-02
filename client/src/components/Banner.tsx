@@ -117,6 +117,11 @@ export function Banner({
     <div ref={ref} className={`banner ${shown.kind} dismissible${leaving ? " leaving" : ""}`}>
       <span>{shown.message}</span>
       <button
+        // Never a submit. A banner drawn inside a form — the topic dialog's —
+        // would otherwise save the form on its ×: a button's default type is
+        // "submit", and dismissing a notice there stored the topic and closed
+        // the dialog.
+        type="button"
         className="banner-close"
         aria-label="Dismiss"
         // Both halves on the click: the class starts the collapse, and giving

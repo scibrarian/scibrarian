@@ -85,7 +85,7 @@ const sameJournals = (a: ListedJournal[], b: ListedJournal[]) =>
 
 export function TopicDialog({
   open,
-  topic,
+  topic: current,
   topics,
   onClose,
   onSaved,
@@ -100,6 +100,14 @@ export function TopicDialog({
   // the dialog closes.
   onSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
 }) {
+  // The topic this opening is about, kept through the close. Both callers clear
+  // their topic in the same update that closes the dialog, and the dialog stays
+  // on screen after that for as long as its exit animation runs — as a dialog
+  // for no topic, which is the New topic form. Cancel on an edit flashed that
+  // form on the way out.
+  const [topic, setTopic] = useState(current);
+  if (open && topic !== current) setTopic(current);
+
   const [headings, setHeadings] = useState<MeshDescriptorRef[]>([]);
   const [query, setQuery] = useState("");
   // The name box shows the headings' own name until someone types in it; from
@@ -309,13 +317,12 @@ export function TopicDialog({
     });
   }
 
-  // One line, always present, so the dialog is the same height whatever it says.
+  // One line, always present — empty until there is a heading to count — so
+  // the dialog is the same height whatever it says.
   const counted = preview && preview.key === key ? preview : null;
   const overCap = counted?.count != null && counted.count > PUBMED_MAX_RESULTS;
   const countLine =
-    headings.length === 0 ? (
-      "Pick a heading to see how many papers match."
-    ) : !counted ? (
+    headings.length === 0 ? null : !counted ? (
       "Counting matches…"
     ) : counted.count == null ? (
       "Couldn't count matches just now."

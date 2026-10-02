@@ -382,6 +382,48 @@ describe("editing a topic", () => {
     // Lancet was already on the list, so one journal is new to it.
     await waitFor(() => expect(listed()).toEqual(["BMJ", "Circulation", "Lancet"]));
   });
+
+  it("says it is searching the catalog from the first keystroke, not that nothing matched", async () => {
+    // The search waits out a debounce before it leaves. Until it does, nothing
+    // is loading and nothing has been found, which used to read as "No matches."
+    let answer!: (r: { results: JournalSearchResult[] }) => void;
+    api.searchJournals.mockReturnValue(new Promise((r) => (answer = r)));
+    open(TOPIC);
+    await listLoaded();
+    fireEvent.change(within(catalogPane()).getByRole("searchbox"), { target: { value: "zzzz" } });
+    expect(within(catalogPane()).getByText("Searching…")).toBeTruthy();
+    expect(within(catalogPane()).queryByText("No matches.")).toBeNull();
+
+    // Still searching once the request is out, and only then an answer.
+    await waitFor(() => expect(api.searchJournals).toHaveBeenCalledWith("zzzz", 30));
+    expect(within(catalogPane()).getByText("Searching…")).toBeTruthy();
+    answer({ results: [] });
+    await within(catalogPane()).findByText("No matches.");
+  });
+
+  it("dismisses a notice without saving or closing", async () => {
+    // The notice sits inside the dialog's form, and its × was a submit button:
+    // dismissing "Added 1 journal…" stored the change and closed the dialog.
+    const other: Topic = { ...TOPIC, id: 8, name: "Other", journalCount: 1 };
+    api.getTopic.mockImplementation(async (id: number) =>
+      id === 8 ? { ...other, journals: [journal(3, CIRC.nlm_id, "Circulation")] } : DETAIL
+    );
+    const { onSaved, onClose } = open(TOPIC, [TOPIC, other]);
+    await listLoaded();
+    fireEvent.change(screen.getByRole("combobox", { name: "Copy another topic's journals" }), {
+      target: { value: "8" },
+    });
+    await screen.findByText("Added 1 journal from “Other”.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByText("Added 1 journal from “Other”.")).toBeNull());
+    expect(api.scopeChangeCount).not.toHaveBeenCalled();
+    expect(api.updateTopic).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // The journal it announced is still staged.
+    expect(listed()).toEqual(["BMJ", "Circulation", "Lancet"]);
+  });
 });
 
 describe("what a save has to say", () => {
