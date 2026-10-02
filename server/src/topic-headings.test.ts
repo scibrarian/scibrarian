@@ -185,11 +185,14 @@ describe("renaming a topic", () => {
     const topic = await (await create([ATHERO.ui, SLEEP.ui])).json();
     const res = await request("PATCH", `/topics/${topic.id}`, { name: " Plaque and rest " });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({
+    const body = await res.json();
+    expect(body.topic).toMatchObject({
       name: "Plaque and rest",
       term: BOTH,
       headings: [ATHERO, SLEEP],
     });
+    // A name is all that changed, so nothing left the feed.
+    expect(body.removed).toEqual({ deletedArticles: 0, removedFromInterests: 0 });
   });
 
   it("lets a topic keep its own name, and refuses another's", async () => {

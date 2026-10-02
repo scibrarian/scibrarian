@@ -12,6 +12,7 @@ import type {
   CollectionFile as CollectionFileRow,
   CollectionFileStatus,
   Topic as TopicRow,
+  TopicDetail as TopicDetailRow,
   ElsewhereHolding,
   EvidenceClass,
   GraphEdge,
@@ -45,6 +46,7 @@ import type {
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
+  TopicUpdateResponse,
   Workspace,
   WorkspaceContents,
   WorkspaceContentsResponse,
@@ -109,6 +111,7 @@ export type {
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
+  TopicUpdateResponse,
   Workspace,
   WorkspaceContents,
   WorkspaceContentsResponse,
@@ -129,6 +132,8 @@ export interface Topic extends TopicRow {
   articleCount?: number;
 }
 
+export type TopicDetail = TopicDetailRow;
+
 export interface JournalSearchResult {
   nlm_id: string; // the journal identity key — used to dedupe against added journals
   title: string;
@@ -141,25 +146,22 @@ export interface JournalSearchResponse {
   results: JournalSearchResult[];
 }
 
-// One row from /api/journals/suggest ("Auto"): a catalog journal plus which of
-// the user's topics wanted it.
-export interface JournalSuggestion extends JournalSearchResult {
-  topics: string[];
+// What /api/journals/suggest ("Auto") returns for a set of headings: catalog
+// journals, in the catalog search's own shape.
+export interface JournalSuggestResponse {
+  results: JournalSearchResult[];
 }
 
-export interface JournalSuggestResponse {
-  results: JournalSuggestion[];
-  topicCount: number; // topics considered; 0 = user has no topics yet
-  failed: string[]; // topics whose PubMed lookup failed (results are partial)
+// What a topic is to search, as the dialog sends it: all of PubMed, or the
+// journals named by NLM id.
+export interface TopicScopeInput {
+  allPubmed: boolean;
+  journals: string[];
 }
 
 export interface RefreshResponse {
   results: PollResult[];
   polledAt: string;
-  // Whether topics searched all of PubMed rather than the journal list. Picks
-  // the advice for a feed PubMed capped, which can't be "watch fewer journals"
-  // while no list is in use.
-  allPubmed: boolean;
 }
 
 // What /api/auth reports: whether this browser's requests count as admin,
@@ -188,9 +190,6 @@ export interface AppSettings {
   // True in the desktop build, which is loopback-only by construction — so
   // share_urls is always empty there and can never be filled in.
   desktop: boolean;
-  // "Search all PubMed journals". Read-only here: updateSettings can't change
-  // it, because turning it off deletes papers — see api.setSearchAllPubmed.
-  search_all_pubmed: boolean;
 }
 
 export interface BookmarkFolder extends BookmarkFolderRow {

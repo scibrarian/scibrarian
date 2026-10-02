@@ -4,7 +4,8 @@ import { api } from "../api";
 import { errorMessage, plural } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { Banner } from "./Banner";
-import { ModalShell } from "./Dialogs";
+import { ConfirmDialog, ModalShell } from "./Dialogs";
+import { JournalPanes, listedFromStored, type ListedJournal } from "./JournalPanes";
 import { Typeahead } from "./Typeahead";
 import {
   MAX_TOPIC_HEADINGS,
@@ -12,16 +13,27 @@ import {
   PUBMED_MAX_RESULTS,
 } from "../../../shared/limits";
 import { defaultTopicName } from "../../../shared/topic";
-import type { MeshDescriptorRef, MeshSearchResult, Topic, TopicSuggestResponse } from "../types";
+import type {
+  MeshDescriptorRef,
+  MeshSearchResult,
+  Topic,
+  TopicDetail,
+  TopicScopeInput,
+  TopicSuggestResponse,
+} from "../types";
 
 // One dialog for a topic, creating it or editing it.
 //
-// A topic is the MeSH headings a paper must carry all of. Creating one is
-// picking them; the dialog counts what they match across PubMed as they are
-// picked, because that number is what says whether a combination is a reading
-// list or more than PubMed will hand over. Editing one changes its name and
-// nothing else — the headings are fixed once a topic exists (see
-// Topic.headings), so they are shown and not offered.
+// A topic is the MeSH headings a paper must carry all of, and where it looks
+// for them: every journal in PubMed, or a list of its own. Creating one is
+// picking both; the dialog counts what the headings match across PubMed as
+// they are picked, because that number is what says whether a combination can
+// search everything or needs a list. Editing one changes its name and its
+// scope — the headings are fixed once a topic exists (see Topic.headings), so
+// they are shown and not offered.
+//
+// Nothing is stored until the button at the bottom. A change of scope that
+// would take papers out of the topic says how many first.
 
 // What the library's own filing suggests watching, when it has anything to say.
 const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
@@ -33,18 +45,60 @@ type HeadingOption = MeshSearchResult & { papers?: number; majorPapers?: number 
 const ALL_REQUIRED = `A paper must carry all of these headings. Up to ${MAX_TOPIC_HEADINGS}.`;
 const FIXED = "Headings can't be changed. To search different ones, create a new topic.";
 
+// What saving did that the reader should hear about, beyond the topic now
+// being as they left it.
+export interface TopicSaveOutcome {
+  created: boolean;
+  // Papers a change of scope took out of the topic's feed.
+  removed: number;
+  // Journals just listed that MEDLINE doesn't index, by name.
+  unindexed: string[];
+}
+
+// That outcome as a sentence or two, or null when there is nothing to say.
+// Shared by the two places the dialog is opened from, which show it in the
+// shell's notice: a warning inside a dialog that has just closed is one nobody
+// reads.
+export function describeTopicSave(topic: Topic, outcome: TopicSaveOutcome): string | null {
+  const parts: string[] = [];
+  if (outcome.removed > 0) {
+    parts.push(`Removed ${plural(outcome.removed, "paper")} from “${topic.name}”.`);
+  }
+  // Journals PubMed carries but MEDLINE doesn't index. Topics are MeSH headings
+  // and only MEDLINE-indexed records get them, so these match no topic however
+  // long they are polled. Still worth keeping for a library built by PDF
+  // import, which doesn't go through a topic at all — hence a warning, not a
+  // refusal.
+  if (outcome.unindexed.length > 0) {
+    const one = outcome.unindexed.length === 1;
+    parts.push(
+      `MEDLINE doesn't index ${outcome.unindexed.join(", ")}. ` +
+        `${one ? "Its papers carry" : "Their papers carry"} no MeSH headings, so ` +
+        `${one ? "it" : "they"} can't match a topic and won't add anything to Interests.`
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+const sameJournals = (a: ListedJournal[], b: ListedJournal[]) =>
+  a.length === b.length && a.every((j) => b.some((k) => k.nlm_id === j.nlm_id));
+
 export function TopicDialog({
   open,
   topic,
+  topics,
   onClose,
   onSaved,
 }: {
   open: boolean;
   // The topic being edited, or null to create one.
   topic: Topic | null;
+  // Every topic, for the lists that can be copied from.
+  topics: Topic[];
   onClose: () => void;
-  // The topic as the server stored it. Called before the dialog closes.
-  onSaved: (topic: Topic) => void;
+  // The topic as the server stored it, and what saving it did. Called before
+  // the dialog closes.
+  onSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
 }) {
   const [headings, setHeadings] = useState<MeshDescriptorRef[]>([]);
   const [query, setQuery] = useState("");
@@ -52,23 +106,39 @@ export function TopicDialog({
   // then on it is theirs, and picking another heading no longer rewrites it.
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
+  const [allPubmed, setAllPubmed] = useState(true);
+  const [journals, setJournals] = useState<ListedJournal[]>([]);
+  // The stored scope of the topic being edited, once it has been fetched. Null
+  // while it is on its way, and always for a topic being created.
+  const [stored, setStored] = useState<{ allPubmed: boolean; journals: ListedJournal[] } | null>(
+    null
+  );
   const [suggested, setSuggested] = useState<TopicSuggestResponse>(NO_SUGGESTIONS);
   // The count, with the set of headings it was taken for: a reading for another
   // set is no answer for this one. `count` is null when PubMed couldn't say.
   const [preview, setPreview] = useState<{ key: string; count: number | null } | null>(null);
+  // The confirmation ahead of a change that takes papers out. Built from a
+  // count fetched before it opens, so it travels with its message.
+  const [confirm, setConfirm] = useState<{ title: string; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const editing = topic != null;
 
-  // Each opening starts fresh, before paint, as JournalManager's does.
+  // Each opening starts fresh, before paint, so the last use can't show through.
   useLayoutEffect(() => {
     if (!open) return;
     setHeadings([]);
     setQuery("");
     setName(topic?.name ?? "");
     setNameTouched(topic != null);
+    // A new topic searches everything until told otherwise: with two headings
+    // that is usually what it should do, and the count below says when not.
+    setAllPubmed(topic ? topic.all_pubmed : true);
+    setJournals([]);
+    setStored(null);
     setPreview(null);
+    setConfirm(null);
     setSaving(false);
     setError(null);
     // Keyed on which topic, not on the object: the shell reloads its topics
@@ -76,6 +146,27 @@ export function TopicDialog({
     // same topic and would otherwise wipe a name half typed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, topic?.id]);
+
+  // The list a topic already has. Fetched here rather than carried on every
+  // topic: only this dialog reads it.
+  const topicId = topic?.id;
+  useEffect(() => {
+    if (!open || topicId == null) return;
+    let active = true;
+    api
+      .getTopic(topicId)
+      .then((detail) => {
+        if (!active) return;
+        const list = detail.journals.flatMap((j) => listedFromStored(j) ?? []);
+        setStored({ allPubmed: detail.all_pubmed, journals: list });
+        setAllPubmed(detail.all_pubmed);
+        setJournals(list);
+      })
+      .catch((e) => active && setError(errorMessage(e)));
+    return () => {
+      active = false;
+    };
+  }, [open, topicId]);
 
   // Topics the Library's own filing points at, so the first heading doesn't
   // have to be guessed cold. Advisory: the dialog is whole without them.
@@ -132,29 +223,90 @@ export function TopicDialog({
   const shownName = nameTouched ? name : autoName;
   const typedName = shownName.trim();
 
-  const canSave = topic ? typedName !== "" && typedName !== topic.name : headings.length > 0;
+  // The headings the journal panes ask Auto about: the ones being picked, or
+  // the ones the topic has.
+  const shownHeadings = topic ? topic.headings : headings;
+  const scope: TopicScopeInput = {
+    allPubmed,
+    journals: allPubmed ? [] : journals.map((j) => j.nlm_id),
+  };
+  const renamed = topic != null && typedName !== topic.name;
+  const rescoped =
+    stored != null &&
+    (allPubmed !== stored.allPubmed || (!allPubmed && !sameJournals(journals, stored.journals)));
 
-  async function save(e: FormEvent) {
-    e.preventDefault();
-    if (saving || !canSave) return;
+  const canSave = topic
+    ? stored != null && typedName !== "" && (renamed || rescoped)
+    : headings.length > 0;
+
+  async function commit() {
+    setConfirm(null);
     setSaving(true);
     setError(null);
     try {
-      const saved = topic
-        ? await api.renameTopic(topic.id, typedName)
-        : // A name nobody typed is left for the server to give, so the two
-          // can't drift; a blanked box asks for the same thing.
-          await api.createTopic(
-            headings.map((h) => h.ui),
-            nameTouched && typedName !== "" ? typedName : undefined
-          );
-      onSaved(saved);
+      let saved: TopicDetail;
+      let removed = 0;
+      if (topic) {
+        const res = await api.updateTopic(topic.id, {
+          ...(renamed ? { name: typedName } : {}),
+          ...(rescoped ? scope : {}),
+        });
+        saved = res.topic;
+        removed = res.removed.removedFromInterests;
+      } else {
+        // A name nobody typed is left for the server to give, so the two can't
+        // drift; a blanked box asks for the same thing.
+        saved = await api.createTopic(
+          headings.map((h) => h.ui),
+          scope,
+          nameTouched && typedName !== "" ? typedName : undefined
+        );
+      }
+      // Only the journals this save listed: one already on the topic said its
+      // piece when it was added.
+      const before = new Set((stored?.journals ?? []).map((j) => j.nlm_id));
+      const unindexed = saved.journals
+        .filter((j) => j.medline_indexed === false && !(j.nlm_id && before.has(j.nlm_id)))
+        .map((j) => j.name);
+      onSaved(saved, { created: topic == null, removed, unindexed });
       onClose();
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setSaving(false);
     }
+  }
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (saving || !canSave) return;
+    if (!topic || !rescoped || !stored) return commit();
+    // Papers leave only when the scope narrows, and how many is the server's to
+    // say — it reads the same query the change itself runs.
+    setSaving(true);
+    setError(null);
+    let count: number;
+    try {
+      count = (await api.scopeChangeCount(topic.id, scope)).count;
+    } catch (err) {
+      // Not waved through as zero: the answer decides whether to ask first.
+      setError(errorMessage(err));
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    if (count === 0) return commit();
+    const dropped = stored.allPubmed
+      ? 0
+      : stored.journals.filter((j) => !journals.some((k) => k.nlm_id === j.nlm_id)).length;
+    setConfirm({
+      title: stored.allPubmed
+        ? "Search only these journals?"
+        : `Remove ${dropped} journal${dropped === 1 ? "" : "s"} from this topic?`,
+      message: `This will remove ${
+        stored.allPubmed ? "" : dropped === 1 ? "its " : "their "
+      }${count.toLocaleString()} stored paper${count === 1 ? "" : "s"} from “${topic.name}”.`,
+    });
   }
 
   // One line, always present, so the dialog is the same height whatever it says.
@@ -172,126 +324,177 @@ export function TopicDialog({
         <strong>{counted.count.toLocaleString()}</strong> {counted.count === 1 ? "paper" : "papers"}{" "}
         in PubMed {counted.count === 1 ? "matches" : "match"}
         {overCap &&
-          `, more than the ${PUBMED_MAX_RESULTS.toLocaleString()} one search returns. Add a heading to narrow it.`}
+          `, more than the ${PUBMED_MAX_RESULTS.toLocaleString()} one search returns. ` +
+            "Add a heading to narrow it, or choose journals."}
       </>
     );
 
   return (
-    <ModalShell
-      open={open}
-      onClose={() => !saving && onClose()}
-      title={topic ? "Edit topic" : "New topic"}
-    >
-      <form className="topic-form" onSubmit={save}>
-        <Banner kind="error" message={error} onDismiss={() => setError(null)} />
+    <>
+      <ModalShell
+        wide
+        open={open}
+        onClose={() => !saving && onClose()}
+        title={topic ? "Edit topic" : "New topic"}
+      >
+        <form className="topic-form" onSubmit={save}>
+          <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
-        <div className="topic-label first">
-          <span id="topic-headings-label">MeSH headings</span>
-          <span
-            className="info-tip"
-            role="img"
-            title={topic ? FIXED : ALL_REQUIRED}
-            aria-label={topic ? FIXED : ALL_REQUIRED}
-          >
-            <Info size={14} aria-hidden />
-          </span>
-        </div>
-        <div className={`topic-headings${topic ? " fixed" : ""}`}>
-          {(topic ? topic.headings : headings).length > 0 && (
-            <ul className="topic-chips" aria-labelledby="topic-headings-label">
-              {(topic ? topic.headings : headings).map((h) => (
-                <li key={h.ui} className="topic-chip">
-                  <span>{h.name}</span>
-                  {!topic && (
-                    <button
-                      type="button"
-                      aria-label={`Remove ${h.name}`}
-                      onClick={() => setHeadings(headings.filter((x) => x.ui !== h.ui))}
-                    >
-                      <X size={12} aria-hidden />
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          {/* A topic from before headings were recorded has none to show, and
-              still searches something: its term says what. */}
-          {topic && topic.headings.length === 0 && <code className="term">{topic.term}</code>}
+          <div className="topic-label first">
+            <span id="topic-headings-label">MeSH headings</span>
+            <span
+              className="info-tip"
+              role="img"
+              title={topic ? FIXED : ALL_REQUIRED}
+              aria-label={topic ? FIXED : ALL_REQUIRED}
+            >
+              <Info size={14} aria-hidden />
+            </span>
+          </div>
+          <div className={`topic-headings${topic ? " fixed" : ""}`}>
+            {shownHeadings.length > 0 && (
+              <ul className="topic-chips" aria-labelledby="topic-headings-label">
+                {shownHeadings.map((h) => (
+                  <li key={h.ui} className="topic-chip">
+                    <span>{h.name}</span>
+                    {!topic && (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${h.name}`}
+                        onClick={() => setHeadings(headings.filter((x) => x.ui !== h.ui))}
+                      >
+                        <X size={12} aria-hidden />
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {/* A topic from before headings were recorded has none to show, and
+                still searches something: its term says what. */}
+            {topic && topic.headings.length === 0 && <code className="term">{topic.term}</code>}
+            {!topic && (
+              <Typeahead<HeadingOption>
+                value={query}
+                onChange={setQuery}
+                search={(q) =>
+                  api.searchMesh(q).then((r) => r.results.filter((m) => !picked.has(m.ui)))
+                }
+                onSelect={addHeading}
+                getKey={(m) => m.ui}
+                idleItems={libraryPicks}
+                idleLabel={libraryNote}
+                disabled={full}
+                placeholder={
+                  full
+                    ? `${MAX_TOPIC_HEADINGS} of ${MAX_TOPIC_HEADINGS} headings`
+                    : headings.length > 0
+                      ? "Add a heading…"
+                      : libraryPicks.length > 0
+                        ? "Search MeSH, or click for suggestions from your Library…"
+                        : "Search MeSH (e.g. type 2 diabetes)…"
+                }
+                id="topic-heading-search"
+                renderItem={(m) => (
+                  <>
+                    <span className="ta-title">{m.name}</span>
+                    {m.synonym && (
+                      <span className="ta-synonym">
+                        <span className="sr-only">, matched synonym </span>
+                        {m.synonym}
+                      </span>
+                    )}
+                    {m.papers != null && (
+                      <span
+                        className="ta-count"
+                        title={`${m.majorPapers} of ${m.papers} are mainly about this`}
+                      >
+                        <span className="sr-only">, filed papers: </span>
+                        {m.papers}
+                      </span>
+                    )}
+                  </>
+                )}
+              />
+            )}
+          </div>
           {!topic && (
-            <Typeahead<HeadingOption>
-              value={query}
-              onChange={setQuery}
-              search={(q) =>
-                api.searchMesh(q).then((r) => r.results.filter((m) => !picked.has(m.ui)))
-              }
-              onSelect={addHeading}
-              getKey={(m) => m.ui}
-              idleItems={libraryPicks}
-              idleLabel={libraryNote}
-              disabled={full}
-              placeholder={
-                full
-                  ? `${MAX_TOPIC_HEADINGS} of ${MAX_TOPIC_HEADINGS} headings`
-                  : headings.length > 0
-                    ? "Add a heading…"
-                    : libraryPicks.length > 0
-                      ? "Search MeSH, or click for suggestions from your Library…"
-                      : "Search MeSH (e.g. type 2 diabetes)…"
-              }
-              id="topic-heading-search"
-              renderItem={(m) => (
-                <>
-                  <span className="ta-title">{m.name}</span>
-                  {m.synonym && (
-                    <span className="ta-synonym">
-                      <span className="sr-only">, matched synonym </span>
-                      {m.synonym}
-                    </span>
-                  )}
-                  {m.papers != null && (
-                    <span
-                      className="ta-count"
-                      title={`${m.majorPapers} of ${m.papers} are mainly about this`}
-                    >
-                      <span className="sr-only">, filed papers: </span>
-                      {m.papers}
-                    </span>
-                  )}
-                </>
-              )}
+            <p className={`topic-count${overCap ? " warn" : ""}`} role="status">
+              {countLine}
+            </p>
+          )}
+
+          <label className="topic-label" htmlFor="topic-name">
+            Name
+          </label>
+          <input
+            id="topic-name"
+            value={shownName}
+            onChange={(e) => {
+              setName(e.target.value);
+              setNameTouched(true);
+            }}
+            placeholder={autoName || "Topic name"}
+            maxLength={MAX_TOPIC_NAME_CHARS}
+          />
+
+          <div className="topic-label" id="topic-scope-label">
+            Journals
+          </div>
+          <div className="topic-scope" role="radiogroup" aria-labelledby="topic-scope-label">
+            <label>
+              <input
+                type="radio"
+                name="topic-scope"
+                checked={allPubmed}
+                onChange={() => setAllPubmed(true)}
+                disabled={saving}
+              />
+              All of PubMed
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="topic-scope"
+                checked={!allPubmed}
+                onChange={() => setAllPubmed(false)}
+                disabled={saving}
+              />
+              Only these journals
+            </label>
+          </div>
+          {!allPubmed && (
+            <JournalPanes
+              original={stored?.journals ?? []}
+              value={journals}
+              onChange={setJournals}
+              headings={shownHeadings}
+              copyFrom={topics.filter((t) => t.id !== topic?.id && t.journalCount > 0)}
+              loading={topic != null && stored == null}
+              disabled={saving}
             />
           )}
-        </div>
-        {!topic && (
-          <p className={`topic-count${overCap ? " warn" : ""}`} role="status">
-            {countLine}
-          </p>
-        )}
 
-        <label className="topic-label" htmlFor="topic-name">
-          Name
-        </label>
-        <input
-          id="topic-name"
-          value={shownName}
-          onChange={(e) => {
-            setName(e.target.value);
-            setNameTouched(true);
-          }}
-          placeholder={autoName || "Topic name"}
-          maxLength={MAX_TOPIC_NAME_CHARS}
-        />
+          <div className="modal-actions">
+            <button type="button" onClick={onClose} disabled={saving}>
+              Cancel
+            </button>
+            <button type="submit" className="primary" disabled={!canSave || saving}>
+              {topic ? "Save" : "Create topic"}
+            </button>
+          </div>
+        </form>
+      </ModalShell>
 
-        <div className="modal-actions">
-          <button type="button" onClick={onClose} disabled={saving}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={!canSave || saving}>
-            {topic ? "Save" : "Create topic"}
-          </button>
-        </div>
-      </form>
-    </ModalShell>
+      <ConfirmDialog
+        open={confirm != null}
+        title={confirm?.title ?? ""}
+        message={confirm?.message ?? ""}
+        confirmLabel="Remove"
+        danger
+        onConfirm={commit}
+        onCancel={() => setConfirm(null)}
+      />
+    </>
   );
 }

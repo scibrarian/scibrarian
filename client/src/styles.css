@@ -1407,10 +1407,8 @@ input:disabled {
   cursor: not-allowed;
 }
 
-/* Open Library switch in the Sharing panel, and "Search all PubMed journals"
-   under the journal list — mirrors .stacked-form label. */
-.open-library,
-.all-pubmed {
+/* Open Library switch in the Sharing panel — mirrors .stacked-form label. */
+.open-library {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1420,8 +1418,7 @@ input:disabled {
   color: var(--text);
 }
 
-.open-library .hint,
-.all-pubmed .hint {
+.open-library .hint {
   font-weight: 400;
   margin: 0;
 }
@@ -1483,7 +1480,7 @@ input:focus {
 /* "Delete all data", at the foot of Settings.
 
    .accent-btn's shape in --danger rather than --accent, because it is a peer of
-   "Manage journals…" and "Save settings" and should sit at the same size and
+   "Add topic…" and "Save settings" and should sit at the same size and
    weight as them — the red is the whole of what differs, and making it also
    bigger or louder would be saying the same thing twice.
 
@@ -1561,16 +1558,16 @@ input:focus {
   border-top: none;
 }
 
-/* Fixed at ~6 rows so the panel never resizes: the 6-row loading skeleton and a
-   long journal list occupy the same box, and anything beyond 6 scrolls. A
-   stable scrollbar gutter keeps rows from shifting when the scrollbar appears. */
+/* Fixed at ~6 rows so the panel never resizes: the loading skeleton and a long
+   list occupy the same box, and anything beyond that scrolls. A stable
+   scrollbar gutter keeps rows from shifting when the scrollbar appears. */
 .scroll-list {
   height: 285px;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
 
-/* Topic rows stand two lines tall (the heading over its PubMed term), 62px
+/* Topic rows stand two lines tall (the name over where it searches), 62px
    each and 71px apart. Four whole rows and a fifth cut below its heading: the
    cut-off row is what says the list scrolls, and cutting through the heading
    instead reads as a rendering fault. */
@@ -1589,13 +1586,6 @@ input:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The journal list while "Search all PubMed journals" is on: kept in view, so
-   turning the setting off shows what topics will go back to, but visibly not
-   what they search now. */
-.list.set-aside {
-  opacity: 0.5;
 }
 
 .list li span:not(.mesh-warn) {
@@ -2394,14 +2384,16 @@ code {
   max-width: 780px;
 }
 
-/* Auto-suggest row: button + inline explainer above the panes. */
+/* Auto-suggest row: button, the copy-from picker, and an inline explainer
+   above the panes. */
 .jm-auto {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.jm-auto button {
+.jm-auto button,
+.jm-auto select {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -2413,9 +2405,16 @@ code {
   white-space: nowrap;
 }
 
-.jm-auto button:disabled {
+.jm-auto button:disabled,
+.jm-auto select:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Wide enough to say what it is, and no wider however long a topic's name. */
+.jm-auto select {
+  max-width: 180px;
+  font-family: inherit;
 }
 
 .jm-auto .hint {
@@ -2678,6 +2677,44 @@ code {
 .topic-count.warn,
 .topic-count.warn strong {
   color: var(--warn);
+}
+
+/* Where the topic searches: two radios, and under the second the journals. */
+.topic-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  font-size: 14px;
+}
+
+.topic-scope label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.topic-scope input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.topic-form .jm {
+  margin-top: 12px;
+}
+
+/* Shorter than the list had as a dialog of its own: here it shares one with
+   the headings and the name, and has to leave the buttons on screen. */
+.topic-form .jm-list {
+  height: 180px;
+}
+
+/* The dialog can still outgrow a short window, and a centred box taller than
+   its backdrop loses its top edge — heading first. So it scrolls inside
+   itself instead. */
+.modal:has(> .topic-form) {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
 }
 
 /* ---------- section nav (Interests / Library) ---------- */
@@ -4174,7 +4211,7 @@ html {
    Every other control in Settings is styled and these were not: nothing in the
    stylesheet named them, so Connect, Sync now, Save license, Create code, Copy,
    Share, Disconnect and Revoke all rendered as raw UA chrome inside a panel
-   sitting directly under "Manage journals…" and "Save settings". The two
+   sitting directly under "Add topic…" and "Save settings". The two
    className="primary" and className="danger" hints already in the markup named
    variants that existed nowhere.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mergeTopicPicks, rankCandidates, topByCount } from "./journal-rank.js";
+import { rankCandidates, toSuggestion, topByCount } from "./journal-rank.js";
 import type { CatalogRow } from "./db.js";
 
 const row = (nlm_id: string, title: string, metric: number | null): CatalogRow => ({
@@ -39,20 +39,6 @@ describe("rankCandidates", () => {
     expect(rankCandidates(cands, 3).map((c) => c.row.nlm_id)).toEqual(["2", "1", "4"]);
   });
 
-  it("subtracts excluded journals after the cut instead of backfilling", () => {
-    const cands = [
-      { row: row("1", "Elite Journal", 40.2), count: 12 },
-      { row: row("2", "Strong Journal", 10.0), count: 30 },
-      { row: row("3", "Runner Up", 5.0), count: 40 },
-      { row: row("4", "Also Ran", 4.0), count: 50 },
-    ];
-    // Top 2 are both already held: the topic contributes nothing, rather than
-    // promoting #3 and #4 into the freed slots.
-    expect(rankCandidates(cands, 2, new Set(["1", "2"]))).toEqual([]);
-    // Partial overlap leaves only the un-held member of the top 2.
-    expect(rankCandidates(cands, 2, new Set(["1"])).map((c) => c.row.nlm_id)).toEqual(["2"]);
-  });
-
   it("does not mutate the input order", () => {
     const cands = [
       { row: row("1", "A", 1), count: 1 },
@@ -63,29 +49,14 @@ describe("rankCandidates", () => {
   });
 });
 
-describe("mergeTopicPicks", () => {
-  it("dedupes across topics, accumulating attribution, multi-topic journals first", () => {
-    const shared = row("1", "Shared Journal", 5);
-    const merged = mergeTopicPicks([
-      { topic: "Neoplasms", picks: [{ row: shared, count: 20 }, { row: row("2", "Onco Only", 9), count: 10 }] },
-      { topic: "Genomics", picks: [{ row: shared, count: 15 }, { row: row("3", "Gene Only", 7), count: 8 }] },
-    ]);
-    expect(merged.map((s) => s.nlm_id)).toEqual(["1", "2", "3"]);
-    expect(merged[0].topics).toEqual(["Neoplasms", "Genomics"]);
-    expect(merged[1].topics).toEqual(["Neoplasms"]);
-  });
-
+describe("toSuggestion", () => {
   it("maps catalog fields the way /journals/search does (abbr and issn fallbacks)", () => {
-    const [s] = mergeTopicPicks([
-      { topic: "T", picks: [{ row: row("9", "Journal Nine", 2.5), count: 1 }] },
-    ]);
-    expect(s).toEqual({
+    expect(toSuggestion({ row: row("9", "Journal Nine", 2.5), count: 1 })).toEqual({
       nlm_id: "9",
       title: "Journal Nine",
       abbr: "Journal Nine abbr",
       issn: "issn-9",
       metric: 2.5,
-      topics: ["T"],
     });
   });
 });

@@ -9,19 +9,17 @@ import {
   errorMessage,
   formatBytes,
   plural,
-  round1,
 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
-import { JournalManager, MeshBadge } from "./JournalManager";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
-import { TopicDialog } from "./TopicDialog";
+import { TopicDialog, type TopicSaveOutcome } from "./TopicDialog";
 import { ProPanel } from "./ProPanel";
 import type {
   AppSettings,
   CacheStats,
   Topic,
-  Journal,
+  TopicDetail,
   ProCollectionStamp,
   ProStatus,
 } from "../types";
@@ -36,8 +34,18 @@ import type {
 // button does.
 const RESET_WARNING =
   "All papers saved to library, interests, and bookmarks will be deleted. " +
-  "All library collections, interest topics, bookmark folders, and journals will also be deleted. " +
+  "All library collections, interest topics, and bookmark folders will also be deleted. " +
   "This cannot be undone.";
+
+// Whether a topic has anywhere to search — see canPoll on the server.
+const canCheck = (t: Topic) => t.all_pubmed || t.journalCount > 0;
+
+// Where a topic searches and how much it has found, under its name.
+function scopeLine(t: Topic): string {
+  if (!canCheck(t)) return "No journals chosen yet · nothing to check";
+  const scope = t.all_pubmed ? "All of PubMed" : plural(t.journalCount, "journal");
+  return t.articleCount == null ? scope : `${scope} · ${plural(t.articleCount, "paper")}`;
+}
 
 export function Settings({
   pro,
@@ -45,6 +53,7 @@ export function Settings({
   onPairingChanged,
   onSharingChanged,
   onPapersRemoved,
+  onTopicSaved,
   onLibraryReset,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
@@ -60,9 +69,13 @@ export function Settings({
   // icon and badge from, and nothing else. Carries the panel's fresh reading of
   // those stamps, or null if it couldn't take one; see ProPanel.
   onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
-  // Papers left the Interests feeds (journal removal): the app refreshes the
+  // Papers left the Interests feeds (a topic removed): the app refreshes the
   // paper views and reports the count.
   onPapersRemoved: (count: number) => void;
+  // A topic was saved from this panel's dialog. The shell reloads what it
+  // draws from topics and says whatever the save has to say — see
+  // describeTopicSave.
+  onTopicSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
   // The library was deleted outright. Separate from onPapersRemoved, which the
   // panel could otherwise have reused: that one describes papers leaving the
   // topic feeds, and the shell answers it by reloading them. Here every source
@@ -74,7 +87,6 @@ export function Settings({
   // notice at the top of a page the reader has scrolled to the bottom of.
   onLibraryReset: () => void;
 }) {
-  const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
@@ -82,7 +94,7 @@ export function Settings({
   // the server confirms a write (initial load and a successful save).
   const [baseline, setBaseline] = useState<AppSettings | null>(null);
   // False only until the first reload settles — the panels show skeletons
-  // instead of misleading "No journals yet." empty states and a form that pops
+  // instead of misleading "No topics yet." empty states and a form that pops
   // in. Later reloads (after mutations) keep showing the current data.
   const [loaded, setLoaded] = useState(false);
   // The same, for the Pro panel, which fetches on its own and used to arrive
@@ -95,13 +107,6 @@ export function Settings({
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  // Journal add/remove lives in the JournalManager dialog.
-  const [managingJournals, setManagingJournals] = useState(false);
-  // Turning "Search all PubMed journals" off deletes papers, so, like a topic
-  // removal, the confirm's message is built from a count fetched before it
-  // opens. Null when no confirm is showing.
-  const [allPubmedOffMessage, setAllPubmedOffMessage] = useState<string | null>(null);
-  const [switchingAllPubmed, setSwitchingAllPubmed] = useState(false);
   // The topic warning depends on an article count fetched *before* the dialog
   // opens, so the pending removal carries its message along.
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
@@ -146,9 +151,8 @@ export function Settings({
   } | null>(null);
 
   function reload() {
-    Promise.all([api.getJournals(), api.getTopics(), api.getSettings()])
-      .then(([j, d, s]) => {
-        setJournals(j);
+    Promise.all([api.getTopics(), api.getSettings()])
+      .then(([d, s]) => {
         setTopics(d);
         setSettings(s);
         setBaseline(s);
@@ -203,50 +207,6 @@ export function Settings({
     }
   }
 
-  // Turning it on stores nothing, so it just happens. Turning it off takes the
-  // papers from journals outside the list out of Interests, so it asks first,
-  // with the count.
-  async function toggleAllPubmed(on: boolean) {
-    setError(null);
-    if (on) return applyAllPubmed(true);
-    let count: number | null = null;
-    try {
-      count = (await api.offListArticleCount()).count;
-    } catch {
-      /* if the count lookup fails, fall through without the number */
-    }
-    const back = "Topics will go back to searching only your added journals.";
-    const kept = "will be removed from Interests, but your bookmarks will be kept.";
-    setAllPubmedOffMessage(
-      count === null
-        ? `${back} Papers in non-added journals ${kept}`
-        : count > 0
-          ? `${back} ${count.toLocaleString()} of your papers (the ones in non-added journals) ${kept}`
-          : back
-    );
-  }
-
-  async function applyAllPubmed(on: boolean) {
-    setAllPubmedOffMessage(null);
-    setSwitchingAllPubmed(true);
-    try {
-      const res = await api.setSearchAllPubmed(on);
-      // Only this key, for the reason toggleOpenLibrary gives: the whole object
-      // would clobber unsaved edits in the settings form.
-      setSettings((s) => (s ? { ...s, search_all_pubmed: on } : s));
-      setBaseline((b) => (b ? { ...b, search_all_pubmed: on } : b));
-      // Turning it on changes nothing the shell shows until the next check.
-      if (!on) {
-        onDataChanged();
-        if (res.removedFromInterests > 0) onPapersRemoved(res.removedFromInterests);
-      }
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSwitchingAllPubmed(false);
-    }
-  }
-
   // Its own fetch rather than a member of reload()'s Promise.all: that one
   // runs on every deployment, and this route is not there to answer on most of
   // them. Called from the effect below once the settings say which build this
@@ -285,8 +245,8 @@ export function Settings({
     try {
       const deleted = await api.resetLibrary();
       setResetResult({ kind: "info", message: describeResetDone(deleted) });
-      // This panel's own lists first — the topics and journals it is still
-      // showing are gone — then ProPanel, which is counting over collections
+      // This panel's own list first — the topics it is still showing are
+      // gone — then ProPanel, which is counting over collections
       // that went with them, then the shell, which owns every other view of all
       // of it.
       reload();
@@ -368,7 +328,7 @@ export function Settings({
   // Every panel waits for the slowest of them.
   //
   // These load from two independent places — one Promise.all here for the
-  // journals, topics, settings and suggestions, and the Pro panel's own reload
+  // topics and settings, and the Pro panel's own reload
   // — and each used to reveal itself the moment its own data landed. The result
   // was a column that resettled two or three times: the Pro panel would paint
   // its unpaired form, then Sharing would arrive underneath and shove it, and
@@ -386,8 +346,6 @@ export function Settings({
   // disabled buttons and the Pro panel included, so the whole page changes in
   // that single faded commit rather than a button enabling a frame ahead of it.
   const ready = useReveal(loaded && (pro == null || proReady));
-
-  const allPubmed = settings?.search_all_pubmed === true;
 
   // The reading itself, or null when there is not one — in flight, or failed.
   const cacheStats = cache === null || cache === "unreadable" ? null : cache;
@@ -408,7 +366,8 @@ export function Settings({
           <strong><Search size={14} className="inline-icon" aria-hidden /> Interests</strong>. A topic is
           one or more <strong>MeSH</strong> headings, and a paper has to carry all of them to
           appear — typing a synonym (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds
-          the official term (<code>Diabetes Mellitus, Type 2</code>).
+          the official term (<code>Diabetes Mellitus, Type 2</code>). Each topic searches all of
+          PubMed, or journals of its own.
         </p>
         <button type="button" className="accent-btn" onClick={() => setTopicDialog("new")}>
           Add topic…
@@ -416,9 +375,9 @@ export function Settings({
 
         <ul className="list scroll-list topic-list">
           {!ready ? (
-            // A fixed box, as the journal list below has, so the panel is the
-            // same height however many topics arrive and nothing under it moves
-            // on the handoff. Four rows is as many as fit whole.
+            // A fixed box, so the panel is the same height however many topics
+            // arrive and nothing under it moves on the handoff. Four rows is as
+            // many as fit whole.
             ["42%", "30%", "36%", "26%"].map((w, i) => (
               <ListRowSkeleton key={i} w={w} sub={["24%", "20%", "22%", "18%"][i]} />
             ))
@@ -426,9 +385,9 @@ export function Settings({
             <>
               {topics.map((d) => (
                 <li key={d.id}>
-                  <span>
-                    <strong title={d.name}>{d.name}</strong>
-                    <code className="term" title={d.term}>{d.term}</code>
+                  <span title={d.term}>
+                    <strong>{d.name}</strong>
+                    <small className={canCheck(d) ? "muted" : "hint warn"}>{scopeLine(d)}</small>
                   </span>
                   {/* A div for the reason .list-label is one: a span in a list
                       row is stacked into a column. */}
@@ -449,77 +408,6 @@ export function Settings({
       </section>
 
       <section className="panel">
-        <h2>Journals</h2>
-        <p className="hint">
-          Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
-          citations per article — an open stand-in for impact factor.
-        </p>
-        {/* Locked, not just dimmed, while every topic searches all of PubMed:
-            removing a journal deletes its papers, which that search still
-            covers. The server refuses too. */}
-        <button
-          type="button"
-          className="accent-btn"
-          onClick={() => setManagingJournals(true)}
-          disabled={allPubmed}
-        >
-          Manage journals…
-        </button>
-        <ul className={`list scroll-list${allPubmed ? " set-aside" : ""}`}>
-          {!ready ? (
-            // Six rows to match the fixed height, so the panel doesn't resize on load.
-            ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
-              <ListRowSkeleton key={i} w={w} pill />
-            ))
-          ) : (
-            <>
-              {journals.map((j) => (
-                <li key={j.id}>
-                  {/* Name and badge are one column: the badge annotates the
-                      journal, so space-between must not strand it mid-row. */}
-                  <div className="list-label">
-                    <span>{j.name}</span>
-                    {j.medline_indexed === false && <MeshBadge name={j.name} />}
-                  </div>
-                  {j.metric != null && (
-                    <span
-                      className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
-                      title="OpenAlex 2-yr citations per article"
-                    >
-                      {round1(j.metric)}
-                    </span>
-                  )}
-                </li>
-              ))}
-              {journals.length === 0 && <li className="muted">No journals yet.</li>}
-            </>
-          )}
-        </ul>
-        {/* Drawn before the settings arrive, disabled and off, rather than
-            appearing with them: text landing late would push nothing, but a
-            whole row landing late pushes every panel below it. */}
-        <label className="all-pubmed">
-          Search all PubMed journals
-          <span className="switch-row">
-            <input
-              type="checkbox"
-              role="switch"
-              className="switch"
-              checked={allPubmed}
-              onChange={(e) => toggleAllPubmed(e.target.checked)}
-              disabled={!ready || !settings || switchingAllPubmed}
-            />
-            <span className="hint">
-              Topics search every journal in PubMed instead of the list above. PubMed returns at
-              most 9,999 papers per search, so the next check keeps each topic’s most recent
-              9,999. Turning this off removes papers from other journals in your interests,
-              but your bookmarks are kept.
-            </span>
-          </span>
-        </label>
-      </section>
-
-      <section className="panel">
         <h2>Polling & NCBI</h2>
         <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />
         {!ready && <StackedFormSkeleton />}
@@ -537,8 +425,8 @@ export function Settings({
                 />
                 <span className="hint">
                   When on, every topic is checked for new papers on the schedule below;
-                  “Check for new papers” works either way. Nothing is checked while no
-                  journals are watched, unless “Search all PubMed journals” is on.
+                  “Check for new papers” works either way. A topic with no journals chosen
+                  is skipped.
                 </span>
               </span>
             </label>
@@ -795,29 +683,12 @@ export function Settings({
       <TopicDialog
         open={topicDialog != null}
         topic={topicDialog === "new" ? null : topicDialog}
+        topics={topics}
         onClose={() => setTopicDialog(null)}
-        onSaved={() => {
+        onSaved={(saved, outcome) => {
           reload();
-          onDataChanged();
+          onTopicSaved(saved, outcome);
         }}
-      />
-      <JournalManager
-        open={managingJournals}
-        onClose={() => setManagingJournals(false)}
-        onCommitted={(papersRemoved, removalsHappened) => {
-          reload();
-          onDataChanged();
-          if (removalsHappened) onPapersRemoved(papersRemoved);
-        }}
-      />
-      <ConfirmDialog
-        open={allPubmedOffMessage != null}
-        title="Stop searching all of PubMed?"
-        message={allPubmedOffMessage ?? ""}
-        confirmLabel="Turn off"
-        danger
-        onConfirm={() => applyAllPubmed(false)}
-        onCancel={() => setAllPubmedOffMessage(null)}
       />
       <ConfirmDialog
         open={topicToRemove != null}

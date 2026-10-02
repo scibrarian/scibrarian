@@ -9,6 +9,7 @@ import type {
   Collection,
   CollectionSelection,
   Topic,
+  TopicDetail,
   PaperSource,
   ProCollectionStamp,
   ProStatus,
@@ -25,7 +26,11 @@ import { warmFacets } from "./components/MeshFilter";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, ToolbarSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
-import { TopicDialog } from "./components/TopicDialog";
+import {
+  TopicDialog,
+  describeTopicSave,
+  type TopicSaveOutcome,
+} from "./components/TopicDialog";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
 import { HaveCheck, HAVE_CHECK_TITLE } from "./components/HaveCheck";
@@ -34,6 +39,7 @@ import {
   Lock,
   LockOpen,
   FilePlus,
+  Pencil,
   Plus,
   SearchCheck,
 } from "lucide-react";
@@ -373,14 +379,10 @@ export default function App() {
   }, []);
 
   const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
-  // The later of the topic's two watermarks — one per search mode, see
-  // topic_pubmed_scans — since either is a poll that updated this feed. Both
-  // are toISOString() output, so they compare as strings.
-  const topicUpdatedAt =
-    [activeTopic?.last_polled_at, activeTopic?.pubmed_polled_at]
-      .filter((t): t is string => !!t)
-      .sort()
-      .pop() ?? null;
+  const topicUpdatedAt = activeTopic?.last_polled_at ?? null;
+  // A topic that lists journals and has none: it has nowhere to search until
+  // it is edited (see canPoll on the server).
+  const topicUnset = activeTopic != null && !activeTopic.all_pubmed && activeTopic.journalCount === 0;
   const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
@@ -420,6 +422,16 @@ export default function App() {
     if (m === "papers" && activeCollectionId == null && collections.length > 0) {
       setActiveCollectionId(collections[0].id);
     }
+  }
+
+  // A topic was created or edited, in the dialog here or the one in Settings.
+  // Its row is stale either way; its papers are stale only if a change of scope
+  // took some out, and then only its own feed is — no other topic was touched.
+  async function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
+    const said = describeTopicSave(saved, outcome);
+    if (said) setStatus(said);
+    await loadTopics();
+    if (outcome.removed > 0) reloadSource({ topic: saved.id });
   }
 
   function selectTopic(id: number) {
@@ -678,11 +690,13 @@ export default function App() {
       // PubMed hands over at most the first 9,999 records per query, so a broad
       // topic's feed is genuinely incomplete. Said plainly rather than left to
       // be inferred from a count nobody has a reference point for — the feed
-      // would otherwise look complete, and only the user can decide whether to
-      // narrow the topic or watch fewer journals.
+      // would otherwise look complete, and only the user can decide what to do
+      // about it. A topic's headings can't be changed, so the advice is its
+      // scope: a list in place of all of PubMed, or a shorter list.
       const capped = res.results.filter((r) => r.truncated);
-      const narrow = res.allPubmed ? "Narrow the topic" : "Narrow the topic or watch fewer journals";
       for (const r of capped) {
+        const everywhere = topics.find((t) => t.id === r.topicId)?.all_pubmed;
+        const narrow = everywhere ? "Give it a list of journals" : "Give it fewer journals";
         msg += ` “${r.topicName}” matches more papers than PubMed will return — ${r.truncated!.toLocaleString()} older ones were left out. ${narrow} for full coverage.`;
       }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
@@ -859,11 +873,15 @@ export default function App() {
   const emptyState = !isAdmin ? (
     <>No papers here yet. The site owner hasn’t added any.</>
   ) : inInterests ? (
-    <>
-      No papers yet. Add journals &amp; topics in{" "}
-      <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>, then
-      click “Check for new papers”.
-    </>
+    topicUnset ? (
+      <>
+        No journals are chosen for this topic. Click{" "}
+        <strong><Pencil size={14} className="inline-icon" aria-hidden /> Edit</strong> beside its name
+        to choose some, or to search all of PubMed.
+      </>
+    ) : (
+      <>No papers yet. Click “Check for new papers”.</>
+    )
   ) : inLibrary ? (
     <>
       No papers yet. Click{" "}
@@ -884,9 +902,9 @@ export default function App() {
     </>
   ) : inInterests ? (
     <>
-      No topics yet. Open{" "}
-      <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong> to add
-      a journal and a MeSH topic to watch, or switch to{" "}
+      No topics yet. Click{" "}
+      <strong><Plus size={14} className="inline-icon" aria-hidden /> Add topic…</strong> in the
+      topics dropdown to watch one or more MeSH headings, or switch to{" "}
       <strong><LibraryIcon size={14} className="inline-icon" aria-hidden /> {MODES.papers.label}</strong>{" "}
       to import your own PDFs.
     </>
@@ -1175,12 +1193,14 @@ export default function App() {
           <Settings
             pro={pro}
             onDataChanged={loadTopics}
+            onTopicSaved={handleTopicSaved}
             onPairingChanged={handlePairingChanged}
             onSharingChanged={handleSharingChanged}
             onPapersRemoved={(count) => {
               setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
-              // A journal or topic removal sweeps papers out of any number of
-              // topics at once, so nothing narrower than everything is safe.
+              // A removed topic's papers are cached under the bookmarks and
+              // the graph as well as its own feed, so nothing narrower than
+              // everything is safe.
               reloadEverything();
             }}
             onLibraryReset={async () => {
@@ -1318,12 +1338,14 @@ export default function App() {
       <TopicDialog
         open={topicDialog != null}
         topic={topicDialog === "new" ? null : topicDialog}
+        topics={topics}
         onClose={() => setTopicDialog(null)}
-        onSaved={(saved) => {
-          const created = topicDialog === "new";
+        onSaved={(saved, outcome) => {
           // A new topic is where the reader goes next: it has no papers until
           // it is checked, and its own view is where that button is.
-          void loadTopics().then(() => created && selectTopic(saved.id));
+          void handleTopicSaved(saved, outcome).then(
+            () => outcome.created && selectTopic(saved.id)
+          );
         }}
       />
 

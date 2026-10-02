@@ -13,12 +13,24 @@ export interface Topic {
   // feed is every stored paper matching the term, and changing the term would
   // leave that untrue until the whole history was listed again.
   headings: MeshDescriptorRef[];
+  // Where it searches: every journal in PubMed, or its own list. A topic that
+  // lists journals and has none (journalCount 0) searches nothing.
+  all_pubmed: boolean;
+  // How many journals are on that list. Always 0 for an all-PubMed topic, which
+  // keeps none.
+  journalCount: number;
+  // When a poll under the current scope last finished. Null until one has, and
+  // again after a change between a list and all of PubMed.
   last_polled_at: string | null;
   created_at: string;
-  // The watermark while "Search all PubMed journals" is on, kept apart from
-  // last_polled_at (the journal list's). Null until the topic has been polled
-  // in that mode, and again once the setting is turned off.
-  pubmed_polled_at: string | null;
+}
+
+// A topic with the journals it lists, as GET /topics/:id returns it for the
+// dialog that edits them. The list rides only here: the picker and the Settings
+// rows need the count, and every topic's journals in one response is the
+// payload nobody reads.
+export interface TopicDetail extends Topic {
+  journals: Journal[];
 }
 
 export interface TopicRemovalResult {
@@ -32,6 +44,7 @@ export interface TopicPreviewResponse {
   count: number;
 }
 
+// A journal some topic lists (see TopicDetail.journals).
 export interface Journal {
   id: number;
   name: string;
@@ -481,9 +494,17 @@ export interface PollResult {
   error?: string;
 }
 
+// What a change to a topic's journal scope took out.
 export interface JournalRemovalResult {
-  deletedArticles: number; // permanently deleted (kept when a collection file references them)
-  removedFromInterests: number; // distinct papers unlinked from the topic feeds
+  deletedArticles: number; // permanently deleted (kept when saved, or in another topic)
+  removedFromInterests: number; // papers that left the topic's feed
+}
+
+// What PATCH /topics/:id answers: the topic as it now stands, and what a change
+// of scope took out of its feed (zeroes for a rename).
+export interface TopicUpdateResponse {
+  topic: TopicDetail;
+  removed: JournalRemovalResult;
 }
 
 // Everything a whole-library reset destroys, counted. Read once, inside the

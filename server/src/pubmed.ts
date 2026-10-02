@@ -1,4 +1,4 @@
-import { findCatalogByName, getSettings } from "./db.js";
+import { getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
 import { fetchWithTimeout } from "./http.js";
 import {
@@ -380,32 +380,6 @@ export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
   return articles;
 }
 
-// Resolve a user-entered journal name to its stable NLM id + display abbreviation.
-// Prefers the local catalog; otherwise a one-shot PubMed lookup (which also
-// validates — no article means PubMed doesn't recognize the name).
-export async function resolveJournal(
-  rawName: string
-): Promise<{ nlmId: string; name: string } | null> {
-  const cat = findCatalogByName(rawName);
-  if (cat) return { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
-
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    retmax: "1",
-    term: `"${rawName.replace(/"/g, "")}"[Journal]`,
-  });
-  const data = await eutilsJson<{ esearchresult?: { idlist?: string[] } }>(
-    "esearch.fcgi",
-    params
-  );
-  const pmid = data.esearchresult?.idlist?.[0];
-  if (!pmid) return null; // PubMed doesn't recognize this journal name
-  const x = (await fetchArticleXml([pmid])).get(pmid);
-  if (!x?.nlmId) return null;
-  return { nlmId: x.nlmId, name: x.medlineTa || rawName };
-}
-
 // ---------- MEDLINE indexing status ----------
 
 // Whether NLM *currently indexes* this journal for MEDLINE, by NLM Unique ID.
@@ -417,9 +391,7 @@ export async function resolveJournal(
 //
 // The local catalog cannot answer it: J_Medline.txt lists every journal PubMed
 // knows (~38k — preprint servers and PMC-only titles included), not the ~5.2k
-// currently indexed for MEDLINE. Neither can `resolveJournal` falling through to
-// its live-esearch branch, since the miss there only means the name didn't match
-// a catalog title or abbreviation. The NLM Catalog's `currentlyindexed` filter is
+// currently indexed for MEDLINE. The NLM Catalog's `currentlyindexed` filter is
 // the authoritative signal, and one esearch answers it.
 //
 // Best-effort by design: `null` means "couldn't tell" — NCBI unreachable, or an

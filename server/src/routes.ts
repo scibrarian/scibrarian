@@ -11,13 +11,11 @@ import {
   bookmarkFolderByName,
   collectionByName,
   collectionCounts,
-  countJournalArticles,
-  countOffListArticles,
+  countScopeLeaving,
   createBookmarkFolder,
   createCollection,
   countTopicArticles,
   createTopic,
-  createJournal,
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
@@ -27,6 +25,7 @@ import {
   topicByName,
   topicByTerm,
   topicArticleCounts,
+  topicJournals,
   existingPmids,
   gcBlobsIfOrphaned,
   getArticleAbstracts,
@@ -46,28 +45,28 @@ import {
   listPapers,
   listCollections,
   listTopics,
-  listJournals,
   findMeshByUi,
   libraryFilingCounts,
   meshFacetsForSource,
   meshFilingForSource,
   missingOrStaleCitations,
   removeBookmark,
-  removeJournalWithArticles,
   renameBookmarkFolder,
   renameCollection,
   resetLibrary,
   searchCatalog,
   searchMesh,
-  searchesAllPubmed,
   setFileMatched,
-  setSearchAllPubmed,
+  setTopicScope,
   setSetting,
   sourceHasFiles,
   suggestTopicsFromLibrary,
   upsertArticles,
+  type JournalSpec,
   type PaperFilter,
   type PaperSource,
+  type ScopeIds,
+  type TopicScope,
 } from "./db.js";
 import { decodeSource } from "../../shared/source.js";
 import {
@@ -106,7 +105,6 @@ import {
   countMatches,
   fetchArticles,
   isMedlineIndexed,
-  resolveJournal,
   topicTerm,
 } from "./pubmed.js";
 import {
@@ -135,14 +133,17 @@ import type {
   GraphNode,
   GraphResponse,
   HaveResponse,
+  JournalRemovalResult,
   MeshDescriptorRef,
   MeshHeadingsResponse,
   MeshSearchResponse,
   PaperProvenance,
   PapersResponse,
   Settings,
+  TopicDetail,
   TopicPreviewResponse,
   TopicSuggestResponse,
+  TopicUpdateResponse,
   Workspace,
   WorkspaceContentsResponse,
   WorkspacesResponse,
@@ -370,19 +371,20 @@ api.get("/topics", (_req, res) => {
   res.json(topics);
 });
 
+// What a request for headings or a scope comes back as when it can't be used:
+// the response to send, in place of the thing asked for.
+type Refusal = { status: number; error: string };
+
 // The headings a request names, as descriptors — or the refusal to send. One
-// reading for POST /topics and its preview, so the count the dialog shows is
-// for exactly the set the create would accept.
+// reading for POST /topics, its preview and the journal suggestions, so the
+// count the dialog shows is for exactly the set the create would accept.
 //
 // `raw` is descriptor ids, the way the picker holds them. Repeats collapse
 // rather than fail: the same heading twice is the same requirement once.
-type ResolvedHeadings =
-  | { headings: MeshDescriptorRef[] }
-  | { status: number; error: string };
-
-async function resolveHeadings(raw: unknown): Promise<ResolvedHeadings> {
-  const given = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
-  const uis = [...new Set(given.map((v) => String(v).trim()).filter(Boolean))];
+async function resolveHeadings(
+  raw: unknown
+): Promise<{ headings: MeshDescriptorRef[] } | Refusal> {
+  const uis = distinctStrings(raw);
   if (uis.length === 0) return { status: 400, error: "Pick at least one MeSH heading." };
   if (uis.length > MAX_TOPIC_HEADINGS) {
     return { status: 400, error: `A topic can have at most ${MAX_TOPIC_HEADINGS} headings.` };
@@ -401,6 +403,64 @@ async function resolveHeadings(raw: unknown): Promise<ResolvedHeadings> {
   }
   return { headings };
 }
+
+// A list of ids as a request carries it — an array in a body, and in a query
+// either a repeated parameter or, for one value, a bare string.
+function distinctStrings(raw: unknown): string[] {
+  const given = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  return [...new Set(given.map((v) => String(v).trim()).filter(Boolean))];
+}
+
+// The scope a request names, as the journals' ids and nothing else: all the
+// count ahead of a change needs (see ScopeIds).
+function scopeIdsOf(body: unknown): ScopeIds {
+  const b = (body ?? {}) as { allPubmed?: unknown; journals?: unknown };
+  const allPubmed = b.allPubmed === true;
+  return { allPubmed, nlmIds: allPubmed ? [] : distinctStrings(b.journals) };
+}
+
+// The same scope, with each journal resolved: against the journals some topic
+// already lists, and otherwise against the NLM catalog.
+//
+// A journal new to the library gets its MEDLINE check here. Advisory, not a
+// gate: the journal is real and the user asked for it, so it is listed either
+// way — but if NLM doesn't index it for MEDLINE its papers carry no MeSH
+// headings, and topics are MeSH terms. Left unsaid, that journal just quietly
+// never yields a paper. An NCBI hiccup answers null, which stores as "not
+// established yet". One already listed keeps the answer it was given then.
+async function resolveScope(body: unknown): Promise<{ scope: TopicScope } | Refusal> {
+  const ids = scopeIdsOf(body);
+  if (ids.allPubmed) return { scope: { allPubmed: true } };
+  const journals: JournalSpec[] = [];
+  for (const nlmId of ids.nlmIds) {
+    const listed = journalByNlmId(nlmId);
+    if (listed) {
+      journals.push({ nlmId, name: listed.name, medlineIndexed: listed.medline_indexed });
+      continue;
+    }
+    await ensureCatalogLoaded();
+    // By catalog id rather than by name: catalog names aren't unique, so a name
+    // round-trip could land on a different journal than the one picked.
+    const cat = findCatalogByNlmId(nlmId);
+    if (!cat) return { status: 422, error: `"${nlmId}" isn't a journal in the NLM catalog.` };
+    journals.push({
+      nlmId: cat.nlm_id,
+      name: cat.med_abbr || cat.title,
+      medlineIndexed: await isMedlineIndexed(cat.nlm_id),
+    });
+  }
+  return { scope: { allPubmed: false, journals } };
+}
+
+// A journal's name is unique in `journals`, and two catalog entries can share
+// one. The index is the arbiter; this turns its error into something sayable.
+// Anything else is the error middleware's to log and answer.
+function rethrowUnlessJournalNameClash(err: unknown, res: Response): void {
+  if (!/UNIQUE/i.test(errMessage(err))) throw err;
+  res.status(409).json({ error: "Two of those journals go by the same name. Remove one of them." });
+}
+
+const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, journals: topicJournals(id) });
 
 // The topic's counterpart of badName, with the longer cap a topic's name gets
 // (see MAX_TOPIC_NAME_CHARS).
@@ -421,7 +481,8 @@ function badTopicName(res: Response, name: string): boolean {
 // Topics are strictly MeSH headings, one or several that a paper must carry all
 // of: the client sends headings picked from the autocomplete, we validate each
 // against the indexed descriptor list, and build the PubMed term ourselves so a
-// topic can never carry an invalid MeSH term.
+// topic can never carry an invalid MeSH term. With them comes where the topic
+// searches — all of PubMed, or journals of its own.
 api.post(
   "/topics",
   asyncHandler(async (req, res) => {
@@ -431,14 +492,28 @@ api.post(
     const name = String(req.body?.name ?? "").trim() || defaultTopicName(headings);
     if (badTopicName(res, name)) return;
     const term = topicTerm(headings);
-    const existing = topicByTerm(term);
-    if (existing) {
-      return res
-        .status(409)
-        .json({ error: `These headings are already a topic (“${existing.name}”).` });
+    // Asked before the journals are resolved, which can take a request to NCBI
+    // each, and again after: nothing awaits between the second and the insert.
+    const taken = () => {
+      const existing = topicByTerm(term);
+      if (existing) {
+        res
+          .status(409)
+          .json({ error: `These headings are already a topic (“${existing.name}”).` });
+        return true;
+      }
+      return nameTaken(res, "topic", topicByName(name), null);
+    };
+    if (taken()) return;
+    const scoped = await resolveScope(req.body);
+    if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
+    if (taken()) return;
+    try {
+      const topic = createTopic(name, term, headings, scoped.scope);
+      res.status(201).json(topicDetail(topic.id));
+    } catch (err) {
+      rethrowUnlessJournalNameClash(err, res);
     }
-    if (nameTaken(res, "topic", topicByName(name), null)) return;
-    res.status(201).json(createTopic(name, term, headings));
   })
 );
 
@@ -449,7 +524,7 @@ api.post(
 // Owner-only although it is a GET: it serves nobody but the person adding a
 // topic, and each call is a request to NCBI on the owner's key.
 //
-// Registered ahead of /topics/:id/..., like /topics/suggest below.
+// Registered ahead of /topics/:id, like /topics/suggest below.
 api.get(
   "/topics/preview",
   asyncHandler(async (req, res) => {
@@ -464,26 +539,13 @@ api.get(
   })
 );
 
-// Rename. The name is all of a topic that changes: its headings are fixed when
-// it is created (see Topic.headings).
-api.patch("/topics/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const name = String(req.body?.name ?? "").trim();
-  if (badTopicName(res, name)) return;
-  if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
-  if (nameTaken(res, "topic", topicByName(name), id)) return;
-  renameTopic(id, name);
-  res.json(getTopic(id)!);
-});
-
 // Topics worth watching, derived from the subjects the user's own held papers
 // cluster around (suggestTopicsFromLibrary). The counterpart of
 // /journals/suggest: both turn what's already here into the next thing to add,
 // rather than asking someone to guess a term cold.
 //
-// Registered ahead of /topics/:id/... so a literal path segment can't be read
-// as an id — they don't collide today (there is no GET /topics/:id), but the
-// ordering is what keeps that true if one is ever added.
+// Registered ahead of /topics/:id so a literal path segment can't be read as
+// an id.
 api.get("/topics/suggest", (req, res) => {
   const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 12));
   const body: TopicSuggestResponse = {
@@ -492,6 +554,66 @@ api.get("/topics/suggest", (req, res) => {
   };
   res.json(body);
 });
+
+// One topic with the journals it lists, for the dialog that edits them.
+api.get("/topics/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
+  res.json(topicDetail(id));
+});
+
+// How many papers a change of scope would take out of this topic's feed, for
+// the confirm ahead of it. A POST only because the scope being asked about is
+// a list of journals, which belongs in a body; it changes nothing.
+api.post("/topics/:id/scope/preview", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
+  res.json({ count: countScopeLeaving(id, scopeIdsOf(req.body)) });
+});
+
+// Change a topic's name, where it searches, or both. Its headings are not here
+// to change: they are fixed when it is created (see Topic.headings).
+//
+// A change of scope runs under the poll lock, like a reset: a poll of this
+// topic still running would finish against the scope it started with, and then
+// stamp the watermark the change had just cleared (see setTopicScope).
+api.patch(
+  "/topics/:id",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const topic = getTopic(id);
+    if (!topic) return res.status(404).json({ error: "Topic not found." });
+
+    const renaming = req.body?.name !== undefined;
+    const name = renaming ? String(req.body.name ?? "").trim() : topic.name;
+    if (renaming) {
+      if (badTopicName(res, name)) return;
+      if (nameTaken(res, "topic", topicByName(name), id)) return;
+    }
+
+    let removed: JournalRemovalResult = { deletedArticles: 0, removedFromInterests: 0 };
+    if (req.body?.allPubmed !== undefined || req.body?.journals !== undefined) {
+      const scoped = await resolveScope(req.body);
+      if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
+      try {
+        const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
+        if (result === null) {
+          return res
+            .status(409)
+            .json({ error: "A check for new papers is running. Try again in a moment." });
+        }
+        removed = result;
+      } catch (err) {
+        return rethrowUnlessJournalNameClash(err, res);
+      }
+    }
+    // Last, so a scope that was refused doesn't leave the topic renamed.
+    if (renaming) renameTopic(id, name);
+    if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
+    const body: TopicUpdateResponse = { topic: topicDetail(id), removed };
+    res.json(body);
+  })
+);
 
 // How many stored papers removing this topic would delete (for the confirm):
 // papers exclusive to the topic and not saved in a library collection.
@@ -547,9 +669,9 @@ api.get("/mesh/headings", (req, res) => {
 
 // ---------- journals ----------
 
-api.get("/journals", (_req, res) => {
-  res.json(listJournals());
-});
+// There is no list of journals to read or change here: each topic has its own,
+// which travels with the topic (GET and PATCH /topics/:id). What is left under
+// /journals is the catalog a topic's list is picked from.
 
 // Autocomplete against the local NLM catalog, with OpenAlex metrics attached.
 api.get(
@@ -579,131 +701,30 @@ api.get(
   })
 );
 
-// "Auto" suggestions: for each of the user's topics, sample its most recent
-// PubMed papers, rank the journals publishing them, and return the
-// highest-impact per-topic picks not already in the list (journal-suggest.ts).
-// `per_topic` is each topic's top-N cut, taken before already-added journals
-// are subtracted — so a topic already covered contributes nothing on a re-run.
-// Suggestions are only staged client-side — adding still goes through
-// POST /journals.
+// "Auto" suggestions for a topic: sample the most recent PubMed papers its
+// headings match, rank the journals publishing them, and return the
+// highest-impact ones (journal-suggest.ts). Asked by headings rather than by
+// topic, so it serves the dialog while the topic is still being made. The cut
+// is taken before the journals a topic already lists are dropped — the dialog
+// does that — so a topic already covered is offered nothing on a re-run.
+// Suggestions are only staged client-side: they are listed when the topic is
+// saved.
+//
+// Owner-only although it is a GET, for the reason /topics/preview is.
 api.get(
   "/journals/suggest",
   asyncHandler(async (req, res) => {
-    const perTopic = Math.min(30, Math.max(1, Number(req.query.per_topic) || 10));
+    if (!isAdminRequest(req)) {
+      return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
+    }
+    const resolved = await resolveHeadings(req.query.ui);
+    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+    const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
-    const topics = listTopics();
-    const { results, failed } =
-      topics.length > 0
-        ? await suggestJournals(topics, perTopic)
-        : { results: [], failed: [] };
-    res.json({
-      topicCount: topics.length,
-      failed,
-      results: results.map((r) => ({ ...r, metric: round1(r.metric) })),
-    });
+    const results = await suggestJournals(resolved.headings, limit);
+    res.json({ results: results.map((r) => ({ ...r, metric: round1(r.metric) })) });
   })
 );
-
-// The journal list is set aside while every topic searches all of PubMed, and
-// locked with it. Removing a journal deletes its papers, which that search
-// still covers; adds are refused alongside so the list reads as one thing that
-// is either in use or not.
-const JOURNALS_LOCKED = "Turn off “Search all PubMed journals” to change the journal list.";
-
-api.post(
-  "/journals",
-  asyncHandler(async (req, res) => {
-    if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
-    const raw = String(req.body?.name ?? "").trim();
-    const nlmId = String(req.body?.nlmId ?? "").trim();
-    if (!raw && !nlmId) return res.status(400).json({ error: "'name' is required." });
-    try {
-      await ensureCatalogLoaded();
-      // An explicit nlmId (the journal manager sends the catalog row's id) skips
-      // name resolution — catalog names aren't unique, so a name round-trip could
-      // land on a different journal than the one the user picked.
-      let resolved: { nlmId: string; name: string } | null = null;
-      if (nlmId) {
-        const cat = findCatalogByNlmId(nlmId);
-        if (!cat) return res.status(422).json({ error: "Unknown journal id." });
-        resolved = { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
-      } else {
-        // Resolve to the stable NLM id + display abbreviation; null means PubMed
-        // doesn't recognize the name, so we never add a journal that returns nothing.
-        resolved = await resolveJournal(raw);
-      }
-      if (!resolved) {
-        return res.status(422).json({
-          error: `PubMed doesn't recognize "${raw}" as a journal name. Use its official title or NLM abbreviation.`,
-          suggestions: searchCatalog(raw, 5).map((c) => c.med_abbr || c.title),
-        });
-      }
-      const existing = journalByNlmId(resolved.nlmId);
-      if (existing) {
-        return res
-          .status(409)
-          .json({ error: `That journal is already in the list (${existing.name}).` });
-      }
-      // Advisory, not a gate. The journal is real and the user asked for it, so
-      // it's added either way — but if NLM doesn't index it for MEDLINE its
-      // papers carry no MeSH headings, and topics are MeSH terms. Left unsaid,
-      // that journal just quietly never yields a paper. An NCBI hiccup answers
-      // null, which stores as "not established yet" and the backfill retries.
-      const indexed = await isMedlineIndexed(resolved.nlmId);
-      // Asked again, after the awaits: the setting can go on while this waits
-      // on the catalog or NCBI. Nothing awaits between here and the insert.
-      if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
-      res.status(201).json(createJournal(resolved.name, resolved.nlmId, indexed));
-    } catch (err) {
-      // The one error this route reads: a race against another add of the same
-      // journal, which the unique index catches. Anything else is the error
-      // middleware's to log and answer.
-      if (/UNIQUE/i.test(errMessage(err))) {
-        return res.status(409).json({ error: "That journal is already in the list." });
-      }
-      throw err;
-    }
-  })
-);
-
-// "Search all PubMed journals" (see searchesAllPubmed). Its own route rather
-// than a PUT /settings key because turning it off deletes papers; the confirm
-// counts them first with the GET. Registered ahead of /journals/:id/... so
-// "all-pubmed" can't be read as an id.
-api.get("/journals/all-pubmed/article-count", (_req, res) => {
-  res.json({ count: countOffListArticles() });
-});
-
-api.put(
-  "/journals/all-pubmed",
-  asyncHandler(async (req, res) => {
-    const on = req.body?.on;
-    if (typeof on !== "boolean") {
-      return res.status(400).json({ error: "'on' must be true or false." });
-    }
-    // Turning it on stores nothing, so it waits on nothing: a poll already
-    // running read the setting when it started, and finishes the way it began.
-    if (on) return res.json(setSearchAllPubmed(true));
-    // Turning it off is under the poll lock, like a reset. An all-PubMed poll
-    // still running after the setting went off would store papers the deletion
-    // had just taken out, and record the watermark it had just forgotten.
-    const result = await withPollLock(async () => setSearchAllPubmed(false));
-    if (result === null) {
-      return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
-    }
-    res.json(result);
-  })
-);
-
-// How many stored papers removing this journal would delete (for the confirm).
-api.get("/journals/:id/article-count", (req, res) => {
-  res.json({ count: countJournalArticles(Number(req.params.id)) });
-});
-
-api.delete("/journals/:id", (req, res) => {
-  if (searchesAllPubmed()) return res.status(409).json({ error: JOURNALS_LOCKED });
-  res.json(removeJournalWithArticles(Number(req.params.id)));
-});
 
 // ---------- papers (unified rows for the table + timeline, either source) ----------
 
@@ -1522,9 +1543,7 @@ api.post(
     if (results === null) {
       return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
     }
-    // allPubmed only picks the advice for a feed PubMed capped: "watch fewer
-    // journals" means nothing while no journal list is in use.
-    res.json({ results, polledAt: new Date().toISOString(), allPubmed: searchesAllPubmed() });
+    res.json({ results, polledAt: new Date().toISOString() });
   })
 );
 
@@ -1592,10 +1611,6 @@ function settingsResponse() {
   // rebound via server/.env, the other has no .env to edit — so the UI needs to
   // tell the two apart.
   out.desktop = IS_DESKTOP;
-  // Read here, written only through PUT /journals/all-pubmed: it isn't in
-  // SETTING_RULES, so the PUT below can't flip it past the deletion that
-  // turning it off does.
-  out.search_all_pubmed = searchesAllPubmed();
   return out;
 }
 

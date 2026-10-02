@@ -1,17 +1,17 @@
 # Scibrarian
 
-A self-hosted web app that watches the top medical journals you choose and keeps
-a **per-topic feed** of the most recent research, pulled from PubMed/NCBI. Runs
+A self-hosted web app that watches the medical topics you choose and keeps a
+**per-topic feed** of the most recent research, pulled from PubMed/NCBI. Runs
 on your laptop or on a server you control.
 
 - Two workspaces: **Interests** (topics you follow) and **Library** (papers you
   already have), each with a picker for the topic or collection in view.
 - Every workspace renders three ways — **Papers** (sortable table), **Timeline**
   (reverse-chronological), and **Graph** — switched from the header.
-- You specify the journals and the topics in **Settings** (the gear icon in the
-  header). Each topic is a MeSH heading, so PubMed is searched by that heading.
-  **Search all PubMed journals** sets the journal list aside and searches every
-  journal instead; turning it back off removes the papers from other journals.
+- A topic is one or more MeSH headings — a paper has to carry all of them — and
+  searches either all of PubMed or a list of journals of its own. Add one from
+  the Interests picker, and edit it from the pencil beside its name or from
+  **Settings** (the gear icon in the header).
 - **Check for new papers** polls on demand; optional scheduled polling (off by
   default) runs on a cron expression you set in Settings. A cron only fires while
   the process is up, so if a schedule was missed while it was down — a closed
@@ -46,14 +46,15 @@ npm run dev        # starts the API (http://localhost:3001) and the UI (http://l
 
 Then open the UI URL printed by Vite (default http://localhost:5173).
 
-1. Open **Settings** — the gear icon in the header.
-2. Add the journals you want to watch (e.g. *New England Journal of Medicine*, *Lancet*,
-   *JAMA*, *Nature Medicine*).
-3. Add the topics you want to track. Each topic is a **MeSH heading** — search the
-   vocabulary and pick one (typing a synonym like `type 2 diabetes` or `NIDDM` finds
-   the official term `Diabetes Mellitus, Type 2`).
-4. Click **Check for new papers**. Pick a topic from the workspace dropdown to see
-   its papers, and switch between Papers / Timeline / Graph in the header.
+1. Switch to **Interests** and choose **Add topic…** from the dropdown.
+2. Pick the topic's **MeSH headings** — search the vocabulary and pick one or more
+   (typing a synonym like `type 2 diabetes` or `NIDDM` finds the official term
+   `Diabetes Mellitus, Type 2`). The dialog shows how many papers they match together.
+3. Choose where it searches: **All of PubMed**, or **Only these journals** (e.g.
+   *New England Journal of Medicine*, *Lancet*, *JAMA*, *Nature Medicine*) — a broad
+   topic needs a list, since PubMed returns at most 9,999 papers for one search.
+4. Click **Check for new papers**. Pick a topic from the dropdown to see its
+   papers, and switch between Papers / Timeline / Graph in the header.
 
 ## Tests
 
@@ -73,7 +74,7 @@ image.
 Two separate places, split by who owns the value:
 
 - **App settings** live in the UI (gear icon) and are stored in the database:
-  journals, topics, the polling schedule, an NCBI API key (higher rate limit),
+  topics and their journals, the polling schedule, an NCBI API key (higher rate limit),
   your contact email, and the sharing options. Nothing here belongs in a file.
 - **Deploy settings** live in `server/.env` — copy `.env.example` to start.
   These cover `PORT`, `HOST`, `DB_PATH`, `BLOBS_DIR`, and `ADMIN_TOKEN`.

@@ -16,7 +16,6 @@ afterEach(cleanup);
 // pro={null} so ProPanel never mounts: it fetches on its own and has nothing to
 // do with any of this.
 const api = vi.hoisted(() => ({
-  getJournals: vi.fn(),
   getTopics: vi.fn(),
   getSettings: vi.fn(),
   cacheStats: vi.fn(),
@@ -33,11 +32,9 @@ const DESKTOP: AppSettings = {
   has_api_key: false,
   share_urls: [],
   desktop: true,
-  search_all_pubmed: false,
 };
 
 function renderSettings() {
-  api.getJournals.mockResolvedValue([]);
   api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(DESKTOP);
   return render(
@@ -47,6 +44,7 @@ function renderSettings() {
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}
       onPapersRemoved={() => {}}
+      onTopicSaved={() => {}}
       onLibraryReset={() => {}}
     />
   );
