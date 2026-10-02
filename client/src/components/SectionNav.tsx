@@ -1,5 +1,14 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Search, Library, Bookmark, ChevronDown, Plus, Folder, FolderSync } from "lucide-react";
+import {
+  Search,
+  Library,
+  Bookmark,
+  ChevronDown,
+  Pencil,
+  Plus,
+  Folder,
+  FolderSync,
+} from "lucide-react";
 import { api } from "../api";
 import type { BookmarkFolder, Collection, CollectionSelection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -109,6 +118,7 @@ export function SectionNav({
   onCreateFolder,
   onCreateCollection,
   onAddTopic,
+  onEditTopic,
   onShareError,
 }: {
   mode: Mode;
@@ -132,9 +142,12 @@ export function SectionNav({
   onCreateFolder: () => void;
   onCreateCollection: () => void;
   onAddTopic: () => void;
+  // Open the active topic for editing — its name, and what it searches.
+  onEditTopic: () => void;
   onShareError: (message: string) => void;
 }) {
   const activeCollection = collections.find((c) => c.id === activeCollectionId);
+  const activeTopic = topics.find((t) => t.id === activeTopicId);
 
   // Every mode's picker is the same thing — a named list with count badges and
   // an admin-only "add" row — so each is described here and rendered by one
@@ -377,6 +390,19 @@ export function SectionNav({
               onError={onShareError}
             />
           )}
+        {/* Owner-only, and in the same slot for the same reason: beside the
+            picker it is unambiguous which topic gets edited. A topic's settings
+            are otherwise a trip to Settings and back to the papers they decide. */}
+        {loaded && mode === "interests" && !settingsActive && isAdmin && activeTopic && (
+          <button
+            className="share-btn"
+            onClick={onEditTopic}
+            aria-label={`Edit topic “${activeTopic.name}”`}
+            title="Edit this topic"
+          >
+            <Pencil size={16} aria-hidden />
+          </button>
+        )}
       </div>
     </nav>
   );

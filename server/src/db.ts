@@ -26,6 +26,7 @@ import type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
   MeshHeading,
@@ -78,6 +79,23 @@ db.exec(`
     term TEXT NOT NULL,
     last_polled_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- The MeSH headings a topic requires, all of them: topics.term is these
+  -- joined with AND (topicTerm in pubmed-parse.ts). Written once, with the
+  -- topic, and never changed after — see Topic.headings.
+  --
+  -- The heading text is stored rather than joined to mesh_descriptors, for the
+  -- reason article_mesh stores it: that table is the current year's vocabulary
+  -- and is replaced wholesale, and a topic has to go on naming what it searches
+  -- for after NLM retires the heading.
+  CREATE TABLE IF NOT EXISTS topic_terms (
+    topic_id INTEGER NOT NULL,
+    ui TEXT NOT NULL,               -- descriptor id, e.g. D003924
+    name TEXT NOT NULL,             -- heading as it was picked
+    position INTEGER NOT NULL,      -- pick order, which the default name follows
+    PRIMARY KEY (topic_id, ui),
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
   );
 
   -- medline_indexed: does NLM currently index this journal for MEDLINE? 1/0, or
@@ -529,26 +547,71 @@ const TOPIC_SELECT = `SELECT t.id, t.name, t.term, t.last_polled_at, t.created_a
      s.polled_at AS pubmed_polled_at
    FROM topics t LEFT JOIN topic_pubmed_scans s ON s.topic_id = t.id`;
 
+// A topics row as selected, before its headings are read from topic_terms.
+type TopicRow = Omit<Topic, "headings">;
+
+const topicHeadingsStmt = db.prepare(
+  "SELECT ui, name FROM topic_terms WHERE topic_id = ? ORDER BY position"
+);
+
+// One query a topic rather than a join: a join would repeat the topic's row
+// for every heading and need regrouping, and there are tens of topics at most.
+function toTopic(row: TopicRow): Topic {
+  return { ...row, headings: topicHeadingsStmt.all(row.id) as unknown as MeshDescriptorRef[] };
+}
+
 export function listTopics(): Topic[] {
-  return db.prepare(`${TOPIC_SELECT} ORDER BY t.id ASC`).all() as unknown as Topic[];
+  const rows = db.prepare(`${TOPIC_SELECT} ORDER BY t.id ASC`).all() as unknown as TopicRow[];
+  return rows.map(toTopic);
 }
 
 export function getTopic(id: number): Topic | undefined {
-  return db.prepare(`${TOPIC_SELECT} WHERE t.id = ?`).get(id) as Topic | undefined;
+  const row = db.prepare(`${TOPIC_SELECT} WHERE t.id = ?`).get(id) as TopicRow | undefined;
+  return row && toTopic(row);
 }
 
 // Used to reject adding the same topic twice. Identity is the PubMed term, which
-// is built deterministically from the MeSH heading, so the same heading always
-// yields the same term; NOCASE also catches an equivalent legacy/seed term.
+// is built deterministically from the MeSH headings (topicTerm sorts them), so
+// the same set always yields the same term whatever order it was picked in;
+// NOCASE also catches an equivalent legacy/seed term.
 export function topicByTerm(term: string): Topic | undefined {
-  return db.prepare(`${TOPIC_SELECT} WHERE t.term = ? COLLATE NOCASE`).get(term) as
-    | Topic
+  const row = db.prepare(`${TOPIC_SELECT} WHERE t.term = ? COLLATE NOCASE`).get(term) as
+    | TopicRow
     | undefined;
+  return row && toTopic(row);
 }
 
-export function createTopic(name: string, term: string): Topic {
-  const info = db.prepare("INSERT INTO topics (name, term) VALUES (?, ?)").run(name, term);
-  return getTopic(Number(info.lastInsertRowid))!;
+const insertTopicTermStmt = db.prepare(
+  "INSERT INTO topic_terms (topic_id, ui, name, position) VALUES (?, ?, ?, ?)"
+);
+
+// `headings` in pick order. The topic and its headings land together or not at
+// all: a topic row without them would poll its term correctly and then have
+// nothing to say about what that term is made of.
+export const createTopic = transaction(
+  (name: string, term: string, headings: MeshDescriptorRef[] = []): Topic => {
+    const info = db.prepare("INSERT INTO topics (name, term) VALUES (?, ?)").run(name, term);
+    const id = Number(info.lastInsertRowid);
+    headings.forEach((h, i) => insertTopicTermStmt.run(id, h.ui, h.name, i));
+    return getTopic(id)!;
+  }
+);
+
+// Two topics with one name are indistinguishable in the picker, the same reason
+// collections and bookmark folders are unique by name. Checked by the routes
+// rather than by a unique index, which topics never had: while a topic was one
+// heading, its name was the heading and the term check above covered both.
+export function topicByName(name: string): Topic | undefined {
+  const row = db.prepare(`${TOPIC_SELECT} WHERE t.name = ? COLLATE NOCASE`).get(name) as
+    | TopicRow
+    | undefined;
+  return row && toTopic(row);
+}
+
+// The name is a label and nothing else: the term a topic polls, and the
+// headings it is made of, are fixed when it is created.
+export function renameTopic(id: number, name: string): void {
+  db.prepare("UPDATE topics SET name = ? WHERE id = ?").run(name, id);
 }
 
 // Which of a topic's articles a removal would permanently delete: papers whose
@@ -2561,12 +2624,14 @@ export function searchMesh(q: string, limit = 10): MeshSearchHit[] {
     .all(like, prefix, prefix, like, limit) as unknown as MeshSearchHit[];
 }
 
-// Validation: exact (case-insensitive) match on the canonical heading. Used by
-// POST /topics to reject anything that isn't a real MeSH descriptor.
-export function findMeshByName(name: string): MeshDescriptor | undefined {
-  return db
-    .prepare("SELECT ui, name FROM mesh_descriptors WHERE name = ? COLLATE NOCASE LIMIT 1")
-    .get(name) as MeshDescriptor | undefined;
+// Validation: used by POST /topics to reject anything that isn't a real MeSH
+// descriptor. By descriptor id, which is what the topic dialog sends — a
+// heading picked from the search is named by its id, so nothing rides on the
+// spelling of a name between the pick and the request.
+export function findMeshByUi(ui: string): MeshDescriptor | undefined {
+  return db.prepare("SELECT ui, name FROM mesh_descriptors WHERE ui = ?").get(ui) as
+    | MeshDescriptor
+    | undefined;
 }
 
 // ---------- whole-library reset ----------

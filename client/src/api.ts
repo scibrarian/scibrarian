@@ -35,6 +35,7 @@ import type {
   ProSyncStatus,
   RefreshResponse,
   ShareLinkResponse,
+  TopicPreviewResponse,
   TopicRemovalResult,
   TopicSuggestResponse,
   UploadResponse,
@@ -149,10 +150,21 @@ export const api = {
   getAuth: () => req<AuthStatus>("/api/auth"),
 
   getTopics: () => req<Topic[]>("/api/topics"),
-  // Topics are MeSH headings: the server validates `name` against its indexed
-  // descriptor list and builds the PubMed term itself.
-  createTopic: (name: string) =>
-    req<Topic>("/api/topics", { method: "POST", body: JSON.stringify({ name }) }),
+  // A topic is one or more MeSH headings, sent as descriptor ids: the server
+  // validates each against its indexed descriptor list and builds the PubMed
+  // term itself. Without a name it is called after its headings.
+  createTopic: (headings: string[], name?: string) =>
+    req<Topic>("/api/topics", {
+      method: "POST",
+      body: JSON.stringify(name ? { headings, name } : { headings }),
+    }),
+  // How many papers those headings match together, before the topic exists.
+  previewTopic: (headings: string[]) =>
+    req<TopicPreviewResponse>(
+      `/api/topics/preview?${headings.map((ui) => `ui=${encodeURIComponent(ui)}`).join("&")}`
+    ),
+  renameTopic: (id: number, name: string) =>
+    req<Topic>(`/api/topics/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   topicArticleCount: (id: number) => req<{ count: number }>(`/api/topics/${id}/article-count`),
   deleteTopic: (id: number) =>
     req<TopicRemovalResult>(`/api/topics/${id}`, { method: "DELETE" }),

@@ -25,6 +25,7 @@ import { warmFacets } from "./components/MeshFilter";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, ToolbarSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
+import { TopicDialog } from "./components/TopicDialog";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
 import { HaveCheck, HAVE_CHECK_TITLE } from "./components/HaveCheck";
@@ -96,6 +97,9 @@ export default function App() {
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
+  // The topic dialog as the section bar opens it: closed, creating a topic, or
+  // editing this one. Settings has its own, over its own list.
+  const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
   // "Do I already have this?" lives in the header rather than inside a
   // section: the question arrives from outside the app (an assignment, a
   // reference list someone sent) and has to be askable without first navigating
@@ -1121,7 +1125,8 @@ export default function App() {
           onSelectCollection={selectCollection}
           onCreateFolder={() => setNamingFolder(true)}
           onCreateCollection={() => setNamingCollection(true)}
-          onAddTopic={() => setShowSettings(true)}
+          onAddTopic={() => setTopicDialog("new")}
+          onEditTopic={() => activeTopic && setTopicDialog(activeTopic)}
           onShareError={setStatus}
         />
       </div>
@@ -1308,6 +1313,18 @@ export default function App() {
         // session, and a paper copied into the collection already on screen
         // didn't appear in it.
         onChanged={handleCollectionChanged}
+      />
+
+      <TopicDialog
+        open={topicDialog != null}
+        topic={topicDialog === "new" ? null : topicDialog}
+        onClose={() => setTopicDialog(null)}
+        onSaved={(saved) => {
+          const created = topicDialog === "new";
+          // A new topic is where the reader goes next: it has no papers until
+          // it is checked, and its own view is where that button is.
+          void loadTopics().then(() => created && selectTopic(saved.id));
+        }}
       />
 
       <PromptDialog

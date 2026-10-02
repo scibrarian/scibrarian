@@ -23,6 +23,8 @@ import {
   deleteCollectionFile,
   removeCollectionPapers,
   removeTopicWithArticles,
+  renameTopic,
+  topicByName,
   topicByTerm,
   topicArticleCounts,
   existingPmids,
@@ -33,6 +35,7 @@ import {
   getCollection,
   getCollectionFile,
   getSettings,
+  getTopic,
   graphPapersForSource,
   findCatalogByNlmId,
   journalByNlmId,
@@ -44,7 +47,7 @@ import {
   listCollections,
   listTopics,
   listJournals,
-  findMeshByName,
+  findMeshByUi,
   libraryFilingCounts,
   meshFacetsForSource,
   meshFilingForSource,
@@ -99,7 +102,13 @@ import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
 import { anyTransferInFlight } from "./pro-storage.js";
-import { fetchArticles, isMedlineIndexed, resolveJournal } from "./pubmed.js";
+import {
+  countMatches,
+  fetchArticles,
+  isMedlineIndexed,
+  resolveJournal,
+  topicTerm,
+} from "./pubmed.js";
 import {
   isValidCron,
   nothingToPoll,
@@ -126,11 +135,13 @@ import type {
   GraphNode,
   GraphResponse,
   HaveResponse,
+  MeshDescriptorRef,
   MeshHeadingsResponse,
   MeshSearchResponse,
   PaperProvenance,
   PapersResponse,
   Settings,
+  TopicPreviewResponse,
   TopicSuggestResponse,
   Workspace,
   WorkspaceContentsResponse,
@@ -155,10 +166,13 @@ import {
   MAX_BULK_BOOKMARK_PMIDS,
   MAX_LINKS_PER_REQUEST,
   MAX_NAME_CHARS,
+  MAX_TOPIC_HEADINGS,
+  MAX_TOPIC_NAME_CHARS,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_FILES,
 } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
+import { defaultTopicName } from "../../shared/topic.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -356,29 +370,111 @@ api.get("/topics", (_req, res) => {
   res.json(topics);
 });
 
-// Topics are strictly MeSH headings: the client sends a heading picked from the
-// autocomplete, we validate it against the indexed descriptor list, and build
-// the PubMed term ourselves so a topic can never carry an invalid MeSH term.
+// The headings a request names, as descriptors — or the refusal to send. One
+// reading for POST /topics and its preview, so the count the dialog shows is
+// for exactly the set the create would accept.
+//
+// `raw` is descriptor ids, the way the picker holds them. Repeats collapse
+// rather than fail: the same heading twice is the same requirement once.
+type ResolvedHeadings =
+  | { headings: MeshDescriptorRef[] }
+  | { status: number; error: string };
+
+async function resolveHeadings(raw: unknown): Promise<ResolvedHeadings> {
+  const given = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const uis = [...new Set(given.map((v) => String(v).trim()).filter(Boolean))];
+  if (uis.length === 0) return { status: 400, error: "Pick at least one MeSH heading." };
+  if (uis.length > MAX_TOPIC_HEADINGS) {
+    return { status: 400, error: `A topic can have at most ${MAX_TOPIC_HEADINGS} headings.` };
+  }
+  await ensureMeshLoaded();
+  const headings: MeshDescriptorRef[] = [];
+  for (const ui of uis) {
+    const descriptor = findMeshByUi(ui);
+    if (!descriptor) {
+      return {
+        status: 422,
+        error: `"${ui}" isn't a MeSH heading. Pick headings from the suggestions.`,
+      };
+    }
+    headings.push({ ui: descriptor.ui, name: descriptor.name });
+  }
+  return { headings };
+}
+
+// The topic's counterpart of badName, with the longer cap a topic's name gets
+// (see MAX_TOPIC_NAME_CHARS).
+function badTopicName(res: Response, name: string): boolean {
+  if (!name) {
+    res.status(400).json({ error: "'name' is required." });
+    return true;
+  }
+  if (name.length > MAX_TOPIC_NAME_CHARS) {
+    res
+      .status(400)
+      .json({ error: `A topic name can be at most ${MAX_TOPIC_NAME_CHARS} characters.` });
+    return true;
+  }
+  return false;
+}
+
+// Topics are strictly MeSH headings, one or several that a paper must carry all
+// of: the client sends headings picked from the autocomplete, we validate each
+// against the indexed descriptor list, and build the PubMed term ourselves so a
+// topic can never carry an invalid MeSH term.
 api.post(
   "/topics",
   asyncHandler(async (req, res) => {
-    const name = String(req.body?.name ?? "").trim();
-    if (!name) return res.status(400).json({ error: "'name' is required." });
-    await ensureMeshLoaded();
-    const descriptor = findMeshByName(name);
-    if (!descriptor) {
-      return res.status(422).json({
-        error: `"${name}" isn't a MeSH heading. Pick a term from the suggestions.`,
-        suggestions: searchMesh(name, 5).map((m) => m.name),
-      });
+    const resolved = await resolveHeadings(req.body?.headings);
+    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+    const { headings } = resolved;
+    const name = String(req.body?.name ?? "").trim() || defaultTopicName(headings);
+    if (badTopicName(res, name)) return;
+    const term = topicTerm(headings);
+    const existing = topicByTerm(term);
+    if (existing) {
+      return res
+        .status(409)
+        .json({ error: `These headings are already a topic (“${existing.name}”).` });
     }
-    const term = `"${descriptor.name}"[MeSH]`;
-    if (topicByTerm(term)) {
-      return res.status(409).json({ error: `"${descriptor.name}" is already a topic.` });
-    }
-    res.status(201).json(createTopic(descriptor.name, term));
+    if (nameTaken(res, "topic", topicByName(name), null)) return;
+    res.status(201).json(createTopic(name, term, headings));
   })
 );
+
+// How many papers a set of headings matches across all of PubMed, before the
+// topic exists — what tells someone a combination is a few hundred papers, or
+// more than PubMed will hand over in one search.
+//
+// Owner-only although it is a GET: it serves nobody but the person adding a
+// topic, and each call is a request to NCBI on the owner's key.
+//
+// Registered ahead of /topics/:id/..., like /topics/suggest below.
+api.get(
+  "/topics/preview",
+  asyncHandler(async (req, res) => {
+    if (!isAdminRequest(req)) {
+      return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
+    }
+    const resolved = await resolveHeadings(req.query.ui);
+    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+    const term = topicTerm(resolved.headings);
+    const body: TopicPreviewResponse = { term, count: await countMatches(term) };
+    res.json(body);
+  })
+);
+
+// Rename. The name is all of a topic that changes: its headings are fixed when
+// it is created (see Topic.headings).
+api.patch("/topics/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name ?? "").trim();
+  if (badTopicName(res, name)) return;
+  if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
+  if (nameTaken(res, "topic", topicByName(name), id)) return;
+  renameTopic(id, name);
+  res.json(getTopic(id)!);
+});
 
 // Topics worth watching, derived from the subjects the user's own held papers
 // cluster around (suggestTopicsFromLibrary). The counterpart of

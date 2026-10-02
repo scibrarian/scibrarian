@@ -8,7 +8,7 @@ import {
   type Candidate,
   type JournalSuggestion,
 } from "./journal-rank.js";
-import { EUTILS_BATCH, fetchJournalIds, searchRecent } from "./pubmed.js";
+import { EUTILS_BATCH, fetchJournalIds, searchRecent, topicTerm } from "./pubmed.js";
 import { chunk, errMessage, httpError } from "./util.js";
 
 // "Auto" journal suggestions: for each topic, sample its most recent PubMed
@@ -52,8 +52,15 @@ export async function suggestJournals(
   const failed: string[] = [];
   for (const t of topics) {
     try {
-      const term = `"${t.name.replace(/"/g, "")}"[majr]`;
-      const pmids = await searchRecent(term, SAMPLE, mindate);
+      // From the headings, not the name: a topic's name is a label someone can
+      // change, and for a topic of several headings it was never a heading.
+      let pmids =
+        t.headings.length > 0
+          ? await searchRecent(topicTerm(t.headings, "majr"), SAMPLE, mindate)
+          : [];
+      // Nothing recent is *mainly* about every heading at once — common for a
+      // narrow combination — so sample what the topic actually polls instead.
+      if (pmids.length === 0) pmids = await searchRecent(t.term, SAMPLE, mindate);
       const ids: string[] = [];
       for (const batch of chunk(pmids, EUTILS_BATCH)) {
         ids.push(...(await fetchJournalIds(batch)));

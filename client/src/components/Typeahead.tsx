@@ -28,6 +28,9 @@ interface TypeaheadProps<T> {
   debounceMs?: number;
   idleItems?: T[];
   idleLabel?: string;
+  // The box takes nothing more — the topic dialog's, once a topic has as many
+  // headings as it may. The placeholder is where the parent says why.
+  disabled?: boolean;
 }
 
 export function Typeahead<T>({
@@ -43,6 +46,7 @@ export function Typeahead<T>({
   debounceMs = 200,
   idleItems,
   idleLabel,
+  disabled = false,
 }: TypeaheadProps<T>) {
   const [results, setResults] = useState<T[]>([]);
   // The results list is a combobox popup: it hides on Escape/blur (dismissed)
@@ -182,6 +186,7 @@ export function Typeahead<T>({
           if (!idle) setListDismissed(false);
         }}
         placeholder={placeholder}
+        disabled={disabled}
         autoComplete="off"
         role="combobox"
         aria-expanded={listOpen}

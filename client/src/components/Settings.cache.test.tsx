@@ -19,7 +19,6 @@ const api = vi.hoisted(() => ({
   getJournals: vi.fn(),
   getTopics: vi.fn(),
   getSettings: vi.fn(),
-  suggestTopics: vi.fn(),
   cacheStats: vi.fn(),
   clearCache: vi.fn(),
 }));
@@ -41,7 +40,6 @@ function renderSettings() {
   api.getJournals.mockResolvedValue([]);
   api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(DESKTOP);
-  api.suggestTopics.mockResolvedValue({ results: [], heldPapers: 0, unchecked: 0 });
   return render(
     <Settings
       pro={null}

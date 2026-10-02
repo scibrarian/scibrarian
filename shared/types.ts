@@ -8,6 +8,11 @@ export interface Topic {
   id: number;
   name: string;
   term: string;
+  // The MeSH headings a paper must carry, all of them, in the order they were
+  // picked. `term` is these joined with AND. Fixed once the topic exists: its
+  // feed is every stored paper matching the term, and changing the term would
+  // leave that untrue until the whole history was listed again.
+  headings: MeshDescriptorRef[];
   last_polled_at: string | null;
   created_at: string;
   // The watermark while "Search all PubMed journals" is on, kept apart from
@@ -18,6 +23,13 @@ export interface Topic {
 
 export interface TopicRemovalResult {
   deletedArticles: number;
+}
+
+// What GET /topics/preview answers before a topic exists: the PubMed term a set
+// of headings makes, and how many papers it matches across all of PubMed.
+export interface TopicPreviewResponse {
+  term: string;
+  count: number;
 }
 
 export interface Journal {

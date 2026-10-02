@@ -1616,6 +1616,13 @@ input:focus {
   min-width: 0;
 }
 
+/* A row's trailing actions, side by side and never squeezed by a long label. */
+.list-actions {
+  display: flex;
+  flex: none;
+  gap: 14px;
+}
+
 .term {
   font-size: 12px;
   color: var(--muted);
@@ -2526,6 +2533,151 @@ code {
   .jm-list {
     height: 200px;
   }
+}
+
+/* ---------- topic dialog ---------- */
+
+.topic-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.topic-form > input {
+  width: 100%;
+}
+
+.topic-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* The first label sits under the dialog's heading, which brings its own gap. */
+.topic-label.first {
+  margin-top: 0;
+}
+
+/* What would otherwise be a sentence under the field: read once, and in the
+   way from then on. */
+.info-tip {
+  display: inline-flex;
+  color: var(--muted);
+  cursor: help;
+}
+
+/* The headings and the box that adds one, drawn as a single field: the chips
+   are what has been typed into it. The typeahead's popup hangs off this box
+   rather than off the input inside it, which is only as wide as the row has
+   left after the chips. */
+.topic-headings {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.topic-headings:focus-within {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.topic-headings .typeahead {
+  position: static;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.topic-headings .typeahead input {
+  border: none;
+  padding: 4px 5px;
+  background: transparent;
+}
+
+.topic-headings .typeahead input:focus {
+  outline: none;
+}
+
+.topic-chips {
+  display: contents;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.topic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 6px 3px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.topic-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 2px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.topic-chip button:hover {
+  background: var(--panel);
+}
+
+/* A topic that exists: its headings are a fact about it, not a field. */
+.topic-headings.fixed {
+  background: none;
+}
+
+.topic-headings.fixed .topic-chip {
+  padding-right: 10px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+/* One line whatever it says, so picking a heading doesn't resize the dialog. */
+.topic-count {
+  min-height: 20px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.topic-count strong {
+  color: var(--text);
+}
+
+.topic-count.warn,
+.topic-count.warn strong {
+  color: var(--warn);
 }
 
 /* ---------- section nav (Interests / Library) ---------- */

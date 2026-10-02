@@ -10,6 +10,7 @@ import {
   parsePubDate,
   parseSummaries,
   parseArticleSet,
+  topicTerm,
 } from "./pubmed-parse.js";
 
 describe("buildTerm", () => {
@@ -20,6 +21,35 @@ describe("buildTerm", () => {
   it("ANDs the term with an OR-clause of journal names, stripping quotes", () => {
     expect(buildTerm("neoplasms[MeSH Terms]", ["Lancet", 'The "BMJ"'])).toBe(
       '(neoplasms[MeSH Terms]) AND ("Lancet"[Journal] OR "The BMJ"[Journal])'
+    );
+  });
+});
+
+describe("topicTerm", () => {
+  const SLEEP = { ui: "D012890", name: "Sleep" };
+  const ATHERO = { ui: "D050197", name: "Atherosclerosis" };
+
+  it("is the bare heading for a topic of one", () => {
+    // Unparenthesised and unjoined, which is what a topic's term was before it
+    // could hold more than one heading — so a single heading still collides
+    // with a topic made that way.
+    expect(topicTerm([ATHERO])).toBe('"Atherosclerosis"[MeSH]');
+  });
+
+  it("ANDs several, in descriptor-id order whichever order they were picked in", () => {
+    const term = '"Sleep"[MeSH] AND "Atherosclerosis"[MeSH]';
+    expect(topicTerm([ATHERO, SLEEP])).toBe(term);
+    expect(topicTerm([SLEEP, ATHERO])).toBe(term);
+  });
+
+  it("asks the major-topic field when told to", () => {
+    expect(topicTerm([ATHERO, SLEEP], "majr")).toBe('"Sleep"[majr] AND "Atherosclerosis"[majr]');
+  });
+
+  it("survives buildTerm's journal clause as one requirement", () => {
+    // The AND inside the term must not bind to the journals' OR.
+    expect(buildTerm(topicTerm([ATHERO, SLEEP]), ["Lancet", "BMJ"])).toBe(
+      '("Sleep"[MeSH] AND "Atherosclerosis"[MeSH]) AND ("Lancet"[Journal] OR "BMJ"[Journal])'
     );
   });
 });

@@ -15,25 +15,16 @@ import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { JournalManager, MeshBadge } from "./JournalManager";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
-import { Typeahead } from "./Typeahead";
+import { TopicDialog } from "./TopicDialog";
 import { ProPanel } from "./ProPanel";
 import type {
   AppSettings,
   CacheStats,
   Topic,
   Journal,
-  MeshSearchResult,
   ProCollectionStamp,
   ProStatus,
-  TopicSuggestResponse,
 } from "../types";
-
-// What the library's own filing suggests watching, when it has anything to say.
-const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
-
-// One option in the topic search: a MeSH hit while typing, or, with the box
-// empty, a heading the Library's filing suggests, which carries its counts.
-type TopicOption = MeshSearchResult & { papers?: number; majorPapers?: number };
 
 // What "Delete all data" is asking about, in the terms the app is navigated in.
 //
@@ -85,7 +76,6 @@ export function Settings({
 }) {
   const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
-  const [suggested, setSuggested] = useState<TopicSuggestResponse>(NO_SUGGESTIONS);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
@@ -99,7 +89,8 @@ export function Settings({
   // whenever it arrived. See `ready` below.
   const [proReady, setProReady] = useState(false);
 
-  const [topicQuery, setTopicQuery] = useState("");
+  // The topic dialog: closed, creating a topic, or editing this one.
+  const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -155,20 +146,12 @@ export function Settings({
   } | null>(null);
 
   function reload() {
-    Promise.all([
-      api.getJournals(),
-      api.getTopics(),
-      api.getSettings(),
-      // Advisory, and the panel is useful without it — a failure here must not
-      // take the journals and topics down with it.
-      api.suggestTopics().catch(() => NO_SUGGESTIONS),
-    ])
-      .then(([j, d, s, sug]) => {
+    Promise.all([api.getJournals(), api.getTopics(), api.getSettings()])
+      .then(([j, d, s]) => {
         setJournals(j);
         setTopics(d);
         setSettings(s);
         setBaseline(s);
-        setSuggested(sug);
       })
       // errorMessage rather than `e.message`: a rejection reason need not be an
       // Error, and reading .message off one that isn't puts an empty banner on
@@ -189,23 +172,6 @@ export function Settings({
     if (settings?.desktop === true) reloadCache();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.desktop]);
-
-  // `name` is a MeSH heading — picked from the autocomplete, or typed and
-  // submitted (the server validates it and rejects anything that isn't a real
-  // heading, so we don't need to gate it here).
-  async function addTopic(name: string) {
-    setError(null);
-    const n = name.trim();
-    if (!n) return;
-    try {
-      await api.createTopic(n);
-      setTopicQuery("");
-      reload();
-      onDataChanged();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
 
   async function askRemoveTopic(d: Topic) {
     setError(null);
@@ -423,27 +389,6 @@ export function Settings({
 
   const allPubmed = settings?.search_all_pubmed === true;
 
-  // Topics the Library's own filing points at, so the first topic doesn't have
-  // to be guessed cold. Drawn from papers the user holds files for rather than
-  // from the topic feeds, which would mostly recommend the topics that put those
-  // papers there. Ranked by how many held papers each heading is a *main*
-  // subject of; the count shown is how many carry it at all.
-  //
-  // Offered by the topic search when its box is empty, not as chips above the
-  // list: they can only arrive with the rest of the page, and their height
-  // depends on how many there are and how they wrap, so wherever they sat in
-  // the flow they pushed the panels below down when loading finished.
-  const libraryPicks: TopicOption[] = suggested.results.map((s) => ({ ...s, synonym: null }));
-  const libraryNote =
-    libraryPicks.length > 0
-      ? `From your Library (${plural(suggested.heldPapers, "filed paper")})`
-      : // The one case worth explaining rather than leaving blank: there are
-        // held papers, but their headings haven't been fetched yet.
-        suggested.unchecked > 0
-        ? `Still reading MeSH headings for ${plural(suggested.unchecked, "paper")} in your ` +
-          "Library — suggestions will appear here once that finishes."
-        : undefined;
-
   // The reading itself, or null when there is not one — in flight, or failed.
   const cacheStats = cache === null || cache === "unreadable" ? null : cache;
   // Pressable when there is something to clear, and when we cannot tell whether
@@ -460,54 +405,14 @@ export function Settings({
         <h2>Topics</h2>
         <p className="hint">
           Each topic appears under{" "}
-          <strong><Search size={14} className="inline-icon" aria-hidden /> Interests</strong>. Search the{" "}
-          <strong>MeSH</strong> vocabulary and pick a heading — typing a synonym
-          (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds the official
-          term (<code>Diabetes Mellitus, Type 2</code>). PubMed is searched by that MeSH heading.
+          <strong><Search size={14} className="inline-icon" aria-hidden /> Interests</strong>. A topic is
+          one or more <strong>MeSH</strong> headings, and a paper has to carry all of them to
+          appear — typing a synonym (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds
+          the official term (<code>Diabetes Mellitus, Type 2</code>).
         </p>
-        <form
-          className="inline-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            addTopic(topicQuery);
-          }}
-        >
-          <Typeahead<TopicOption>
-            value={topicQuery}
-            onChange={setTopicQuery}
-            search={(q) => api.searchMesh(q).then((r) => r.results)}
-            onSelect={(m) => addTopic(m.name)}
-            getKey={(m) => m.ui}
-            idleItems={libraryPicks}
-            idleLabel={libraryNote}
-            placeholder={
-              libraryPicks.length > 0
-                ? "Search MeSH terms, or click for suggestions from your Library…"
-                : "Search MeSH terms (e.g. type 2 diabetes)…"
-            }
-            id="topic-typeahead"
-            renderItem={(m) => (
-              <>
-                <span className="ta-title">{m.name}</span>
-                {m.synonym && (
-                  <span className="ta-synonym">
-                    <span className="sr-only">, matched synonym </span>
-                    {m.synonym}
-                  </span>
-                )}
-                {m.papers != null && (
-                  <span
-                    className="ta-count"
-                    title={`${m.majorPapers} of ${m.papers} are mainly about this`}
-                  >
-                    <span className="sr-only">, filed papers: </span>
-                    {m.papers}
-                  </span>
-                )}
-              </>
-            )}
-          />
-        </form>
+        <button type="button" className="accent-btn" onClick={() => setTopicDialog("new")}>
+          Add topic…
+        </button>
 
         <ul className="list scroll-list topic-list">
           {!ready ? (
@@ -525,9 +430,16 @@ export function Settings({
                     <strong title={d.name}>{d.name}</strong>
                     <code className="term" title={d.term}>{d.term}</code>
                   </span>
-                  <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
-                    Remove
-                  </button>
+                  {/* A div for the reason .list-label is one: a span in a list
+                      row is stacked into a column. */}
+                  <div className="list-actions">
+                    <button className="link-btn" onClick={() => setTopicDialog(d)}>
+                      Edit
+                    </button>
+                    <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
+                      Remove
+                    </button>
+                  </div>
                 </li>
               ))}
               {topics.length === 0 && <li className="muted">No topics yet.</li>}
@@ -880,6 +792,15 @@ export function Settings({
         />
       </section>
 
+      <TopicDialog
+        open={topicDialog != null}
+        topic={topicDialog === "new" ? null : topicDialog}
+        onClose={() => setTopicDialog(null)}
+        onSaved={() => {
+          reload();
+          onDataChanged();
+        }}
+      />
       <JournalManager
         open={managingJournals}
         onClose={() => setManagingJournals(false)}
