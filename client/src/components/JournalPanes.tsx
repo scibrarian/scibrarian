@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, ArrowLeft, Info, TriangleAlert } from "lucide-react";
+import { ArrowRight, ArrowLeft, TriangleAlert } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, round1, titleCaseJournal } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { Banner } from "./Banner";
+import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton } from "./Skeleton";
 import type { Journal, JournalSearchResult, MeshDescriptorRef, Topic } from "../types";
 
@@ -313,9 +314,7 @@ export function JournalPanes({
         </button>
         {/* What Auto does and what the numbers are, read once and in the way
             from then on — so beside the button rather than under it. */}
-        <span className="info-tip" role="img" title={AUTO_HELP} aria-label={AUTO_HELP}>
-          <Info size={14} aria-hidden />
-        </span>
+        <InfoTip text={AUTO_HELP} />
         {copyFrom.length > 0 && (
           <select
             aria-label="Copy another topic's journals"

@@ -1,10 +1,11 @@
 import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
-import { Info, X } from "lucide-react";
+import { X } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, plural } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
+import { InfoTip } from "./InfoTip";
 import { JournalPanes, listedFromStored, type ListedJournal } from "./JournalPanes";
 import { Typeahead } from "./Typeahead";
 import {
@@ -349,14 +350,7 @@ export function TopicDialog({
 
           <div className="topic-label first">
             <span id="topic-headings-label">MeSH headings</span>
-            <span
-              className="info-tip"
-              role="img"
-              title={topic ? FIXED : ALL_REQUIRED}
-              aria-label={topic ? FIXED : ALL_REQUIRED}
-            >
-              <Info size={14} aria-hidden />
-            </span>
+            <InfoTip text={topic ? FIXED : ALL_REQUIRED} />
           </div>
           <div className={`topic-headings${topic ? " fixed" : ""}`}>
             {shownHeadings.length > 0 && (

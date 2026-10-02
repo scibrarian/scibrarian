@@ -223,8 +223,8 @@ export function ListRowSkeleton({
   );
 }
 
-// Mirrors the Polling & NCBI stacked form (label / control / hint groups plus
-// the save button) so the panel doesn't pop in when settings arrive.
+// Mirrors the Polling & NCBI stacked form (label / control groups plus the save
+// button) so the panel doesn't pop in when settings arrive.
 export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
   return (
     <div className="stacked-form" aria-busy="true" aria-label="Loading settings">
@@ -232,7 +232,6 @@ export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
         <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <SkeletonBar w={140} h={14} />
           <SkeletonBar w="100%" h={36} />
-          <SkeletonBar w={["55%", "70%", "62%", "48%"][i % 4]} h={12} />
         </div>
       ))}
       <SkeletonBar w={116} h={36} style={{ borderRadius: 8 }} />

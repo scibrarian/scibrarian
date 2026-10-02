@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Search, Share2, Check, Trash2 } from "lucide-react";
+import { Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useReveal } from "../lib/hooks";
@@ -12,6 +12,7 @@ import {
 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
+import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { TopicDialog, type TopicSaveOutcome } from "./TopicDialog";
 import { ProPanel } from "./ProPanel";
@@ -36,6 +37,47 @@ const RESET_WARNING =
   "All papers saved to library, interests, and bookmarks will be deleted. " +
   "All library collections, interest topics, and bookmark folders will also be deleted. " +
   "This cannot be undone.";
+
+// The help behind each heading's and field's info icon. It used to be printed
+// under them, a paragraph a panel, and Settings was mostly paragraphs: the
+// page says what is so, and this says how it works for whoever asks.
+const HELP = {
+  topics:
+    "Each topic appears under Interests. A topic is one or more MeSH headings, and a paper " +
+    "has to carry all of them to appear — typing a synonym (e.g. type 2 diabetes or NIDDM) " +
+    "finds the official term (Diabetes Mellitus, Type 2). Each topic searches all of PubMed, " +
+    "or journals of its own.",
+  polling:
+    "When on, every topic is checked for new papers on the schedule below; “Check for new " +
+    "papers” works either way. A topic with no journals chosen is skipped.",
+  cron: "Default 0 6 * * * = daily at 6am. Format: min hour day month weekday.",
+  email:
+    "Optional but recommended. Sent to NCBI and OpenAlex so they can contact you before " +
+    "blocking access if requests ever exceed their limits.",
+  apiKey: "Optional. A free key raises the rate limit from ~3 to ~10 requests/sec.",
+  sharingOff:
+    "To let others view your server, set HOST and ADMIN_TOKEN in server/.env and restart — " +
+    "see the README’s “Sharing your server” section.",
+  sharingOn:
+    "Send one of these addresses to anyone on your network. They can view everything except " +
+    "stored PDFs — share those with the share buttons, or turn on Open Library below. " +
+    "Changing anything still requires the admin token.",
+  openLibrary:
+    "When on, viewers can freely download stored files and collection zips — no share link " +
+    "needed. When off, files are owner-only and shared via expiring links.",
+  cache:
+    "The cache allows anything you annotate and save to go back into the library. If you " +
+    "clear the cache, you will have to reopen files before editing them again.",
+};
+
+// The same for "Delete all data", which says one thing more in a Pro build.
+const resetHelp = (pro: boolean) =>
+  "Permanently deletes everything in this library: every paper, topic, journal, saved " +
+  "folder, collection, and every stored PDF. Your polling and NCBI settings are kept, and " +
+  "so are the MeSH and journal reference lists — so the pickers still work when you start " +
+  "again." +
+  (pro ? " Your organization pairing and license are kept too." : "") +
+  " This cannot be undone.";
 
 // Whether a topic has anywhere to search — see canPoll on the server.
 const canCheck = (t: Topic) => t.all_pubmed || t.journalCount > 0;
@@ -360,15 +402,9 @@ export function Settings({
       <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
       <section className="panel">
-        <h2>Topics</h2>
-        <p className="hint">
-          Each topic appears under{" "}
-          <strong><Search size={14} className="inline-icon" aria-hidden /> Interests</strong>. A topic is
-          one or more <strong>MeSH</strong> headings, and a paper has to carry all of them to
-          appear — typing a synonym (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds
-          the official term (<code>Diabetes Mellitus, Type 2</code>). Each topic searches all of
-          PubMed, or journals of its own.
-        </p>
+        <h2 className="with-tip">
+          Topics <InfoTip text={HELP.topics} />
+        </h2>
         <button type="button" className="accent-btn" onClick={() => setTopicDialog("new")}>
           Add topic…
         </button>
@@ -414,7 +450,9 @@ export function Settings({
         {ready && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
             <label>
-              Scheduled polling
+              <span className="label-line">
+                Scheduled polling <InfoTip text={HELP.polling} />
+              </span>
               <span className="switch-row">
                 <input
                   type="checkbox"
@@ -423,47 +461,39 @@ export function Settings({
                   checked={settings.poll_enabled}
                   onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
                 />
-                <span className="hint">
-                  When on, every topic is checked for new papers on the schedule below;
-                  “Check for new papers” works either way. A topic with no journals chosen
-                  is skipped.
-                </span>
               </span>
             </label>
             <label>
-              Poll schedule (cron)
+              <span className="label-line">
+                Poll schedule (cron) <InfoTip text={HELP.cron} />
+              </span>
               <input
                 value={settings.poll_cron}
                 onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
                 disabled={!settings.poll_enabled}
               />
-              <span className="hint">
-                Default <code>0 6 * * *</code> = daily at 6am. Format: min hour day month weekday.
-              </span>
             </label>
             <label>
-              Contact email
+              <span className="label-line">
+                Contact email <InfoTip text={HELP.email} />
+              </span>
               <input
                 value={settings.ncbi_email}
                 onChange={(e) => setSettings({ ...settings, ncbi_email: e.target.value })}
                 placeholder="optional"
               />
-              <span className="hint">
-                Optional but recommended. Sent to NCBI and OpenAlex so they can contact you
-                before blocking access if requests ever exceed their limits.
-              </span>
             </label>
             <label>
-              NCBI API key {settings.has_api_key && <span className="pill">set <Check size={12} className="inline-icon" aria-hidden /></span>}
+              <span className="label-line">
+                NCBI API key <InfoTip text={HELP.apiKey} />
+                {settings.has_api_key && <span className="pill">set <Check size={12} className="inline-icon" aria-hidden /></span>}
+              </span>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={settings.has_api_key ? "•••••• (leave blank to keep)" : "optional"}
               />
-              <span className="hint">
-                Optional. A free key raises the rate limit from ~3 to ~10 requests/sec.
-              </span>
             </label>
             <button type="submit" disabled={!settingsDirty}>
               Save settings
@@ -513,28 +543,28 @@ export function Settings({
           its own null. */}
       {(!ready || settings?.desktop === false) && (
         <section className="panel">
-          <h2>Sharing</h2>
+          <h2 className="with-tip">
+            Sharing
+            {/* Which help depends on what the settings say, so none until they
+                have: the wrong one for a moment is worse than a moment without. */}
+            {ready && settings && (
+              <InfoTip
+                text={settings.share_urls.length === 0 ? HELP.sharingOff : HELP.sharingOn}
+              />
+            )}
+          </h2>
           {!ready && (
             <p className="hint" aria-busy="true" aria-label="Loading sharing info">
-              <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
               <SkeletonBar w="60%" h={12} />
             </p>
           )}
           {ready && settings &&
             (settings.share_urls.length === 0 ? (
-              <p className="hint">
-                Only this machine can connect right now. To let others view your server, set{" "}
-                <code>HOST</code> and <code>ADMIN_TOKEN</code> in <code>server/.env</code> and
-                restart — see the README&rsquo;s &ldquo;Sharing your server&rdquo; section.
-              </p>
+              // What is so, which stays on the page; how to change it is the
+              // help beside the heading.
+              <p className="hint">Only this machine can connect right now.</p>
             ) : (
               <>
-                <p className="hint">
-                  Send one of these addresses to anyone on your network. They can view
-                  everything except stored PDFs — share those with the{" "}
-                  <Share2 size={14} className="inline-icon" aria-hidden /> buttons, or turn
-                  on Open Library below. Changing anything still requires the admin token.
-                </p>
                 <ul className="list">
                   {settings.share_urls.map((url) => (
                     <li key={url}>
@@ -548,8 +578,9 @@ export function Settings({
                   ))}
                 </ul>
                 <label className="open-library">
-                  <span>
-                    Open Library {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
+                  <span className="label-line">
+                    Open Library <InfoTip text={HELP.openLibrary} />
+                    {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
                   </span>
                   <span className="switch-row">
                     <input
@@ -559,11 +590,6 @@ export function Settings({
                       checked={settings.library_open}
                       onChange={(e) => toggleOpenLibrary(e.target.checked)}
                     />
-                    <span className="hint">
-                      When on, viewers can freely download stored files and collection zips —
-                      no share link needed. When off, files are owner-only and shared via
-                      expiring links.
-                    </span>
                   </span>
                 </label>
               </>
@@ -578,19 +604,24 @@ export function Settings({
           errand — reclaiming disk — and the destructive control stays last. */}
       {settings?.desktop === true && (
         <section className="panel">
-          <h2>Cached copies</h2>
+          <h2 className="with-tip">
+            Cached copies <InfoTip text={HELP.cache} />
+          </h2>
+          {/* What the cache holds right now, which is the part worth a line on
+              the page; what a cache is for is the help beside the heading. A
+              space until the first reading lands, so the line it lands on is
+              already there. */}
           <p className="hint">
-            The cache allows anything you annotate and save to go back into the library.
-            If you clear the cache, you will have to reopen files before editing them again.
+            {cache === null && "\u00a0"}
             {cacheStats !== null && cacheStats.files > 0 && (
-              <> Currently {plural(cacheStats.files, "file")}, {formatBytes(cacheStats.bytes)}.</>
+              <>Currently {plural(cacheStats.files, "file")}, {formatBytes(cacheStats.bytes)}.</>
             )}
-            {cacheStats !== null && cacheStats.files === 0 && <> Nothing is cached right now.</>}
+            {cacheStats !== null && cacheStats.files === 0 && <>Nothing is cached right now.</>}
             {/* Said rather than left blank. A reader who cannot see a size and
                 cannot press the button has no way to tell a cache that is empty
                 from one this panel failed to ask about. */}
             {cache === "unreadable" && (
-              <> The cache could not be read just now — clearing it still works, and reports what it did.</>
+              <>The cache could not be read just now — clearing it still works, and reports what it did.</>
             )}
           </p>
           {/* The one thing in this section a reader may have to act on, so it
@@ -641,15 +672,9 @@ export function Settings({
           the button alone, not the panel, so the section doesn't read as an
           alarm about the settings above it. */}
       <section className="panel">
-        <h2>Delete all data</h2>
-        <p className="hint">
-          Permanently deletes everything in this library: every paper, topic, journal, saved
-          folder, collection, and every stored PDF. Your polling and NCBI settings are kept,
-          and so are the MeSH and journal reference lists — so the pickers still work when you
-          start again.
-          {pro && " Your organization pairing and license are kept too."} This cannot be
-          undone.
-        </p>
+        <h2 className="with-tip">
+          Delete all data <InfoTip text={resetHelp(pro != null)} />
+        </h2>
         <button
           type="button"
           className="danger-btn"
@@ -666,7 +691,7 @@ export function Settings({
         {/* Below the button, where the panels above this one put their banners
             under the heading instead.
             Deliberate, and the reason is the button rather than the banner: a
-            message inserted above the hint pushes the control down by its own
+            message inserted above it pushes the control down by its own
             height, out from under the pointer that just pressed it — which for
             the failure case is the pointer about to press it again. Last in the
             panel, it displaces nothing. */}

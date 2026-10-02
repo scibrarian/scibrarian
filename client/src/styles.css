@@ -1158,6 +1158,23 @@ body {
   margin: 0 0 6px;
 }
 
+/* A heading whose explanation is the info icon beside it rather than a
+   paragraph under it. The paragraph used to supply the gap to whatever came
+   next, so the heading takes it on. */
+.panel h2.with-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+/* A field's label with its info icon, and any badge, on one line. */
+.label-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .hint {
   color: var(--muted);
   font-size: 13px;
@@ -1586,6 +1603,9 @@ input:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* The second line borrows .hint's colours when it is a warning, and must not
+     take its paragraph margin with them: that row stood 12px taller. */
+  margin: 0;
 }
 
 .list li span:not(.mesh-warn) {
@@ -2556,12 +2576,31 @@ code {
   margin-top: 0;
 }
 
-/* What would otherwise be a sentence under the field: read once, and in the
-   way from then on. */
+/* See InfoTip. */
 .info-tip {
   display: inline-flex;
   color: var(--muted);
   cursor: help;
+}
+
+/* Its bubble. Drawn in a portal and fixed to the viewport, at a position the
+   component measures, so nothing that scrolls or clips can cut it off; above
+   the dialogs it is used in, and under the toast. Inverted like the toast,
+   which is the app's other message that floats over the page. */
+.tip-bubble {
+  position: fixed;
+  z-index: 150;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.25);
+  pointer-events: none;
+  animation: overlay-in var(--dur-fast) var(--ease-out);
 }
 
 /* The headings and the box that adds one, drawn as a single field: the chips
