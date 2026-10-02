@@ -2,7 +2,6 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
-import { MAX_MESH_FILTER } from "./routes.js";
 
 // What the subject filter does with more descriptors than it will take.
 //
@@ -32,11 +31,18 @@ let topic: number;
 // Shape-valid descriptor ids — parseFilter drops anything that isn't before it
 // counts, so a malformed one would be tested as a shorter list than it looks.
 const ui = (i: number) => `D${String(i).padStart(6, "0")}`;
-const AT_THE_CAP = Array.from({ length: MAX_MESH_FILTER }, (_, i) => ui(i));
 // The one heading the paper is not filed under, appended so that trimming to
 // the cap would drop precisely the id that excludes it.
 const EXCLUDES_IT = "D999999";
-const PAST_THE_CAP = [...AT_THE_CAP, EXCLUDES_IT];
+
+// The cap, and the two lists built from it, are read in beforeAll rather than
+// imported at the top. routes.js imports db.js, which opens its database as it
+// loads, and a static import runs before openTempDb has set DB_PATH — so this
+// file opened the developer's own library instead of a temp one, and left its
+// "Reflux" topic and its paper there on every run of the suite.
+let MAX_MESH_FILTER: number;
+let AT_THE_CAP: string[];
+let PAST_THE_CAP: string[];
 
 const PMID = "10000001";
 
@@ -46,6 +52,9 @@ const papers = async (res: Response) =>
 
 beforeAll(async () => {
   db = await openTempDb("mesh-filter-cap");
+  ({ MAX_MESH_FILTER } = await import("./routes.js"));
+  AT_THE_CAP = Array.from({ length: MAX_MESH_FILTER }, (_, i) => ui(i));
+  PAST_THE_CAP = [...AT_THE_CAP, EXCLUDES_IT];
   // index.ts builds the app at module scope and only listens inside start(),
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
