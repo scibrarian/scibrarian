@@ -2963,8 +2963,12 @@ html {
   transition: background-color var(--dur-fast) var(--ease);
 }
 
+/* .picked is the row that was just chosen, for as long as the menu takes to
+   close: Radix drops the highlight with the focus the moment it starts, and
+   the row would fade back to white under the pointer that picked it. */
 .picker-option:hover,
-.picker-option[data-highlighted] {
+.picker-option[data-highlighted],
+.picker-option.picked {
   background: var(--accent-soft);
   outline: none;
 }
