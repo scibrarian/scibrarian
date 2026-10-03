@@ -16,9 +16,9 @@ import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { TopicDialog, type TopicSaveOutcome } from "./TopicDialog";
 import { ProPanel } from "./ProPanel";
+import type { ViewerCache } from "../lib/viewerCache";
 import type {
   AppSettings,
-  CacheStats,
   Topic,
   TopicDetail,
   ProCollectionStamp,
@@ -79,6 +79,7 @@ function scopeLine(t: Topic): string {
 
 export function Settings({
   pro,
+  viewerCache,
   onDataChanged,
   onPairingChanged,
   onSharingChanged,
@@ -89,6 +90,10 @@ export function Settings({
   // Null in a free build, which is the only thing gating the shared-holdings
   // panel — there is no separate feature flag to keep in step with it.
   pro: ProStatus | null;
+  // The desktop viewer cache, which the shell owns: its header draws a warning
+  // from the same reading this panel prints, and either can clear it. Inert on
+  // every other build, where the section that uses it is not drawn.
+  viewerCache: ViewerCache;
   onDataChanged: () => void;
   // This instance connected to an organization's library or left one, so the
   // `pro` block above is now stale. Passed straight through to the panel that
@@ -160,17 +165,11 @@ export function Settings({
     kind: "info" | "error";
     message: string;
   } | null>(null);
-  // The last reading of the desktop viewer cache. Three states rather than two:
-  // null while the first fetch is in flight, "unreadable" when it failed, and
-  // the stats when it worked.
-  //
-  // The middle one used to be spelled the same as the first. Since the section
-  // is drawn on settings.desktop rather than on this fetch, a failed read left
-  // it showing no size beside a button greyed out for good — a control the
-  // reader could neither press nor account for, with nothing that would try
-  // again while the panel stayed open.
-  const [cache, setCache] = useState<CacheStats | "unreadable" | null>(null);
-  const [clearingCache, setClearingCache] = useState(false);
+  // The last reading of the desktop viewer cache, and whether a clear is
+  // running — both the shell's now (see ViewerCache for the reading's three
+  // states). The section is drawn on settings.desktop rather than on this
+  // reading, which is why "unreadable" has to be told apart from "not yet".
+  const { cache, clearing: clearingCache } = viewerCache;
   // Reported in this panel rather than through savedMsg or the shell's notice,
   // for the reason resetResult is: both of those draw far from the button that
   // caused them — savedMsg under the Polling heading, three panels up — and a
@@ -209,11 +208,14 @@ export function Settings({
       .catch((e) => setError(errorMessage(e)));
   }
 
-  // Once the settings say this is the desktop build, and not before: the route
-  // 404s everywhere else, and asking anyway would put a failed request in the
-  // console of every server deployment on every visit to this page.
+  // A fresh reading for a panel that is about to print one. The shell re-reads
+  // when the window regains focus, which covers the cache growing; this covers
+  // the reader who came here to look at the number. Once the settings say this
+  // is the desktop build, and not before: the route 404s everywhere else, and
+  // asking anyway would put a failed request in the console of every server
+  // deployment on every visit to this page.
   useEffect(() => {
-    if (settings?.desktop === true) reloadCache();
+    if (settings?.desktop === true) viewerCache.reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.desktop]);
 
@@ -247,32 +249,16 @@ export function Settings({
     }
   }
 
-  // Its own fetch rather than a member of reload()'s Promise.all: that one
-  // runs on every deployment, and this route is not there to answer on most of
-  // them. Called from the effect below once the settings say which build this
-  // is, and again after a clear.
-  function reloadCache() {
-    api
-      .cacheStats()
-      .then(setCache)
-      .catch(() => setCache("unreadable"));
-  }
-
+  // Asks first: requestClear puts up the shell's confirmation, and answers with
+  // what the clear did once the reader has said to go ahead. Null is them
+  // backing out, which leaves nothing to report.
   async function clearCache() {
     setCacheResult(null);
-    setClearingCache(true);
     try {
-      const cleared = await api.clearCache();
-      // Re-read rather than assuming empty. A copy whose changes the library
-      // could not take is still there, and so are its bytes — writing zeroes in
-      // here would tell the reader the cache is empty while the section's own
-      // message says it is not.
-      reloadCache();
-      setCacheResult({ kind: "info", message: describeCacheCleared(cleared) });
+      const cleared = await viewerCache.requestClear();
+      if (cleared) setCacheResult({ kind: "info", message: describeCacheCleared(cleared) });
     } catch (err) {
       setCacheResult({ kind: "error", message: errorMessage(err) });
-    } finally {
-      setClearingCache(false);
     }
   }
 

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Settings } from "./Settings";
+import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings, Topic, TopicDetail } from "../types";
 
 afterEach(cleanup);
@@ -50,6 +51,18 @@ const TOPIC: Topic = {
 };
 const RENAMED: Topic = { ...TOPIC, name: "Rest" };
 
+// The desktop viewer cache, which the shell hands down. This is not that build,
+// so it is the one the shell holds there: nothing read, and nothing to clear.
+const NO_CACHE: ViewerCache = {
+  cache: null,
+  clearing: false,
+  confirming: false,
+  reload: () => {},
+  requestClear: async () => null,
+  proceed: () => {},
+  cancel: () => {},
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.getSettings.mockResolvedValue(SAVED);
@@ -70,6 +83,7 @@ async function renderWithAnEdit() {
   render(
     <Settings
       pro={null}
+      viewerCache={NO_CACHE}
       onDataChanged={() => {}}
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}

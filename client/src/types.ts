@@ -176,6 +176,10 @@ export interface AuthStatus {
   // piece of Pro UI keys off. Optional so a response from an older server
   // (or a test stub) doesn't have to carry it.
   pro?: ProStatusRow | null;
+  // True in the desktop build. The same fact AppSettings.desktop carries, here
+  // as well because the shell needs it and only the owner's Settings panel
+  // loads that one. Optional for the reason `pro` is.
+  desktop?: boolean;
 }
 
 // What /api/settings exposes: never the API key itself, just whether one is set.

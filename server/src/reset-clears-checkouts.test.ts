@@ -61,6 +61,10 @@ describe("deleting all data", () => {
     // build that never had the problem.
     const res = await fetch(`${base}/api/settings`, { headers: OWNER });
     expect(((await res.json()) as { desktop: boolean }).desktop).toBe(true);
+    // And /auth agrees, which is the one the shell reads: its cache warning
+    // asks for the viewer cache only when this says there is one to ask about.
+    const auth = await fetch(`${base}/api/auth`, { headers: OWNER });
+    expect(((await auth.json()) as { desktop: boolean }).desktop).toBe(true);
   });
 
   it("takes the checked-out copies with it", async () => {

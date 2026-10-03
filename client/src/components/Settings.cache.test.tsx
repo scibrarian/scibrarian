@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Settings } from "./Settings";
+import { ClearCacheDialog } from "./CacheChip";
+import { useViewerCache } from "../lib/viewerCache";
 import type { AppSettings } from "../types";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 // The "Cached copies" section, and what it does when it cannot read the cache.
 //
@@ -34,20 +39,34 @@ const DESKTOP: AppSettings = {
   desktop: true,
 };
 
+// The reading and the clear are the shell's, handed down, so this stands in for
+// the shell: the same hook App calls, and the confirmation it renders beside
+// the panel. Real ones rather than a stubbed ViewerCache, because what these
+// tests pin is what the panel does with a request that failed or a clear that
+// was confirmed — and a stub would be asserting against itself.
+function Shell() {
+  const viewerCache = useViewerCache(true);
+  return (
+    <>
+      <Settings
+        pro={null}
+        viewerCache={viewerCache}
+        onDataChanged={() => {}}
+        onPairingChanged={() => {}}
+        onSharingChanged={() => {}}
+        onPapersRemoved={() => {}}
+        onTopicSaved={() => {}}
+        onLibraryReset={() => {}}
+      />
+      <ClearCacheDialog viewerCache={viewerCache} />
+    </>
+  );
+}
+
 function renderSettings() {
   api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(DESKTOP);
-  return render(
-    <Settings
-      pro={null}
-      onDataChanged={() => {}}
-      onPairingChanged={() => {}}
-      onSharingChanged={() => {}}
-      onPapersRemoved={() => {}}
-      onTopicSaved={() => {}}
-      onLibraryReset={() => {}}
-    />
-  );
+  return render(<Shell />);
 }
 
 const clearButton = (): HTMLButtonElement =>
@@ -82,5 +101,52 @@ describe("the cached copies section when the reading fails", () => {
 
     await waitFor(() => expect(screen.getByText(/changes that are not in the library/)).toBeTruthy());
     expect(clearButton().disabled).toBe(false);
+  });
+});
+
+// The button used to clear on the press. It asks now, because a paper still
+// open in a viewer is the one thing the clear cannot check for itself.
+describe("clearing from the cached copies section", () => {
+  const QUESTION = "Confirm all of your library papers are closed before continuing.";
+
+  async function pressClear() {
+    await waitFor(() => expect(clearButton().disabled).toBe(false));
+    fireEvent.click(clearButton());
+  }
+
+  it("asks first, and Cancel deletes nothing", async () => {
+    api.cacheStats.mockResolvedValue({ files: 3, bytes: 2048, unsaved: 0 });
+    renderSettings();
+    await pressClear();
+
+    expect(screen.getByText(QUESTION)).toBeTruthy();
+    expect(api.clearCache).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByText(QUESTION)).toBeNull());
+    expect(api.clearCache).not.toHaveBeenCalled();
+    // Nothing happened, so there is nothing for the panel to report.
+    expect(screen.queryByText(/Cleared/)).toBeNull();
+  });
+
+  it("clears on Proceed and reports under its own button", async () => {
+    api.cacheStats
+      .mockResolvedValueOnce({ files: 3, bytes: 2048, unsaved: 0 })
+      // Settings asks again on mount; both of those come before the clear.
+      .mockResolvedValueOnce({ files: 3, bytes: 2048, unsaved: 0 })
+      .mockResolvedValue({ files: 0, bytes: 0, unsaved: 0 });
+    api.clearCache.mockResolvedValue({ files: 3, bytes: 2048, unsaved: 0, blocked: 0 });
+    renderSettings();
+    await pressClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Proceed" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Cleared 3 cached files, freeing 2 KB.")).toBeTruthy()
+    );
+    expect(api.clearCache).toHaveBeenCalledTimes(1);
+    // And the size beside it is the one read back afterwards.
+    await waitFor(() => expect(screen.getByText(/Nothing is cached right now/)).toBeTruthy());
   });
 });

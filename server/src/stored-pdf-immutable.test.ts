@@ -148,6 +148,14 @@ describe("on a server deployment", () => {
     expect(((await res.json()) as { desktop: boolean }).desktop).toBe(false);
   });
 
+  it("tells the shell the same, before it has a token to ask with", async () => {
+    // /auth is where the header's cache warning learns which build this is, and
+    // it is what keeps a hosted instance from asking for the two routes below
+    // on every load. No credential: the client calls it before it has one.
+    const res = await fetch(`${base}/api/auth`);
+    expect(((await res.json()) as { desktop: boolean }).desktop).toBe(false);
+  });
+
   it("has no viewer cache to read or clear", async () => {
     for (const [method, url] of [
       ["GET", `${base}/api/cache`],

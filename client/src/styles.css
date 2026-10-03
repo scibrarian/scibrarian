@@ -178,12 +178,25 @@ body {
      the bar has breathing room above its controls once it's stuck to the
      viewport edge. The gap between the two is unchanged: 2 + 12. */
   padding: 20px 0 2px;
+  /* Only ever felt when the row is full: space-between keeps the two halves far
+     apart otherwise. It is what stops the workspace picker touching the first
+     control once the picker has started giving up width (see .brand). */
+  gap: 8px;
 }
 
+/* May be narrower than its contents, which is the first half of an arrangement
+   the header needed once the cache warning could join it: on the desktop the
+   row is brand, workspace picker, and up to four controls, and with the warning
+   showing there is not quite room for all of it at the app's full width. What
+   gives is the workspace name, which already knows how to truncate — rather
+   than the controls wrapping, which put the gear on a row of its own and moved
+   the whole page down each time the warning came or went. The other halves are
+   .workspace-trigger's min-width and the rule after .header-actions. */
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .brand h1 {
@@ -253,6 +266,10 @@ body {
   align-items: center;
   gap: 6px;
   max-width: 220px;
+  /* Lets it go below the width of its name when the header is full — the name
+     ellipsises, as it does at max-width. Without this a flex item's minimum is
+     its content, and the brand could not give anything up. */
+  min-width: 0;
   margin-left: 4px;
   padding: 4px 8px;
   background: var(--bg);
@@ -497,6 +514,23 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 12px;
+}
+
+/* ...but not while the workspace name still has width to give. A flex row
+   shares a shortfall between its items, so without this the controls took their
+   part of it and wrapped while the name beside them was still drawn in full.
+   Holding them at their own width hands the whole shortfall to .brand.
+
+   Only where that is safe. Much below this the brand has nothing left to give —
+   its fixed parts and the full set of controls need about 790px of row, and at
+   860 the name is down to its last 15px — so the wrap above is still the
+   fallback it always was. The desktop window cannot be made narrower than 900px
+   (electron/main.mjs), frame included, so this covers every size the build with
+   a workspace picker and a cache warning can be. */
+@media (min-width: 860px) {
+  .header-actions {
+    flex-shrink: 0;
+  }
 }
 
 .updated {
@@ -4001,6 +4035,47 @@ html {
   .have-btn-label {
     display: none;
   }
+}
+
+/* ---------- viewer cache warning ---------- */
+
+/* The header's "142 MB cached", shown on the desktop build once the viewer
+   cache is over its limit (see CacheChip).
+
+   .have-btn's box, so it sits in the row as one of the row's own controls
+   rather than as something laid over it — same padding, type and radius, and
+   the transparent border is there only to keep the two the same height. What
+   differs is the fill: the warning pair, which is what says this one is
+   reporting a state where its neighbours are offering a tool. Both tokens are
+   redefined for dark mode, so there is nothing to override there.
+
+   The line-height is the other half of matching that box. .have-btn is as tall
+   as its 16px glyph; this has no glyph (see CacheChip for why), so it takes the
+   same 16px from its line instead of sitting a pixel short beside it. */
+.cache-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--warn-soft);
+  border: 1px solid transparent;
+  color: var(--warn);
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.cache-chip:hover:not(:disabled) {
+  border-color: var(--warn);
+}
+
+/* While the clear runs. Not dimmed: the spinner and "Clearing…" are already
+   saying it is busy, and a faded warning reads as one that went away. */
+.cache-chip:disabled {
+  cursor: default;
 }
 
 .have-form {

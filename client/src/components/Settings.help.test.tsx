@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Settings } from "./Settings";
+import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings } from "../types";
 
 afterEach(cleanup);
@@ -37,6 +38,18 @@ const SHARED: AppSettings = {
   desktop: false,
 };
 
+// The desktop viewer cache, which the shell hands down. This is not that build,
+// so it is the one the shell holds there: nothing read, and nothing to clear.
+const NO_CACHE: ViewerCache = {
+  cache: null,
+  clearing: false,
+  confirming: false,
+  reload: () => {},
+  requestClear: async () => null,
+  proceed: () => {},
+  cancel: () => {},
+};
+
 async function renderSettings(settings: AppSettings = SHARED) {
   api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(settings);
@@ -45,6 +58,7 @@ async function renderSettings(settings: AppSettings = SHARED) {
   render(
     <Settings
       pro={null}
+      viewerCache={NO_CACHE}
       onDataChanged={() => {}}
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}

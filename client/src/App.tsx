@@ -3,6 +3,7 @@ import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api
 import { errorMessage, plural } from "./lib/format";
 import { useReveal } from "./lib/hooks";
 import { showToast } from "./lib/toast";
+import { useViewerCache } from "./lib/viewerCache";
 import type {
   AuthStatus,
   BookmarkFolder,
@@ -34,6 +35,7 @@ import {
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
 import { HaveCheck, HAVE_CHECK_TITLE } from "./components/HaveCheck";
+import { CacheChip, ClearCacheDialog } from "./components/CacheChip";
 import {
   Settings as SettingsIcon,
   Lock,
@@ -145,6 +147,14 @@ export default function App() {
   // the UI hangs off this being non-null, so a free build renders none of it
   // without a single feature check of its own.
   const [pro, setPro] = useState<ProStatus | null>(null);
+  // Whether this is the desktop build, as /api/auth reports it. False until it
+  // answers, which is also the answer for every other build.
+  const [desktop, setDesktop] = useState(false);
+  // The desktop build's viewer cache: its size, the clear, and the confirmation
+  // the clear goes through. Held here because the header's warning and the
+  // Settings panel both draw from it and both can clear it. Admin as well as
+  // desktop, since the routes are owner-only; on the desktop that is everyone.
+  const viewerCache = useViewerCache(desktop && isAdmin);
   // Which collections carry an organisation stamp. Kept here rather than in the
   // Library view because two places draw from it — the picker's icon, which is
   // rendered by the nav above that view, and the badge inside it.
@@ -363,6 +373,7 @@ export default function App() {
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
+        setDesktop(status?.desktop === true);
         // Preselect each section's first entry so switching modes never opens
         // on an empty picker. The load itself always lands in the Library,
         // where `mode` starts, even when it is empty. It used to fall through
@@ -1054,6 +1065,13 @@ export default function App() {
             </>
           ) : (
             <>
+              {/* Draws nothing until the viewer cache is over its limit, and
+                  nothing at all off the desktop. Not reserved in the stand-ins
+                  above, unlike the rest of the row: it is absent on most loads,
+                  and it sits at the row's left end, where arriving late moves
+                  nothing beside it. What it reports goes to the notice below
+                  the section bar, the same place a refresh reports to. */}
+              <CacheChip viewerCache={viewerCache} onResult={setStatus} />
               {showViewControls && (
                 <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
@@ -1193,6 +1211,7 @@ export default function App() {
         ) : showSettings ? (
           <Settings
             pro={pro}
+            viewerCache={viewerCache}
             onDataChanged={loadTopics}
             onTopicSaved={handleTopicSaved}
             onPairingChanged={handlePairingChanged}
@@ -1349,6 +1368,10 @@ export default function App() {
           );
         }}
       />
+
+      {/* One, for both ways of clearing the viewer cache: the header's warning
+          and the button in Settings ask through the same viewerCache. */}
+      <ClearCacheDialog viewerCache={viewerCache} />
 
       <PromptDialog
         open={namingFolder}

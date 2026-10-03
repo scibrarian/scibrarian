@@ -355,6 +355,13 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
 // build gives. That collapse is the point: a viewer cannot tell a Pro instance
 // from a free one, and the only client that consumes this block is the Settings
 // panel, which no viewer can open.
+//
+// `desktop` is which build this is, for the shell: the header's cache warning
+// reads /cache, which exists only on the desktop, and it has to know that
+// before it asks rather than from a 404 on every load of every hosted instance.
+// Safe beside the rest for a plainer reason than theirs — the desktop build is
+// loopback-only, so the only caller who can ever be told `true` is the person
+// sitting at it, and `false` tells a stranger they have reached a server.
 api.get("/auth", (req, res) => {
   const admin = isAdminRequest(req);
   res.json({
@@ -362,6 +369,7 @@ api.get("/auth", (req, res) => {
     token_required: ADMIN_TOKEN.length > 0,
     library_open: libraryOpen(),
     pro: admin ? proStatus() : null,
+    desktop: IS_DESKTOP,
   });
 });
 
