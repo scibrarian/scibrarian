@@ -90,12 +90,31 @@ describe("a bulk body reaches the route that expects it", () => {
     expect(res.status).toBe(404);
   });
 
+  it("takes a large bookmark removal", async () => {
+    // No mount of its own: it is reached through the save's, one segment up.
+    // Which is exactly the kind of cover that goes unnoticed when it is lost —
+    // narrow that mount to the save alone and this route still compiles.
+    const res = await post(`/api/bookmark-folders/${folder}/papers/remove`, {
+      pmids: pmids(OVER_THE_DEFAULT),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ removed: 0 });
+  });
+
   // The finding this file was written for. The handler refuses more than
   // MAX_BULK_BOOKMARK_PMIDS with a message naming the limit; behind the 100kb
   // default that message was unreachable, since 50,001 ids is ~550kb and
   // body-parser answered first with a payload-too-large that names nothing.
   it("lets the handler's own cap be the thing that refuses an oversized one", async () => {
     const res = await post(`/api/collections/${collection}/papers/remove`, {
+      pmids: pmids(MAX_BULK_BOOKMARK_PMIDS + 1),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(String(MAX_BULK_BOOKMARK_PMIDS));
+  });
+
+  it("does the same for an oversized bookmark removal", async () => {
+    const res = await post(`/api/bookmark-folders/${folder}/papers/remove`, {
       pmids: pmids(MAX_BULK_BOOKMARK_PMIDS + 1),
     });
     expect(res.status).toBe(400);

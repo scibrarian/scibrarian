@@ -2155,11 +2155,29 @@ export function linkedPapersByPmids(pmids: string[]): LinkedPaperRow[] {
   );
 }
 
+const deleteBookmarkStmt = db.prepare("DELETE FROM bookmarks WHERE folder_id = ? AND pmid = ?");
+
 // Un-saving something that isn't saved is likewise a no-op, so the toggle can
 // be driven from a possibly-stale client view without erroring.
 export function removeBookmark(folderId: number, pmid: string): void {
-  db.prepare("DELETE FROM bookmarks WHERE folder_id = ? AND pmid = ?").run(folderId, pmid);
+  deleteBookmarkStmt.run(folderId, pmid);
 }
+
+// Take papers out of one folder, atomically — the folder table's "Remove
+// selected". One transaction for addBookmarks' reason: a ticked set is as long
+// as the folder, and a per-row transaction each would be that many fsyncs.
+//
+// Returns how many were actually there to remove, which falls short of what was
+// asked whenever something else got there first — another tab, a second window.
+// The caller reports that rather than the length of what it sent, as
+// removeCollectionPapers' caller does. A folder holds a paper once (the primary
+// key), so unlike a collection there is no second count to return: a row is a
+// paper.
+export const removeBookmarks = transaction((folderId: number, pmids: string[]): number => {
+  let removed = 0;
+  for (const pmid of pmids) removed += Number(deleteBookmarkStmt.run(folderId, pmid).changes);
+  return removed;
+});
 
 // Saved papers per folder, for the picker's count badges. Folders with no
 // bookmarks are absent, so callers default to 0 (as collectionCounts does).

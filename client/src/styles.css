@@ -3315,8 +3315,8 @@ html {
   text-align: center;
 }
 
-/* "Remove N selected" — the Library's bulk action, in the slot the bulk save
-   occupies in the sections that have one. Shares .save-all-btn's box because
+/* "Remove N selected" — the Library's and Bookmarks' bulk action, in the slot
+   the bulk save occupies in Interests. Shares .save-all-btn's box because
    it lands in the same place and must not change the filter row's height when
    the section changes.
 

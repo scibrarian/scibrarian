@@ -109,12 +109,21 @@ function describeHeldBack(r: ProPushResult): string {
  * of five that another tab had already emptied down to two still reported
  * "Removed 5 papers" — the one direction a user could have acted on, since it
  * says work happened that didn't.
+ *
+ * `from` is what the papers left. A bookmark folder holds a paper once, so its
+ * caller passes the one count it has as both `removed` and `papers`, and the
+ * files clause never fires for it.
  */
-export function describeRemoval(asked: number, removed: number, papers: number): string {
+export function describeRemoval(
+  asked: number,
+  removed: number,
+  papers: number,
+  from: "collection" | "folder" = "collection"
+): string {
   if (papers === 0) {
     return asked === 1
-      ? "Nothing was removed — that paper had already left this collection."
-      : "Nothing was removed — those papers had already left this collection.";
+      ? `Nothing was removed — that paper had already left this ${from}.`
+      : `Nothing was removed — those papers had already left this ${from}.`;
   }
   // Files only when they outnumber papers. Saying "(3 stored files)" beside
   // "3 papers" is noise about an implementation detail; saying it beside
@@ -122,7 +131,7 @@ export function describeRemoval(asked: number, removed: number, papers: number):
   const files = removed > papers ? ` (${plural(removed, "stored file")})` : "";
   const gone = asked - papers;
   return (
-    `Removed ${plural(papers, "paper")} from this collection${files}.` +
+    `Removed ${plural(papers, "paper")} from this ${from}${files}.` +
     (gone > 0 ? ` ${gone.toLocaleString()} had already left.` : "")
   );
 }

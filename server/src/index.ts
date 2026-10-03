@@ -119,7 +119,9 @@ app.use("/api", (req, res, next) => {
 // paper: the bulk bookmark save, and removing the selected papers from a
 // collection. Both are thousands of ids by design — past body-parser's 100kb
 // default at around nine thousand — and both bound the count themselves at
-// MAX_BULK_BOOKMARK_PMIDS.
+// MAX_BULK_BOOKMARK_PMIDS. Removing the selected papers from a folder is a
+// third, and has no entry of its own below: app.use matches a prefix, and
+// /bookmark-folders/:id/papers/remove sits under the save's path.
 //
 // A handler's cap is only reachable if the parser in front of it will take the
 // bytes. Under the 100kb default the removal's own message was dead code: a

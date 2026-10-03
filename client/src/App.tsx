@@ -591,6 +591,19 @@ export default function App() {
     if (activeFolderId != null) reloadSource({ folder: activeFolderId });
   }
 
+  // The folder on screen gained or lost papers: Add links put some in, or the
+  // table's "Remove selected" took some out. Three things are stale — its list,
+  // its count in the picker, and the map of what is saved where, which fills
+  // the bookmark icon on every paper in Interests.
+  //
+  // Bumped before the await, for the reason handleCollectionChanged gives just
+  // below: the papers fetch reads neither of the other two, and a removal's
+  // rows stay on screen, dimmed, until it lands.
+  async function handleFolderPapersChanged() {
+    if (activeFolderId != null) reloadSource({ folder: activeFolderId });
+    await Promise.all([loadBookmarks(), loadFolders()]);
+  }
+
   async function handleCollectionChanged() {
     // Bumped before the await, not after it. These two are independent — the
     // papers fetch doesn't read the collection list — and sequencing them cost
@@ -853,8 +866,9 @@ export default function App() {
   // row can: it sits in the sticky bar, clickable however deep you've scrolled.
   //
   // Not keyed on reloadToken. That bumps on in-place data changes too — see
-  // removeBookmark, which invalidates the very folder you're reading — and
-  // yanking the page to the top mid-read is worse than the offset it'd fix.
+  // handleFolderPapersChanged, which invalidates the very folder you're reading
+  // — and yanking the page to the top mid-read is worse than the offset it'd
+  // fix.
   //
   // Only *swaps* reset, never the first view we settle on: reloading a scrolled
   // page has the browser restore that offset, and a scroll to top on arrival
@@ -943,11 +957,14 @@ export default function App() {
     onAuthRefreshed: handleAuthRefreshed,
   };
 
-  // Bookmarking is offered where a paper is still a candidate: Interests (save
-  // what the search turned up) and Bookmarks (unsave, or file it into a second
-  // folder). Not the Library — those are papers you already own, not ones
-  // you're deciding about — and not for viewers, since saving is a mutation the
-  // server would refuse and a control that always fails is worse than none.
+  // Bookmarking is offered where a paper is still a candidate, which is
+  // Interests: save what the search turned up. Not the Library — those are
+  // papers you already own, not ones you're deciding about. Not Bookmarks
+  // either: every paper there is already saved, so the control's one job in a
+  // folder was taking papers back out, a menu and a click per paper. The
+  // folder's table does that by tick now, as a collection's does (see
+  // PapersTable's removeFrom). And not for viewers, since saving is a mutation
+  // the server would refuse and a control that always fails is worse than none.
   // null is what keeps the control out.
   //
   // Both halves of that rule live here rather than in the views. Each view used
@@ -955,7 +972,7 @@ export default function App() {
   // `false` where the others answered null — which is how an empty filter row
   // ended up rendering for anyone who wasn't the owner.
   const bookmarking: Bookmarking | null =
-    inLibrary || !isAdmin
+    !inInterests || !isAdmin
       ? null
       : {
           folders,
@@ -978,6 +995,9 @@ export default function App() {
       // The same handler the collection chrome uses: removing papers changes
       // the collection's counts and its file list exactly as an upload does.
       onCollectionChanged={handleCollectionChanged}
+      // And the folder chrome's, for the same reason: papers ticked out of a
+      // folder undo what Add links does.
+      onFolderChanged={handleFolderPapersChanged}
     />
   );
 
@@ -1321,10 +1341,7 @@ export default function App() {
             // The saved-papers map as well as the folder's list and count, the
             // same three a bulk save refreshes: a paper added here may be on
             // screen elsewhere, and its bookmark icon has to fill in.
-            onPapersAdded={async () => {
-              await Promise.all([loadBookmarks(), loadFolders()]);
-              if (activeFolderId != null) reloadSource({ folder: activeFolderId });
-            }}
+            onPapersAdded={handleFolderPapersChanged}
             onDeleted={async () => {
               // The folder's bookmarks are deleted with it (the rows cascade),
               // so the map of what's saved has to come back from the server

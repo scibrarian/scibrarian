@@ -14,7 +14,7 @@ import {
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
-import { ConfirmDialog, STORED_COPIES_NOTE } from "./Dialogs";
+import { ConfirmDialog, FOLDER_ONLY_NOTE, STORED_COPIES_NOTE } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
 import { useFacetHold, useMeshFacets } from "./MeshFilter";
 import { PaperFilters } from "./PaperFilters";
@@ -49,6 +49,7 @@ export function PapersTable({
   libraryOpen,
   onAuthRefreshed,
   onCollectionChanged,
+  onFolderChanged,
   filters,
   bookmarking,
 }: PaperAccess & {
@@ -64,8 +65,8 @@ export function PapersTable({
   filters: PaperFilterState;
   /**
    * Papers were taken out of the collection on screen, so the shell has to
-   * reload the sources that counted them. Absent everywhere the delete control
-   * is absent, which is every source but a single collection.
+   * reload the sources that counted them. Only ever called for a single
+   * collection; a bookmark folder's removal reports through onFolderChanged.
    *
    * Named for the collection rather than for the papers because Settings has an
    * `onPapersRemoved` of its own, with a different signature and a different
@@ -76,6 +77,12 @@ export function PapersTable({
    * with handleCollectionChanged.
    */
   onCollectionChanged?: () => void;
+  /**
+   * The same event for a bookmark folder: papers were ticked out of the one on
+   * screen. A prop of its own because what App reloads for it is different —
+   * the folder's list and count, and the map of what is saved where.
+   */
+  onFolderChanged?: () => void;
   bookmarking: Bookmarking | null;
 }) {
   const {
@@ -147,13 +154,24 @@ export function PapersTable({
   const [namingFor, setNamingFor] = useState<string | null>(null);
   // Papers ticked for removal, by pmid.
   //
-  // Offered for one collection only. In the all-collections view a paper can be
-  // filed under three engagements and "remove it" has no single meaning — the
-  // view exists to show that reuse, so a control that silently picked one of
-  // them would undo the thing it was opened to reveal. Admin-only because the
-  // server refuses the mutation anyway, and a control that always fails is
-  // worse than none.
-  const removeFrom = isAdmin && "collection" in source ? source.collection : null;
+  // Offered for one collection, or one bookmark folder. In the all-collections
+  // view a paper can be filed under three engagements and "remove it" has no
+  // single meaning — the view exists to show that reuse, so a control that
+  // silently picked one of them would undo the thing it was opened to reveal.
+  // A topic has nothing to remove a paper from: its list is PubMed's answer.
+  // Admin-only because the server refuses the mutation anyway, and a control
+  // that always fails is worse than none.
+  //
+  // The folder case replaced a bookmark icon on every row, which un-saved one
+  // paper per click through a menu. Emptying a folder of forty was forty of
+  // those; here it is the header tick and one button, as it is in the Library.
+  const removeFrom = !isAdmin
+    ? null
+    : "collection" in source
+      ? ({ place: "collection", id: source.collection } as const)
+      : "folder" in source
+        ? ({ place: "folder", id: source.folder } as const)
+        : null;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -295,19 +313,29 @@ export function PapersTable({
       // copies of one article removes more files than papers, and anything that
       // got there first (another tab, a second window, an import cleanup)
       // removes fewer papers than were ticked. See describeRemoval.
-      const { removed, papers } = await api.removeCollectionPapers(removeFrom, batch);
+      let text: string;
+      if (removeFrom.place === "collection") {
+        const { removed, papers } = await api.removeCollectionPapers(removeFrom.id, batch);
+        text = describeRemoval(batch.length, removed, papers);
+      } else {
+        // A folder holds a paper once, so it has the one count and only the
+        // shortfall to report.
+        const { removed } = await api.removeBookmarks(removeFrom.id, batch);
+        text = describeRemoval(batch.length, removed, removed, "folder");
+      }
       setPendingNotice({
-        text: describeRemoval(batch.length, removed, papers),
+        text,
         pmids: batch,
-        // Read before onCollectionChanged below bumps it, which is the point:
-        // the refresh this message waits for is the next one, not this one.
+        // Read before the callback below bumps it, which is the point: the
+        // refresh this message waits for is the next one, not this one.
         token: reloadToken,
       });
       setSelected(new Set());
-      // The papers list, the collection's count in the picker and the file list
-      // in the view above are all now stale, and none of them is this
-      // component's to reload.
-      onCollectionChanged?.();
+      // The papers list, the source's count in the picker and — for a
+      // collection — the file list in the view above are all now stale, and
+      // none of them is this component's to reload.
+      if (removeFrom.place === "collection") onCollectionChanged?.();
+      else onFolderChanged?.();
     } catch (err) {
       setActionError(errorMessage(err));
       // Nothing left the collection, so nothing should still look like it is
@@ -347,8 +375,9 @@ export function PapersTable({
   // The share-link column only exists for the owner of a token-mode instance;
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
-  // Whether saving is offered at all is App's call (viewers and the Library
-  // don't get it); the column follows from that rather than re-deciding it.
+  // Whether saving is offered at all is App's call (only Interests gets it,
+  // and not for viewers); the column follows from that rather than re-deciding
+  // it.
   const showBookmarkCol = bookmarking != null;
   // Only across every collection: inside one, every row is in it, and a topic
   // or folder holds nothing. This is the column that turns "we have it" into
@@ -381,10 +410,10 @@ export function PapersTable({
         settling={!revealed}
         action={
           showSelectCol ? (
-            // Sits where the bulk save does in the sections that have one.
-            // The two never coexist — bookmarking is null in the Library, which
-            // is the only place removal is offered — so the slot carries
-            // whichever bulk action this source actually has.
+            // Sits where the bulk save does in the section that has one. The
+            // two never coexist — bookmarking is null in the Library and in
+            // Bookmarks, the two places removal is offered — so the slot
+            // carries whichever bulk action this source actually has.
             //
             // Rendered even with nothing ticked, disabled. Appearing only once
             // a box is checked means the control is invisible at the moment
@@ -623,11 +652,12 @@ export function PapersTable({
       {/* Names the collection's side of it and nothing more. The papers
           themselves are articles rows the whole app shares — a topic feed may
           have put them there, and another collection may hold its own copy — so
-          "delete this paper" would promise something this does not do. */}
+          "delete this paper" would promise something this does not do. A
+          folder's side of it is smaller still: the entry on its list. */}
       <ConfirmDialog
         open={confirmingRemove}
         title={`Remove ${onScreen.size} paper${onScreen.size === 1 ? "" : "s"}?`}
-        message={STORED_COPIES_NOTE}
+        message={removeFrom?.place === "folder" ? FOLDER_ONLY_NOTE : STORED_COPIES_NOTE}
         confirmLabel="Remove"
         danger
         onConfirm={() => void removeSelected()}

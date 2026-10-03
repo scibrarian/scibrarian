@@ -53,6 +53,7 @@ import {
   meshFilingForSource,
   missingOrStaleCitations,
   removeBookmark,
+  removeBookmarks,
   renameBookmarkFolder,
   renameCollection,
   resetLibrary,
@@ -1170,6 +1171,26 @@ api.post(
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
   removeBookmark(Number(req.params.id), String(req.params.pmid));
   res.status(204).end();
+});
+
+// Take papers out of a folder — the folder table's "Remove selected". The
+// one-paper DELETE above stays for the toggle in Interests; this is the same
+// operation for a ticked set, in one request so it either happens or doesn't.
+//
+// Shaped like the collection removal further down, for the reasons given there:
+// a POST naming the action because it carries a body, and the same cap, since
+// "select all" makes this a list as long as the folder. `removed` is how many
+// were still in the folder, not how many were sent.
+api.post("/bookmark-folders/:id/papers/remove", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+  const raw: unknown = req.body?.pmids;
+  if (!Array.isArray(raw)) return res.status(400).json({ error: "'pmids' must be an array." });
+  if (raw.length > MAX_BULK_BOOKMARK_PMIDS) {
+    return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
+  }
+  const pmids = raw.map((p) => String(p).trim()).filter(Boolean);
+  res.json({ removed: removeBookmarks(id, pmids) });
 });
 
 // ---------- collections (uploaded PDF libraries) ----------

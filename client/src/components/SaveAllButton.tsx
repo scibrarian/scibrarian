@@ -53,7 +53,7 @@ export function SaveAllButton({
   // source with no papers has no journals, no citation range and no year span,
   // so the row is this button and nothing else. A slot held open there is a
   // blank band above the empty state with nothing in it to explain it, and it
-  // is the *first* thing you see in a folder you just made.
+  // is the *first* thing you see in a topic you just added.
   if (count === 0) {
     if (total === 0) return null;
 
@@ -145,8 +145,9 @@ export function SaveAllButton({
       />
 
       {/* Confirmed even for a folder being created here: the point of the step
-          is that the count is large and easy to misjudge, and there is no bulk
-          un-save to undo it with. */}
+          is that the count is large and easy to misjudge, and undoing it means
+          going to the folder and ticking them back out from among whatever it
+          already held. */}
       <ConfirmDialog
         open={target != null}
         title={`Save ${papers}?`}
