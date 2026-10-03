@@ -44,6 +44,7 @@ import {
   SearchCheck,
 } from "lucide-react";
 import { MAX_NAME_CHARS } from "../../shared/limits";
+import { canPoll } from "../../shared/topic";
 
 // The prose below points at the Library section by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
@@ -381,8 +382,8 @@ export default function App() {
   const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
   const topicUpdatedAt = activeTopic?.last_polled_at ?? null;
   // A topic that lists journals and has none: it has nowhere to search until
-  // it is edited (see canPoll on the server).
-  const topicUnset = activeTopic != null && !activeTopic.all_pubmed && activeTopic.journalCount === 0;
+  // it is edited.
+  const topicUnset = activeTopic != null && !canPoll(activeTopic);
   const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 

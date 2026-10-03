@@ -84,7 +84,13 @@ export function InfoTip({ text, id }: { text: string; id?: string }) {
               // right for a button that does something else. This one's only
               // job is the help, and a click on it is someone asking for it.
               onPointerDown={(e) => e.preventDefault()}
-              onClick={(e) => e.preventDefault()}
+              // So the click opens it, which is all a touch screen has: no
+              // pointer rests on the icon there, and iOS doesn't focus a button
+              // that is tapped. A tap anywhere else closes it again.
+              onClick={(e) => {
+                e.preventDefault();
+                setOpen(true);
+              }}
             >
               <Info size={14} aria-hidden />
             </button>

@@ -24,6 +24,7 @@ import type {
   ProCollectionStamp,
   ProStatus,
 } from "../types";
+import { canPoll } from "../../../shared/topic";
 
 // What "Delete all data" is asking about, in the terms the app is navigated in.
 //
@@ -69,12 +70,9 @@ const CRON_HINT = (
   </>
 );
 
-// Whether a topic has anywhere to search — see canPoll on the server.
-const canCheck = (t: Topic) => t.all_pubmed || t.journalCount > 0;
-
 // Where a topic searches and how much it has found, under its name.
 function scopeLine(t: Topic): string {
-  if (!canCheck(t)) return "No journals chosen yet · nothing to check";
+  if (!canPoll(t)) return "No journals chosen yet · nothing to check";
   const scope = t.all_pubmed ? "All of PubMed" : plural(t.journalCount, "journal");
   return t.articleCount == null ? scope : `${scope} · ${plural(t.articleCount, "paper")}`;
 }
@@ -201,6 +199,16 @@ export function Settings({
 
   useEffect(reload, []);
 
+  // The topics alone, after a change that touched nothing else: one saved, or
+  // one removed. reload() fetches the settings too and puts them back over the
+  // Polling & NCBI form, taking any edit there not yet saved.
+  function reloadTopics() {
+    api
+      .getTopics()
+      .then(setTopics)
+      .catch((e) => setError(errorMessage(e)));
+  }
+
   // Once the settings say this is the desktop build, and not before: the route
   // 404s everywhere else, and asking anyway would put a failed request in the
   // console of every server deployment on every visit to this page.
@@ -231,7 +239,7 @@ export function Settings({
     setTopicToRemove(null);
     try {
       const res = await api.deleteTopic(topicToRemove.topic.id);
-      reload();
+      reloadTopics();
       onDataChanged();
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
@@ -417,7 +425,7 @@ export function Settings({
                 <li key={d.id}>
                   <span title={d.term}>
                     <strong>{d.name}</strong>
-                    <small className={canCheck(d) ? "muted" : "hint warn"}>{scopeLine(d)}</small>
+                    <small className={canPoll(d) ? "muted" : "hint warn"}>{scopeLine(d)}</small>
                   </span>
                   {/* A div for the reason .list-label is one: a span in a list
                       row is stacked into a column. */}
@@ -736,7 +744,7 @@ export function Settings({
         topics={topics}
         onClose={() => setTopicDialog(null)}
         onSaved={(saved, outcome) => {
-          reload();
+          reloadTopics();
           onTopicSaved(saved, outcome);
         }}
       />

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { TopicDialog, describeTopicSave } from "./TopicDialog";
 import { MAX_TOPIC_HEADINGS } from "../../../shared/limits";
 import type { Journal, JournalSearchResult, MeshSearchResult, Topic, TopicDetail } from "../types";
@@ -261,6 +261,23 @@ describe("creating a topic", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("doesn't count the last opening's headings when it is opened again", async () => {
+    // The headings are cleared as the dialog opens, but the count ran a
+    // debounce behind them, and for that long still held the ones the last
+    // opening ended with: a PubMed search for a set nobody was looking at.
+    const rest = { topic: null, topics: [], onClose: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<TopicDialog open {...rest} />);
+    await pick("Atherosclerosis");
+    await waitFor(() => expect(api.previewTopic).toHaveBeenCalledTimes(1));
+
+    rerender(<TopicDialog open={false} {...rest} />);
+    rerender(<TopicDialog open {...rest} />);
+    // Past the debounce, so a search that was only waiting would have left.
+    await act(() => new Promise<void>((r) => setTimeout(r, 400)));
+    expect(api.previewTopic).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("list", { name: "MeSH headings" })).toBeNull();
+  });
+
   it("takes no more headings once it has as many as a topic may", async () => {
     const many = Array.from({ length: MAX_TOPIC_HEADINGS }, (_, i) => hit(`D9${i}`, `Heading ${i}`));
     api.searchMesh.mockResolvedValue({ results: many });
@@ -281,6 +298,27 @@ describe("editing a topic", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(api.previewTopic).not.toHaveBeenCalled();
     await listLoaded();
+  });
+
+  it("holds its scope still until the stored one has arrived", async () => {
+    // The stored scope replaces whatever the dialog shows when it lands. On a
+    // slow server there was time to switch the radio or add a journal first,
+    // and the answer then put both back without a word.
+    let arrive!: (detail: TopicDetail) => void;
+    api.getTopic.mockReturnValue(new Promise((r) => (arrive = r)));
+    open(TOPIC);
+    const auto = () => screen.getByRole("button", { name: "Auto" }) as HTMLButtonElement;
+    expect(scopeRadio("All of PubMed").disabled).toBe(true);
+    expect(scopeRadio("Only these journals").disabled).toBe(true);
+    expect(auto().disabled).toBe(true);
+    // The name is the dialog's own, and waits on nothing.
+    expect(nameBox().disabled).toBe(false);
+
+    await act(async () => arrive(DETAIL));
+    await listLoaded();
+    expect(scopeRadio("All of PubMed").disabled).toBe(false);
+    expect(scopeRadio("Only these journals").disabled).toBe(false);
+    expect(auto().disabled).toBe(false);
   });
 
   it("saves a new name, and only a new one, without touching the scope", async () => {
@@ -423,6 +461,51 @@ describe("editing a topic", () => {
     expect(onClose).not.toHaveBeenCalled();
     // The journal it announced is still staged.
     expect(listed()).toEqual(["BMJ", "Circulation", "Lancet"]);
+  });
+
+  it("keeps Enter in the journal panes from saving the topic", async () => {
+    // The panes sit inside the dialog's form too, where Enter in a box submits:
+    // searching the catalog for "circ" and pressing Enter saved the topic as it
+    // stood. jsdom submits no form on a key, so what is pinned is the cause —
+    // whether the key's default was prevented, which fireEvent answers false for.
+    open(TOPIC);
+    await listLoaded();
+    const box = within(catalogPane()).getByRole("searchbox");
+    fireEvent.change(box, { target: { value: "circ" } });
+    expect(fireEvent.keyDown(box, { key: "Enter" })).toBe(false);
+    const tick = within(listPane()).getByRole("checkbox", { name: /^Lancet/ });
+    expect(fireEvent.keyDown(tick, { key: "Enter" })).toBe(false);
+
+    // A button keeps its Enter, which is how a keyboard presses one — and so
+    // does the name, where saving is what Enter is for.
+    expect(fireEvent.keyDown(screen.getByRole("button", { name: "Auto" }), { key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(nameBox(), { key: "Enter" })).toBe(true);
+  });
+
+  it("drops what Auto finds once the panes that asked are gone", async () => {
+    // Auto takes several PubMed round trips, and the dialog can be cancelled
+    // and opened on another topic before it answers. The answer used to land
+    // there: the first topic's journals and its suggestions in place of the
+    // second's own, one Save from replacing them.
+    const other: Topic = { ...TOPIC, id: 8, name: "Other", journalCount: 1 };
+    api.getTopic.mockImplementation(async (id: number) =>
+      id === 8 ? { ...other, journals: [LANCET] } : DETAIL
+    );
+    let answer!: (r: { results: JournalSearchResult[] }) => void;
+    api.suggestJournals.mockReturnValue(new Promise((r) => (answer = r)));
+    const rest = { topics: [TOPIC, other], onClose: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<TopicDialog open topic={TOPIC} {...rest} />);
+    await listLoaded();
+    fireEvent.click(screen.getByRole("button", { name: "Auto" }));
+    await waitFor(() => expect(api.suggestJournals).toHaveBeenCalled());
+
+    rerender(<TopicDialog open={false} topic={null} {...rest} />);
+    rerender(<TopicDialog open topic={other} {...rest} />);
+    await waitFor(() => expect(listed()).toEqual(["Lancet"]));
+
+    await act(async () => answer({ results: [CIRC] }));
+    expect(listed()).toEqual(["Lancet"]);
+    expect(submit("Save").disabled).toBe(true);
   });
 });
 

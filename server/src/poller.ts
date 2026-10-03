@@ -20,8 +20,9 @@ import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
 import { buildTerm, EUTILS_BATCH, fetchArticles, searchWithTotal } from "./pubmed.js";
-import type { PollResult, Topic } from "./types.js";
+import type { PollResult } from "./types.js";
 import { chunk, errMessage, safeMessage } from "./util.js";
+import { canPoll } from "../../shared/topic.js";
 
 // Link existing articles to a topic without refetching them from PubMed.
 // Returns how many links were newly created — a (pmid, topic) link that
@@ -54,14 +55,6 @@ function mhdaWindowStart(lastPolledIso: string): string {
   const d = new Date(lastPolledIso);
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10).replace(/-/g, "/");
-}
-
-// Whether a topic has anywhere to search: all of PubMed, or a list with
-// something on it. A topic that lists journals and has none searches nothing —
-// searching its bare term would be all of PubMed, which is a scope a topic is
-// given and never one it falls into.
-export function canPoll(topic: Topic): boolean {
-  return topic.all_pubmed || topic.journalCount > 0;
 }
 
 const NO_JOURNALS_CHOSEN =

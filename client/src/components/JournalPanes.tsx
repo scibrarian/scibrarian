@@ -112,6 +112,20 @@ export function JournalPanes({
   const latest = useRef(value);
   latest.current = value;
 
+  // Whether these panes are still on screen. Auto and Copy from can outlive
+  // them — the dialog cancelled, or switched to All of PubMed, with a request
+  // out — and `onChange` is the dialog's, which stays: the answer would be
+  // added to whatever list it holds by then, another topic's if one has been
+  // opened since. Set on mount as well as cleared on unmount, for StrictMode's
+  // mount-unmount-mount.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   // Debounced catalog search; the `active` flag keeps a stale earlier response
   // from overwriting newer results.
   const query = useDebounced(leftFilter.trim(), 200);
@@ -211,6 +225,7 @@ export function JournalPanes({
     setNotice(null);
     try {
       const r = await api.suggestJournals(headings.map((h) => h.ui));
+      if (!mounted.current) return;
       const added = add(r.results.map(entryFor));
       setNotice(
         added > 0
@@ -218,9 +233,9 @@ export function JournalPanes({
           : "No new suggestions — the list already has these headings' top journals."
       );
     } catch (err) {
-      setError(errorMessage(err));
+      if (mounted.current) setError(errorMessage(err));
     } finally {
-      setFetching(null);
+      if (mounted.current) setFetching(null);
     }
   }
 
@@ -232,6 +247,7 @@ export function JournalPanes({
     setNotice(null);
     try {
       const detail = await api.getTopic(topicId);
+      if (!mounted.current) return;
       const theirs = detail.journals.flatMap((j) => {
         const entry = listedFromStored(j);
         // The same journal on this topic's stored list is this topic's entry.
@@ -244,9 +260,9 @@ export function JournalPanes({
           : `The list already has every journal “${from?.name ?? "that topic"}” does.`
       );
     } catch (err) {
-      setError(errorMessage(err));
+      if (mounted.current) setError(errorMessage(err));
     } finally {
-      setFetching(null);
+      if (mounted.current) setFetching(null);
     }
   }
 
@@ -301,7 +317,16 @@ export function JournalPanes({
             : "All matches already on the list.";
 
   return (
-    <div className="jm">
+    <div
+      className="jm"
+      // The panes sit inside the topic dialog's form, where Enter in a box
+      // submits. No box here is a field of the topic — they filter the lists
+      // and tick their rows — and Enter in one saved the topic as it stood.
+      // Buttons and the Copy from menu are left theirs.
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && e.target instanceof HTMLInputElement) e.preventDefault();
+      }}
+    >
       <Banner kind="error" message={error} onDismiss={() => setError(null)} />
       <Banner kind="info" message={notice} onDismiss={() => setNotice(null)} />
       <div className="jm-auto">

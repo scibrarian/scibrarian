@@ -156,7 +156,12 @@ export function Typeahead<T>({
       // Choose the highlighted result, not the raw typed text the form would submit.
       e.preventDefault();
       choose(items[activeIndex]);
+      return;
     }
+    // Text typed with nothing chosen from it is a search half made, and Enter
+    // there is not the form's to take: the topic dialog's created the topic
+    // without the heading being typed. An empty box is a field like any other.
+    if (e.key === "Enter" && !idle) e.preventDefault();
   }
 
   return (

@@ -2,7 +2,6 @@ import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, plural } from "../lib/format";
-import { useDebounced } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
 import { InfoTip } from "./InfoTip";
@@ -191,20 +190,27 @@ export function TopicDialog({
     };
   }, [open, editing]);
 
+  // Counted a moment after the headings settle rather than on every pick. The
+  // wait is this effect's own timer, so it is dropped with the headings it was
+  // started for: a debounced copy of the key outlived them, and an opening,
+  // which begins by clearing the last one's headings, still asked PubMed about
+  // those.
   const key = headings.map((h) => h.ui).join(",");
-  const countedKey = useDebounced(key, 300);
   useEffect(() => {
-    if (!open || editing || countedKey === "") return;
+    if (!open || editing || key === "") return;
     let active = true;
-    api
-      .previewTopic(countedKey.split(","))
-      .then((r) => active && setPreview({ key: countedKey, count: r.count }))
-      // A count that can't be had is not a reason to refuse the topic.
-      .catch(() => active && setPreview({ key: countedKey, count: null }));
+    const timer = setTimeout(() => {
+      api
+        .previewTopic(key.split(","))
+        .then((r) => active && setPreview({ key, count: r.count }))
+        // A count that can't be had is not a reason to refuse the topic.
+        .catch(() => active && setPreview({ key, count: null }));
+    }, 300);
     return () => {
       active = false;
+      clearTimeout(timer);
     };
-  }, [countedKey, open, editing]);
+  }, [key, open, editing]);
 
   const picked = new Set(headings.map((h) => h.ui));
   const full = headings.length >= MAX_TOPIC_HEADINGS;
@@ -243,6 +249,10 @@ export function TopicDialog({
   const rescoped =
     stored != null &&
     (allPubmed !== stored.allPubmed || (!allPubmed && !sameJournals(journals, stored.journals)));
+  // The stored scope of the topic being edited is still on its way. It replaces
+  // whatever the dialog shows when it lands, so until then the scope is held
+  // still: a radio switched or a journal added first would be put back.
+  const loading = topic != null && stored == null;
 
   const canSave = topic
     ? stored != null && typedName !== "" && (renamed || rescoped)
@@ -455,7 +465,7 @@ export function TopicDialog({
                 name="topic-scope"
                 checked={allPubmed}
                 onChange={() => setAllPubmed(true)}
-                disabled={saving}
+                disabled={saving || loading}
               />
               All of PubMed
             </label>
@@ -465,7 +475,7 @@ export function TopicDialog({
                 name="topic-scope"
                 checked={!allPubmed}
                 onChange={() => setAllPubmed(false)}
-                disabled={saving}
+                disabled={saving || loading}
               />
               Only these journals
             </label>
@@ -477,8 +487,8 @@ export function TopicDialog({
               onChange={setJournals}
               headings={shownHeadings}
               copyFrom={topics.filter((t) => t.id !== topic?.id && t.journalCount > 0)}
-              loading={topic != null && stored == null}
-              disabled={saving}
+              loading={loading}
+              disabled={saving || loading}
             />
           )}
 

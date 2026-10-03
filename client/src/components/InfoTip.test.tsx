@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { InfoTip, TIP_DELAY_MS } from "./InfoTip";
+import { ModalShell } from "./Dialogs";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -34,6 +35,12 @@ const scroll = () => {
   } finally {
     delete (window as { event?: Event }).event;
   }
+};
+// A finger on a touch screen: down, up, and the click the browser makes of it.
+const tap = (target: Element) => {
+  fireEvent.pointerDown(target, { pointerType: "touch" });
+  fireEvent.pointerUp(target, { pointerType: "touch" });
+  fireEvent.click(target);
 };
 // Leaving the icon starts a corridor towards the bubble that the pointer may
 // cross without closing it; a move well clear of both is what closes it.
@@ -112,6 +119,25 @@ describe("an info icon's help", () => {
     expect(bubble()).not.toBeNull();
   });
 
+  it("appears on a tap, where no pointer rests on it and no focus comes to it", () => {
+    // A touch screen moves no pointer over the icon, and iOS doesn't focus a
+    // button that is tapped, so neither of the ways above opened the help
+    // there: the tap was all the icon got, and it did nothing with it.
+    render(<InfoTip text={TEXT} />);
+    tap(icon());
+    expect(shown()).toBe(TEXT);
+    // Radix starts listening for a press outside the bubble a moment after it
+    // opens, and a press on the icon is one.
+    act(() => void vi.advanceTimersByTime(1));
+
+    // A second tap leaves it open, and a tap anywhere else closes it.
+    tap(icon());
+    expect(shown()).toBe(TEXT);
+    act(() => void vi.advanceTimersByTime(1));
+    tap(document.body);
+    expect(bubble()).toBeNull();
+  });
+
   it("is read once, as the icon's name, rather than again as its description or the bubble", () => {
     render(<InfoTip text={TEXT} />);
     act(() => icon().focus());
@@ -137,5 +163,29 @@ describe("an info icon's help", () => {
       </div>
     );
     expect(screen.getByRole("switch", { name: "Scheduled polling", description: TEXT })).toBeTruthy();
+  });
+
+  it("is all that Escape closes inside a dialog, which the next Escape closes", () => {
+    // The bubble and the dialog are layers of one Radix stack, and Escape goes
+    // to the top one. That holds only while they share a copy of the package
+    // that keeps the stack, which is why the tooltip's version is pinned to the
+    // release the Dialog came from: a second copy is a second stack, each layer
+    // the top of its own, and one Escape closed the help and the topic dialog
+    // around it, with whatever was staged there.
+    const onClose = vi.fn();
+    render(
+      <ModalShell open onClose={onClose} title="New topic">
+        <InfoTip text={TEXT} />
+      </ModalShell>
+    );
+    act(() => icon().focus());
+    expect(shown()).toBe(TEXT);
+
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(bubble()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -590,6 +590,36 @@ export function topicByTerm(term: string): Topic | undefined {
   return row && toTopic(row);
 }
 
+// The same question asked of the headings themselves: the topic that requires
+// exactly these descriptors, by id. The term is built from the headings' names,
+// and NLM revises names — the descriptor keeps its id and is called something
+// else, the same pick builds a different term, and the check above lets a
+// second topic in for one set of headings. Asked first, with the term still
+// asked after it: a topic from before headings were recorded has no rows in
+// topic_terms, and its term is all that says what it is.
+export function topicByHeadings(uis: string[]): Topic | undefined {
+  if (uis.length === 0) return undefined;
+  const row = db
+    .prepare(
+      `${TOPIC_SELECT}
+       WHERE (SELECT COUNT(*) FROM topic_terms tt WHERE tt.topic_id = t.id) = ?
+         AND (SELECT COUNT(*) FROM topic_terms tt
+              WHERE tt.topic_id = t.id AND tt.ui IN (${uis.map(() => "?").join(",")})) = ?`
+    )
+    .get(uis.length, ...uis, uis.length) as TopicRow | undefined;
+  return row && toTopic(row);
+}
+
+// A heading as a topic recorded it, for a descriptor the vocabulary no longer
+// has. This is what topic_terms keeps the name for: a topic goes on naming what
+// it searches for after NLM retires the heading. The most recent topic's, where
+// several carry it.
+export function storedHeading(ui: string): MeshDescriptorRef | undefined {
+  return db
+    .prepare("SELECT ui, name FROM topic_terms WHERE ui = ? ORDER BY topic_id DESC LIMIT 1")
+    .get(ui) as MeshDescriptorRef | undefined;
+}
+
 // A journal as a topic's scope names it: enough to find its row in `journals`,
 // or to make one. `medlineIndexed` is only read when the row is made — see the
 // note on that column.
@@ -1745,6 +1775,14 @@ const CHECK_TAG_NAMES = CHECK_TAGS.map(([, name]) => name);
 // is about, while one mentioned in passing by fifty is background. Headings
 // already watched are excluded — suggesting a topic the user has is noise — as
 // are check tags (above).
+//
+// Watched means a topic requires that heading and no other: picked on its own
+// it would be refused as a topic that exists. One a topic requires alongside
+// others is still offered, since alone or in other company it is a different
+// topic. Read from topic_terms by descriptor id, not from the topic's name,
+// which was the heading only while a topic was one heading and couldn't be
+// renamed. A topic from before headings were recorded has no rows there, and
+// for it the name is still all there is to go on.
 export function suggestTopicsFromLibrary(limit = 12): TopicSuggestion[] {
   const excluded = CHECK_TAG_UIS;
   const excludedNames = CHECK_TAG_NAMES;
@@ -1756,7 +1794,15 @@ export function suggestTopicsFromLibrary(limit = 12): TopicSuggestion[] {
        JOIN article_mesh am ON am.pmid = held.pmid
        WHERE am.ui NOT IN (${excluded.map(() => "?").join(",")})
          AND am.name NOT IN (${excludedNames.map(() => "?").join(",")})
-         AND NOT EXISTS (SELECT 1 FROM topics t WHERE t.name = am.name COLLATE NOCASE)
+         AND NOT EXISTS (
+           SELECT 1 FROM topic_terms tt
+           WHERE tt.ui = am.ui
+             AND NOT EXISTS (SELECT 1 FROM topic_terms more
+                             WHERE more.topic_id = tt.topic_id AND more.ui != tt.ui))
+         AND NOT EXISTS (
+           SELECT 1 FROM topics t
+           WHERE t.name = am.name COLLATE NOCASE
+             AND NOT EXISTS (SELECT 1 FROM topic_terms tt WHERE tt.topic_id = t.id))
        GROUP BY am.ui
        ORDER BY majorPapers DESC, papers DESC, name ASC
        LIMIT ?`

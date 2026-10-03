@@ -22,6 +22,8 @@ import {
   removeCollectionPapers,
   removeTopicWithArticles,
   renameTopic,
+  storedHeading,
+  topicByHeadings,
   topicByName,
   topicByTerm,
   topicArticleCounts,
@@ -381,8 +383,14 @@ type Refusal = { status: number; error: string };
 //
 // `raw` is descriptor ids, the way the picker holds them. Repeats collapse
 // rather than fail: the same heading twice is the same requirement once.
+//
+// `orStored` also takes a heading the vocabulary has dropped, as a topic
+// recorded it. For the journal suggestions alone, which an existing topic asks
+// for by headings it cannot change; a new topic is still made only of headings
+// NLM has now.
 async function resolveHeadings(
-  raw: unknown
+  raw: unknown,
+  orStored = false
 ): Promise<{ headings: MeshDescriptorRef[] } | Refusal> {
   const uis = distinctStrings(raw);
   if (uis.length === 0) return { status: 400, error: "Pick at least one MeSH heading." };
@@ -392,7 +400,7 @@ async function resolveHeadings(
   await ensureMeshLoaded();
   const headings: MeshDescriptorRef[] = [];
   for (const ui of uis) {
-    const descriptor = findMeshByUi(ui);
+    const descriptor = findMeshByUi(ui) ?? (orStored ? storedHeading(ui) : undefined);
     if (!descriptor) {
       return {
         status: 422,
@@ -453,29 +461,18 @@ async function resolveScope(body: unknown): Promise<{ scope: TopicScope } | Refu
 }
 
 // A journal's name is unique in `journals`, and two catalog entries can share
-// one. The index is the arbiter; this turns its error into something sayable.
-// Anything else is the error middleware's to log and answer.
+// one. The index is the arbiter; this turns its error into something sayable
+// (see rethrowUnlessUnique).
 function rethrowUnlessJournalNameClash(err: unknown, res: Response): void {
-  if (!/UNIQUE/i.test(errMessage(err))) throw err;
-  res.status(409).json({ error: "Two of those journals go by the same name. Remove one of them." });
+  rethrowUnlessUnique(err, res, "Two of those journals go by the same name. Remove one of them.");
 }
 
 const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, journals: topicJournals(id) });
 
-// The topic's counterpart of badName, with the longer cap a topic's name gets
-// (see MAX_TOPIC_NAME_CHARS).
+// badName for a topic, with the longer cap a topic's name gets (see
+// MAX_TOPIC_NAME_CHARS).
 function badTopicName(res: Response, name: string): boolean {
-  if (!name) {
-    res.status(400).json({ error: "'name' is required." });
-    return true;
-  }
-  if (name.length > MAX_TOPIC_NAME_CHARS) {
-    res
-      .status(400)
-      .json({ error: `A topic name can be at most ${MAX_TOPIC_NAME_CHARS} characters.` });
-    return true;
-  }
-  return false;
+  return badName(res, name, MAX_TOPIC_NAME_CHARS, "topic name");
 }
 
 // Topics are strictly MeSH headings, one or several that a paper must carry all
@@ -495,7 +492,7 @@ api.post(
     // Asked before the journals are resolved, which can take a request to NCBI
     // each, and again after: nothing awaits between the second and the insert.
     const taken = () => {
-      const existing = topicByTerm(term);
+      const existing = topicByHeadings(headings.map((h) => h.ui)) ?? topicByTerm(term);
       if (existing) {
         res
           .status(409)
@@ -595,6 +592,12 @@ api.patch(
     if (req.body?.allPubmed !== undefined || req.body?.journals !== undefined) {
       const scoped = await resolveScope(req.body);
       if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
+      // Asked again, as POST /topics asks twice: resolving the journals can
+      // take a request to NCBI each, and another topic could have taken the
+      // name meanwhile. Here rather than at the rename, so a name refused now
+      // leaves the scope unchanged too; nothing from here to the rename waits
+      // on anything outside this process.
+      if (renaming && nameTaken(res, "topic", topicByName(name), id)) return;
       try {
         const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
         if (result === null) {
@@ -717,7 +720,7 @@ api.get(
     if (!isAdminRequest(req)) {
       return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
     }
-    const resolved = await resolveHeadings(req.query.ui);
+    const resolved = await resolveHeadings(req.query.ui, true);
     if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
@@ -991,14 +994,16 @@ api.get(
 // reads as one line rather than repeating both branches four times.
 //
 // The cap is shared with the client, which sets it as the input's maxLength —
-// this is the backstop for a request that didn't come from that box.
-function badName(res: Response, name: string): boolean {
+// this is the backstop for a request that didn't come from that box. `max` and
+// `what` are a section entry's unless a caller has a cap of its own, as a topic
+// does (badTopicName).
+function badName(res: Response, name: string, max = MAX_NAME_CHARS, what = "name"): boolean {
   if (!name) {
     res.status(400).json({ error: "'name' is required." });
     return true;
   }
-  if (name.length > MAX_NAME_CHARS) {
-    res.status(400).json({ error: `A name can be at most ${MAX_NAME_CHARS} characters.` });
+  if (name.length > max) {
+    res.status(400).json({ error: `A ${what} can be at most ${max} characters.` });
     return true;
   }
   return false;
@@ -1022,11 +1027,18 @@ function nameTaken(
 
 // The lookup above and the write below aren't atomic, so two same-name requests
 // can both pass the check. The unique index is the real arbiter; translate its
-// error into the same 409 the check would have sent, as POST /journals does for
-// its own unique constraint. Anything else is the error middleware's to handle.
+// error into the same 409 the check would have sent.
 function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
+  rethrowUnlessUnique(err, res, `That ${label} name is already taken.`);
+}
+
+// A unique index's refusal as the 409 it stands for, saying `error`. One
+// reading of what such a refusal looks like, for the section names above and
+// for a topic's journals (rethrowUnlessJournalNameClash). Anything else is the
+// error middleware's to log and answer.
+function rethrowUnlessUnique(err: unknown, res: Response, error: string): void {
   if (!/UNIQUE/i.test(errMessage(err))) throw err;
-  res.status(409).json({ error: `That ${label} name is already taken.` });
+  res.status(409).json({ error });
 }
 
 // ---------- bookmark folders (saved papers) ----------

@@ -53,12 +53,17 @@ const request = (method: string, path: string, body?: unknown, headers: HeadersI
 const create = (headings: string[], name?: string) =>
   request("POST", "/topics", name === undefined ? { headings } : { headings, name });
 
-beforeAll(async () => {
-  db = await openTempDb("topic-headings");
+// The vocabulary the routes check headings against. Seeded once for the file;
+// a test that revises it puts this back.
+const seedMesh = (rows = [SLEEP, ATHERO, ...FILLER]) =>
   db.replaceMeshData(
-    [SLEEP, ATHERO, ...FILLER].map((d) => ({ ...d, terms: [d.name] })),
+    rows.map((d) => ({ ...d, terms: [d.name] })),
     "2026"
   );
+
+beforeAll(async () => {
+  db = await openTempDb("topic-headings");
+  seedMesh();
   const { app } = await import("./index.js");
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
@@ -114,6 +119,23 @@ describe("creating a topic from headings", () => {
     expect(again.status).toBe(409);
     expect((await again.json()).error).toContain("Atherosclerosis + Sleep");
     expect(db.listTopics()).toHaveLength(1);
+  });
+
+  it("refuses the same headings once NLM has renamed one of them", async () => {
+    // What made two topics the same was the term, and the term is built from
+    // the headings' names. NLM revises those each year: the descriptor keeps
+    // its id and is called something else, the same pick builds a different
+    // term, and a second topic was let in for one set of headings.
+    expect((await create([ATHERO.ui, SLEEP.ui])).status).toBe(201);
+    seedMesh([SLEEP, { ui: ATHERO.ui, name: "Arterial Plaque" }, ...FILLER]);
+    try {
+      const again = await create([SLEEP.ui, ATHERO.ui]);
+      expect(again.status).toBe(409);
+      expect((await again.json()).error).toContain("Atherosclerosis + Sleep");
+      expect(db.listTopics()).toHaveLength(1);
+    } finally {
+      seedMesh();
+    }
   });
 
   it("refuses a name another topic has", async () => {

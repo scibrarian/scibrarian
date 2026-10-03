@@ -31,6 +31,9 @@ const ncbi = vi.hoisted(() => ({
   indexed: true as boolean | null,
   // The recent-paper samples journal suggestions asked for.
   sampled: [] as string[],
+  // What a MEDLINE check waits on before it answers, when a test has to act
+  // while one is out.
+  held: null as Promise<void> | null,
 }));
 vi.mock("./pubmed.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pubmed.js")>();
@@ -42,6 +45,7 @@ vi.mock("./pubmed.js", async (importOriginal) => {
     },
     isMedlineIndexed: async (nlmId: string) => {
       ncbi.indexingAsked.push(nlmId);
+      await ncbi.held;
       return ncbi.indexed;
     },
     searchRecent: async (term: string) => {
@@ -105,12 +109,17 @@ const request = (method: string, path: string, body?: unknown, headers: HeadersI
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-beforeAll(async () => {
-  db = await openTempDb("topic-scope");
+// The vocabulary the routes check headings against. Seeded once for the file;
+// a test that revises it puts this back.
+const seedMesh = (rows = [ADIPOSE, OBESITY]) =>
   db.replaceMeshData(
-    [ADIPOSE, OBESITY].map((d) => ({ ...d, terms: [d.name] })),
+    rows.map((d) => ({ ...d, terms: [d.name] })),
     "2026"
   );
+
+beforeAll(async () => {
+  db = await openTempDb("topic-scope");
+  seedMesh();
   db.bulkUpsertCatalog(
     [
       { nlm_id: LANCET.nlmId, title: "The Lancet", med_abbr: "Lancet" },
@@ -142,6 +151,7 @@ beforeEach(() => {
   ncbi.indexingAsked = [];
   ncbi.indexed = true;
   ncbi.sampled = [];
+  ncbi.held = null;
 });
 
 // The count ahead of a change and the change itself, which must agree on what
@@ -396,6 +406,29 @@ describe("the routes", () => {
     }
   });
 
+  it("refuse a name another topic took while the journals were being resolved", async () => {
+    // A journal new to the library is asked about at NLM, and the name used to
+    // be asked about only before that wait. A topic created meanwhile left two
+    // of one name, which the picker can't tell apart.
+    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED).id;
+    let answer!: () => void;
+    ncbi.held = new Promise<void>((r) => (answer = r));
+    const changing = request("PATCH", `/topics/${t}`, {
+      name: "Fat",
+      allPubmed: false,
+      journals: [LANCET.nlmId],
+    });
+    await vi.waitFor(() => expect(ncbi.indexingAsked).toEqual([LANCET.nlmId]));
+    db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED);
+    answer();
+
+    const res = await changing;
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("A topic named “Fat” already exists.");
+    // Not half applied: the scope that came with the refused name isn't taken.
+    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", all_pubmed: true, journalCount: 0 });
+  });
+
   it("suggest journals for the headings asked about, to the owner alone", async () => {
     const path = `/journals/suggest?ui=${ADIPOSE.ui}&ui=${OBESITY.ui}`;
     expect((await request("GET", path, undefined, {})).status).toBe(401);
@@ -410,6 +443,27 @@ describe("the routes", () => {
       '"Adipose Tissue"[MeSH] AND "Obesity"[MeSH]',
     ]);
     expect((await request("GET", "/journals/suggest")).status).toBe(400);
+  });
+
+  it("suggest journals for a topic whose heading NLM has since retired", async () => {
+    // The dialog asks about an existing topic by the headings it has, which
+    // can't be changed. Checked against this year's vocabulary, a heading NLM
+    // had retired made Auto answer that it isn't a MeSH heading and to pick
+    // another, to someone with no way to.
+    db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED);
+    seedMesh([OBESITY]);
+    try {
+      const res = await request("GET", `/journals/suggest?ui=${ADIPOSE.ui}`);
+      expect(res.status).toBe(200);
+      // Under the name the topic recorded, which is what it polls.
+      expect(ncbi.sampled[0]).toBe('"Adipose Tissue"[majr]');
+      // An id no topic carries is still refused, and a retired heading is not
+      // one a new topic can be made from.
+      expect((await request("GET", "/journals/suggest?ui=D000000")).status).toBe(422);
+      expect((await request("POST", "/topics", { headings: [ADIPOSE.ui] })).status).toBe(422);
+    } finally {
+      seedMesh();
+    }
   });
 
   it("refuse a check for new papers when no topic has anywhere to search", async () => {
