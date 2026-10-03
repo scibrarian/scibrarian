@@ -426,6 +426,21 @@ describe("editing a topic", () => {
   });
 });
 
+describe("where the focus starts", () => {
+  // The info icon beside "MeSH headings" is the dialog's first tab stop, and
+  // Radix opens a dialog on its first tab stop. The field the icon explains
+  // takes the focus instead.
+  it("is the heading search, for a new topic", async () => {
+    open();
+    await waitFor(() => expect(document.activeElement).toBe(search()));
+  });
+
+  it("is the name, for a topic being edited", async () => {
+    open(TOPIC);
+    await waitFor(() => expect(document.activeElement).toBe(nameBox()));
+  });
+});
+
 describe("what a save has to say", () => {
   it("is nothing when nothing left and nothing needs a warning", () => {
     expect(describeTopicSave(TOPIC, { created: true, removed: 0, unindexed: [] })).toBeNull();

@@ -31,6 +31,9 @@ interface TypeaheadProps<T> {
   // The box takes nothing more — the topic dialog's, once a topic has as many
   // headings as it may. The placeholder is where the parent says why.
   disabled?: boolean;
+  // Focused when it mounts — the topic dialog's, whose first tab stop is the
+  // info icon ahead of it.
+  autoFocus?: boolean;
 }
 
 export function Typeahead<T>({
@@ -47,6 +50,7 @@ export function Typeahead<T>({
   idleItems,
   idleLabel,
   disabled = false,
+  autoFocus = false,
 }: TypeaheadProps<T>) {
   const [results, setResults] = useState<T[]>([]);
   // The results list is a combobox popup: it hides on Escape/blur (dismissed)
@@ -187,6 +191,7 @@ export function Typeahead<T>({
         }}
         placeholder={placeholder}
         disabled={disabled}
+        autoFocus={autoFocus}
         autoComplete="off"
         role="combobox"
         aria-expanded={listOpen}

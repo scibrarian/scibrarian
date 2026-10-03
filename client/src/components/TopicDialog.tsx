@@ -348,6 +348,10 @@ export function TopicDialog({
         <form className="topic-form" onSubmit={save}>
           <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
+          {/* The icon here is the dialog's first tab stop, and Radix opens a
+              dialog on its first tab stop — so the field it explains, the
+              heading search for a new topic and the name for one being edited,
+              takes the focus itself with autoFocus, which Radix leaves alone. */}
           <div className="topic-label first">
             <span id="topic-headings-label">MeSH headings</span>
             <InfoTip text={topic ? FIXED : ALL_REQUIRED} />
@@ -386,6 +390,7 @@ export function TopicDialog({
                 idleItems={libraryPicks}
                 idleLabel={libraryNote}
                 disabled={full}
+                autoFocus
                 placeholder={
                   full
                     ? `${MAX_TOPIC_HEADINGS} of ${MAX_TOPIC_HEADINGS} headings`
@@ -430,6 +435,7 @@ export function TopicDialog({
           </label>
           <input
             id="topic-name"
+            autoFocus={topic != null}
             value={shownName}
             onChange={(e) => {
               setName(e.target.value);

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Check, Trash2 } from "lucide-react";
+import { Share2, Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useReveal } from "../lib/hooks";
@@ -38,9 +38,14 @@ const RESET_WARNING =
   "All library collections, interest topics, and bookmark folders will also be deleted. " +
   "This cannot be undone.";
 
-// The help behind each heading's and field's info icon. It used to be printed
-// under them, a paragraph a panel, and Settings was mostly paragraphs: the
-// page says what is so, and this says how it works for whoever asks.
+// The help behind an info icon: how a thing works, read once and in the way
+// from then on.
+//
+// Only that. What a reader has to copy — the cron format, the sharing setup —
+// stays printed on the page, where it can be selected and kept in view while
+// typing, and so does anything that says what a control will do to their data:
+// what Open Library exposes, what the cache and Delete all data take with them.
+// A bubble that closes when the pointer moves is the wrong place for either.
 const HELP = {
   topics:
     "Each topic appears under Interests. A topic is one or more MeSH headings, and a paper " +
@@ -50,34 +55,19 @@ const HELP = {
   polling:
     "When on, every topic is checked for new papers on the schedule below; “Check for new " +
     "papers” works either way. A topic with no journals chosen is skipped.",
-  cron: "Default 0 6 * * * = daily at 6am. Format: min hour day month weekday.",
   email:
     "Optional but recommended. Sent to NCBI and OpenAlex so they can contact you before " +
     "blocking access if requests ever exceed their limits.",
   apiKey: "Optional. A free key raises the rate limit from ~3 to ~10 requests/sec.",
-  sharingOff:
-    "To let others view your server, set HOST and ADMIN_TOKEN in server/.env and restart — " +
-    "see the README’s “Sharing your server” section.",
-  sharingOn:
-    "Send one of these addresses to anyone on your network. They can view everything except " +
-    "stored PDFs — share those with the share buttons, or turn on Open Library below. " +
-    "Changing anything still requires the admin token.",
-  openLibrary:
-    "When on, viewers can freely download stored files and collection zips — no share link " +
-    "needed. When off, files are owner-only and shared via expiring links.",
-  cache:
-    "The cache allows anything you annotate and save to go back into the library. If you " +
-    "clear the cache, you will have to reopen files before editing them again.",
 };
 
-// The same for "Delete all data", which says one thing more in a Pro build.
-const resetHelp = (pro: boolean) =>
-  "Permanently deletes everything in this library: every paper, topic, journal, saved " +
-  "folder, collection, and every stored PDF. Your polling and NCBI settings are kept, and " +
-  "so are the MeSH and journal reference lists — so the pickers still work when you start " +
-  "again." +
-  (pro ? " Your organization pairing and license are kept too." : "") +
-  " This cannot be undone.";
+// The cron field's format line. A constant because the form's stand-in prints
+// it too, unseen, to take the room it will (see StackedFormSkeleton).
+const CRON_HINT = (
+  <>
+    Default <code>0 6 * * *</code> = daily at 6am. Format: min hour day month weekday.
+  </>
+);
 
 // Whether a topic has anywhere to search — see canPoll on the server.
 const canCheck = (t: Topic) => t.all_pubmed || t.journalCount > 0;
@@ -402,9 +392,13 @@ export function Settings({
       <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
       <section className="panel">
-        <h2 className="with-tip">
-          Topics <InfoTip text={HELP.topics} />
-        </h2>
+        {/* The icon beside the heading rather than in it, where its help would
+            become part of the heading's name: a screen reader moving by heading
+            would read the whole paragraph as the title of the panel. */}
+        <div className="with-tip">
+          <h2>Topics</h2>
+          <InfoTip text={HELP.topics} />
+        </div>
         <button type="button" className="accent-btn" onClick={() => setTopicDialog("new")}>
           Add topic…
         </button>
@@ -446,55 +440,66 @@ export function Settings({
       <section className="panel">
         <h2>Polling & NCBI</h2>
         <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />
-        {!ready && <StackedFormSkeleton />}
+        {!ready && <StackedFormSkeleton cronHint={CRON_HINT} />}
         {ready && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
-            <label>
+            {/* A field with an info icon is a div whose <label> holds only the
+                words, and the icon sits beside it. Inside the label, a click
+                that missed the icon by a pixel would land on the label and flip
+                or focus its control. The help still reaches the field, as its
+                description. */}
+            <div className="field">
               <span className="label-line">
-                Scheduled polling <InfoTip text={HELP.polling} />
+                <label htmlFor="settings-poll-enabled">Scheduled polling</label>
+                <InfoTip id="settings-poll-enabled-help" text={HELP.polling} />
               </span>
-              <span className="switch-row">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  className="switch"
-                  checked={settings.poll_enabled}
-                  onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
-                />
-              </span>
-            </label>
+              <input
+                id="settings-poll-enabled"
+                aria-describedby="settings-poll-enabled-help"
+                type="checkbox"
+                role="switch"
+                className="switch"
+                checked={settings.poll_enabled}
+                onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
+              />
+            </div>
             <label>
-              <span className="label-line">
-                Poll schedule (cron) <InfoTip text={HELP.cron} />
-              </span>
+              Poll schedule (cron)
               <input
                 value={settings.poll_cron}
                 onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
                 disabled={!settings.poll_enabled}
               />
+              <span className="hint">{CRON_HINT}</span>
             </label>
-            <label>
+            <div className="field">
               <span className="label-line">
-                Contact email <InfoTip text={HELP.email} />
+                <label htmlFor="settings-ncbi-email">Contact email</label>
+                <InfoTip id="settings-ncbi-email-help" text={HELP.email} />
               </span>
               <input
+                id="settings-ncbi-email"
+                aria-describedby="settings-ncbi-email-help"
                 value={settings.ncbi_email}
                 onChange={(e) => setSettings({ ...settings, ncbi_email: e.target.value })}
                 placeholder="optional"
               />
-            </label>
-            <label>
+            </div>
+            <div className="field">
               <span className="label-line">
-                NCBI API key <InfoTip text={HELP.apiKey} />
+                <label htmlFor="settings-api-key">NCBI API key</label>
+                <InfoTip id="settings-api-key-help" text={HELP.apiKey} />
                 {settings.has_api_key && <span className="pill">set <Check size={12} className="inline-icon" aria-hidden /></span>}
               </span>
               <input
+                id="settings-api-key"
+                aria-describedby="settings-api-key-help"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={settings.has_api_key ? "•••••• (leave blank to keep)" : "optional"}
               />
-            </label>
+            </div>
             <button type="submit" disabled={!settingsDirty}>
               Save settings
             </button>
@@ -543,28 +548,35 @@ export function Settings({
           its own null. */}
       {(!ready || settings?.desktop === false) && (
         <section className="panel">
-          <h2 className="with-tip">
-            Sharing
-            {/* Which help depends on what the settings say, so none until they
-                have: the wrong one for a moment is worse than a moment without. */}
-            {ready && settings && (
-              <InfoTip
-                text={settings.share_urls.length === 0 ? HELP.sharingOff : HELP.sharingOn}
-              />
-            )}
-          </h2>
+          <h2>Sharing</h2>
           {!ready && (
             <p className="hint" aria-busy="true" aria-label="Loading sharing info">
+              {/* Two lines of the paragraph, each bar on a line box of its own:
+                  too wide to share one, so the second wraps, and with no margin
+                  of its own each line is the text's. The unseen <code> is for
+                  the first line, which carries HOST and ADMIN_TOKEN: 12px
+                  monospace sits lower than the text around it and makes that
+                  line 20px rather than 19.5, by however much its font says. */}
+              <SkeletonBar w="85%" h={12} />
+              <code style={{ visibility: "hidden" }}>{"​"}</code>
               <SkeletonBar w="60%" h={12} />
             </p>
           )}
           {ready && settings &&
             (settings.share_urls.length === 0 ? (
-              // What is so, which stays on the page; how to change it is the
-              // help beside the heading.
-              <p className="hint">Only this machine can connect right now.</p>
+              <p className="hint">
+                Only this machine can connect right now. To let others view your server, set{" "}
+                <code>HOST</code> and <code>ADMIN_TOKEN</code> in <code>server/.env</code> and
+                restart — see the README&rsquo;s &ldquo;Sharing your server&rdquo; section.
+              </p>
             ) : (
               <>
+                <p className="hint">
+                  Send one of these addresses to anyone on your network. They can view
+                  everything except stored PDFs — share those with the{" "}
+                  <Share2 size={14} className="inline-icon" aria-hidden /> buttons, or turn
+                  on Open Library below. Changing anything still requires the admin token.
+                </p>
                 <ul className="list">
                   {settings.share_urls.map((url) => (
                     <li key={url}>
@@ -577,21 +589,33 @@ export function Settings({
                     </li>
                   ))}
                 </ul>
-                <label className="open-library">
-                  <span className="label-line">
-                    Open Library <InfoTip text={HELP.openLibrary} />
+                {/* Only the name is the switch's <label>, not the sentence
+                    beside it. This switch saves the moment it changes, and
+                    turned on it opens every stored file to everyone on the
+                    network, so a click meant for selecting that sentence must
+                    not reach it. */}
+                <div className="open-library">
+                  <span>
+                    <label htmlFor="settings-library-open">Open Library</label>{" "}
                     {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
                   </span>
                   <span className="switch-row">
                     <input
+                      id="settings-library-open"
+                      aria-describedby="settings-library-open-help"
                       type="checkbox"
                       role="switch"
                       className="switch"
                       checked={settings.library_open}
                       onChange={(e) => toggleOpenLibrary(e.target.checked)}
                     />
+                    <span id="settings-library-open-help" className="hint">
+                      When on, viewers can freely download stored files and collection zips —
+                      no share link needed. When off, files are owner-only and shared via
+                      expiring links.
+                    </span>
                   </span>
-                </label>
+                </div>
               </>
             ))}
         </section>
@@ -604,24 +628,19 @@ export function Settings({
           errand — reclaiming disk — and the destructive control stays last. */}
       {settings?.desktop === true && (
         <section className="panel">
-          <h2 className="with-tip">
-            Cached copies <InfoTip text={HELP.cache} />
-          </h2>
-          {/* What the cache holds right now, which is the part worth a line on
-              the page; what a cache is for is the help beside the heading. A
-              space until the first reading lands, so the line it lands on is
-              already there. */}
+          <h2>Cached copies</h2>
           <p className="hint">
-            {cache === null && "\u00a0"}
+            The cache allows anything you annotate and save to go back into the library.
+            If you clear the cache, you will have to reopen files before editing them again.
             {cacheStats !== null && cacheStats.files > 0 && (
-              <>Currently {plural(cacheStats.files, "file")}, {formatBytes(cacheStats.bytes)}.</>
+              <> Currently {plural(cacheStats.files, "file")}, {formatBytes(cacheStats.bytes)}.</>
             )}
-            {cacheStats !== null && cacheStats.files === 0 && <>Nothing is cached right now.</>}
+            {cacheStats !== null && cacheStats.files === 0 && <> Nothing is cached right now.</>}
             {/* Said rather than left blank. A reader who cannot see a size and
                 cannot press the button has no way to tell a cache that is empty
                 from one this panel failed to ask about. */}
             {cache === "unreadable" && (
-              <>The cache could not be read just now — clearing it still works, and reports what it did.</>
+              <> The cache could not be read just now — clearing it still works, and reports what it did.</>
             )}
           </p>
           {/* The one thing in this section a reader may have to act on, so it
@@ -672,9 +691,15 @@ export function Settings({
           the button alone, not the panel, so the section doesn't read as an
           alarm about the settings above it. */}
       <section className="panel">
-        <h2 className="with-tip">
-          Delete all data <InfoTip text={resetHelp(pro != null)} />
-        </h2>
+        <h2>Delete all data</h2>
+        <p className="hint">
+          Permanently deletes everything in this library: every paper, topic, journal, saved
+          folder, collection, and every stored PDF. Your polling and NCBI settings are kept,
+          and so are the MeSH and journal reference lists — so the pickers still work when you
+          start again.
+          {pro && " Your organization pairing and license are kept too."} This cannot be
+          undone.
+        </p>
         <button
           type="button"
           className="danger-btn"
@@ -691,7 +716,7 @@ export function Settings({
         {/* Below the button, where the panels above this one put their banners
             under the heading instead.
             Deliberate, and the reason is the button rather than the banner: a
-            message inserted above it pushes the control down by its own
+            message inserted above the hint pushes the control down by its own
             height, out from under the pointer that just pressed it — which for
             the failure case is the pointer about to press it again. Last in the
             panel, it displaces nothing. */}

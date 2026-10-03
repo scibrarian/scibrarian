@@ -223,18 +223,94 @@ export function ListRowSkeleton({
   );
 }
 
-// Mirrors the Polling & NCBI stacked form (label / control groups plus the save
-// button) so the panel doesn't pop in when settings arrive.
-export function StackedFormSkeleton({ groups = 4 }: { groups?: number }) {
+// A bar over a real element that is laid out but not drawn, so the space the
+// stand-in takes is the element's own — its padding, its border, the line its
+// font makes — rather than a number written here. That matters for controls:
+// an input or a button takes its line height from its font rather than from
+// the page, so the height a number would pin is one platform's fonts, not the
+// app's. The bar fills the space, or is `w` by `h` inside it: at its start, or
+// with `center` in the middle, for an element whose margins are part of the
+// space — a checkbox keeps the browser's.
+function Covered({
+  children,
+  w,
+  h,
+  radius,
+  center = false,
+  style,
+}: {
+  children: ReactNode;
+  w?: number | string;
+  h?: number;
+  radius?: number;
+  center?: boolean;
+  style?: CSSProperties;
+}) {
+  return (
+    <span style={{ display: "grid", ...style }}>
+      {/* A flex box, so the element inside is a flex item and sits on no line
+          box: inline, an input would carry the strut's descender under it. */}
+      <span style={{ gridArea: "1 / 1", display: "flex", visibility: "hidden" }}>{children}</span>
+      <SkeletonBar
+        w={w}
+        style={{
+          gridArea: "1 / 1",
+          height: h ?? "auto",
+          alignSelf: h == null ? "stretch" : "center",
+          justifySelf: w == null ? "stretch" : center ? "center" : "start",
+          borderRadius: radius,
+        }}
+      />
+    </span>
+  );
+}
+
+// Mirrors the Polling & NCBI stacked form so the panel doesn't move when the
+// settings arrive: a switch, then three inputs, the first with its format
+// printed under it, then the save button. Each group is the element the form
+// uses there — a .field, or for the cron field a <label> — so the stylesheet
+// spaces both alike, and each control is Covered. A label's bar sits in a block
+// of its own, whose one line of 13px text at 1.5 is the label's height.
+//
+// `cronHint` is that format line, passed from the form that prints it, for
+// FilterSkeleton's reason: under the bar it is the real sentence, so it wraps
+// where the form's does in a narrow window, and a rewording can't leave the
+// stand-in a line short.
+export function StackedFormSkeleton({ cronHint }: { cronHint: ReactNode }) {
+  const label = (
+    <div>
+      <SkeletonBar w={140} h={14} />
+    </div>
+  );
   return (
     <div className="stacked-form" aria-busy="true" aria-label="Loading settings">
-      {Array.from({ length: groups }).map((_, i) => (
-        <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <SkeletonBar w={140} h={14} />
-          <SkeletonBar w="100%" h={36} />
+      <div className="field">
+        {label}
+        {/* As wide as the switch, not the column, as the switch is. */}
+        <Covered w={38} h={22} radius={11} center style={{ alignSelf: "flex-start" }}>
+          <input type="checkbox" className="switch" />
+        </Covered>
+      </div>
+      <label>
+        {label}
+        <Covered>
+          <input />
+        </Covered>
+        <Covered w="62%" h={12}>
+          <span className="hint">{cronHint}</span>
+        </Covered>
+      </label>
+      {[0, 1].map((i) => (
+        <div key={i} className="field">
+          {label}
+          <Covered>
+            <input />
+          </Covered>
         </div>
       ))}
-      <SkeletonBar w={116} h={36} style={{ borderRadius: 8 }} />
+      <Covered radius={8} style={{ alignSelf: "flex-start" }}>
+        <button type="button">Save settings</button>
+      </Covered>
     </div>
   );
 }

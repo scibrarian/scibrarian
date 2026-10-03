@@ -50,6 +50,13 @@ const DIM_ALPHA = 0.1; // everything outside the anchor paper's reach
 // the previous highlight through the gap instead of flashing back to full color.
 const HOVER_SETTLE_MS = 140;
 
+// The cluster-name tip's widest, which is the max-width every tooltip shares
+// (see .tip-bubble in styles.css), and how far it sits from the pointer and
+// from the window's right edge. The edge is clientWidth's, which leaves out the
+// scrollbar gutter that innerWidth counts.
+const TIP_MAX_WIDTH = 320;
+const TIP_OFFSET = 12;
+
 // Canvas accepts #rrggbbaa; cluster colors past the curated palette are hsl(),
 // which becomes hsla(). Node colors are re-resolved on every frame, so the
 // variants are memoized rather than rebuilt per node per frame. The key space is
@@ -816,7 +823,13 @@ export function CitationGraph({
       {tip && (
         <div
           className="hover-tip"
-          style={{ left: Math.min(tip.x + 12, window.innerWidth - 292), top: tip.y + 14 }}
+          style={{
+            left: Math.min(
+              tip.x + TIP_OFFSET,
+              document.documentElement.clientWidth - TIP_MAX_WIDTH - TIP_OFFSET
+            ),
+            top: tip.y + 14,
+          }}
         >
           {tip.text}
         </div>
