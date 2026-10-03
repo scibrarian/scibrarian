@@ -10,9 +10,19 @@ import {
   sha256File,
   storeBlobFromTemp,
 } from "./blobstore.js";
-import { gcBlobsIfOrphaned, getCollectionFile, repointFileBlob, savePdfText } from "./db.js";
+import {
+  addCheckout,
+  blobIsHeld,
+  checkoutBaseline,
+  checkoutsHolding,
+  deleteOrphanedCheckouts,
+  gcBlobsIfOrphaned,
+  getCollectionFile,
+  repointCheckedOutPaper,
+  savePdfText,
+} from "./db.js";
 import { extractPdf } from "./pdf-text.js";
-import type { CacheStats, ClearedCache } from "./types.js";
+import type { CacheStats, ClearedCache, CollectionFile } from "./types.js";
 import { errMessage } from "./util.js";
 
 // Opening a stored PDF in whatever this machine already opens PDFs with, for
@@ -28,6 +38,17 @@ import { errMessage } from "./util.js";
 // in place would leave the bytes no longer matching the name that identifies
 // them. Instead a file is *checked out*: copied under its real name, watched,
 // and checked back in when the viewer saves.
+//
+// **One copy per paper, not per row.** The same PDF filed in three collections
+// is one blob under three rows, and a reader annotating it is annotating the
+// paper: opening it from any of the three hands over the same file, and a save
+// moves all three onto the new bytes. So a checkout is keyed by neither a row
+// nor a hash — a row can go while the paper stays, and the hash changes with
+// every save — but by a directory of its own, with the bytes its copy was
+// handed recorded in viewer_checkouts (db.ts). A save is whatever differs from
+// that record. Measured against a row's hash instead, a copy that had fallen
+// behind its paper would read as an edit, and checking it in would put every
+// collection back to the older document.
 //
 // **Desktop only, and enforced here rather than assumed.** A server deployment
 // hands its PDFs to a browser, which renders them and cannot write back — so
@@ -144,12 +165,36 @@ function copiesIn(dir: string): string[] {
 }
 
 /**
- * One directory per file id, so two papers that arrived under the same name can
+ * One directory per checkout, so two papers that arrived under the same name can
  * both be open at once, and so the sweep has one copy at a time to reason about.
  */
-function checkoutDir(fileId: number): string {
-  return path.join(EXTERNAL_OPEN_DIR, String(fileId));
+function checkoutDir(checkout: string): string {
+  return path.join(EXTERNAL_OPEN_DIR, checkout);
 }
+
+/**
+ * The checkout whose copy holds these bytes, recorded now if there is none.
+ *
+ * Named at random, since nothing about the paper stays put — see the note at
+ * the top of this file. Where two checkouts hold the bytes, which takes two
+ * papers that a save made identical, the one with a copy on disk wins, so the
+ * reader goes on being handed the file they already have open.
+ */
+function checkoutFor(hash: string): string {
+  const recorded = checkoutsHolding(hash);
+  const chosen = recorded.find((c) => copiesIn(checkoutDir(c)).length > 0) ?? recorded[0];
+  if (chosen) return chosen;
+  const checkout = randomUUID();
+  addCheckout(checkout, hash);
+  return checkout;
+}
+
+// Checkouts being handed over right now. Two opens of one paper can arrive
+// together — a double-click, or the paper opened from two collections — and
+// each would find the directory empty and copy into it under the name of the
+// row it came through, leaving two files where everything else here expects
+// one. The second is handed the first one's answer instead.
+const opening = new Map<string, Promise<string>>();
 
 /**
  * Check one stored PDF out for an external viewer, and answer with the path to
@@ -157,7 +202,8 @@ function checkoutDir(fileId: number): string {
  *
  * Reuses the copy from an earlier open whenever the library already holds
  * exactly those bytes — reopening a paper you read yesterday copies nothing,
- * and the viewer reopens the same path it remembers.
+ * and the viewer reopens the same path it remembers. That holds whichever
+ * collection the paper is opened from.
  */
 export async function checkOutForExternalOpen(fileId: number): Promise<string> {
   if (!IS_DESKTOP) throw new Error("Opening in a local viewer is a desktop-only feature.");
@@ -165,7 +211,18 @@ export async function checkOutForExternalOpen(fileId: number): Promise<string> {
   if (!file) throw new Error("File not found.");
   if (!blobExists(file.content_hash)) throw new Error("That file's PDF is no longer stored.");
 
-  const dir = checkoutDir(fileId);
+  // Everything up to here is synchronous, so the second of two opens arriving
+  // together finds the checkout the first one recorded.
+  const checkout = checkoutFor(file.content_hash);
+  const pending = opening.get(checkout);
+  if (pending) return pending;
+  const handing = handOver(checkout, file).finally(() => opening.delete(checkout));
+  opening.set(checkout, handing);
+  return handing;
+}
+
+async function handOver(checkout: string, file: CollectionFile): Promise<string> {
+  const dir = checkoutDir(checkout);
 
   // Whatever copy is already here, under whatever name it is under — rather
   // than testing for the name this code would choose today. A case-sensitive
@@ -178,23 +235,23 @@ export async function checkOutForExternalOpen(fileId: number): Promise<string> {
     // Changes the watch never saw: it dies with the process, so anything the
     // viewer saved after the last quit arrives here instead. Taken before the
     // copy is handed back, since reuse is what would bury them.
-    await checkInIfWhole(fileId, existing);
-    watchForSaves(fileId, existing);
+    await checkInIfWhole(checkout, existing);
+    watchForSaves(checkout, existing);
     return existing;
   }
 
-  const copy = path.join(dir, openableName(file.file_name, fileId));
+  const copy = path.join(dir, openableName(file.file_name, file.id));
   await fs.promises.mkdir(dir, { recursive: true });
   await fs.promises.copyFile(blobPath(file.content_hash), copy, COW);
-  watchForSaves(fileId, copy);
+  watchForSaves(checkout, copy);
   return copy;
 }
 
-// One watcher per checked-out file, and the path it is watching. Opening the
-// same paper twice is the ordinary case — it is still open from an hour ago —
-// and must not arm a second one; the path is what says whether the one already
+// One watcher per checkout, and the path it is watching. Opening the same
+// paper twice is the ordinary case — it is still open from an hour ago — and
+// must not arm a second one; the path is what says whether the one already
 // armed is still pointed at the file this checkout is handing over.
-const watches = new Map<number, string>();
+const watches = new Map<string, string>();
 
 /**
  * Notice when the viewer writes to the copy.
@@ -216,24 +273,24 @@ const watches = new Map<number, string>();
  * is not a cost worth engineering around, and the alternative — guessing that a
  * paper has been closed — is the guess that loses work.
  *
- * Re-armed when the path changes rather than skipped on the file id alone. A
+ * Re-armed when the path changes rather than skipped on the checkout alone. A
  * copy can be replaced at a different name — the reader renames it in Finder,
  * removes it and reopens the paper — and a watch left on the old path is then
  * polling nothing while the new copy's saves are collected by no one.
  */
-function watchForSaves(fileId: number, copy: string): void {
-  const watched = watches.get(fileId);
+function watchForSaves(checkout: string, copy: string): void {
+  const watched = watches.get(checkout);
   if (watched === copy) return; // still open from an hour ago: the ordinary case
-  if (watched !== undefined) stopWatching(fileId);
+  if (watched !== undefined) stopWatching(checkout);
   const watcher = fs.watchFile(copy, { interval: POLL_MS }, (now, before) => {
     // A zeroed stat is the file having gone: cleared, or deleted by hand.
-    if (now.mtimeMs === 0) return stopWatching(fileId);
+    if (now.mtimeMs === 0) return stopWatching(checkout);
     if (now.mtimeMs === before.mtimeMs && now.size === before.size) return;
-    void collect(fileId, copy);
+    void collect(checkout, copy);
   });
   watcher.unref(); // never a reason for the process to stay up
-  watches.set(fileId, copy);
-  reconcileOnce(fileId, copy);
+  watches.set(checkout, copy);
+  reconcileOnce(checkout, copy);
 }
 
 /**
@@ -256,33 +313,33 @@ function watchForSaves(fileId: number, copy: string): void {
  * "unchanged" when there is nothing to take, which is the ordinary case. The
  * cost is one hash of the copy per checkout.
  */
-function reconcileOnce(fileId: number, copy: string): void {
+function reconcileOnce(checkout: string, copy: string): void {
   const settle = setTimeout(() => {
     // Gone or replaced meanwhile: a clear took the copy, or a second checkout
     // re-armed on a different name. Either way this is no longer the watch that
     // answers for this file, and collect would be hashing someone else's.
-    if (watches.get(fileId) !== copy) return;
-    void collect(fileId, copy);
+    if (watches.get(checkout) !== copy) return;
+    void collect(checkout, copy);
   }, POLL_MS);
   settle.unref(); // never a reason for the process to stay up
 }
 
 /** Stop polling one copy. Unrefing the watcher does not do this: it only says
  *  the poll must not hold the process up, and the poll goes on running. */
-function stopWatching(fileId: number): void {
-  const copy = watches.get(fileId);
+function stopWatching(checkout: string): void {
+  const copy = watches.get(checkout);
   if (copy === undefined) return;
   fs.unwatchFile(copy);
-  watches.delete(fileId);
+  watches.delete(checkout);
 }
 
 /** Something wrote to the copy: decide whether anything actually changed. */
-async function collect(fileId: number, copy: string): Promise<void> {
+async function collect(checkout: string, copy: string): Promise<void> {
   try {
     if (!fs.existsSync(copy)) return;
-    await checkInIfWhole(fileId, copy);
+    await checkInIfWhole(checkout, copy);
   } catch (err) {
-    console.warn(`[external-open] file ${fileId}: ${errMessage(err)}`);
+    console.warn(`[external-open] checkout ${checkout}: ${errMessage(err)}`);
   }
 }
 
@@ -295,7 +352,7 @@ async function collect(fileId: number, copy: string): Promise<void> {
  * startup sweep below both hashed whatever copy they found and stored it on the
  * strength of the hash differing, so a quit part way through a save left a
  * fragment that the next open wrote over the paper. What that costs is not a
- * bad revision but the document: checkIn repoints the row, and the blob it
+ * bad revision but the document: checkIn repoints the paper, and the blob it
  * stops naming is collected the moment nothing references it.
  *
  * What it answers matters to the clear. "collected", "unchanged" and
@@ -306,7 +363,7 @@ async function collect(fileId: number, copy: string): Promise<void> {
  */
 type Checkin = "collected" | "unchanged" | "orphaned" | "unfinished" | "busy";
 
-// The check-ins in flight, so no two run for one file at once.
+// The check-ins in flight, so no two run for one checkout at once.
 //
 // Three callers reach this and none knows about the others. A PDF whose hash,
 // copy and text extraction take longer than POLL_MS lets the watch fire again
@@ -321,7 +378,7 @@ type Checkin = "collected" | "unchanged" | "orphaned" | "unfinished" | "busy";
 // loser threw ENOENT, which this module records as a copy whose changes are not
 // in the library and the panel reports to the reader — over a save that had
 // been taken perfectly. Duplicated pdfjs extraction was the smaller half.
-const collecting = new Set<number>();
+const collecting = new Set<string>();
 
 /**
  * Copies whose changes the library does not have, and why: a save the viewer
@@ -338,7 +395,7 @@ const collecting = new Set<number>();
  * copy and therefore knows. That makes it exact for every copy this process has
  * looked at, and the startup sweep looks at all of them.
  */
-const unsaved = new Map<number, string>();
+const unsaved = new Map<string, string>();
 
 /** How many copies are holding changes the library does not have. */
 export function unsavedCheckouts(): number {
@@ -349,54 +406,56 @@ export function unsavedCheckouts(): number {
   // warning about changes nobody can act on and nothing can ever clear — and
   // the note is only ever written for a file that had just been hashed, so
   // disk is the authority here and this map is the cache.
-  for (const fileId of [...unsaved.keys()]) {
-    if (copiesIn(checkoutDir(fileId)).length === 0) unsaved.delete(fileId);
+  for (const checkout of [...unsaved.keys()]) {
+    if (copiesIn(checkoutDir(checkout)).length === 0) unsaved.delete(checkout);
   }
   return unsaved.size;
 }
 
-async function checkInIfWhole(fileId: number, copy: string): Promise<Checkin> {
-  if (collecting.has(fileId)) return "busy";
-  collecting.add(fileId);
+async function checkInIfWhole(checkout: string, copy: string): Promise<Checkin> {
+  if (collecting.has(checkout)) return "busy";
+  collecting.add(checkout);
   try {
-    const file = getCollectionFile(fileId);
-    // The row went with its collection. Nothing can be saved into it now, so
+    const handed = checkoutBaseline(checkout);
+    // The paper went from every collection that held it, or this checkout was
+    // never recorded — a cache laid out before checkouts were per paper, or one
+    // a reset emptied the table under. Nothing can be saved into it now, so
     // there is nothing outstanding either; a delete sweep takes the copy.
-    if (!file) return forget(fileId, "orphaned");
+    if (handed === undefined || !blobIsHeld(handed)) return forget(checkout, "orphaned");
     const hash = await sha256File(copy);
-    if (hash === file.content_hash) return forget(fileId, "unchanged"); // read, not edited
+    if (hash === handed) return forget(checkout, "unchanged"); // read, not edited
     // A save the viewer is still in the middle of, or one it never finished.
     // Deliberately no retry: a write on the way to a finished file moves the
     // mtime, so the poll comes back on its own, and a file that stops halfway
     // stays in the cache as the fragment it is until the reader clears it.
     if (!(await isWholePdf(copy))) {
-      unsaved.set(fileId, "the viewer did not finish writing it");
+      unsaved.set(checkout, "the viewer did not finish writing it");
       return "unfinished";
     }
-    await checkIn(fileId, copy, hash);
-    return forget(fileId, "collected");
+    await checkIn(checkout, copy, hash);
+    return forget(checkout, "collected");
   } catch (err) {
     // Recorded here rather than in the three callers' catch blocks, so that
     // every way of reaching a check-in reports one the same way.
-    unsaved.set(fileId, errMessage(err));
+    unsaved.set(checkout, errMessage(err));
     throw err;
   } finally {
-    collecting.delete(fileId);
+    collecting.delete(checkout);
   }
 }
 
-/** Drop any outstanding note about this file, and answer with `outcome`. */
-function forget(fileId: number, outcome: Checkin): Checkin {
-  unsaved.delete(fileId);
+/** Drop any outstanding note about this checkout, and answer with `outcome`. */
+function forget(checkout: string, outcome: Checkin): Checkin {
+  unsaved.delete(checkout);
   return outcome;
 }
 
 /**
  * Take the bytes an external viewer wrote back into the library: store them,
- * point the row at them, and re-index the text so search answers for the
- * document that is actually there now.
+ * point every collection holding the paper at them, and re-index the text so
+ * search answers for the document that is actually there now.
  */
-async function checkIn(fileId: number, copy: string, hash: string): Promise<void> {
+async function checkIn(checkout: string, copy: string, hash: string): Promise<void> {
   // Through a temp file, because storeBlobFromTemp renames what it is given
   // into the store — and what it would be given here is the file the viewer
   // still has open. In the upload directory so that rename stays same-volume.
@@ -409,23 +468,24 @@ async function checkIn(fileId: number, copy: string, hash: string): Promise<void
   // one that had. The guard above makes that pair unreachable; this is what
   // keeps it harmless if it becomes reachable again, and it costs a uuid.
   await fs.promises.mkdir(UPLOAD_TMP_DIR, { recursive: true });
-  const tmp = path.join(UPLOAD_TMP_DIR, `checkin-${fileId}-${randomUUID()}.pdf`);
+  const tmp = path.join(UPLOAD_TMP_DIR, `checkin-${checkout}-${randomUUID()}.pdf`);
   await fs.promises.copyFile(copy, tmp, COW);
   const { hash: stored } = await storeBlobFromTemp(tmp);
-  if (!repointFileBlob(fileId, stored)) {
-    // The bytes are in the store and nothing points at them. repointFileBlob
-    // refuses when the row has gone between the save and this line, or when
-    // another row in the same collection already holds these bytes — and in
-    // the first case nothing else will ever collect the blob, because every
-    // other path that orphans one does this itself. Ordered this way round on
-    // purpose: store first so a crash leaves an unreferenced blob rather than a
-    // row pointing at bytes that are not there.
+  if (!repointCheckedOutPaper(checkout, stored)) {
+    // The bytes are in the store and nothing points at them.
+    // repointCheckedOutPaper refuses when the paper has gone between the save
+    // and this line, or when every collection holding it already holds these
+    // bytes as another file — and in the first case nothing else will ever
+    // collect the blob, because every other path that orphans one does this
+    // itself. Ordered this way round on purpose: store first so a crash leaves
+    // an unreferenced blob rather than a row pointing at bytes that are not
+    // there.
     gcBlobsIfOrphaned([stored]);
     return;
   }
 
   // The text index is keyed by content_hash, so the old extraction went with
-  // the old blob and this row has none until the new one is parsed. Its own
+  // the old blob and the paper has none until the new one is parsed. Its own
   // try/catch: a document pdfjs cannot read is still correctly stored and
   // correctly pointed at, and only its searchability is in question.
   try {
@@ -437,9 +497,11 @@ async function checkIn(fileId: number, copy: string, hash: string): Promise<void
       truncated: extracted.truncated,
     });
   } catch (err) {
-    console.warn(`[external-open] file ${fileId}: full-text re-index failed: ${errMessage(err)}`);
+    console.warn(
+      `[external-open] checkout ${checkout}: full-text re-index failed: ${errMessage(err)}`
+    );
   }
-  console.log(`[external-open] file ${fileId}: took back changes from the system viewer`);
+  console.log(`[external-open] checkout ${checkout}: took back changes from the system viewer`);
 }
 
 /**
@@ -461,30 +523,33 @@ async function isWholePdf(filePath: string): Promise<boolean> {
   }
 }
 
-/** The per-file directories under the checkout root, each with its file id. */
-function checkoutDirs(): { fileId: number; dir: string }[] {
+/**
+ * The checkout directories under the cache root, each with its checkout.
+ *
+ * Every directory, recorded or not. One that viewer_checkouts has no row for —
+ * named after a file id, from before checkouts were per paper, or left behind
+ * by a reset — reads as orphaned to the gate, so it is never checked in and the
+ * next delete or clear takes it.
+ */
+function checkoutDirs(): { checkout: string; dir: string }[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(EXTERNAL_OPEN_DIR, { withFileTypes: true });
   } catch {
     return []; // nothing has ever been opened externally
   }
-  const out: { fileId: number; dir: string }[] = [];
-  for (const entry of entries) {
-    const fileId = Number(entry.name);
-    if (!entry.isDirectory() || !Number.isInteger(fileId)) continue;
-    out.push({ fileId, dir: path.join(EXTERNAL_OPEN_DIR, entry.name) });
-  }
-  return out;
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({ checkout: entry.name, dir: path.join(EXTERNAL_OPEN_DIR, entry.name) }));
 }
 
 /**
- * Every checked-out copy on disk, with the file id whose directory it sits in.
+ * Every checked-out copy on disk, with the checkout whose directory it sits in.
  */
-function everyCopy(): { fileId: number; copy: string }[] {
-  const out: { fileId: number; copy: string }[] = [];
-  for (const { fileId, dir } of checkoutDirs()) {
-    for (const copy of copiesIn(dir)) out.push({ fileId, copy });
+function everyCopy(): { checkout: string; copy: string }[] {
+  const out: { checkout: string; copy: string }[] = [];
+  for (const { checkout, dir } of checkoutDirs()) {
+    for (const copy of copiesIn(dir)) out.push({ checkout, copy });
   }
   return out;
 }
@@ -504,11 +569,11 @@ function everyCopy(): { fileId: number; copy: string }[] {
  */
 export async function collectPendingCheckins(): Promise<void> {
   if (!IS_DESKTOP) return;
-  for (const { fileId, copy } of everyCopy()) {
+  for (const { checkout, copy } of everyCopy()) {
     try {
-      await checkInIfWhole(fileId, copy);
+      await checkInIfWhole(checkout, copy);
     } catch (err) {
-      console.warn(`[external-open] collecting file ${fileId}: ${errMessage(err)}`);
+      console.warn(`[external-open] collecting checkout ${checkout}: ${errMessage(err)}`);
     }
   }
 }
@@ -516,13 +581,16 @@ export async function collectPendingCheckins(): Promise<void> {
 /**
  * Take away the copies whose paper no longer exists.
  *
- * A checked-out copy belongs to one collection_files row. When that row goes —
- * one file deleted, papers removed from a collection, a whole collection
- * dropped — the copy is left behind as a plaintext PDF under the paper's own
- * name that nothing will ever check in again, because there is nothing left to
- * check it into. The delete unlinks the blob and cannot reach this: the store
- * and the cache are different directories, and db.ts sits underneath this
- * module rather than above it, so the sweep is called from the routes.
+ * A checked-out copy belongs to a paper: every collection_files row holding the
+ * bytes it was handed. When the last of those goes — one file deleted, papers
+ * removed from a collection, a whole collection dropped — the copy is left
+ * behind as a plaintext PDF under the paper's own name that nothing will ever
+ * check in again, because there is nothing left to check it into. Until then
+ * it stays, since the reader may still have it open and a save into it belongs
+ * to the collections that kept the paper. The delete unlinks the blob and
+ * cannot reach this: the store and the cache are different directories, and
+ * db.ts sits underneath this module rather than above it, so the sweep is
+ * called from the routes.
  *
  * By orphanhood rather than by a list of ids the caller captured before its
  * delete. Nothing has to be remembered at the call site — which is what the
@@ -531,24 +599,29 @@ export async function collectPendingCheckins(): Promise<void> {
  * stranded by an earlier version are taken by the next delete of any kind.
  *
  * An unfinished save is no reason to keep one here, unlike in clearCheckouts:
- * the row it would have been checked into is the thing that just went.
+ * the rows it would have been checked into are the thing that just went.
  */
 export async function discardOrphanedCheckouts(): Promise<number> {
   if (!IS_DESKTOP) return 0;
   let discarded = 0;
-  for (const { fileId, dir } of checkoutDirs()) {
-    if (getCollectionFile(fileId)) continue;
+  for (const { checkout, dir } of checkoutDirs()) {
+    const handed = checkoutBaseline(checkout);
+    if (handed !== undefined && blobIsHeld(handed)) continue;
     try {
       await fs.promises.rm(dir, { recursive: true, force: true });
     } catch (err) {
       // Never thrown on: the rows are already gone, and a copy that could not
       // be removed must not turn a delete that happened into a failed request.
-      console.warn(`[external-open] discarding copies of file ${fileId}: ${errMessage(err)}`);
+      console.warn(`[external-open] discarding copies of checkout ${checkout}: ${errMessage(err)}`);
       continue;
     }
-    stopWatching(fileId); // no-op when nothing was watching this one
+    stopWatching(checkout); // no-op when nothing was watching this one
     discarded++;
   }
+  // The rows go by the same test, whether or not their directory did: one that
+  // could not be removed reads as orphaned without its row just as well, and is
+  // taken by the next sweep.
+  deleteOrphanedCheckouts();
   return discarded;
 }
 
@@ -580,14 +653,14 @@ type Disposition = "delete" | "unsaved" | "blocked";
  * is neither: another pass is inside the same check-in right now, so this one
  * has no business deleting the file it is reading.
  */
-async function dispositionOf(fileId: number, copy: string): Promise<Disposition> {
+async function dispositionOf(checkout: string, copy: string): Promise<Disposition> {
   try {
-    const outcome = await checkInIfWhole(fileId, copy);
+    const outcome = await checkInIfWhole(checkout, copy);
     if (outcome === "unfinished") return "unsaved";
     if (outcome === "busy") return "blocked";
     return "delete";
   } catch (err) {
-    console.warn(`[external-open] clearing file ${fileId}: ${errMessage(err)}`);
+    console.warn(`[external-open] clearing checkout ${checkout}: ${errMessage(err)}`);
     return "unsaved";
   }
 }
@@ -612,7 +685,7 @@ async function dispositionOf(fileId: number, copy: string): Promise<Disposition>
 export async function clearCheckouts(): Promise<ClearedCache> {
   if (!IS_DESKTOP) return { files: 0, bytes: 0, unsaved: 0, blocked: 0 };
   const cleared: ClearedCache = { files: 0, bytes: 0, unsaved: 0, blocked: 0 };
-  for (const { fileId, dir } of checkoutDirs()) {
+  for (const { checkout, dir } of checkoutDirs()) {
     let keptHere = 0;
     for (const copy of copiesIn(dir)) {
       let size: number;
@@ -621,7 +694,7 @@ export async function clearCheckouts(): Promise<ClearedCache> {
       } catch {
         continue; // removed between the listing and the stat; nothing to do
       }
-      const disposition = await dispositionOf(fileId, copy);
+      const disposition = await dispositionOf(checkout, copy);
       if (disposition !== "delete") {
         keptHere++;
         if (disposition === "unsaved") cleared.unsaved++;
@@ -636,7 +709,7 @@ export async function clearCheckouts(): Promise<ClearedCache> {
         // than unsaved, because the branch above is what "delete" ruled out —
         // the library has these bytes, and only the unlink failed. Windows
         // refuses one for a file a viewer still has open, where POSIX allows it.
-        console.warn(`[external-open] clearing file ${fileId}: ${errMessage(err)}`);
+        console.warn(`[external-open] clearing checkout ${checkout}: ${errMessage(err)}`);
         keptHere++;
         cleared.blocked++;
         continue;
@@ -644,13 +717,18 @@ export async function clearCheckouts(): Promise<ClearedCache> {
       // The poll goes with the file it was watching. Left armed it would stat a
       // path with nothing at it, and the checkout that re-creates the copy
       // would decline to arm a fresh one because the map still claimed this id.
-      if (watches.get(fileId) === copy) stopWatching(fileId);
+      if (watches.get(checkout) === copy) stopWatching(checkout);
       cleared.files++;
       cleared.bytes += size;
     }
     // The directory goes when nothing in it is being kept, which takes the
     // viewer's lock and temp files with it: copiesIn does not list those, and
     // they are not anyone's work.
+    //
+    // Its viewer_checkouts row stays. The paper is still in the library, and a
+    // checkout being handed over while this runs may be about to make the
+    // directory again — without its row, the copy it put there would read as
+    // orphaned and no save into it would ever be taken.
     if (keptHere === 0) await fs.promises.rm(dir, { recursive: true, force: true });
   }
   // And the root, so a library that has never had a checkout and one that has

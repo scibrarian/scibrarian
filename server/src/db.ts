@@ -289,6 +289,17 @@ db.exec(`
     FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
   );
 
+  -- Desktop only: the copies of stored PDFs handed to the machine's own viewer,
+  -- one per paper rather than per row (see external-open.ts). id names the
+  -- copy's directory in the checkout cache; content_hash is the bytes the copy
+  -- was handed, or was last checked back in as, and a save is whatever differs
+  -- from it. No foreign key, for the reason pdf_text has none: it is keyed by
+  -- content, which every row holding the paper shares and none of them owns.
+  CREATE TABLE IF NOT EXISTS viewer_checkouts (
+    id TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL
+  );
+
   -- User-created folders of saved papers. A folder is a paper source in its own
   -- right (papers/timeline/graph read it exactly like a topic), but it stores
   -- nothing itself: membership is the bookmarks table below.
@@ -2222,29 +2233,90 @@ export function gcBlobsIfOrphaned(hashes: string[]): void {
   deleteBlobs(orphaned);
 }
 
+// ---------- viewer checkouts (desktop) ----------
+
+/** The checkouts whose copy holds these bytes, oldest first. */
+export function checkoutsHolding(hash: string): string[] {
+  return (
+    db
+      .prepare("SELECT id FROM viewer_checkouts WHERE content_hash = ? ORDER BY rowid")
+      .all(hash) as { id: string }[]
+  ).map((r) => r.id);
+}
+
+/** The bytes a checkout's copy was handed, or undefined for one never recorded. */
+export function checkoutBaseline(checkout: string): string | undefined {
+  return (
+    db.prepare("SELECT content_hash FROM viewer_checkouts WHERE id = ?").get(checkout) as
+      | { content_hash: string }
+      | undefined
+  )?.content_hash;
+}
+
+export function addCheckout(checkout: string, hash: string): void {
+  db.prepare("INSERT INTO viewer_checkouts (id, content_hash) VALUES (?, ?)").run(checkout, hash);
+}
+
+/** Forget the checkouts whose paper no collection holds any more. */
+export function deleteOrphanedCheckouts(): void {
+  db.prepare(
+    `DELETE FROM viewer_checkouts WHERE NOT EXISTS
+       (SELECT 1 FROM collection_files f WHERE f.content_hash = viewer_checkouts.content_hash)`
+  ).run();
+}
+
+/** Whether any collection still holds these bytes. */
+export function blobIsHeld(hash: string): boolean {
+  return countFilesByHash(hash) > 0;
+}
+
+// The rows and the checkout move in one transaction, so no crash can leave the
+// paper on the new bytes with its copy still recorded as the old ones: that
+// copy would read as an edit at the next sweep, and checking it in would put
+// every collection back to the document as it was.
+const moveCheckedOutPaper = transaction((checkout: string, newHash: string): string | null => {
+  const old = checkoutBaseline(checkout);
+  if (old === undefined || old === newHash) return null;
+  // At most one row per collection holds `old` — UNIQUE (collection_id,
+  // content_hash) — so a row this moves can never change the subquery's answer
+  // for another.
+  const moved = db
+    .prepare(
+      `UPDATE collection_files SET content_hash = ?
+       WHERE content_hash = ?
+         AND collection_id NOT IN (SELECT collection_id FROM collection_files WHERE content_hash = ?)`
+    )
+    .run(newHash, old, newHash).changes;
+  if (Number(moved) === 0) return null;
+  db.prepare("UPDATE viewer_checkouts SET content_hash = ? WHERE id = ?").run(newHash, checkout);
+  return old;
+});
+
 /**
- * Point one file row at different bytes, and clean up after the ones it left.
+ * Move a checked-out paper onto the bytes its viewer saved, in every collection
+ * that holds it, and clean up after the ones it left.
  *
  * The only thing that changes a row's content_hash after it is written: the
  * desktop build hands a stored PDF to the machine's own viewer, which can save
  * annotations back over it (external-open.ts). The bytes are already in the
  * store by the time this runs — a row must never name a blob that isn't there.
  *
- * False when nothing moved, which is either of two things. The hash is already
- * the row's, or the collection holds another row for exactly these bytes and
- * the UNIQUE (collection_id, content_hash) would refuse the update: the
- * annotated copy *is* that other file, and merging the two is not a decision
- * to make from under a file watch.
+ * Every row holding what the copy was handed, not the one it was opened from.
+ * The same PDF in three collections is one paper, and annotations made to it
+ * belong wherever it is filed.
+ *
+ * Except a row whose collection already holds the saved bytes as another file:
+ * the UNIQUE (collection_id, content_hash) would refuse the update, the
+ * annotated copy *is* that other file there, and merging the two is not a
+ * decision to make from under a file watch. That row keeps the paper as it
+ * was. False when every row was in that position, or none was left to move.
  */
-export function repointFileBlob(fileId: number, newHash: string): boolean {
-  const file = getCollectionFile(fileId);
-  if (!file || file.content_hash === newHash) return false;
-  const clash = db
-    .prepare("SELECT 1 FROM collection_files WHERE collection_id = ? AND content_hash = ?")
-    .get(file.collection_id, newHash);
-  if (clash) return false;
-  db.prepare("UPDATE collection_files SET content_hash = ? WHERE id = ?").run(newHash, fileId);
-  gcBlobsIfOrphaned([file.content_hash]);
+export function repointCheckedOutPaper(checkout: string, newHash: string): boolean {
+  const left = moveCheckedOutPaper(checkout, newHash);
+  if (left === null) return false;
+  // After the commit, for the reason removeCollectionPapers gives: no ROLLBACK
+  // undoes an unlink.
+  gcBlobsIfOrphaned([left]);
   return true;
 }
 
@@ -2713,10 +2785,11 @@ function libraryStats(): LibraryStats {
 // topic_journals, bookmarks and collection_files are absent from this list
 // because they are already covered, not because they survive.
 //
-// paper_citations and pdf_text are here because nothing cascades to them:
-// neither carries a foreign key (both are keyed by something they only softly
-// reference — a PMID and a content hash), which is exactly what lets them
-// outlive the row that caused them, and exactly why a wipe has to name them.
+// paper_citations, pdf_text and viewer_checkouts are here because nothing
+// cascades to them: none carries a foreign key (each is keyed by something it
+// only softly references — a PMID or a content hash), which is exactly what
+// lets them outlive the row that caused them, and exactly why a wipe has to
+// name them.
 //
 // What is *not* here is not here on purpose:
 //
@@ -2746,6 +2819,7 @@ const RESET_TABLES = [
   "articles",
   "paper_citations",
   "pdf_text",
+  "viewer_checkouts",
 ];
 
 const clearLibraryTables = transaction((): LibraryStats => {

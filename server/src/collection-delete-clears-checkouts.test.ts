@@ -12,8 +12,8 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // reach the copy the machine's viewer was handed, which is a readable PDF under
 // the paper's own name in a directory the reader can open. The dialog behind
 // two of these says "any stored PDF copies are deleted"; a copy that outlives
-// its row is also permanently unreachable, since every path that would collect
-// or count it starts from the row.
+// its paper is also permanently unreachable, since every path that would
+// collect it starts from a row holding the paper.
 //
 // One test per route rather than one for the sweep, because the sweep was never
 // the part in doubt: what is easy to get wrong is a deletion path that forgets
@@ -84,6 +84,24 @@ describe("a delete that takes a paper out of the library", () => {
 
     expect(res.status).toBe(204);
     expect(fs.existsSync(copy)).toBe(false);
+  });
+
+  it("keeps the copy while another collection still holds the paper", async () => {
+    const opened = db.createCollection("Opened from").id;
+    const { fileId, copy } = await openedPaper(opened, "Shelved twice.pdf");
+    const hash = db.getCollectionFile(fileId)!.content_hash;
+    const kept = db.createCollection("Still shelved").id;
+    db.addCollectionFiles(kept, [{ hash, name: "Shelved twice.pdf" }]);
+
+    const res = await fetch(`${base}/api/collections/files/${fileId}`, {
+      method: "DELETE",
+      headers: OWNER,
+    });
+
+    // The copy is the paper's, not the row's. The reader may still have it
+    // open, and a save into it belongs to the collection that kept the paper.
+    expect(res.status).toBe(204);
+    expect(fs.existsSync(copy)).toBe(true);
   });
 
   it("takes the copies when papers are removed from a collection", async () => {

@@ -96,9 +96,21 @@ const indexedText = (fileId: number): string | undefined =>
 const isIndexed = (hash: string): boolean =>
   db.db.prepare("SELECT 1 FROM pdf_text WHERE content_hash = ?").get(hash) !== undefined;
 
-/** A copy placed the way a finished session left it: no watch armed over it. */
+/**
+ * A copy placed the way a finished session left it: no watch armed over it.
+ *
+ * Recorded as handed the bytes the paper holds now, which is what a checkout
+ * records — so whatever is written here is, to the library, a save the reader
+ * made after the app had gone. Into the paper's existing checkout when it has
+ * one, since a paper only ever has the one.
+ */
 function copyLeftBehind(fileId: number, name: string, bytes: Buffer, ageMs = 0): string {
-  const dir = path.join(EXTERNAL_OPEN_DIR, String(fileId));
+  let [checkout] = db.checkoutsHolding(hashOf(fileId));
+  if (!checkout) {
+    checkout = `left-behind-${fileId}`;
+    db.addCheckout(checkout, hashOf(fileId));
+  }
+  const dir = path.join(EXTERNAL_OPEN_DIR, checkout);
   fs.mkdirSync(dir, { recursive: true });
   const copy = path.join(dir, name);
   fs.writeFileSync(copy, bytes);
@@ -246,7 +258,7 @@ describe("checking a stored PDF out for the system viewer", () => {
     // what the file we had just written is called.
     const hostile = store('../../up: "40%"? .pdf', "hostile name");
     const copy = await checkOutForExternalOpen(hostile);
-    expect(path.dirname(copy)).toBe(path.join(EXTERNAL_OPEN_DIR, String(hostile)));
+    expect(path.dirname(path.dirname(copy))).toBe(EXTERNAL_OPEN_DIR);
     expect(path.basename(copy)).toBe("up_ _40%__ .pdf");
 
     // CON.pdf is still the console device as far as Windows is concerned, and
@@ -412,6 +424,87 @@ describe("taking back what the viewer saved", () => {
   });
 });
 
+describe("a paper filed in more than one collection", () => {
+  /** The same bytes filed in another collection, as uploading them there does. */
+  function fileAgain(fileId: number, into: number, name?: string): number {
+    const file = db.getCollectionFile(fileId)!;
+    db.addCollectionFiles(into, [{ hash: file.content_hash, name: name ?? file.file_name }]);
+    return db.collectionFileByHash(into, file.content_hash)!.id;
+  }
+
+  it("is one copy, whichever collection it is opened from", async () => {
+    const here = store("Filed twice.pdf");
+    const there = fileAgain(here, db.createCollection("Second shelf").id);
+
+    const first = await checkOutForExternalOpen(here);
+    expect(await checkOutForExternalOpen(there)).toBe(first);
+  });
+
+  it("is one copy when it is opened from two collections at once", async () => {
+    const here = store("Opened twice together.pdf");
+    // Filed there under the publisher's file name, as the same paper often is,
+    // so the two opens would name their copies differently.
+    const elsewhere = db.createCollection("Opened from here too").id;
+    const there = fileAgain(here, elsewhere, "1-s2.0-main.pdf");
+    // Not awaited in between: each would otherwise find the directory empty and
+    // copy into it under its own row's name, and the second is the one the
+    // watch would follow while the viewer holds the first.
+    const [one, other] = await Promise.all([
+      checkOutForExternalOpen(here),
+      checkOutForExternalOpen(there),
+    ]);
+    expect(other).toBe(one);
+    expect(fs.readdirSync(path.dirname(one))).toEqual([path.basename(one)]);
+  });
+
+  it("takes a save into every collection that holds it", async () => {
+    const here = store("Annotated in one place.pdf", "before the annotation");
+    const there = fileAgain(here, db.createCollection("Also filed here").id);
+    const before = hashOf(here);
+    // Read from one collection, then annotated from the other. With a copy per
+    // row, the first copy would still hold the original, and reopening the
+    // paper from there would check it in over the annotations.
+    await checkOutForExternalOpen(there);
+    const copy = await checkOutForExternalOpen(here);
+
+    fs.writeFileSync(copy, minimalPdf("annotated here, seen there"));
+    await collected(here, "annotated here, seen there");
+
+    expect(hashOf(there)).toBe(hashOf(here));
+    expect(indexedText(there)).toContain("annotated here, seen there");
+    expect(fs.existsSync(blobPath(before))).toBe(false);
+    expect(isIndexed(before)).toBe(false);
+
+    expect(await checkOutForExternalOpen(there)).toBe(copy);
+    expect(indexedText(here)).toContain("annotated here, seen there");
+  }, OUTLASTS_THE_POLL);
+
+  it("leaves it as it was in a collection that already holds the saved bytes", async () => {
+    await onlyCopyInCache();
+    const here = store("Saved over in one shelf.pdf", "the paper before saving");
+    const shelf = db.createCollection("Holds the result already").id;
+    const there = fileAgain(here, shelf);
+    // The second shelf already has the saved bytes as a file of their own.
+    // Moving its row onto them would put two rows on one hash in one
+    // collection, which UNIQUE refuses — and which would be merging two files
+    // from under a file watch.
+    const saved = minimalPdf("what the save turned it into");
+    fs.writeFileSync(blobPath(sha256(saved)), saved);
+    db.addCollectionFiles(shelf, [{ hash: sha256(saved), name: "Filed separately.pdf" }]);
+    const before = hashOf(here);
+    copyLeftBehind(here, "Saved over in one shelf.pdf", saved);
+
+    await collectPendingCheckins();
+
+    expect(hashOf(here)).toBe(sha256(saved));
+    expect(hashOf(there)).toBe(before);
+    // Still that shelf's copy of the paper, so neither the bytes nor the text
+    // go with the row that moved.
+    expect(fs.existsSync(blobPath(before))).toBe(true);
+    expect(indexedText(there)).toContain("the paper before saving");
+  });
+});
+
 describe("two check-ins for one file at once", () => {
   // An invariant test, and not a test of the guard in checkInIfWhole — it
   // passes with that guard and the per-attempt temp name both reverted, which
@@ -471,9 +564,9 @@ describe("when the paper goes while its save is being taken back", () => {
     const orphan = sha256(annotated);
     const copy = copyLeftBehind(id, "Deleted mid-checkin.pdf", annotated);
 
-    // The row is read synchronously, before the first await, so the sweep has
-    // already decided this file exists. Deleting it here lands during the hash,
-    // and repointFileBlob then refuses — there is nothing left to point — after
+    // The paper is looked up synchronously, before the first await, so the sweep
+    // has already decided it exists. Deleting it here lands during the hash, and
+    // repointCheckedOutPaper then refuses — there is nothing left to point — after
     // storeBlobFromTemp has moved the bytes into the store. That order is
     // deliberate, so a crash leaves an unreferenced blob rather than a row
     // naming bytes that are not there; what it needs is for the unreferenced
@@ -489,10 +582,10 @@ describe("when the paper goes while its save is being taken back", () => {
   });
 
   it("keeps a blob another row in the collection turns out to hold", async () => {
-    // The other way repointFileBlob refuses: a sibling row already holds these
-    // bytes, so the collection would end up with two rows on one hash. The blob
-    // is not an orphan — the sibling is pointing at it — and the cleanup above
-    // must not be what deletes a paper that is still in the library.
+    // The other way repointCheckedOutPaper refuses: a sibling row already holds
+    // these bytes, so the collection would end up with two rows on one hash. The
+    // blob is not an orphan — the sibling is pointing at it — and the cleanup
+    // above must not be what deletes a paper that is still in the library.
     await onlyCopyInCache();
     const shared = minimalPdf("the bytes both rows would hold");
     const sibling = store("Already holds them.pdf", "the bytes both rows would hold");
@@ -537,10 +630,7 @@ describe("collecting at startup", () => {
   it("does not store a truncated copy over the paper", async () => {
     const id = store("Truncated.pdf");
     const before = hashOf(id);
-    const dir = path.join(EXTERNAL_OPEN_DIR, String(id));
-    fs.mkdirSync(dir, { recursive: true });
-    const copy = path.join(dir, "Truncated.pdf");
-    fs.writeFileSync(copy, "%PDF-1.4\nnever finished");
+    const copy = copyLeftBehind(id, "Truncated.pdf", Buffer.from("%PDF-1.4\nnever finished"));
 
     await collectPendingCheckins();
 

@@ -18,8 +18,8 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // Nothing today does, and it holds at four independent layers:
 //
 //   1. `collection_files.content_hash` is written by exactly one statement, in
-//      repointFileBlob, whose only caller is the desktop check-in — reachable
-//      from the Electron main process and from no request at all.
+//      repointCheckedOutPaper, whose only caller is the desktop check-in —
+//      reachable from the Electron main process and from no request at all.
 //   2. The blob store is content-addressed. Its only write renames a temp file
 //      to blobPath(sha256(that temp file)), so bytes can only ever land at
 //      their own digest; overwriting a blob would take a SHA-256 collision.
