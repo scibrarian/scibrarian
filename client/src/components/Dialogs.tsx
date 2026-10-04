@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState, type FormEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useHeldWhile } from "../lib/hooks";
 
 // Radix-backed replacements for window.prompt/confirm. Radix supplies the
 // behavior a hand-rolled modal misses — focus trap, Escape, focus restore, aria
@@ -117,6 +118,16 @@ export function ModalShell({
 export const STORED_COPIES_NOTE =
   "Any stored PDF copies are deleted, unless another collection also holds the same file.";
 
+/**
+ * The same question for a bookmark folder, where the answer is that nothing is
+ * destroyed: a folder is a list, and taking a paper off it leaves the paper —
+ * and any other folder's entry for it — where it was. Said in the terms the
+ * folder's own delete dialog uses, so the two agree on what a folder owns, and
+ * without a pronoun for the papers, since the title above it may count one.
+ */
+export const FOLDER_ONLY_NOTE =
+  "Only this folder's list changes. The papers themselves stay in the app.";
+
 // Confirmation dialog. Cancel is the first tabbable thing in it, so it takes
 // initial focus and Enter never destroys anything by default — which holds only
 // because ModalFrame puts its × last; see the note there.
@@ -137,15 +148,37 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  // What it asked, as of the last render it was open for.
+  //
+  // Answering closes it, and it stays painted for its exit after that (see
+  // .modal[data-state="closed"]). Drawn from its props, it spent that exit
+  // rewording itself, because the answer is usually what changes the thing the
+  // question was about: "Remove 2 papers?" read "Remove 0 papers?" once the
+  // ticks were cleared, and a title built from the topic being removed went
+  // blank, and its message with it. A closing dialog is a picture of what was
+  // asked, so it keeps the words it was answered with until it next opens.
+  // Held a field at a time: see useHeldWhile for why not as one object.
+  const shown = {
+    title: useHeldWhile(open, title),
+    message: useHeldWhile(open, message),
+    confirmLabel: useHeldWhile(open, confirmLabel),
+    danger: useHeldWhile(open, danger),
+  };
+  // And it is answered once. The button outlives the answer by that same exit,
+  // still painted and still taking a click, so the second half of a
+  // double-click reached the caller again — a removal sent twice, whose second
+  // reply ("nothing was removed") replaced the first. Cancel is left live:
+  // closing what is already closing changes nothing.
+  const confirm = open ? onConfirm : undefined;
   return (
-    <ModalShell open={open} onClose={onCancel} title={title}>
-      <p className="modal-message">{message}</p>
+    <ModalShell open={open} onClose={onCancel} title={shown.title}>
+      <p className="modal-message">{shown.message}</p>
       <div className="modal-actions">
         <button type="button" onClick={onCancel}>
           Cancel
         </button>
-        <button type="button" className={danger ? "danger" : "primary"} onClick={onConfirm}>
-          {confirmLabel}
+        <button type="button" className={shown.danger ? "danger" : "primary"} onClick={confirm}>
+          {shown.confirmLabel}
         </button>
       </div>
     </ModalShell>
@@ -211,7 +244,9 @@ export function PromptDialog({
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const v = value.trim();
-    if (v) onSubmit(v, checked);
+    // Only while open, for ConfirmDialog's reason: the form stays up for its
+    // exit with the name still in the box, and a second click resubmitted it.
+    if (open && v) onSubmit(v, checked);
   }
 
   return (

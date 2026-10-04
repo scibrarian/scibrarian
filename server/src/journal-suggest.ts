@@ -1,31 +1,29 @@
-import { findCatalogByNlmId, listJournals } from "./db.js";
-import type { Topic } from "./types.js";
+import { findCatalogByNlmId } from "./db.js";
+import type { MeshDescriptorRef } from "./types.js";
 import { attachMetrics } from "./journal-catalog.js";
 import {
-  mergeTopicPicks,
   rankCandidates,
+  toSuggestion,
   topByCount,
   type Candidate,
   type JournalSuggestion,
 } from "./journal-rank.js";
-import { EUTILS_BATCH, fetchJournalIds, searchRecent } from "./pubmed.js";
+import { EUTILS_BATCH, fetchJournalIds, searchRecent, topicTerm } from "./pubmed.js";
 import { chunk, errMessage, httpError } from "./util.js";
 
-// "Auto" journal suggestions: for each topic, sample its most recent PubMed
-// papers, rank the journals that published them by volume, keep the
-// highest-impact of those, and union the per-topic picks (ranking/merging is
-// the pure journal-rank.ts). The suggestion query uses [majr] (MeSH *major*
-// topic) — tighter than the [MeSH] term polls use — so a broad topic suggests
-// the venues centrally about it, not every journal that ever tags it.
+// "Auto" journal suggestions for one topic: sample the most recent PubMed
+// papers its headings match, rank the journals that published them by volume,
+// and keep the highest-impact of those (the ranking is the pure
+// journal-rank.ts). Asked about a set of headings rather than a stored topic,
+// because the dialog that offers them is also the one that creates the topic.
+//
+// The query uses [majr] (MeSH *major* topic) — tighter than the [MeSH] term
+// polls use — so a broad topic suggests the venues centrally about it, not
+// every journal that ever tags it.
 
 const WINDOW_YEARS = 5; // rank where the field publishes now, not historically
-const SAMPLE = 300; // recent papers per topic; enough to separate the top venues
+const SAMPLE = 300; // recent papers; enough to separate the top venues
 const CANDIDATE_POOL = 30; // volume-ranked pool that the impact ranking then cuts
-
-export interface SuggestResult {
-  results: JournalSuggestion[];
-  failed: string[]; // topics whose PubMed lookup failed (partial results still count)
-}
 
 function windowStart(): string {
   const d = new Date();
@@ -35,46 +33,32 @@ function windowStart(): string {
   return `${d.getFullYear()}/${mm}/${dd}`;
 }
 
+// Journals the topic already lists are not left out here: the caller knows
+// what is on the list being edited, staged changes included, and this doesn't.
 export async function suggestJournals(
-  topics: Topic[],
-  perTopic: number
-): Promise<SuggestResult> {
+  headings: MeshDescriptorRef[],
+  limit: number
+): Promise<JournalSuggestion[]> {
   const mindate = windowStart();
-  // Already-added journals stay in the pool so they can occupy their rank, and
-  // are dropped after the per-topic cut (see rankCandidates) — a topic whose
-  // top `perTopic` are all present suggests nothing on a re-run.
-  const have = new Set(
-    listJournals()
-      .map((j) => j.nlm_id)
-      .filter((id): id is string => !!id)
-  );
-  const perTopicPicks: { topic: string; picks: Candidate[] }[] = [];
-  const failed: string[] = [];
-  for (const t of topics) {
-    try {
-      const term = `"${t.name.replace(/"/g, "")}"[majr]`;
-      const pmids = await searchRecent(term, SAMPLE, mindate);
-      const ids: string[] = [];
-      for (const batch of chunk(pmids, EUTILS_BATCH)) {
-        ids.push(...(await fetchJournalIds(batch)));
-      }
-      const cands: Candidate[] = [];
-      for (const { nlmId, count } of topByCount(ids, CANDIDATE_POOL)) {
-        const row = findCatalogByNlmId(nlmId);
-        if (row) cands.push({ row, count });
-      }
-      // Pool ≤ CANDIDATE_POOL rows, within attachMetrics's 50-ISSN per-call cap.
-      await attachMetrics(cands.map((c) => c.row));
-      perTopicPicks.push({ topic: t.name, picks: rankCandidates(cands, perTopic, have) });
-    } catch (err) {
-      // One topic failing (throttle exhaustion, transient NCBI error) shouldn't
-      // sink the rest; the caller reports which topics were skipped.
-      failed.push(t.name);
-      console.warn(`[suggest] topic "${t.name}" failed:`, errMessage(err));
+  try {
+    let pmids = await searchRecent(topicTerm(headings, "majr"), SAMPLE, mindate);
+    // Nothing recent is *mainly* about every heading at once — common for a
+    // narrow combination — so sample what the topic would actually poll.
+    if (pmids.length === 0) pmids = await searchRecent(topicTerm(headings), SAMPLE, mindate);
+    const ids: string[] = [];
+    for (const batch of chunk(pmids, EUTILS_BATCH)) {
+      ids.push(...(await fetchJournalIds(batch)));
     }
-  }
-  if (topics.length > 0 && failed.length === topics.length) {
+    const cands: Candidate[] = [];
+    for (const { nlmId, count } of topByCount(ids, CANDIDATE_POOL)) {
+      const row = findCatalogByNlmId(nlmId);
+      if (row) cands.push({ row, count });
+    }
+    // Pool ≤ CANDIDATE_POOL rows, within attachMetrics's 50-ISSN per-call cap.
+    await attachMetrics(cands.map((c) => c.row));
+    return rankCandidates(cands, limit).map(toSuggestion);
+  } catch (err) {
+    console.warn("[suggest] journal suggestions failed:", errMessage(err));
     throw httpError(503, "Couldn't reach PubMed for journal suggestions. Try again in a minute.");
   }
-  return { results: mergeTopicPicks(perTopicPicks), failed };
 }

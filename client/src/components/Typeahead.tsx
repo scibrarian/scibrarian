@@ -28,6 +28,12 @@ interface TypeaheadProps<T> {
   debounceMs?: number;
   idleItems?: T[];
   idleLabel?: string;
+  // The box takes nothing more — the topic dialog's, once a topic has as many
+  // headings as it may. The placeholder is where the parent says why.
+  disabled?: boolean;
+  // Focused when it mounts — the topic dialog's, whose first tab stop is the
+  // info icon ahead of it.
+  autoFocus?: boolean;
 }
 
 export function Typeahead<T>({
@@ -43,6 +49,8 @@ export function Typeahead<T>({
   debounceMs = 200,
   idleItems,
   idleLabel,
+  disabled = false,
+  autoFocus = false,
 }: TypeaheadProps<T>) {
   const [results, setResults] = useState<T[]>([]);
   // The results list is a combobox popup: it hides on Escape/blur (dismissed)
@@ -148,7 +156,12 @@ export function Typeahead<T>({
       // Choose the highlighted result, not the raw typed text the form would submit.
       e.preventDefault();
       choose(items[activeIndex]);
+      return;
     }
+    // Text typed with nothing chosen from it is a search half made, and Enter
+    // there is not the form's to take: the topic dialog's created the topic
+    // without the heading being typed. An empty box is a field like any other.
+    if (e.key === "Enter" && !idle) e.preventDefault();
   }
 
   return (
@@ -182,6 +195,8 @@ export function Typeahead<T>({
           if (!idle) setListDismissed(false);
         }}
         placeholder={placeholder}
+        disabled={disabled}
+        autoFocus={autoFocus}
         autoComplete="off"
         role="combobox"
         aria-expanded={listOpen}

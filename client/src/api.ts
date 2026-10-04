@@ -16,8 +16,6 @@ import type {
   HaveResponse,
   ImportStartResponse,
   ImportStatus,
-  Journal,
-  JournalRemovalResult,
   JournalSearchResponse,
   JournalSuggestResponse,
   LibraryStats,
@@ -35,8 +33,12 @@ import type {
   ProSyncStatus,
   RefreshResponse,
   ShareLinkResponse,
+  TopicDetail,
+  TopicPreviewResponse,
   TopicRemovalResult,
+  TopicScopeInput,
   TopicSuggestResponse,
+  TopicUpdateResponse,
   UploadResponse,
   WorkspaceContentsResponse,
   WorkspacesResponse,
@@ -149,10 +151,35 @@ export const api = {
   getAuth: () => req<AuthStatus>("/api/auth"),
 
   getTopics: () => req<Topic[]>("/api/topics"),
-  // Topics are MeSH headings: the server validates `name` against its indexed
-  // descriptor list and builds the PubMed term itself.
-  createTopic: (name: string) =>
-    req<Topic>("/api/topics", { method: "POST", body: JSON.stringify({ name }) }),
+  // One topic with the journals it lists, for the dialog that edits them.
+  getTopic: (id: number) => req<TopicDetail>(`/api/topics/${id}`),
+  // A topic is one or more MeSH headings, sent as descriptor ids: the server
+  // validates each against its indexed descriptor list and builds the PubMed
+  // term itself. Without a name it is called after its headings. With them
+  // goes where it searches.
+  createTopic: (headings: string[], scope: TopicScopeInput, name?: string) =>
+    req<TopicDetail>("/api/topics", {
+      method: "POST",
+      body: JSON.stringify(name ? { headings, ...scope, name } : { headings, ...scope }),
+    }),
+  // How many papers those headings match together, before the topic exists.
+  previewTopic: (headings: string[]) =>
+    req<TopicPreviewResponse>(
+      `/api/topics/preview?${headings.map((ui) => `ui=${encodeURIComponent(ui)}`).join("&")}`
+    ),
+  // A topic's name, where it searches, or both — whichever the change names.
+  // A change of scope can take papers out of the topic, which `removed` counts.
+  updateTopic: (id: number, change: { name?: string } & Partial<TopicScopeInput>) =>
+    req<TopicUpdateResponse>(`/api/topics/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(change),
+    }),
+  // How many papers that change of scope would take out, for the confirm.
+  scopeChangeCount: (id: number, scope: TopicScopeInput) =>
+    req<{ count: number }>(`/api/topics/${id}/scope/preview`, {
+      method: "POST",
+      body: JSON.stringify(scope),
+    }),
   topicArticleCount: (id: number) => req<{ count: number }>(`/api/topics/${id}/article-count`),
   deleteTopic: (id: number) =>
     req<TopicRemovalResult>(`/api/topics/${id}`, { method: "DELETE" }),
@@ -167,34 +194,15 @@ export const api = {
   // Topics the user's own held papers suggest, for the Settings picker.
   suggestTopics: () => req<TopicSuggestResponse>("/api/topics/suggest"),
 
-  getJournals: () => req<Journal[]>("/api/journals"),
   searchJournals: (q: string, limit?: number) =>
     req<JournalSearchResponse>(
       `/api/journals/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`
     ),
-  // Per-topic journal suggestions for the Auto button; omitting perTopic uses
-  // the server default (10 per topic).
-  suggestJournals: (perTopic?: number) =>
+  // The top journals publishing on a set of headings, for the dialog's Auto.
+  suggestJournals: (headings: string[]) =>
     req<JournalSuggestResponse>(
-      `/api/journals/suggest${perTopic ? `?per_topic=${perTopic}` : ""}`
+      `/api/journals/suggest?${headings.map((ui) => `ui=${encodeURIComponent(ui)}`).join("&")}`
     ),
-  createJournal: (name: string, nlmId?: string) =>
-    req<Journal>("/api/journals", {
-      method: "POST",
-      body: JSON.stringify(nlmId ? { name, nlmId } : { name }),
-    }),
-  journalArticleCount: (id: number) =>
-    req<{ count: number }>(`/api/journals/${id}/article-count`),
-  deleteJournal: (id: number) =>
-    req<JournalRemovalResult>(`/api/journals/${id}`, { method: "DELETE" }),
-  // "Search all PubMed journals". Turning it off deletes the papers from
-  // journals outside the list, which the count is for.
-  offListArticleCount: () => req<{ count: number }>("/api/journals/all-pubmed/article-count"),
-  setSearchAllPubmed: (on: boolean) =>
-    req<JournalRemovalResult>("/api/journals/all-pubmed", {
-      method: "PUT",
-      body: JSON.stringify({ on }),
-    }),
 
   getPapers: (source: PaperSource, filter?: PaperQuery) =>
     req<PapersResponse>(`/api/papers?${sourceQuery(source)}${filterQuery(filter)}`),
@@ -261,6 +269,13 @@ export const api = {
     ),
   removeBookmark: (folderId: number, pmid: string) =>
     req<void>(`/api/bookmark-folders/${folderId}/papers/${pmid}`, { method: "DELETE" }),
+  // Take a ticked set out of one folder. `removed` is how many were still in it
+  // — not the length of what was sent, for removeCollectionPapers' reason below.
+  removeBookmarks: (folderId: number, pmids: string[]) =>
+    req<{ removed: number }>(`/api/bookmark-folders/${folderId}/papers/remove`, {
+      method: "POST",
+      body: JSON.stringify({ pmids }),
+    }),
   // One request of "Add links" — at most MAX_LINKS_PER_REQUEST lines. Unlike
   // checkHave this does not split a long paste itself: the dialog sends the
   // batches, so it can show its progress and keep the answers of the batches

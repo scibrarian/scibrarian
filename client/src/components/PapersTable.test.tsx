@@ -67,7 +67,8 @@ function deferred<T>() {
 }
 
 // A shell that owns the reload token, the way App does: the table asks for a
-// reload through onCollectionChanged and the token moves by exactly one.
+// reload through onCollectionChanged — or onFolderChanged, for a bookmark
+// folder — and the token moves by exactly one.
 function Host({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolean }) {
   const [token, setToken] = useState(0);
   const filters = usePaperFilters(source);
@@ -81,6 +82,7 @@ function Host({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolea
       libraryOpen
       onAuthRefreshed={() => {}}
       onCollectionChanged={() => setToken((t) => t + 1)}
+      onFolderChanged={() => setToken((t) => t + 1)}
       filters={filters}
       bookmarking={null}
     />
@@ -173,6 +175,85 @@ describe("removing papers from a collection", () => {
     // about to — and the ticks stay put so the same removal can be retried.
     await waitFor(() => expect(dimmed(container)).toBe(0));
     expect(screen.getByText(/Remove 2 selected/)).toBeTruthy();
+  });
+});
+
+// The same control over a folder. What differs is everything the table says and
+// calls, and none of how it behaves — so this pins the differences and leaves
+// the dim, the held notice and the failure paths to the block above.
+describe("removing papers from a bookmark folder", () => {
+  let nextFolder = 900;
+  let folder: number;
+
+  beforeEach(() => {
+    folder = nextFolder++;
+    source = { folder };
+    api.getPapers.mockReset();
+  });
+
+  it("offers the tick column and the button, and no bookmark control per row", async () => {
+    api.getPapers.mockResolvedValue(THREE);
+    const { container } = render(<Host source={source} />);
+    await screen.findByText("Paper 1");
+
+    expect(container.querySelectorAll(".select-cell input")).toHaveLength(3);
+    expect(container.querySelectorAll(".bookmark-cell")).toHaveLength(0);
+    // Drawn with nothing ticked, as it is in the Library, so it is there to find.
+    expect((screen.getByText("Remove selected") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says what a folder loses, which is not what a collection does", async () => {
+    api.getPapers.mockResolvedValue(THREE);
+    const { container } = render(<Host source={source} />);
+    await screen.findByText("Paper 1");
+
+    fireEvent.click(container.querySelector<HTMLInputElement>(".select-cell input")!);
+    fireEvent.click(await screen.findByText(/Remove 1 selected/));
+
+    // Nothing is deleted from a folder, so the collection's line about stored
+    // PDF copies would be a warning about something that cannot happen.
+    expect(await screen.findByText(/Only this folder's list changes/)).toBeTruthy();
+    expect(screen.queryByText(/stored PDF copies/)).toBeNull();
+  });
+
+  it("removes through the folder's route and reports what left it", async () => {
+    const removal = deferred<{ removed: number }>();
+    api.getPapers.mockResolvedValueOnce(THREE).mockResolvedValueOnce({
+      papers: [paper("3")],
+      journals: ["Lancet"],
+    });
+    api.removeBookmarks.mockReturnValue(removal.promise);
+
+    const { container } = render(<Host source={source} />);
+    await tickTwoAndConfirm(container);
+    // One request for the ticked set, not one per paper — the whole point.
+    expect(api.removeBookmarks).toHaveBeenCalledTimes(1);
+    expect(api.removeBookmarks.mock.calls[0][0]).toBe(folder);
+    expect([...api.removeBookmarks.mock.calls[0][1]].sort()).toEqual(["1", "2"]);
+    expect(api.removeCollectionPapers).not.toHaveBeenCalled();
+
+    await removal.land({ ok: true, value: { removed: 2 } });
+
+    await waitFor(() => expect(screen.queryByText("Paper 1")).toBeNull());
+    expect(await screen.findByText("Removed 2 papers from this folder.")).toBeTruthy();
+    expect(dimmed(container)).toBe(0);
+  });
+
+  it("reports the shortfall when another tab got to one of them first", async () => {
+    const removal = deferred<{ removed: number }>();
+    api.getPapers.mockResolvedValueOnce(THREE).mockResolvedValueOnce({
+      papers: [paper("3")],
+      journals: ["Lancet"],
+    });
+    api.removeBookmarks.mockReturnValue(removal.promise);
+
+    const { container } = render(<Host source={source} />);
+    await tickTwoAndConfirm(container);
+    await removal.land({ ok: true, value: { removed: 1 } });
+
+    expect(
+      await screen.findByText("Removed 1 paper from this folder. 1 had already left.")
+    ).toBeTruthy();
   });
 });
 

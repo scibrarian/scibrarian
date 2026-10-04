@@ -280,6 +280,18 @@ describe("describeRemoval", () => {
     );
   });
 
+  // A bookmark folder is the other place papers are ticked out of. One count
+  // there, passed as both, so the sentence is the plain one or the shortfall.
+  it("names the folder when that is what the papers left", () => {
+    expect(describeRemoval(3, 3, 3, "folder")).toBe("Removed 3 papers from this folder.");
+    expect(describeRemoval(3, 2, 2, "folder")).toBe(
+      "Removed 2 papers from this folder. 1 had already left."
+    );
+    expect(describeRemoval(1, 0, 0, "folder")).toBe(
+      "Nothing was removed — that paper had already left this folder."
+    );
+  });
+
   // The property under all of it: the sentence may never name a number larger
   // than what actually happened, whatever the three counts are.
   it("never reports more papers than the server removed", () => {

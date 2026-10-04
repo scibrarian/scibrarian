@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Search, Share2, Check, Trash2 } from "lucide-react";
+import { Share2, Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useReveal } from "../lib/hooks";
@@ -9,31 +9,22 @@ import {
   errorMessage,
   formatBytes,
   plural,
-  round1,
 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
-import { JournalManager, MeshBadge } from "./JournalManager";
+import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
-import { Typeahead } from "./Typeahead";
+import { TopicDialog, type TopicSaveOutcome } from "./TopicDialog";
 import { ProPanel } from "./ProPanel";
+import type { ViewerCache } from "../lib/viewerCache";
 import type {
   AppSettings,
-  CacheStats,
   Topic,
-  Journal,
-  MeshSearchResult,
+  TopicDetail,
   ProCollectionStamp,
   ProStatus,
-  TopicSuggestResponse,
 } from "../types";
-
-// What the library's own filing suggests watching, when it has anything to say.
-const NO_SUGGESTIONS: TopicSuggestResponse = { results: [], heldPapers: 0, unchecked: 0 };
-
-// One option in the topic search: a MeSH hit while typing, or, with the box
-// empty, a heading the Library's filing suggests, which carries its counts.
-type TopicOption = MeshSearchResult & { papers?: number; majorPapers?: number };
+import { canPoll } from "../../../shared/topic";
 
 // What "Delete all data" is asking about, in the terms the app is navigated in.
 //
@@ -45,20 +36,64 @@ type TopicOption = MeshSearchResult & { papers?: number; majorPapers?: number };
 // button does.
 const RESET_WARNING =
   "All papers saved to library, interests, and bookmarks will be deleted. " +
-  "All library collections, interest topics, bookmark folders, and journals will also be deleted. " +
+  "All library collections, interest topics, and bookmark folders will also be deleted. " +
   "This cannot be undone.";
+
+// The help behind an info icon: how a thing works, read once and in the way
+// from then on.
+//
+// Only that. What a reader has to copy — the cron format, the sharing setup —
+// stays printed on the page, where it can be selected and kept in view while
+// typing, and so does anything that says what a control will do to their data:
+// what Open Library exposes, what the cache and Delete all data take with them.
+// A bubble that closes when the pointer moves is the wrong place for either.
+const HELP = {
+  topics:
+    "Each topic appears under Interests. A topic is one or more MeSH headings, and a paper " +
+    "has to carry all of them to appear — typing a synonym (e.g. type 2 diabetes or NIDDM) " +
+    "finds the official term (Diabetes Mellitus, Type 2). Each topic searches all of PubMed, " +
+    "or journals of its own.",
+  polling:
+    "When on, every topic is checked for new papers on the schedule below; “Check for new " +
+    "papers” works either way. A topic with no journals chosen is skipped.",
+  email:
+    "Optional but recommended. Sent to NCBI and OpenAlex so they can contact you before " +
+    "blocking access if requests ever exceed their limits.",
+  apiKey: "Optional. A free key raises the rate limit from ~3 to ~10 requests/sec.",
+};
+
+// The cron field's format line. A constant because the form's stand-in prints
+// it too, unseen, to take the room it will (see StackedFormSkeleton).
+const CRON_HINT = (
+  <>
+    Default <code>0 6 * * *</code> = daily at 6am. Format: min hour day month weekday.
+  </>
+);
+
+// Where a topic searches and how much it has found, under its name.
+function scopeLine(t: Topic): string {
+  if (!canPoll(t)) return "No journals chosen yet · nothing to check";
+  const scope = t.all_pubmed ? "All of PubMed" : plural(t.journalCount, "journal");
+  return t.articleCount == null ? scope : `${scope} · ${plural(t.articleCount, "paper")}`;
+}
 
 export function Settings({
   pro,
+  viewerCache,
   onDataChanged,
   onPairingChanged,
   onSharingChanged,
   onPapersRemoved,
+  onTopicSaved,
   onLibraryReset,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
   // panel — there is no separate feature flag to keep in step with it.
   pro: ProStatus | null;
+  // The desktop viewer cache, which the shell owns: its header draws a warning
+  // from the same reading this panel prints, and either can clear it. Inert on
+  // every other build, where the section that uses it is not drawn.
+  viewerCache: ViewerCache;
   onDataChanged: () => void;
   // This instance connected to an organization's library or left one, so the
   // `pro` block above is now stale. Passed straight through to the panel that
@@ -69,9 +104,13 @@ export function Settings({
   // icon and badge from, and nothing else. Carries the panel's fresh reading of
   // those stamps, or null if it couldn't take one; see ProPanel.
   onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
-  // Papers left the Interests feeds (journal removal): the app refreshes the
+  // Papers left the Interests feeds (a topic removed): the app refreshes the
   // paper views and reports the count.
   onPapersRemoved: (count: number) => void;
+  // A topic was saved from this panel's dialog. The shell reloads what it
+  // draws from topics and says whatever the save has to say — see
+  // describeTopicSave.
+  onTopicSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
   // The library was deleted outright. Separate from onPapersRemoved, which the
   // panel could otherwise have reused: that one describes papers leaving the
   // topic feeds, and the shell answers it by reloading them. Here every source
@@ -83,34 +122,26 @@ export function Settings({
   // notice at the top of a page the reader has scrolled to the bottom of.
   onLibraryReset: () => void;
 }) {
-  const [journals, setJournals] = useState<Journal[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
-  const [suggested, setSuggested] = useState<TopicSuggestResponse>(NO_SUGGESTIONS);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
   // the server confirms a write (initial load and a successful save).
   const [baseline, setBaseline] = useState<AppSettings | null>(null);
   // False only until the first reload settles — the panels show skeletons
-  // instead of misleading "No journals yet." empty states and a form that pops
+  // instead of misleading "No topics yet." empty states and a form that pops
   // in. Later reloads (after mutations) keep showing the current data.
   const [loaded, setLoaded] = useState(false);
   // The same, for the Pro panel, which fetches on its own and used to arrive
   // whenever it arrived. See `ready` below.
   const [proReady, setProReady] = useState(false);
 
-  const [topicQuery, setTopicQuery] = useState("");
+  // The topic dialog: closed, creating a topic, or editing this one.
+  const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  // Journal add/remove lives in the JournalManager dialog.
-  const [managingJournals, setManagingJournals] = useState(false);
-  // Turning "Search all PubMed journals" off deletes papers, so, like a topic
-  // removal, the confirm's message is built from a count fetched before it
-  // opens. Null when no confirm is showing.
-  const [allPubmedOffMessage, setAllPubmedOffMessage] = useState<string | null>(null);
-  const [switchingAllPubmed, setSwitchingAllPubmed] = useState(false);
   // The topic warning depends on an article count fetched *before* the dialog
   // opens, so the pending removal carries its message along.
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
@@ -134,17 +165,11 @@ export function Settings({
     kind: "info" | "error";
     message: string;
   } | null>(null);
-  // The last reading of the desktop viewer cache. Three states rather than two:
-  // null while the first fetch is in flight, "unreadable" when it failed, and
-  // the stats when it worked.
-  //
-  // The middle one used to be spelled the same as the first. Since the section
-  // is drawn on settings.desktop rather than on this fetch, a failed read left
-  // it showing no size beside a button greyed out for good — a control the
-  // reader could neither press nor account for, with nothing that would try
-  // again while the panel stayed open.
-  const [cache, setCache] = useState<CacheStats | "unreadable" | null>(null);
-  const [clearingCache, setClearingCache] = useState(false);
+  // The last reading of the desktop viewer cache, and whether a clear is
+  // running — both the shell's now (see ViewerCache for the reading's three
+  // states). The section is drawn on settings.desktop rather than on this
+  // reading, which is why "unreadable" has to be told apart from "not yet".
+  const { cache, clearing: clearingCache } = viewerCache;
   // Reported in this panel rather than through savedMsg or the shell's notice,
   // for the reason resetResult is: both of those draw far from the button that
   // caused them — savedMsg under the Polling heading, three panels up — and a
@@ -155,20 +180,11 @@ export function Settings({
   } | null>(null);
 
   function reload() {
-    Promise.all([
-      api.getJournals(),
-      api.getTopics(),
-      api.getSettings(),
-      // Advisory, and the panel is useful without it — a failure here must not
-      // take the journals and topics down with it.
-      api.suggestTopics().catch(() => NO_SUGGESTIONS),
-    ])
-      .then(([j, d, s, sug]) => {
-        setJournals(j);
+    Promise.all([api.getTopics(), api.getSettings()])
+      .then(([d, s]) => {
         setTopics(d);
         setSettings(s);
         setBaseline(s);
-        setSuggested(sug);
       })
       // errorMessage rather than `e.message`: a rejection reason need not be an
       // Error, and reading .message off one that isn't puts an empty banner on
@@ -182,30 +198,26 @@ export function Settings({
 
   useEffect(reload, []);
 
-  // Once the settings say this is the desktop build, and not before: the route
-  // 404s everywhere else, and asking anyway would put a failed request in the
-  // console of every server deployment on every visit to this page.
+  // The topics alone, after a change that touched nothing else: one saved, or
+  // one removed. reload() fetches the settings too and puts them back over the
+  // Polling & NCBI form, taking any edit there not yet saved.
+  function reloadTopics() {
+    api
+      .getTopics()
+      .then(setTopics)
+      .catch((e) => setError(errorMessage(e)));
+  }
+
+  // A fresh reading for a panel that is about to print one. The shell re-reads
+  // when the window regains focus, which covers the cache growing; this covers
+  // the reader who came here to look at the number. Once the settings say this
+  // is the desktop build, and not before: the route 404s everywhere else, and
+  // asking anyway would put a failed request in the console of every server
+  // deployment on every visit to this page.
   useEffect(() => {
-    if (settings?.desktop === true) reloadCache();
+    if (settings?.desktop === true) viewerCache.reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.desktop]);
-
-  // `name` is a MeSH heading — picked from the autocomplete, or typed and
-  // submitted (the server validates it and rejects anything that isn't a real
-  // heading, so we don't need to gate it here).
-  async function addTopic(name: string) {
-    setError(null);
-    const n = name.trim();
-    if (!n) return;
-    try {
-      await api.createTopic(n);
-      setTopicQuery("");
-      reload();
-      onDataChanged();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
 
   async function askRemoveTopic(d: Topic) {
     setError(null);
@@ -229,7 +241,7 @@ export function Settings({
     setTopicToRemove(null);
     try {
       const res = await api.deleteTopic(topicToRemove.topic.id);
-      reload();
+      reloadTopics();
       onDataChanged();
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
@@ -237,76 +249,16 @@ export function Settings({
     }
   }
 
-  // Turning it on stores nothing, so it just happens. Turning it off takes the
-  // papers from journals outside the list out of Interests, so it asks first,
-  // with the count.
-  async function toggleAllPubmed(on: boolean) {
-    setError(null);
-    if (on) return applyAllPubmed(true);
-    let count: number | null = null;
-    try {
-      count = (await api.offListArticleCount()).count;
-    } catch {
-      /* if the count lookup fails, fall through without the number */
-    }
-    const back = "Topics will go back to searching only your added journals.";
-    const kept = "will be removed from Interests, but your bookmarks will be kept.";
-    setAllPubmedOffMessage(
-      count === null
-        ? `${back} Papers in non-added journals ${kept}`
-        : count > 0
-          ? `${back} ${count.toLocaleString()} of your papers (the ones in non-added journals) ${kept}`
-          : back
-    );
-  }
-
-  async function applyAllPubmed(on: boolean) {
-    setAllPubmedOffMessage(null);
-    setSwitchingAllPubmed(true);
-    try {
-      const res = await api.setSearchAllPubmed(on);
-      // Only this key, for the reason toggleOpenLibrary gives: the whole object
-      // would clobber unsaved edits in the settings form.
-      setSettings((s) => (s ? { ...s, search_all_pubmed: on } : s));
-      setBaseline((b) => (b ? { ...b, search_all_pubmed: on } : b));
-      // Turning it on changes nothing the shell shows until the next check.
-      if (!on) {
-        onDataChanged();
-        if (res.removedFromInterests > 0) onPapersRemoved(res.removedFromInterests);
-      }
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSwitchingAllPubmed(false);
-    }
-  }
-
-  // Its own fetch rather than a member of reload()'s Promise.all: that one
-  // runs on every deployment, and this route is not there to answer on most of
-  // them. Called from the effect below once the settings say which build this
-  // is, and again after a clear.
-  function reloadCache() {
-    api
-      .cacheStats()
-      .then(setCache)
-      .catch(() => setCache("unreadable"));
-  }
-
+  // Asks first: requestClear puts up the shell's confirmation, and answers with
+  // what the clear did once the reader has said to go ahead. Null is them
+  // backing out, which leaves nothing to report.
   async function clearCache() {
     setCacheResult(null);
-    setClearingCache(true);
     try {
-      const cleared = await api.clearCache();
-      // Re-read rather than assuming empty. A copy whose changes the library
-      // could not take is still there, and so are its bytes — writing zeroes in
-      // here would tell the reader the cache is empty while the section's own
-      // message says it is not.
-      reloadCache();
-      setCacheResult({ kind: "info", message: describeCacheCleared(cleared) });
+      const cleared = await viewerCache.requestClear();
+      if (cleared) setCacheResult({ kind: "info", message: describeCacheCleared(cleared) });
     } catch (err) {
       setCacheResult({ kind: "error", message: errorMessage(err) });
-    } finally {
-      setClearingCache(false);
     }
   }
 
@@ -319,8 +271,8 @@ export function Settings({
     try {
       const deleted = await api.resetLibrary();
       setResetResult({ kind: "info", message: describeResetDone(deleted) });
-      // This panel's own lists first — the topics and journals it is still
-      // showing are gone — then ProPanel, which is counting over collections
+      // This panel's own list first — the topics it is still showing are
+      // gone — then ProPanel, which is counting over collections
       // that went with them, then the shell, which owns every other view of all
       // of it.
       reload();
@@ -402,7 +354,7 @@ export function Settings({
   // Every panel waits for the slowest of them.
   //
   // These load from two independent places — one Promise.all here for the
-  // journals, topics, settings and suggestions, and the Pro panel's own reload
+  // topics and settings, and the Pro panel's own reload
   // — and each used to reveal itself the moment its own data landed. The result
   // was a column that resettled two or three times: the Pro panel would paint
   // its unpaired form, then Sharing would arrive underneath and shove it, and
@@ -421,29 +373,6 @@ export function Settings({
   // that single faded commit rather than a button enabling a frame ahead of it.
   const ready = useReveal(loaded && (pro == null || proReady));
 
-  const allPubmed = settings?.search_all_pubmed === true;
-
-  // Topics the Library's own filing points at, so the first topic doesn't have
-  // to be guessed cold. Drawn from papers the user holds files for rather than
-  // from the topic feeds, which would mostly recommend the topics that put those
-  // papers there. Ranked by how many held papers each heading is a *main*
-  // subject of; the count shown is how many carry it at all.
-  //
-  // Offered by the topic search when its box is empty, not as chips above the
-  // list: they can only arrive with the rest of the page, and their height
-  // depends on how many there are and how they wrap, so wherever they sat in
-  // the flow they pushed the panels below down when loading finished.
-  const libraryPicks: TopicOption[] = suggested.results.map((s) => ({ ...s, synonym: null }));
-  const libraryNote =
-    libraryPicks.length > 0
-      ? `From your Library (${plural(suggested.heldPapers, "filed paper")})`
-      : // The one case worth explaining rather than leaving blank: there are
-        // held papers, but their headings haven't been fetched yet.
-        suggested.unchecked > 0
-        ? `Still reading MeSH headings for ${plural(suggested.unchecked, "paper")} in your ` +
-          "Library — suggestions will appear here once that finishes."
-        : undefined;
-
   // The reading itself, or null when there is not one — in flight, or failed.
   const cacheStats = cache === null || cache === "unreadable" ? null : cache;
   // Pressable when there is something to clear, and when we cannot tell whether
@@ -457,63 +386,22 @@ export function Settings({
       <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
       <section className="panel">
-        <h2>Topics</h2>
-        <p className="hint">
-          Each topic appears under{" "}
-          <strong><Search size={14} className="inline-icon" aria-hidden /> Interests</strong>. Search the{" "}
-          <strong>MeSH</strong> vocabulary and pick a heading — typing a synonym
-          (e.g. <code>type 2 diabetes</code> or <code>NIDDM</code>) finds the official
-          term (<code>Diabetes Mellitus, Type 2</code>). PubMed is searched by that MeSH heading.
-        </p>
-        <form
-          className="inline-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            addTopic(topicQuery);
-          }}
-        >
-          <Typeahead<TopicOption>
-            value={topicQuery}
-            onChange={setTopicQuery}
-            search={(q) => api.searchMesh(q).then((r) => r.results)}
-            onSelect={(m) => addTopic(m.name)}
-            getKey={(m) => m.ui}
-            idleItems={libraryPicks}
-            idleLabel={libraryNote}
-            placeholder={
-              libraryPicks.length > 0
-                ? "Search MeSH terms, or click for suggestions from your Library…"
-                : "Search MeSH terms (e.g. type 2 diabetes)…"
-            }
-            id="topic-typeahead"
-            renderItem={(m) => (
-              <>
-                <span className="ta-title">{m.name}</span>
-                {m.synonym && (
-                  <span className="ta-synonym">
-                    <span className="sr-only">, matched synonym </span>
-                    {m.synonym}
-                  </span>
-                )}
-                {m.papers != null && (
-                  <span
-                    className="ta-count"
-                    title={`${m.majorPapers} of ${m.papers} are mainly about this`}
-                  >
-                    <span className="sr-only">, filed papers: </span>
-                    {m.papers}
-                  </span>
-                )}
-              </>
-            )}
-          />
-        </form>
+        {/* The icon beside the heading rather than in it, where its help would
+            become part of the heading's name: a screen reader moving by heading
+            would read the whole paragraph as the title of the panel. */}
+        <div className="with-tip">
+          <h2>Topics</h2>
+          <InfoTip text={HELP.topics} />
+        </div>
+        <button type="button" className="accent-btn" onClick={() => setTopicDialog("new")}>
+          Add topic…
+        </button>
 
         <ul className="list scroll-list topic-list">
           {!ready ? (
-            // A fixed box, as the journal list below has, so the panel is the
-            // same height however many topics arrive and nothing under it moves
-            // on the handoff. Four rows is as many as fit whole.
+            // A fixed box, so the panel is the same height however many topics
+            // arrive and nothing under it moves on the handoff. Four rows is as
+            // many as fit whole.
             ["42%", "30%", "36%", "26%"].map((w, i) => (
               <ListRowSkeleton key={i} w={w} sub={["24%", "20%", "22%", "18%"][i]} />
             ))
@@ -521,13 +409,20 @@ export function Settings({
             <>
               {topics.map((d) => (
                 <li key={d.id}>
-                  <span>
-                    <strong title={d.name}>{d.name}</strong>
-                    <code className="term" title={d.term}>{d.term}</code>
+                  <span title={d.term}>
+                    <strong>{d.name}</strong>
+                    <small className={canPoll(d) ? "muted" : "hint warn"}>{scopeLine(d)}</small>
                   </span>
-                  <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
-                    Remove
-                  </button>
+                  {/* A div for the reason .list-label is one: a span in a list
+                      row is stacked into a column. */}
+                  <div className="list-actions">
+                    <button className="link-btn" onClick={() => setTopicDialog(d)}>
+                      Edit
+                    </button>
+                    <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
+                      Remove
+                    </button>
+                  </div>
                 </li>
               ))}
               {topics.length === 0 && <li className="muted">No topics yet.</li>}
@@ -537,99 +432,31 @@ export function Settings({
       </section>
 
       <section className="panel">
-        <h2>Journals</h2>
-        <p className="hint">
-          Papers from these journals feed your Interests topics. The number is OpenAlex 2-yr
-          citations per article — an open stand-in for impact factor.
-        </p>
-        {/* Locked, not just dimmed, while every topic searches all of PubMed:
-            removing a journal deletes its papers, which that search still
-            covers. The server refuses too. */}
-        <button
-          type="button"
-          className="accent-btn"
-          onClick={() => setManagingJournals(true)}
-          disabled={allPubmed}
-        >
-          Manage journals…
-        </button>
-        <ul className={`list scroll-list${allPubmed ? " set-aside" : ""}`}>
-          {!ready ? (
-            // Six rows to match the fixed height, so the panel doesn't resize on load.
-            ["30%", "42%", "35%", "28%", "38%", "33%"].map((w, i) => (
-              <ListRowSkeleton key={i} w={w} pill />
-            ))
-          ) : (
-            <>
-              {journals.map((j) => (
-                <li key={j.id}>
-                  {/* Name and badge are one column: the badge annotates the
-                      journal, so space-between must not strand it mid-row. */}
-                  <div className="list-label">
-                    <span>{j.name}</span>
-                    {j.medline_indexed === false && <MeshBadge name={j.name} />}
-                  </div>
-                  {j.metric != null && (
-                    <span
-                      className={`ta-metric${j.metric === 0 ? " zero" : ""}`}
-                      title="OpenAlex 2-yr citations per article"
-                    >
-                      {round1(j.metric)}
-                    </span>
-                  )}
-                </li>
-              ))}
-              {journals.length === 0 && <li className="muted">No journals yet.</li>}
-            </>
-          )}
-        </ul>
-        {/* Drawn before the settings arrive, disabled and off, rather than
-            appearing with them: text landing late would push nothing, but a
-            whole row landing late pushes every panel below it. */}
-        <label className="all-pubmed">
-          Search all PubMed journals
-          <span className="switch-row">
-            <input
-              type="checkbox"
-              role="switch"
-              className="switch"
-              checked={allPubmed}
-              onChange={(e) => toggleAllPubmed(e.target.checked)}
-              disabled={!ready || !settings || switchingAllPubmed}
-            />
-            <span className="hint">
-              Topics search every journal in PubMed instead of the list above. PubMed returns at
-              most 9,999 papers per search, so the next check keeps each topic’s most recent
-              9,999. Turning this off removes papers from other journals in your interests,
-              but your bookmarks are kept.
-            </span>
-          </span>
-        </label>
-      </section>
-
-      <section className="panel">
         <h2>Polling & NCBI</h2>
         <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />
-        {!ready && <StackedFormSkeleton />}
+        {!ready && <StackedFormSkeleton cronHint={CRON_HINT} />}
         {ready && settings && (
           <form className="stacked-form" onSubmit={saveSettings}>
-            <label>
-              Scheduled polling
-              <span className="switch-row">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  className="switch"
-                  checked={settings.poll_enabled}
-                  onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
-                />
-                <span className="hint">
-                  When on, every topic is checked for new papers on the schedule below;
-                  “Check for new papers” works either way. Nothing is checked while no
-                  journals are watched, unless “Search all PubMed journals” is on.
-                </span>
+            {/* A field with an info icon is a div whose <label> holds only the
+                words, and the icon sits beside it. Inside the label, a click
+                that missed the icon by a pixel would land on the label and flip
+                or focus its control. The help still reaches the field, as its
+                description. */}
+            <div className="field">
+              <span className="label-line">
+                <label htmlFor="settings-poll-enabled">Scheduled polling</label>
+                <InfoTip id="settings-poll-enabled-help" text={HELP.polling} />
               </span>
-            </label>
+              <input
+                id="settings-poll-enabled"
+                aria-describedby="settings-poll-enabled-help"
+                type="checkbox"
+                role="switch"
+                className="switch"
+                checked={settings.poll_enabled}
+                onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
+              />
+            </div>
             <label>
               Poll schedule (cron)
               <input
@@ -637,34 +464,36 @@ export function Settings({
                 onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
                 disabled={!settings.poll_enabled}
               />
-              <span className="hint">
-                Default <code>0 6 * * *</code> = daily at 6am. Format: min hour day month weekday.
-              </span>
+              <span className="hint">{CRON_HINT}</span>
             </label>
-            <label>
-              Contact email
+            <div className="field">
+              <span className="label-line">
+                <label htmlFor="settings-ncbi-email">Contact email</label>
+                <InfoTip id="settings-ncbi-email-help" text={HELP.email} />
+              </span>
               <input
+                id="settings-ncbi-email"
+                aria-describedby="settings-ncbi-email-help"
                 value={settings.ncbi_email}
                 onChange={(e) => setSettings({ ...settings, ncbi_email: e.target.value })}
                 placeholder="optional"
               />
-              <span className="hint">
-                Optional but recommended. Sent to NCBI and OpenAlex so they can contact you
-                before blocking access if requests ever exceed their limits.
+            </div>
+            <div className="field">
+              <span className="label-line">
+                <label htmlFor="settings-api-key">NCBI API key</label>
+                <InfoTip id="settings-api-key-help" text={HELP.apiKey} />
+                {settings.has_api_key && <span className="pill">set <Check size={12} className="inline-icon" aria-hidden /></span>}
               </span>
-            </label>
-            <label>
-              NCBI API key {settings.has_api_key && <span className="pill">set <Check size={12} className="inline-icon" aria-hidden /></span>}
               <input
+                id="settings-api-key"
+                aria-describedby="settings-api-key-help"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={settings.has_api_key ? "•••••• (leave blank to keep)" : "optional"}
               />
-              <span className="hint">
-                Optional. A free key raises the rate limit from ~3 to ~10 requests/sec.
-              </span>
-            </label>
+            </div>
             <button type="submit" disabled={!settingsDirty}>
               Save settings
             </button>
@@ -716,7 +545,14 @@ export function Settings({
           <h2>Sharing</h2>
           {!ready && (
             <p className="hint" aria-busy="true" aria-label="Loading sharing info">
-              <SkeletonBar w="85%" h={12} style={{ marginBottom: 6 }} />
+              {/* Two lines of the paragraph, each bar on a line box of its own:
+                  too wide to share one, so the second wraps, and with no margin
+                  of its own each line is the text's. The unseen <code> is for
+                  the first line, which carries HOST and ADMIN_TOKEN: 12px
+                  monospace sits lower than the text around it and makes that
+                  line 20px rather than 19.5, by however much its font says. */}
+              <SkeletonBar w="85%" h={12} />
+              <code style={{ visibility: "hidden" }}>{"​"}</code>
               <SkeletonBar w="60%" h={12} />
             </p>
           )}
@@ -747,25 +583,33 @@ export function Settings({
                     </li>
                   ))}
                 </ul>
-                <label className="open-library">
+                {/* Only the name is the switch's <label>, not the sentence
+                    beside it. This switch saves the moment it changes, and
+                    turned on it opens every stored file to everyone on the
+                    network, so a click meant for selecting that sentence must
+                    not reach it. */}
+                <div className="open-library">
                   <span>
-                    Open Library {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
+                    <label htmlFor="settings-library-open">Open Library</label>{" "}
+                    {librarySaved && <span className="pill">Saved <Check size={12} className="inline-icon" aria-hidden /></span>}
                   </span>
                   <span className="switch-row">
                     <input
+                      id="settings-library-open"
+                      aria-describedby="settings-library-open-help"
                       type="checkbox"
                       role="switch"
                       className="switch"
                       checked={settings.library_open}
                       onChange={(e) => toggleOpenLibrary(e.target.checked)}
                     />
-                    <span className="hint">
+                    <span id="settings-library-open-help" className="hint">
                       When on, viewers can freely download stored files and collection zips —
                       no share link needed. When off, files are owner-only and shared via
                       expiring links.
                     </span>
                   </span>
-                </label>
+                </div>
               </>
             ))}
         </section>
@@ -880,23 +724,15 @@ export function Settings({
         />
       </section>
 
-      <JournalManager
-        open={managingJournals}
-        onClose={() => setManagingJournals(false)}
-        onCommitted={(papersRemoved, removalsHappened) => {
-          reload();
-          onDataChanged();
-          if (removalsHappened) onPapersRemoved(papersRemoved);
+      <TopicDialog
+        open={topicDialog != null}
+        topic={topicDialog === "new" ? null : topicDialog}
+        topics={topics}
+        onClose={() => setTopicDialog(null)}
+        onSaved={(saved, outcome) => {
+          reloadTopics();
+          onTopicSaved(saved, outcome);
         }}
-      />
-      <ConfirmDialog
-        open={allPubmedOffMessage != null}
-        title="Stop searching all of PubMed?"
-        message={allPubmedOffMessage ?? ""}
-        confirmLabel="Turn off"
-        danger
-        onConfirm={() => applyAllPubmed(false)}
-        onCancel={() => setAllPubmedOffMessage(null)}
       />
       <ConfirmDialog
         open={topicToRemove != null}

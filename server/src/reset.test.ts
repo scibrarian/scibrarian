@@ -77,13 +77,19 @@ beforeAll(async () => {
 
   // Contents — the half that has to go. Everything below is something a person
   // put here.
-  const topic = db.createTopic("Diabetes Mellitus, Type 2", "diabetes").id;
-  const journal = db.createJournal("The Lancet", "0053266", true).id;
-  db.markJournalsScanned(topic, [journal]);
-  db.setTopicPubmedPolled(topic, "2026-01-01T00:00:00.000Z");
-  // As an all-PubMed poll saves it, so the link's topic_pubmed_links row is
-  // there for the cascade to take too.
-  db.saveArticles([article("11111111", "Metformin in cohort A")], topic, true);
+  // With a heading and a journal of its own, so topic_terms and topic_journals
+  // both have a row for the cascade to take.
+  const topic = db.createTopic(
+    "Diabetes Mellitus, Type 2",
+    "diabetes",
+    [{ ui: "D003924", name: "Diabetes Mellitus, Type 2" }],
+    {
+      allPubmed: false,
+      journals: [{ nlmId: "0053266", name: "The Lancet", medlineIndexed: true }],
+    }
+  ).id;
+  db.markJournalsScanned(topic, db.topicJournals(topic).map((j) => j.id));
+  db.saveArticles([article("11111111", "Metformin in cohort A")], topic);
   db.upsertArticles([article("22222222", "A paper held as a file")]);
   db.saveArticleMesh([
     {
@@ -157,9 +163,8 @@ describe("deleting all data", () => {
       "article_mesh",
       "article_pub_types",
       "article_topics",
-      "topic_journal_scans",
-      "topic_pubmed_scans",
-      "topic_pubmed_links",
+      "topic_terms",
+      "topic_journals",
       "bookmarks",
     ]) {
       expect({ table, rows: count(table) }).toEqual({ table, rows: 0 });

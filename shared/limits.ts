@@ -80,3 +80,22 @@ export const MAX_BULK_BOOKMARK_BYTES = MAX_BULK_BOOKMARK_PMIDS * 22;
 // the two agree exactly: the box stops accepting at the character the server
 // would have refused, rather than taking a name that fails on submit.
 export const MAX_NAME_CHARS = 30;
+
+// Most MeSH headings one topic may require. A topic is its headings ANDed into
+// one PubMed term, and every heading narrows it: two or three is a research
+// question, and well before ten the intersection is empty. A bound so a
+// hand-written request can't build an unbounded term, not a number anyone is
+// expected to reach.
+export const MAX_TOPIC_HEADINGS = 10;
+
+// Most records PubMed hands over for one search — NCBI's ceiling, not ours (see
+// searchWithTotal in pubmed.ts, which is where it bites). Here because the topic
+// dialog says so before a topic is created: a set of headings matching more
+// than this cannot be listed whole.
+export const PUBMED_MAX_RESULTS = 9999;
+
+// Longest name a topic may carry. Longer than MAX_NAME_CHARS because a topic is
+// named after its headings by default, and those have never fit in 30: "Pulmonary
+// Disease, Chronic Obstructive" is one heading. The picker and the Settings list
+// already cut a topic's name with an ellipsis, which is what made that workable.
+export const MAX_TOPIC_NAME_CHARS = 120;

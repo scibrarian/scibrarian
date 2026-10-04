@@ -1,4 +1,4 @@
-import { findCatalogByName, getSettings } from "./db.js";
+import { getSettings } from "./db.js";
 import type { ArticleInsert } from "./db.js";
 import { fetchWithTimeout } from "./http.js";
 import {
@@ -10,10 +10,11 @@ import {
 } from "./pubmed-parse.js";
 import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
 import { errMessage, safeError } from "./util.js";
+import { PUBMED_MAX_RESULTS } from "../../shared/limits.js";
 
 // Fetch/throttle/retry side of the PubMed client; response parsing and query
 // building live in pubmed-parse.ts (pure, tested against fixtures).
-export { buildTerm } from "./pubmed-parse.js";
+export { buildTerm, topicTerm } from "./pubmed-parse.js";
 
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 const TOOL = "scibrarian";
@@ -189,7 +190,7 @@ async function eutilsJson<T>(endpoint: string, params: URLSearchParams): Promise
 // add-date (edat) window would silently miss. Omit it to scan the full history
 // (a topic's first poll).
 const PAGE = 1000;
-const MAX_RESULTS = 9999;
+const MAX_RESULTS = PUBMED_MAX_RESULTS;
 const MAX_RETSTART = 9998;
 
 export interface SearchResult {
@@ -256,6 +257,24 @@ export async function searchRecent(
     params
   );
   return data.esearchresult?.idlist ?? [];
+}
+
+// How many papers a term matches, and nothing else: one request that asks for
+// no ids. For the topic dialog, which shows how big a topic would be before it
+// exists — and so whether it fits under MAX_RESULTS without a journal list.
+export async function countMatches(term: string): Promise<number> {
+  const params = new URLSearchParams({
+    db: "pubmed",
+    retmode: "json",
+    retmax: "0",
+    term,
+  });
+  const data = await eutilsJson<{ esearchresult?: { count?: string } }>("esearch.fcgi", params);
+  const count = Number(data.esearchresult?.count);
+  // Not a number is NCBI answering without the one field asked for. Reporting
+  // that as 0 would tell someone their topic matches nothing.
+  if (!Number.isFinite(count)) throw safeError("PubMed didn't report how many papers match.");
+  return count;
 }
 
 // The PMIDs PubMed files a DOI under, via a field-tagged esearch (covers all of
@@ -361,32 +380,6 @@ export async function fetchArticles(pmids: string[]): Promise<ArticleInsert[]> {
   return articles;
 }
 
-// Resolve a user-entered journal name to its stable NLM id + display abbreviation.
-// Prefers the local catalog; otherwise a one-shot PubMed lookup (which also
-// validates — no article means PubMed doesn't recognize the name).
-export async function resolveJournal(
-  rawName: string
-): Promise<{ nlmId: string; name: string } | null> {
-  const cat = findCatalogByName(rawName);
-  if (cat) return { nlmId: cat.nlm_id, name: cat.med_abbr || cat.title };
-
-  const params = new URLSearchParams({
-    db: "pubmed",
-    retmode: "json",
-    retmax: "1",
-    term: `"${rawName.replace(/"/g, "")}"[Journal]`,
-  });
-  const data = await eutilsJson<{ esearchresult?: { idlist?: string[] } }>(
-    "esearch.fcgi",
-    params
-  );
-  const pmid = data.esearchresult?.idlist?.[0];
-  if (!pmid) return null; // PubMed doesn't recognize this journal name
-  const x = (await fetchArticleXml([pmid])).get(pmid);
-  if (!x?.nlmId) return null;
-  return { nlmId: x.nlmId, name: x.medlineTa || rawName };
-}
-
 // ---------- MEDLINE indexing status ----------
 
 // Whether NLM *currently indexes* this journal for MEDLINE, by NLM Unique ID.
@@ -398,9 +391,7 @@ export async function resolveJournal(
 //
 // The local catalog cannot answer it: J_Medline.txt lists every journal PubMed
 // knows (~38k — preprint servers and PMC-only titles included), not the ~5.2k
-// currently indexed for MEDLINE. Neither can `resolveJournal` falling through to
-// its live-esearch branch, since the miss there only means the name didn't match
-// a catalog title or abbreviation. The NLM Catalog's `currentlyindexed` filter is
+// currently indexed for MEDLINE. The NLM Catalog's `currentlyindexed` filter is
 // the authoritative signal, and one esearch answers it.
 //
 // Best-effort by design: `null` means "couldn't tell" — NCBI unreachable, or an

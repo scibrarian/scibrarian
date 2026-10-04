@@ -178,12 +178,25 @@ body {
      the bar has breathing room above its controls once it's stuck to the
      viewport edge. The gap between the two is unchanged: 2 + 12. */
   padding: 20px 0 2px;
+  /* Only ever felt when the row is full: space-between keeps the two halves far
+     apart otherwise. It is what stops the workspace picker touching the first
+     control once the picker has started giving up width (see .brand). */
+  gap: 8px;
 }
 
+/* May be narrower than its contents, which is the first half of an arrangement
+   the header needed once the cache warning could join it: on the desktop the
+   row is brand, workspace picker, and up to four controls, and with the warning
+   showing there is not quite room for all of it at the app's full width. What
+   gives is the workspace name, which already knows how to truncate — rather
+   than the controls wrapping, which put the gear on a row of its own and moved
+   the whole page down each time the warning came or went. The other halves are
+   .workspace-trigger's min-width and the rule after .header-actions. */
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .brand h1 {
@@ -253,6 +266,10 @@ body {
   align-items: center;
   gap: 6px;
   max-width: 220px;
+  /* Lets it go below the width of its name when the header is full — the name
+     ellipsises, as it does at max-width. Without this a flex item's minimum is
+     its content, and the brand could not give anything up. */
+  min-width: 0;
   margin-left: 4px;
   padding: 4px 8px;
   background: var(--bg);
@@ -497,6 +514,23 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 12px;
+}
+
+/* ...but not while the workspace name still has width to give. A flex row
+   shares a shortfall between its items, so without this the controls took their
+   part of it and wrapped while the name beside them was still drawn in full.
+   Holding them at their own width hands the whole shortfall to .brand.
+
+   Only where that is safe. Much below this the brand has nothing left to give —
+   its fixed parts and the full set of controls need about 790px of row, and at
+   860 the name is down to its last 15px — so the wrap above is still the
+   fallback it always was. The desktop window cannot be made narrower than 900px
+   (electron/main.mjs), frame included, so this covers every size the build with
+   a workspace picker and a cache warning can be. */
+@media (min-width: 860px) {
+  .header-actions {
+    flex-shrink: 0;
+  }
 }
 
 .updated {
@@ -1158,6 +1192,34 @@ body {
   margin: 0 0 6px;
 }
 
+/* A heading whose explanation is the info icon beside it rather than a
+   paragraph under it. The icon sits next to the <h2>, not in it, so the help
+   doesn't become the heading's name. The paragraph used to supply the gap to
+   whatever came next, so the pair takes it on. */
+.panel .with-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.panel .with-tip h2 {
+  margin: 0;
+}
+
+/* A field's label with its info icon, and any badge, on one line. */
+.label-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The line's gap already spaces a badge from what precedes it; its own margin,
+   which is for a badge after inline text, would double that. */
+.label-line .pill {
+  margin-left: 0;
+}
+
 .hint {
   color: var(--muted);
   font-size: 13px;
@@ -1346,7 +1408,11 @@ body {
   margin-bottom: 6px;
 }
 
-.stacked-form label {
+/* A .field is a group whose <label> holds only the words, so that an info icon
+   can sit beside it rather than inside it — see Settings. It is laid out as a
+   label would be. */
+.stacked-form > label,
+.stacked-form > .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1407,10 +1473,8 @@ input:disabled {
   cursor: not-allowed;
 }
 
-/* Open Library switch in the Sharing panel, and "Search all PubMed journals"
-   under the journal list — mirrors .stacked-form label. */
-.open-library,
-.all-pubmed {
+/* Open Library switch in the Sharing panel — mirrors .stacked-form label. */
+.open-library {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1420,8 +1484,7 @@ input:disabled {
   color: var(--text);
 }
 
-.open-library .hint,
-.all-pubmed .hint {
+.open-library .hint {
   font-weight: 400;
   margin: 0;
 }
@@ -1483,7 +1546,7 @@ input:focus {
 /* "Delete all data", at the foot of Settings.
 
    .accent-btn's shape in --danger rather than --accent, because it is a peer of
-   "Manage journals…" and "Save settings" and should sit at the same size and
+   "Add topic…" and "Save settings" and should sit at the same size and
    weight as them — the red is the whole of what differs, and making it also
    bigger or louder would be saying the same thing twice.
 
@@ -1561,16 +1624,16 @@ input:focus {
   border-top: none;
 }
 
-/* Fixed at ~6 rows so the panel never resizes: the 6-row loading skeleton and a
-   long journal list occupy the same box, and anything beyond 6 scrolls. A
-   stable scrollbar gutter keeps rows from shifting when the scrollbar appears. */
+/* Fixed at ~6 rows so the panel never resizes: the loading skeleton and a long
+   list occupy the same box, and anything beyond that scrolls. A stable
+   scrollbar gutter keeps rows from shifting when the scrollbar appears. */
 .scroll-list {
   height: 285px;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
 
-/* Topic rows stand two lines tall (the heading over its PubMed term), 62px
+/* Topic rows stand two lines tall (the name over where it searches), 62px
    each and 71px apart. Four whole rows and a fifth cut below its heading: the
    cut-off row is what says the list scrolls, and cutting through the heading
    instead reads as a rendering fault. */
@@ -1589,13 +1652,9 @@ input:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The journal list while "Search all PubMed journals" is on: kept in view, so
-   turning the setting off shows what topics will go back to, but visibly not
-   what they search now. */
-.list.set-aside {
-  opacity: 0.5;
+  /* The second line borrows .hint's colours when it is a warning, and must not
+     take its paragraph margin with them: that row stood 12px taller. */
+  margin: 0;
 }
 
 .list li span:not(.mesh-warn) {
@@ -1614,6 +1673,13 @@ input:focus {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+/* A row's trailing actions, side by side and never squeezed by a long label. */
+.list-actions {
+  display: flex;
+  flex: none;
+  gap: 14px;
 }
 
 .term {
@@ -1879,18 +1945,11 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
-/* Near-instant cluster-name tooltip (native title has an un-tunable delay). */
+/* Near-instant cluster-name tooltip (native title has an un-tunable delay).
+   Placed here, at the pointer; it looks like every tooltip — see .tip-bubble. */
 .hover-tip {
   position: fixed;
   z-index: 100;
-  max-width: 280px;
-  background: #1a1f29;
-  color: #fff;
-  font-size: 12px;
-  line-height: 1.3;
-  padding: 6px 9px;
-  border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.25);
   pointer-events: none;
   white-space: normal;
 }
@@ -2387,14 +2446,16 @@ code {
   max-width: 780px;
 }
 
-/* Auto-suggest row: button + inline explainer above the panes. */
+/* Auto-suggest row: button, the copy-from picker, and an inline explainer
+   above the panes. */
 .jm-auto {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.jm-auto button {
+.jm-auto button,
+.jm-auto select {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -2406,13 +2467,16 @@ code {
   white-space: nowrap;
 }
 
-.jm-auto button:disabled {
+.jm-auto button:disabled,
+.jm-auto select:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.jm-auto .hint {
-  margin: 0;
+/* Wide enough to say what it is, and no wider however long a topic's name. */
+.jm-auto select {
+  max-width: 180px;
+  font-family: inherit;
 }
 
 .jm-panes {
@@ -2526,6 +2590,237 @@ code {
   .jm-list {
     height: 200px;
   }
+}
+
+/* ---------- topic dialog ---------- */
+
+.topic-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.topic-form > input {
+  width: 100%;
+}
+
+.topic-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* The first label sits under the dialog's heading, which brings its own gap. */
+.topic-label.first {
+  margin-top: 0;
+}
+
+/* See InfoTip. A button, drawn as the bare icon. `button.info-tip` rather than
+   the class alone, to undo the rules that dress every button in the places it
+   sits — `.stacked-form button` and `.jm-auto button` — which it matches in
+   weight and follows in the file. */
+button.info-tip {
+  display: inline-flex;
+  align-self: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  line-height: 0;
+  cursor: help;
+}
+
+button.info-tip:hover,
+button.info-tip[data-state$="open"] {
+  color: var(--text);
+}
+
+button.info-tip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The app's one tooltip look, for InfoTip's bubble and the citation graph's
+   cluster names alike, so the two read as the same thing. Inverted like the
+   toast, which is the app's other message that floats over the page — dark on
+   a light page, light on a dark one. Each keeps its own placement. The 320px
+   is also in CitationGraph, which keeps its tip that far from the edge. */
+.tip-bubble,
+.hover-tip {
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.25);
+}
+
+/* InfoTip's bubble. Drawn in a portal and placed by Radix, so nothing that
+   scrolls or clips can cut it off; above the dialogs it is used in, and under
+   the toast — Radix lifts this z-index onto the wrapper it positions. No wider
+   than the room Radix reports, which is the window less its scrollbar and the
+   margin. */
+.tip-bubble {
+  z-index: 150;
+  max-width: min(320px, var(--radix-tooltip-content-available-width));
+  animation: overlay-in var(--dur-fast) var(--ease-out);
+}
+
+/* The headings and the box that adds one, drawn as a single field: the chips
+   are what has been typed into it. The typeahead's popup hangs off this box
+   rather than off the input inside it, which is only as wide as the row has
+   left after the chips. */
+.topic-headings {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.topic-headings:focus-within {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.topic-headings .typeahead {
+  position: static;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.topic-headings .typeahead input {
+  border: none;
+  padding: 4px 5px;
+  background: transparent;
+}
+
+.topic-headings .typeahead input:focus {
+  outline: none;
+}
+
+.topic-chips {
+  display: contents;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.topic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 6px 3px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.topic-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 2px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.topic-chip button:hover {
+  background: var(--panel);
+}
+
+/* A topic that exists: its headings are a fact about it, not a field. */
+.topic-headings.fixed {
+  background: none;
+}
+
+.topic-headings.fixed .topic-chip {
+  padding-right: 10px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+/* One line whatever it says, so picking a heading doesn't resize the dialog. */
+.topic-count {
+  min-height: 20px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.topic-count strong {
+  color: var(--text);
+}
+
+.topic-count.warn,
+.topic-count.warn strong {
+  color: var(--warn);
+}
+
+/* Where the topic searches: two radios, and under the second the journals. */
+.topic-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  font-size: 14px;
+}
+
+.topic-scope label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.topic-scope input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.topic-form .jm {
+  margin-top: 12px;
+}
+
+/* Shorter than the list had as a dialog of its own: here it shares one with
+   the headings and the name, and has to leave the buttons on screen. */
+.topic-form .jm-list {
+  height: 180px;
+}
+
+/* The dialog can still outgrow a short window, and a centred box taller than
+   its backdrop loses its top edge — heading first. So it scrolls inside
+   itself instead. */
+.modal:has(> .topic-form) {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
 }
 
 /* ---------- section nav (Interests / Library) ---------- */
@@ -2778,8 +3073,12 @@ html {
   transition: background-color var(--dur-fast) var(--ease);
 }
 
+/* .picked is the row that was just chosen, for as long as the menu takes to
+   close: Radix drops the highlight with the focus the moment it starts, and
+   the row would fade back to white under the pointer that picked it. */
 .picker-option:hover,
-.picker-option[data-highlighted] {
+.picker-option[data-highlighted],
+.picker-option.picked {
   background: var(--accent-soft);
   outline: none;
 }
@@ -3016,8 +3315,8 @@ html {
   text-align: center;
 }
 
-/* "Remove N selected" — the Library's bulk action, in the slot the bulk save
-   occupies in the sections that have one. Shares .save-all-btn's box because
+/* "Remove N selected" — the Library's and Bookmarks' bulk action, in the slot
+   the bulk save occupies in Interests. Shares .save-all-btn's box because
    it lands in the same place and must not change the filter row's height when
    the section changes.
 
@@ -3738,6 +4037,47 @@ html {
   }
 }
 
+/* ---------- viewer cache warning ---------- */
+
+/* The header's "142 MB cached", shown on the desktop build once the viewer
+   cache is over its limit (see CacheChip).
+
+   .have-btn's box, so it sits in the row as one of the row's own controls
+   rather than as something laid over it — same padding, type and radius, and
+   the transparent border is there only to keep the two the same height. What
+   differs is the fill: the warning pair, which is what says this one is
+   reporting a state where its neighbours are offering a tool. Both tokens are
+   redefined for dark mode, so there is nothing to override there.
+
+   The line-height is the other half of matching that box. .have-btn is as tall
+   as its 16px glyph; this has no glyph (see CacheChip for why), so it takes the
+   same 16px from its line instead of sitting a pixel short beside it. */
+.cache-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--warn-soft);
+  border: 1px solid transparent;
+  color: var(--warn);
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.cache-chip:hover:not(:disabled) {
+  border-color: var(--warn);
+}
+
+/* While the clear runs. Not dimmed: the spinner and "Clearing…" are already
+   saying it is busy, and a faded warning reads as one that went away. */
+.cache-chip:disabled {
+  cursor: default;
+}
+
 .have-form {
   display: flex;
   flex-direction: column;
@@ -4022,7 +4362,7 @@ html {
    Every other control in Settings is styled and these were not: nothing in the
    stylesheet named them, so Connect, Sync now, Save license, Create code, Copy,
    Share, Disconnect and Revoke all rendered as raw UA chrome inside a panel
-   sitting directly under "Manage journals…" and "Save settings". The two
+   sitting directly under "Add topic…" and "Save settings". The two
    className="primary" and className="danger" hints already in the markup named
    variants that existed nowhere.
 
@@ -4408,10 +4748,6 @@ html {
 
   .swatch {
     border-color: rgba(255, 255, 255, 0.18);
-  }
-
-  .hover-tip {
-    background: #283142;
   }
 
   .file-missing {

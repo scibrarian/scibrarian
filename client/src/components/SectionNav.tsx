@@ -1,5 +1,15 @@
+import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Search, Library, Bookmark, ChevronDown, Plus, Folder, FolderSync } from "lucide-react";
+import {
+  Search,
+  Library,
+  Bookmark,
+  ChevronDown,
+  Pencil,
+  Plus,
+  Folder,
+  FolderSync,
+} from "lucide-react";
 import { api } from "../api";
 import type { BookmarkFolder, Collection, CollectionSelection, Topic } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -109,6 +119,7 @@ export function SectionNav({
   onCreateFolder,
   onCreateCollection,
   onAddTopic,
+  onEditTopic,
   onShareError,
 }: {
   mode: Mode;
@@ -132,9 +143,12 @@ export function SectionNav({
   onCreateFolder: () => void;
   onCreateCollection: () => void;
   onAddTopic: () => void;
+  // Open the active topic for editing — its name, and what it searches.
+  onEditTopic: () => void;
   onShareError: (message: string) => void;
 }) {
   const activeCollection = collections.find((c) => c.id === activeCollectionId);
+  const activeTopic = topics.find((t) => t.id === activeTopicId);
 
   // Every mode's picker is the same thing — a named list with count badges and
   // an admin-only "add" row — so each is described here and rendered by one
@@ -203,6 +217,43 @@ export function SectionNav({
             addLabel: "New collection",
             onAdd: onCreateCollection,
           };
+
+  // What the menu showed at the moment a row in it was picked, held until it
+  // next opens.
+  //
+  // Picking a row changes the selection at once and closes the menu, and the
+  // menu stays painted for its exit after that. Drawn from the live selection,
+  // it spent that exit restyling itself: the row just left dropped its bold and
+  // its fill, the row just picked took them on, both re-wrapped at their new
+  // weight, and the pointer's highlight went with the focus — all inside a
+  // 90ms fade, which read as a flash. A closing menu is a picture of what was
+  // clicked, so it keeps the selection it opened with and marks the row that
+  // was picked; the trigger beside it is what shows the new one.
+  const [picked, setPicked] = useState<{
+    row: number | "lead";
+    activeId: number | null;
+    leadActive: boolean;
+    settingsActive: boolean;
+  } | null>(null);
+  const shown = picked ?? {
+    row: null,
+    activeId: picker.activeId,
+    leadActive: picker.lead?.active ?? false,
+    settingsActive,
+  };
+  const pick = (row: number | "lead", select: () => void) => () => {
+    setPicked({
+      row,
+      activeId: picker.activeId,
+      leadActive: picker.lead?.active ?? false,
+      settingsActive,
+    });
+    select();
+  };
+  const rowClass = (row: number | "lead", isActive: boolean) =>
+    `picker-option${isActive && !shown.settingsActive ? " active" : ""}${
+      shown.row === row ? " picked" : ""
+    }`;
 
   const active: PickerItem | undefined = picker.items.find((i) => i.id === picker.activeId);
   // The lead, only when it's the current selection — so the trigger can name it
@@ -281,7 +332,7 @@ export function SectionNav({
             <SkeletonBar w={128} h={14} />
           </div>
         ) : (
-          <DropdownMenu.Root>
+          <DropdownMenu.Root onOpenChange={(open) => open && setPicked(null)}>
             <DropdownMenu.Trigger className="picker-trigger">
               {/* Which section this name belongs to. A topic, a bookmark
                   folder and a collection can all be called "Cardiac Imaging",
@@ -314,8 +365,8 @@ export function SectionNav({
                 {picker.lead && (
                   <>
                     <DropdownMenu.Item
-                      className={`picker-option ${picker.lead.active && !settingsActive ? "active" : ""}`}
-                      onSelect={picker.lead.onSelect}
+                      className={rowClass("lead", shown.leadActive)}
+                      onSelect={pick("lead", picker.lead.onSelect)}
                     >
                       <span className="picker-option-name">
                         <Library size={14} className="inline-icon" aria-hidden /> {picker.lead.name}
@@ -327,8 +378,8 @@ export function SectionNav({
                 {picker.items.map((item) => (
                   <DropdownMenu.Item
                     key={item.id}
-                    className={`picker-option ${item.id === picker.activeId && !settingsActive ? "active" : ""}`}
-                    onSelect={() => picker.onSelect(item.id)}
+                    className={rowClass(item.id, item.id === shown.activeId)}
+                    onSelect={pick(item.id, () => picker.onSelect(item.id))}
                   >
                     <span className="picker-option-name">
                       {/* Same silhouette, different state. Swapping to a
@@ -377,6 +428,19 @@ export function SectionNav({
               onError={onShareError}
             />
           )}
+        {/* Owner-only, and in the same slot for the same reason: beside the
+            picker it is unambiguous which topic gets edited. A topic's settings
+            are otherwise a trip to Settings and back to the papers they decide. */}
+        {loaded && mode === "interests" && !settingsActive && isAdmin && activeTopic && (
+          <button
+            className="share-btn"
+            onClick={onEditTopic}
+            aria-label={`Edit topic “${activeTopic.name}”`}
+            title="Edit this topic"
+          >
+            <Pencil size={16} aria-hidden />
+          </button>
+        )}
       </div>
     </nav>
   );

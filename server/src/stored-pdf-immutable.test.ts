@@ -18,8 +18,8 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // Nothing today does, and it holds at four independent layers:
 //
 //   1. `collection_files.content_hash` is written by exactly one statement, in
-//      repointFileBlob, whose only caller is the desktop check-in — reachable
-//      from the Electron main process and from no request at all.
+//      repointCheckedOutPaper, whose only caller is the desktop check-in —
+//      reachable from the Electron main process and from no request at all.
 //   2. The blob store is content-addressed. Its only write renames a temp file
 //      to blobPath(sha256(that temp file)), so bytes can only ever land at
 //      their own digest; overwriting a blob would take a SHA-256 collision.
@@ -145,6 +145,14 @@ describe("on a server deployment", () => {
     // The canary for the note at the top of this file: if this is ever true,
     // another test file's environment has leaked into this one and the two
     // assertions below stopped meaning anything.
+    expect(((await res.json()) as { desktop: boolean }).desktop).toBe(false);
+  });
+
+  it("tells the shell the same, before it has a token to ask with", async () => {
+    // /auth is where the header's cache warning learns which build this is, and
+    // it is what keeps a hosted instance from asking for the two routes below
+    // on every load. No credential: the client calls it before it has one.
+    const res = await fetch(`${base}/api/auth`);
     expect(((await res.json()) as { desktop: boolean }).desktop).toBe(false);
   });
 

@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import type { MeshHeading } from "../../shared/types.js";
+import type { MeshDescriptorRef, MeshHeading } from "../../shared/types.js";
 
 // Pure parsing and query-building for PubMed E-utilities responses. No I/O and
 // no imports from db/config, so tests can feed fixture payloads directly;
@@ -22,6 +22,18 @@ const xml = new XMLParser({
 });
 
 // ---------- query building ----------
+
+// A topic's PubMed term: every one of its headings, ANDed. Ordered by
+// descriptor id rather than as picked, so one set of headings is one term
+// whichever order it was chosen in — the term is what makes two topics the same
+// topic (see topicByTerm in db.ts). `field` is [MeSH] for what a topic polls,
+// and [majr] for the tighter question journal suggestions ask.
+export function topicTerm(headings: MeshDescriptorRef[], field: "MeSH" | "majr" = "MeSH"): string {
+  return [...headings]
+    .sort((a, b) => (a.ui < b.ui ? -1 : a.ui > b.ui ? 1 : 0))
+    .map((h) => `"${h.name.replace(/"/g, "")}"[${field}]`)
+    .join(" AND ");
+}
 
 export function buildTerm(topicTerm: string, journalNames: string[]): string {
   const term = topicTerm.trim();

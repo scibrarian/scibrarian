@@ -3,12 +3,14 @@ import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api
 import { errorMessage, plural } from "./lib/format";
 import { useReveal } from "./lib/hooks";
 import { showToast } from "./lib/toast";
+import { useViewerCache } from "./lib/viewerCache";
 import type {
   AuthStatus,
   BookmarkFolder,
   Collection,
   CollectionSelection,
   Topic,
+  TopicDetail,
   PaperSource,
   ProCollectionStamp,
   ProStatus,
@@ -25,18 +27,26 @@ import { warmFacets } from "./components/MeshFilter";
 import { Settings } from "./components/Settings";
 import { SkeletonBar, ToolbarSkeleton } from "./components/Skeleton";
 import { PromptDialog } from "./components/Dialogs";
+import {
+  TopicDialog,
+  describeTopicSave,
+  type TopicSaveOutcome,
+} from "./components/TopicDialog";
 import { Banner } from "./components/Banner";
 import { ViewSwitcher, ViewSwitcherSkeleton, type ViewMode } from "./components/ViewSwitcher";
 import { HaveCheck, HAVE_CHECK_TITLE } from "./components/HaveCheck";
+import { CacheChip, ClearCacheDialog } from "./components/CacheChip";
 import {
   Settings as SettingsIcon,
   Lock,
   LockOpen,
   FilePlus,
+  Pencil,
   Plus,
   SearchCheck,
 } from "lucide-react";
 import { MAX_NAME_CHARS } from "../../shared/limits";
+import { canPoll } from "../../shared/topic";
 
 // The prose below points at the Library section by name and glyph, so it
 // takes both from the nav's MODES rather than picking an icon of its own that
@@ -96,6 +106,9 @@ export default function App() {
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
+  // The topic dialog as the section bar opens it: closed, creating a topic, or
+  // editing this one. Settings has its own, over its own list.
+  const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
   // "Do I already have this?" lives in the header rather than inside a
   // section: the question arrives from outside the app (an assignment, a
   // reference list someone sent) and has to be askable without first navigating
@@ -134,6 +147,14 @@ export default function App() {
   // the UI hangs off this being non-null, so a free build renders none of it
   // without a single feature check of its own.
   const [pro, setPro] = useState<ProStatus | null>(null);
+  // Whether this is the desktop build, as /api/auth reports it. False until it
+  // answers, which is also the answer for every other build.
+  const [desktop, setDesktop] = useState(false);
+  // The desktop build's viewer cache: its size, the clear, and the confirmation
+  // the clear goes through. Held here because the header's warning and the
+  // Settings panel both draw from it and both can clear it. Admin as well as
+  // desktop, since the routes are owner-only; on the desktop that is everyone.
+  const viewerCache = useViewerCache(desktop && isAdmin);
   // Which collections carry an organisation stamp. Kept here rather than in the
   // Library view because two places draw from it — the picker's icon, which is
   // rendered by the nav above that view, and the badge inside it.
@@ -352,6 +373,7 @@ export default function App() {
         setTokenRequired(token_required);
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
+        setDesktop(status?.desktop === true);
         // Preselect each section's first entry so switching modes never opens
         // on an empty picker. The load itself always lands in the Library,
         // where `mode` starts, even when it is empty. It used to fall through
@@ -369,14 +391,10 @@ export default function App() {
   }, []);
 
   const activeTopic = topics.find((d) => d.id === activeTopicId) ?? null;
-  // The later of the topic's two watermarks — one per search mode, see
-  // topic_pubmed_scans — since either is a poll that updated this feed. Both
-  // are toISOString() output, so they compare as strings.
-  const topicUpdatedAt =
-    [activeTopic?.last_polled_at, activeTopic?.pubmed_polled_at]
-      .filter((t): t is string => !!t)
-      .sort()
-      .pop() ?? null;
+  const topicUpdatedAt = activeTopic?.last_polled_at ?? null;
+  // A topic that lists journals and has none: it has nowhere to search until
+  // it is edited.
+  const topicUnset = activeTopic != null && !canPoll(activeTopic);
   const activeFolder = folders.find((f) => f.id === activeFolderId) ?? null;
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
 
@@ -416,6 +434,16 @@ export default function App() {
     if (m === "papers" && activeCollectionId == null && collections.length > 0) {
       setActiveCollectionId(collections[0].id);
     }
+  }
+
+  // A topic was created or edited, in the dialog here or the one in Settings.
+  // Its row is stale either way; its papers are stale only if a change of scope
+  // took some out, and then only its own feed is — no other topic was touched.
+  async function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
+    const said = describeTopicSave(saved, outcome);
+    if (said) setStatus(said);
+    await loadTopics();
+    if (outcome.removed > 0) reloadSource({ topic: saved.id });
   }
 
   function selectTopic(id: number) {
@@ -563,6 +591,19 @@ export default function App() {
     if (activeFolderId != null) reloadSource({ folder: activeFolderId });
   }
 
+  // The folder on screen gained or lost papers: Add links put some in, or the
+  // table's "Remove selected" took some out. Three things are stale — its list,
+  // its count in the picker, and the map of what is saved where, which fills
+  // the bookmark icon on every paper in Interests.
+  //
+  // Bumped before the await, for the reason handleCollectionChanged gives just
+  // below: the papers fetch reads neither of the other two, and a removal's
+  // rows stay on screen, dimmed, until it lands.
+  async function handleFolderPapersChanged() {
+    if (activeFolderId != null) reloadSource({ folder: activeFolderId });
+    await Promise.all([loadBookmarks(), loadFolders()]);
+  }
+
   async function handleCollectionChanged() {
     // Bumped before the await, not after it. These two are independent — the
     // papers fetch doesn't read the collection list — and sequencing them cost
@@ -674,11 +715,13 @@ export default function App() {
       // PubMed hands over at most the first 9,999 records per query, so a broad
       // topic's feed is genuinely incomplete. Said plainly rather than left to
       // be inferred from a count nobody has a reference point for — the feed
-      // would otherwise look complete, and only the user can decide whether to
-      // narrow the topic or watch fewer journals.
+      // would otherwise look complete, and only the user can decide what to do
+      // about it. A topic's headings can't be changed, so the advice is its
+      // scope: a list in place of all of PubMed, or a shorter list.
       const capped = res.results.filter((r) => r.truncated);
-      const narrow = res.allPubmed ? "Narrow the topic" : "Narrow the topic or watch fewer journals";
       for (const r of capped) {
+        const everywhere = topics.find((t) => t.id === r.topicId)?.all_pubmed;
+        const narrow = everywhere ? "Give it a list of journals" : "Give it fewer journals";
         msg += ` “${r.topicName}” matches more papers than PubMed will return — ${r.truncated!.toLocaleString()} older ones were left out. ${narrow} for full coverage.`;
       }
       if (errs.length) msg += ` ${errs.length} error(s): ${errs.map((e) => e.error).join("; ")}`;
@@ -823,8 +866,9 @@ export default function App() {
   // row can: it sits in the sticky bar, clickable however deep you've scrolled.
   //
   // Not keyed on reloadToken. That bumps on in-place data changes too — see
-  // removeBookmark, which invalidates the very folder you're reading — and
-  // yanking the page to the top mid-read is worse than the offset it'd fix.
+  // handleFolderPapersChanged, which invalidates the very folder you're reading
+  // — and yanking the page to the top mid-read is worse than the offset it'd
+  // fix.
   //
   // Only *swaps* reset, never the first view we settle on: reloading a scrolled
   // page has the browser restore that offset, and a scroll to top on arrival
@@ -855,11 +899,15 @@ export default function App() {
   const emptyState = !isAdmin ? (
     <>No papers here yet. The site owner hasn’t added any.</>
   ) : inInterests ? (
-    <>
-      No papers yet. Add journals &amp; topics in{" "}
-      <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong>, then
-      click “Check for new papers”.
-    </>
+    topicUnset ? (
+      <>
+        No journals are chosen for this topic. Click{" "}
+        <strong><Pencil size={14} className="inline-icon" aria-hidden /> Edit</strong> beside its name
+        to choose some, or to search all of PubMed.
+      </>
+    ) : (
+      <>No papers yet. Click “Check for new papers”.</>
+    )
   ) : inLibrary ? (
     <>
       No papers yet. Click{" "}
@@ -880,9 +928,9 @@ export default function App() {
     </>
   ) : inInterests ? (
     <>
-      No topics yet. Open{" "}
-      <strong><SettingsIcon size={14} className="inline-icon" aria-hidden /> Settings</strong> to add
-      a journal and a MeSH topic to watch, or switch to{" "}
+      No topics yet. Click{" "}
+      <strong><Plus size={14} className="inline-icon" aria-hidden /> Add topic…</strong> in the
+      topics dropdown to watch one or more MeSH headings, or switch to{" "}
       <strong><LibraryIcon size={14} className="inline-icon" aria-hidden /> {MODES.papers.label}</strong>{" "}
       to import your own PDFs.
     </>
@@ -909,11 +957,14 @@ export default function App() {
     onAuthRefreshed: handleAuthRefreshed,
   };
 
-  // Bookmarking is offered where a paper is still a candidate: Interests (save
-  // what the search turned up) and Bookmarks (unsave, or file it into a second
-  // folder). Not the Library — those are papers you already own, not ones
-  // you're deciding about — and not for viewers, since saving is a mutation the
-  // server would refuse and a control that always fails is worse than none.
+  // Bookmarking is offered where a paper is still a candidate, which is
+  // Interests: save what the search turned up. Not the Library — those are
+  // papers you already own, not ones you're deciding about. Not Bookmarks
+  // either: every paper there is already saved, so the control's one job in a
+  // folder was taking papers back out, a menu and a click per paper. The
+  // folder's table does that by tick now, as a collection's does (see
+  // PapersTable's removeFrom). And not for viewers, since saving is a mutation
+  // the server would refuse and a control that always fails is worse than none.
   // null is what keeps the control out.
   //
   // Both halves of that rule live here rather than in the views. Each view used
@@ -921,7 +972,7 @@ export default function App() {
   // `false` where the others answered null — which is how an empty filter row
   // ended up rendering for anyone who wasn't the owner.
   const bookmarking: Bookmarking | null =
-    inLibrary || !isAdmin
+    !inInterests || !isAdmin
       ? null
       : {
           folders,
@@ -944,6 +995,9 @@ export default function App() {
       // The same handler the collection chrome uses: removing papers changes
       // the collection's counts and its file list exactly as an upload does.
       onCollectionChanged={handleCollectionChanged}
+      // And the folder chrome's, for the same reason: papers ticked out of a
+      // folder undo what Add links does.
+      onFolderChanged={handleFolderPapersChanged}
     />
   );
 
@@ -1031,6 +1085,13 @@ export default function App() {
             </>
           ) : (
             <>
+              {/* Draws nothing until the viewer cache is over its limit, and
+                  nothing at all off the desktop. Not reserved in the stand-ins
+                  above, unlike the rest of the row: it is absent on most loads,
+                  and it sits at the row's left end, where arriving late moves
+                  nothing beside it. What it reports goes to the notice below
+                  the section bar, the same place a refresh reports to. */}
+              <CacheChip viewerCache={viewerCache} onResult={setStatus} />
               {showViewControls && (
                 <ViewSwitcher viewMode={viewMode} onChange={setViewMode} />
               )}
@@ -1121,7 +1182,8 @@ export default function App() {
           onSelectCollection={selectCollection}
           onCreateFolder={() => setNamingFolder(true)}
           onCreateCollection={() => setNamingCollection(true)}
-          onAddTopic={() => setShowSettings(true)}
+          onAddTopic={() => setTopicDialog("new")}
+          onEditTopic={() => activeTopic && setTopicDialog(activeTopic)}
           onShareError={setStatus}
         />
       </div>
@@ -1169,13 +1231,16 @@ export default function App() {
         ) : showSettings ? (
           <Settings
             pro={pro}
+            viewerCache={viewerCache}
             onDataChanged={loadTopics}
+            onTopicSaved={handleTopicSaved}
             onPairingChanged={handlePairingChanged}
             onSharingChanged={handleSharingChanged}
             onPapersRemoved={(count) => {
               setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
-              // A journal or topic removal sweeps papers out of any number of
-              // topics at once, so nothing narrower than everything is safe.
+              // A removed topic's papers are cached under the bookmarks and
+              // the graph as well as its own feed, so nothing narrower than
+              // everything is safe.
               reloadEverything();
             }}
             onLibraryReset={async () => {
@@ -1276,10 +1341,7 @@ export default function App() {
             // The saved-papers map as well as the folder's list and count, the
             // same three a bulk save refreshes: a paper added here may be on
             // screen elsewhere, and its bookmark icon has to fill in.
-            onPapersAdded={async () => {
-              await Promise.all([loadBookmarks(), loadFolders()]);
-              if (activeFolderId != null) reloadSource({ folder: activeFolderId });
-            }}
+            onPapersAdded={handleFolderPapersChanged}
             onDeleted={async () => {
               // The folder's bookmarks are deleted with it (the rows cascade),
               // so the map of what's saved has to come back from the server
@@ -1309,6 +1371,24 @@ export default function App() {
         // didn't appear in it.
         onChanged={handleCollectionChanged}
       />
+
+      <TopicDialog
+        open={topicDialog != null}
+        topic={topicDialog === "new" ? null : topicDialog}
+        topics={topics}
+        onClose={() => setTopicDialog(null)}
+        onSaved={(saved, outcome) => {
+          // A new topic is where the reader goes next: it has no papers until
+          // it is checked, and its own view is where that button is.
+          void handleTopicSaved(saved, outcome).then(
+            () => outcome.created && selectTopic(saved.id)
+          );
+        }}
+      />
+
+      {/* One, for both ways of clearing the viewer cache: the header's warning
+          and the button in Settings ask through the same viewerCache. */}
+      <ClearCacheDialog viewerCache={viewerCache} />
 
       <PromptDialog
         open={namingFolder}

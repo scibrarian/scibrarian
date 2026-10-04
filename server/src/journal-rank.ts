@@ -1,7 +1,7 @@
 import type { CatalogRow } from "./db.js";
 
-// Pure ranking/merging half of the "Auto" journal suggestions (orchestration
-// and fetching live in journal-suggest.ts); kept free of runtime db/network
+// Pure ranking half of the "Auto" journal suggestions (orchestration and
+// fetching live in journal-suggest.ts); kept free of runtime db/network
 // imports so it's testable in isolation, like pubmed-parse.ts.
 
 export interface JournalSuggestion {
@@ -10,7 +10,6 @@ export interface JournalSuggestion {
   abbr: string;
   issn: string;
   metric: number | null; // OpenAlex 2-yr mean citedness, unrounded
-  topics: string[]; // topic names that produced the suggestion
 }
 
 export interface Candidate {
@@ -35,15 +34,11 @@ export function topByCount(nlmIds: string[], limit: number): { nlmId: string; co
 // sinking (mirrors /journals/search), sample volume breaking ties. Without this
 // cut, raw volume would put mega-journals on top of every topic.
 //
-// `exclude` (journals the user already has) is applied *after* the cut, so a
-// topic's top `limit` never shifts: once its picks are added, pressing Auto
-// again contributes nothing for that topic instead of backfilling with the
-// next `limit` journals down the list.
-export function rankCandidates(
-  cands: Candidate[],
-  limit: number,
-  exclude?: ReadonlySet<string>
-): Candidate[] {
+// The cut is the topic's top `limit` whatever it already lists. The dialog
+// drops the ones it has *after* this, so the set never shifts: once a topic's
+// picks are added, pressing Auto again offers nothing rather than backfilling
+// with the next `limit` journals down the list.
+export function rankCandidates(cands: Candidate[], limit: number): Candidate[] {
   return [...cands]
     .sort(
       (a, b) =>
@@ -51,36 +46,17 @@ export function rankCandidates(
         b.count - a.count ||
         a.row.title.localeCompare(b.row.title)
     )
-    .slice(0, limit)
-    .filter((c) => !exclude?.has(c.row.nlm_id));
+    .slice(0, limit);
 }
 
-// Union the per-topic picks, accumulating which topics wanted each journal.
-// Journals wanted by more topics sort first — they're the strongest candidates
-// — then by impact.
-export function mergeTopicPicks(
-  perTopic: { topic: string; picks: Candidate[] }[]
-): JournalSuggestion[] {
-  const merged = new Map<string, JournalSuggestion>();
-  for (const { topic, picks } of perTopic) {
-    for (const { row } of picks) {
-      const existing = merged.get(row.nlm_id);
-      if (existing) existing.topics.push(topic);
-      else
-        merged.set(row.nlm_id, {
-          nlm_id: row.nlm_id,
-          title: row.title,
-          abbr: row.med_abbr || row.iso_abbr,
-          issn: row.issn_print || row.issn_online,
-          metric: row.metric,
-          topics: [topic],
-        });
-    }
-  }
-  return [...merged.values()].sort(
-    (a, b) =>
-      b.topics.length - a.topics.length ||
-      score(b.metric) - score(a.metric) ||
-      a.title.localeCompare(b.title)
-  );
+// A ranked candidate as the API sends it: the catalog row, in the shape the
+// catalog search returns, so the dialog stages either the same way.
+export function toSuggestion({ row }: Candidate): JournalSuggestion {
+  return {
+    nlm_id: row.nlm_id,
+    title: row.title,
+    abbr: row.med_abbr || row.iso_abbr,
+    issn: row.issn_print || row.issn_online,
+    metric: row.metric,
+  };
 }

@@ -5,10 +5,12 @@ import type { BookmarkFolder } from "../types";
 // hand it to the same control, so a paper is saved identically wherever it's
 // shown.
 //
-// A null Bookmarking is how a section opts out: the Library holds papers you
-// already own, not ones you're still deciding about, so the control simply
-// doesn't render there. Interests (save what you find) and Bookmarks (unsave,
-// or file into a second folder) both get one.
+// A null Bookmarking is how a section opts out, and only Interests opts in:
+// that is where a paper is saved, unsaved, or filed into a second folder. The
+// Library holds papers you already own, not ones you're still deciding about.
+// Bookmarks holds the ones you decided on, and what is left to do with those is
+// take them back out — which the folder's table does by tick, the way a
+// collection's does (see PapersTable), rather than through this control.
 export interface Bookmarking {
   folders: BookmarkFolder[];
   // Which folders each paper is saved in, keyed by pmid. App owns this map and

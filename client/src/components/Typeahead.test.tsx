@@ -122,6 +122,24 @@ describe("typed results", () => {
     fireEvent.focus(input());
     expect(options()).toEqual(["Obesity"]);
   });
+
+  it("keep Enter from the form around the box until one of them is chosen", async () => {
+    // Text typed with nothing picked from it is a search half made. Left to
+    // the browser, Enter there submits the form the box sits in: the topic
+    // dialog's, which created the topic without the heading being typed.
+    // jsdom submits no form on a key, so what is pinned is the cause — whether
+    // the key's default was prevented, which fireEvent answers false for.
+    const onSelect = vi.fn();
+    render(<Box search={async () => [B]} onSelect={onSelect} />);
+    fireEvent.focus(input());
+    // Nothing typed: Enter is the form's, as in any other of its fields.
+    expect(fireEvent.keyDown(input(), { key: "Enter" })).toBe(true);
+
+    fireEvent.change(input(), { target: { value: "obes" } });
+    await screen.findByRole("option", { name: "Obesity" });
+    expect(fireEvent.keyDown(input(), { key: "Enter" })).toBe(false);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });
 
 describe("a note with no offers under it", () => {
