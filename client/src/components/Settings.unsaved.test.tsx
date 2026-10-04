@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Settings } from "./Settings";
+import { TopicDialog } from "./TopicDialog";
 import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings, Topic, TopicDetail } from "../types";
 
@@ -10,11 +12,12 @@ afterEach(cleanup);
 // What the Polling & NCBI form keeps while it holds edits not yet saved.
 //
 // The form is saved by its own button, and the Topics panel above it changes
-// things on its own: a topic saved or removed sends the panel back for its
-// list. That used to be the reload the page opens with, which fetches the
+// things on its own: a topic saved or removed changes its list. The panel used
+// to answer that with the reload the page opens with, which fetches the
 // settings as well and put the server's copy back over the form — an address
 // typed and not yet saved was gone, and the button that would have saved it
-// went grey with it.
+// went grey with it. The list is the shell's now, and the panel reads nothing
+// again when it changes.
 //
 // pro={null} so ProPanel never mounts: it fetches on its own and has nothing to
 // do with any of this.
@@ -78,20 +81,44 @@ beforeEach(() => {
 const email = () => screen.getByRole("textbox", { name: "Contact email" }) as HTMLInputElement;
 const saveSettings = () => screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement;
 
+// The topics and the dialog that edits them are the shell's, handed down, so
+// this stands in for the shell: it reads the list as App does, again whenever
+// the panel or the dialog says it changed, and puts the dialog beside the
+// panel. The real dialog rather than a stub, because what these pin is what
+// the form keeps when a topic really is saved or removed.
+function Shell() {
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [editing, setEditing] = useState<Topic | null>(null);
+  const load = () => void api.getTopics().then(setTopics);
+  useEffect(load, []);
+  return (
+    <>
+      <Settings
+        pro={null}
+        viewerCache={NO_CACHE}
+        topics={topics}
+        onAddTopic={() => {}}
+        onEditTopic={setEditing}
+        onDataChanged={load}
+        onPairingChanged={() => {}}
+        onSharingChanged={() => {}}
+        onPapersRemoved={() => {}}
+        onLibraryReset={() => {}}
+      />
+      <TopicDialog
+        open={editing != null}
+        topic={editing}
+        topics={topics}
+        onClose={() => setEditing(null)}
+        onSaved={load}
+      />
+    </>
+  );
+}
+
 // Settings as it opens, with an address typed into the form and not saved.
 async function renderWithAnEdit() {
-  render(
-    <Settings
-      pro={null}
-      viewerCache={NO_CACHE}
-      onDataChanged={() => {}}
-      onPairingChanged={() => {}}
-      onSharingChanged={() => {}}
-      onPapersRemoved={() => {}}
-      onTopicSaved={() => {}}
-      onLibraryReset={() => {}}
-    />
-  );
+  render(<Shell />);
   await screen.findByText("Sleep");
   fireEvent.change(email(), { target: { value: "reader@example.com" } });
   expect(saveSettings().disabled).toBe(false);

@@ -57,9 +57,8 @@ export interface TopicSaveOutcome {
 }
 
 // That outcome as a sentence or two, or null when there is nothing to say.
-// Shared by the two places the dialog is opened from, which show it in the
-// shell's notice: a warning inside a dialog that has just closed is one nobody
-// reads.
+// For the shell's notice, wherever the dialog was opened from: a warning
+// inside a dialog that has just closed is one nobody reads.
 export function describeTopicSave(topic: Topic, outcome: TopicSaveOutcome): string | null {
   const parts: string[] = [];
   if (outcome.removed > 0) {
@@ -101,8 +100,8 @@ export function TopicDialog({
   // the dialog closes.
   onSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
 }) {
-  // The topic this opening is about, kept through the close. Both callers clear
-  // their topic in the same update that closes the dialog, and the dialog stays
+  // The topic this opening is about, kept through the close. The shell clears
+  // its topic in the same update that closes the dialog, and the dialog stays
   // on screen after that for as long as its exit animation runs — as a dialog
   // for no topic, which is the New topic form. Cancel on an edit flashed that
   // form on the way out.

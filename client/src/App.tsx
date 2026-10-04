@@ -106,9 +106,12 @@ export default function App() {
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
-  // The topic dialog as the section bar opens it: closed, creating a topic, or
-  // editing this one. Settings has its own, over its own list.
+  // The topic dialog, the only one: closed, creating a topic, or editing this
+  // one. The section bar opens it, and so does the list in Settings.
   const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
+  // Which of the two opened it. A ref, not state: nothing draws from it, and it
+  // is read once, when a topic is saved (see openTopicDialog).
+  const topicDialogInSettings = useRef(false);
   // "Do I already have this?" lives in the header rather than inside a
   // section: the question arrives from outside the app (an assignment, a
   // reference list someone sent) and has to be askable without first navigating
@@ -436,7 +439,16 @@ export default function App() {
     }
   }
 
-  // A topic was created or edited, in the dialog here or the one in Settings.
+  // Open the topic dialog, from the section bar or from the list in Settings.
+  // Where from decides one thing: a topic made from the section bar is where
+  // the reader goes next, and one made in Settings leaves them at the list it
+  // has just joined, as it did when Settings had a dialog of its own.
+  function openTopicDialog(which: Topic | "new", inSettings = false) {
+    topicDialogInSettings.current = inSettings;
+    setTopicDialog(which);
+  }
+
+  // A topic was created or edited.
   // Its row is stale either way; its papers are stale only if a change of scope
   // took some out, and then only its own feed is — no other topic was touched.
   async function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
@@ -1182,8 +1194,8 @@ export default function App() {
           onSelectCollection={selectCollection}
           onCreateFolder={() => setNamingFolder(true)}
           onCreateCollection={() => setNamingCollection(true)}
-          onAddTopic={() => setTopicDialog("new")}
-          onEditTopic={() => activeTopic && setTopicDialog(activeTopic)}
+          onAddTopic={() => openTopicDialog("new")}
+          onEditTopic={() => activeTopic && openTopicDialog(activeTopic)}
           onShareError={setStatus}
         />
       </div>
@@ -1232,8 +1244,10 @@ export default function App() {
           <Settings
             pro={pro}
             viewerCache={viewerCache}
+            topics={topics}
+            onAddTopic={() => openTopicDialog("new", true)}
+            onEditTopic={(topic) => openTopicDialog(topic, true)}
             onDataChanged={loadTopics}
-            onTopicSaved={handleTopicSaved}
             onPairingChanged={handlePairingChanged}
             onSharingChanged={handleSharingChanged}
             onPapersRemoved={(count) => {
@@ -1379,9 +1393,12 @@ export default function App() {
         onClose={() => setTopicDialog(null)}
         onSaved={(saved, outcome) => {
           // A new topic is where the reader goes next: it has no papers until
-          // it is checked, and its own view is where that button is.
+          // it is checked, and its own view is where that button is. Unless it
+          // was made in Settings — read now, before the wait, while the answer
+          // is still this opening's.
+          const stay = topicDialogInSettings.current;
           void handleTopicSaved(saved, outcome).then(
-            () => outcome.created && selectTopic(saved.id)
+            () => outcome.created && !stay && selectTopic(saved.id)
           );
         }}
       />

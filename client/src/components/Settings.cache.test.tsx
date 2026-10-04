@@ -21,7 +21,6 @@ afterEach(() => {
 // pro={null} so ProPanel never mounts: it fetches on its own and has nothing to
 // do with any of this.
 const api = vi.hoisted(() => ({
-  getTopics: vi.fn(),
   getSettings: vi.fn(),
   cacheStats: vi.fn(),
   clearCache: vi.fn(),
@@ -51,11 +50,13 @@ function Shell() {
       <Settings
         pro={null}
         viewerCache={viewerCache}
+        topics={[]}
+        onAddTopic={() => {}}
+        onEditTopic={() => {}}
         onDataChanged={() => {}}
         onPairingChanged={() => {}}
         onSharingChanged={() => {}}
         onPapersRemoved={() => {}}
-        onTopicSaved={() => {}}
         onLibraryReset={() => {}}
       />
       <ClearCacheDialog viewerCache={viewerCache} />
@@ -64,7 +65,6 @@ function Shell() {
 }
 
 function renderSettings() {
-  api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(DESKTOP);
   return render(<Shell />);
 }

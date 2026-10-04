@@ -553,7 +553,7 @@ describe("editing a topic", () => {
   });
 });
 
-// The dialog on its way out. Both callers clear the topic in the update that
+// The dialog on its way out. The shell clears the topic in the update that
 // closes it, and it stays on screen for its exit after that — as a dialog for
 // no topic, which is the New topic form. Cancel on an edit flashed that form.
 describe("a topic dialog while it closes", () => {
