@@ -44,6 +44,13 @@ export interface TopicPreviewResponse {
   count: number;
 }
 
+// What MEDLINE has to do with a journal, by NLM's list of the ones it has
+// indexed: it indexes the journal now, it used to, or it never has. Only an
+// indexed paper carries MeSH headings, and a topic is MeSH headings — so a
+// 'former' journal adds the papers of the years it was indexed and none after,
+// and a 'never' one adds nothing.
+export type MedlineStatus = "current" | "former" | "never";
+
 // A journal some topic lists (see TopicDetail.journals).
 export interface Journal {
   id: number;
@@ -51,12 +58,17 @@ export interface Journal {
   nlm_id: string | null; // null on rows added before NLM resolution existed
   metric: number | null; // OpenAlex 2-yr mean citedness (from journal_catalog), null when unknown
   created_at: string;
-  // Does NLM currently index this journal for MEDLINE? `false` is the one state
-  // worth surfacing: no MeSH headings, so the journal can never match a topic
-  // and will never contribute a paper to Interests. `null` means nobody has
-  // established it yet (added before the check existed, or NCBI was unreachable)
-  // — not the same as false, and not something to warn about.
+  // Did NLM index this journal for MEDLINE when a topic first listed it? Asked
+  // once, then, and never again. `false` is the state worth surfacing: no new
+  // paper of the journal's will carry MeSH headings or match a topic. `null`
+  // means nobody has established it (NCBI was unreachable) — not the same as
+  // false, and not something to warn about.
   medline_indexed: boolean | null;
+  // What the catalog says of the journal, which is read again each month and
+  // says more than the answer above: whether a journal not indexed now ever
+  // was. Null while the catalog doesn't say, and then medline_indexed is all
+  // there is to go by.
+  medline: MedlineStatus | null;
 }
 
 export interface Article {

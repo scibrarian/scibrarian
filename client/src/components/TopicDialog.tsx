@@ -6,7 +6,13 @@ import { useHeldWhile } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
 import { InfoTip } from "./InfoTip";
-import { JournalPanes, listedFromStored, type ListedJournal } from "./JournalPanes";
+import {
+  JournalPanes,
+  listedFromStored,
+  medlineNote,
+  type ListedJournal,
+  type MedlineNote,
+} from "./JournalPanes";
 import { Typeahead } from "./Typeahead";
 import {
   MAX_TOPIC_HEADINGS,
@@ -52,7 +58,9 @@ export interface TopicSaveOutcome {
   created: boolean;
   // Papers a change of scope took out of the topic's feed.
   removed: number;
-  // Journals just listed that MEDLINE doesn't index, by name.
+  // Journals just listed that MEDLINE doesn't index now, by name: the ones it
+  // used to, and the ones it never has (see medlineNote).
+  lapsed: string[];
   unindexed: string[];
 }
 
@@ -64,15 +72,22 @@ export function describeTopicSave(topic: Topic, outcome: TopicSaveOutcome): stri
   if (outcome.removed > 0) {
     parts.push(`Removed ${plural(outcome.removed, "paper")} from “${topic.name}”.`);
   }
-  // Journals PubMed carries but MEDLINE doesn't index. Topics are MeSH headings
-  // and only MEDLINE-indexed records get them, so these match no topic however
-  // long they are polled. Still worth keeping for a library built by PDF
-  // import, which doesn't go through a topic at all — hence a warning, not a
-  // refusal.
+  // Journals MEDLINE doesn't index now. Topics are MeSH headings and only the
+  // papers MEDLINE indexed carry them, so one it used to index brings in the
+  // papers of those years and nothing after.
+  if (outcome.lapsed.length > 0) {
+    parts.push(
+      `MEDLINE doesn't index ${outcome.lapsed.join(", ")} now. ` +
+        "Papers from the years it did still match, and no new ones will be added."
+    );
+  }
+  // And one it has never indexed matches no topic however long it is polled.
+  // The catalog search leaves these out, so one gets here on a list copied
+  // from another topic.
   if (outcome.unindexed.length > 0) {
     const one = outcome.unindexed.length === 1;
     parts.push(
-      `MEDLINE doesn't index ${outcome.unindexed.join(", ")}. ` +
+      `MEDLINE has never indexed ${outcome.unindexed.join(", ")}. ` +
         `${one ? "Its papers carry" : "Their papers carry"} no MeSH headings, so ` +
         `${one ? "it" : "they"} can't match a topic and won't add anything to Interests.`
     );
@@ -292,12 +307,23 @@ export function TopicDialog({
         );
       }
       // Only the journals this save listed: one already on the topic said its
-      // piece when it was added.
+      // piece when it was added. A save that left the scope alone listed none,
+      // and that is asked outright, not left to `before`: a name can be saved
+      // ahead of the stored list arriving, and with nothing known to be on the
+      // topic already, every journal on it read as just listed.
       const before = new Set((stored?.journals ?? []).map((j) => j.nlm_id));
-      const unindexed = saved.journals
-        .filter((j) => j.medline_indexed === false && !(j.nlm_id && before.has(j.nlm_id)))
-        .map((j) => j.name);
-      onSaved(saved, { created: topic == null, removed, unindexed });
+      const listed =
+        topic == null || rescoped
+          ? saved.journals.filter((j) => !(j.nlm_id && before.has(j.nlm_id)))
+          : [];
+      const named = (note: MedlineNote) =>
+        listed.filter((j) => medlineNote(j) === note).map((j) => j.name);
+      onSaved(saved, {
+        created: topic == null,
+        removed,
+        lapsed: named("lapsed"),
+        unindexed: named("never"),
+      });
       onClose();
     } catch (err) {
       setError(errorMessage(err));

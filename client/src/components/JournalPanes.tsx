@@ -6,7 +6,13 @@ import { useDebounced } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton } from "./Skeleton";
-import type { Journal, JournalSearchResult, MeshDescriptorRef, Topic } from "../types";
+import type {
+  Journal,
+  JournalSearchResult,
+  MedlineStatus,
+  MeshDescriptorRef,
+  Topic,
+} from "../types";
 
 // The transfer list a topic's journals are picked in: left pane is the NLM
 // catalog (search-driven), right pane is the topic's list. It edits a list the
@@ -22,13 +28,21 @@ export interface ListedJournal {
   // this dialog and not yet saved: nothing has asked about it, and "unknown"
   // must not render as "fine".
   medline_indexed: boolean | null;
+  // What the catalog says, which a journal picked here carries from the start.
+  medline: MedlineStatus | null;
 }
 
 // A stored journal as a list entry. Null for one stored without an NLM id,
 // which predates NLM resolution and can't be named in a scope.
 export function listedFromStored(j: Journal): ListedJournal | null {
   if (!j.nlm_id) return null;
-  return { nlm_id: j.nlm_id, name: j.name, metric: j.metric, medline_indexed: j.medline_indexed };
+  return {
+    nlm_id: j.nlm_id,
+    name: j.name,
+    metric: j.metric,
+    medline_indexed: j.medline_indexed,
+    medline: j.medline,
+  };
 }
 
 const listedFromCatalog = (r: JournalSearchResult): ListedJournal => ({
@@ -36,7 +50,31 @@ const listedFromCatalog = (r: JournalSearchResult): ListedJournal => ({
   name: r.abbr || titleCaseJournal(r.title),
   metric: r.metric,
   medline_indexed: null,
+  medline: r.medline,
 });
+
+// What there is to say about a journal and MEDLINE, if anything.
+//
+// "lapsed" is a journal MEDLINE doesn't index now: the papers of the years it
+// did carry MeSH headings and match a topic, and nothing newer will. "never" is
+// one it never has, which adds nothing. They used to be told as one — "can't
+// match any topic" — which was wrong of ten thousand journals whose back
+// catalogue a topic does bring in.
+//
+// The catalog's word where it has one. Where it doesn't, what NLM answered
+// when the journal was listed: not indexed then, and whether it ever was isn't
+// known, so the weaker of the two is said.
+export type MedlineNote = "lapsed" | "never";
+
+export function medlineNote(j: {
+  medline: MedlineStatus | null;
+  medline_indexed: boolean | null;
+}): MedlineNote | null {
+  if (j.medline === "never") return "never";
+  if (j.medline === "former") return "lapsed";
+  if (j.medline === "current") return null;
+  return j.medline_indexed === false ? "lapsed" : null;
+}
 
 const AUTO_HELP =
   "Auto adds the top journals for these headings. The number is OpenAlex 2-yr citations " +
@@ -52,16 +90,33 @@ function metricSort(rows: ListedJournal[]): ListedJournal[] {
   });
 }
 
-// Marks a journal MEDLINE doesn't index. Without it, a journal that can never
-// match a topic is visually identical to one that can.
-function MeshBadge({ name }: { name: string }) {
+// Marks a journal MEDLINE doesn't index now. Without it, a journal that will
+// add no new paper to a topic, or none at all, is visually identical to one
+// that will.
+//
+// One short word for the lapsed kind, with the rest behind a hover. The mark
+// shares a row some 300px wide with the journal's name, and a mark that said
+// it all ("no new papers") left "Arch Intern Med" as "Arch I…". Read aloud it
+// is said in full, a hover being no use to someone who can't see the word.
+function MeshBadge({ name, note }: { name: string; note: MedlineNote }) {
   return (
     <span
       className="mesh-warn"
-      title={`MEDLINE doesn't index ${name}, so its papers carry no MeSH headings and it can't match any topic.`}
+      title={
+        note === "never"
+          ? `MEDLINE has never indexed ${name}, so its papers carry no MeSH headings and it can't match any topic.`
+          : `Older papers only. MEDLINE doesn't index ${name} now: papers from the years it did still match a topic, and no new ones will be added.`
+      }
     >
       <TriangleAlert size={11} aria-hidden />
-      no MeSH
+      {note === "never" ? (
+        "no MeSH"
+      ) : (
+        <>
+          <span aria-hidden="true">old</span>
+          <span className="sr-only">older papers only</span>
+        </>
+      )}
     </span>
   );
 }
@@ -98,6 +153,8 @@ export function JournalPanes({
   const [leftFilter, setLeftFilter] = useState("");
   const [rightFilter, setRightFilter] = useState("");
   const [searchResults, setSearchResults] = useState<JournalSearchResult[]>([]);
+  // How many journals the search matched and didn't return (see leftEmpty).
+  const [neverIndexed, setNeverIndexed] = useState(0);
   const [searchLoading, setSearchLoading] = useState(false);
   const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
   const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
@@ -132,15 +189,21 @@ export function JournalPanes({
   useEffect(() => {
     if (query.length < 2) {
       setSearchResults([]);
+      setNeverIndexed(0);
       setSearchLoading(false);
       return;
     }
     let active = true;
     setSearchLoading(true);
+    const answered = (results: JournalSearchResult[], left: number) => {
+      if (!active) return;
+      setSearchResults(results);
+      setNeverIndexed(left);
+    };
     api
       .searchJournals(query, 30)
-      .then((r) => active && setSearchResults(r.results))
-      .catch(() => active && setSearchResults([]))
+      .then((r) => answered(r.results, r.neverIndexed))
+      .catch(() => answered([], 0))
       .finally(() => active && setSearchLoading(false));
     return () => {
       active = false;
@@ -166,7 +229,14 @@ export function JournalPanes({
   const lq = leftFilter.trim().toLowerCase();
   const dropped: JournalSearchResult[] = original
     .filter((j) => !listed.has(j.nlm_id) && (!searching || j.name.toLowerCase().includes(lq)))
-    .map((j) => ({ nlm_id: j.nlm_id, title: j.name, abbr: j.name, issn: "", metric: j.metric }));
+    .map((j) => ({
+      nlm_id: j.nlm_id,
+      title: j.name,
+      abbr: j.name,
+      issn: "",
+      metric: j.metric,
+      medline: j.medline,
+    }));
   const droppedIds = new Set(dropped.map((r) => r.nlm_id));
 
   // Search results keep the server's relevance-aware order (metric-desc with
@@ -275,7 +345,7 @@ export function JournalPanes({
     selected,
     onToggle,
     isNew = false,
-    warn = false,
+    note = null,
   }: {
     key: string;
     name: string;
@@ -283,7 +353,7 @@ export function JournalPanes({
     selected: boolean;
     onToggle: () => void;
     isNew?: boolean;
-    warn?: boolean;
+    note?: MedlineNote | null;
   }) {
     return (
       <li key={key} className="jm-row" title={name}>
@@ -291,7 +361,7 @@ export function JournalPanes({
           <input type="checkbox" checked={selected} onChange={onToggle} />
           <span className="filter-option-name">{name}</span>
           {isNew && <span className="jm-new">new</span>}
-          {warn && <MeshBadge name={name} />}
+          {note && <MeshBadge name={name} note={note} />}
           {metric != null && (
             <span
               className={`ta-metric${metric === 0 ? " zero" : ""}`}
@@ -305,6 +375,9 @@ export function JournalPanes({
     );
   }
 
+  // The catalog search leaves out the journals MEDLINE has never indexed. When
+  // they are all a search matched, "No matches." would read as a catalog that
+  // doesn't know a journal the reader can name — a preprint server, say.
   const leftEmpty =
     leftRows.length > 0
       ? null
@@ -312,9 +385,13 @@ export function JournalPanes({
         ? "Type to search the NLM catalog (e.g. lancet, n engl j med)…"
         : awaiting
           ? "Searching…"
-          : searchResults.length === 0
-            ? "No matches."
-            : "All matches already on the list.";
+          : searchResults.length > 0
+            ? "All matches already on the list."
+            : neverIndexed > 0
+              ? neverIndexed === 1
+                ? "1 journal matches, but MEDLINE has never indexed it, so it can't add papers to a topic."
+                : `${neverIndexed} journals match, but MEDLINE has never indexed them, so they can't add papers to a topic.`
+              : "No matches.";
 
   return (
     <div
@@ -380,6 +457,9 @@ export function JournalPanes({
                 metric: r.metric,
                 selected: leftSelected.has(r.nlm_id),
                 onToggle: () => setLeftSelected(toggled(leftSelected, r.nlm_id)),
+                // Said before the journal is listed, where it used to be found
+                // out from the notice after the save.
+                note: medlineNote(entryFor(r)),
               })
             )}
             {leftEmpty && <li className="muted jm-empty">{leftEmpty}</li>}
@@ -428,7 +508,7 @@ export function JournalPanes({
                 selected: rightSelected.has(j.nlm_id),
                 onToggle: () => setRightSelected(toggled(rightSelected, j.nlm_id)),
                 isNew: !stored.has(j.nlm_id),
-                warn: j.medline_indexed === false,
+                note: medlineNote(j),
               })
             )}
             {!loading && rightRows.length === 0 && (

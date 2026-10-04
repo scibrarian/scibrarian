@@ -24,6 +24,7 @@ export type {
   LibraryStats,
   LinkAnswer,
   LinkedPaper,
+  MedlineStatus,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,

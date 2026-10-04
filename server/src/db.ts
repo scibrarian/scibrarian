@@ -26,6 +26,7 @@ import type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  MedlineStatus,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
@@ -251,6 +252,15 @@ db.exec(`
   -- journal-catalog.ts); journal_catalog_loaded_at (in settings) tracks the
   -- last load. metric = OpenAlex 2yr mean citedness, fetched + cached lazily
   -- and preserved across catalog refreshes.
+  --
+  -- medline: what MEDLINE has to do with the journal, which J_Medline.txt
+  -- doesn't say. 'current' — NLM indexes it now. 'former' — it did once, so the
+  -- papers from those years carry MeSH headings and match a topic, and no new
+  -- one will. 'never' — none of its papers carry any, and it can add nothing
+  -- to a topic, so the picker leaves it out (searchCatalog). NULL until NLM's
+  -- list of the journals it has indexed has been read (setCatalogIndexing),
+  -- which is "not known yet" and not 'never'. Kept across catalog refreshes,
+  -- as metric is.
   CREATE TABLE IF NOT EXISTS journal_catalog (
     nlm_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -259,7 +269,8 @@ db.exec(`
     issn_print TEXT NOT NULL DEFAULT '',
     issn_online TEXT NOT NULL DEFAULT '',
     metric REAL,
-    metric_fetched_at TEXT
+    metric_fetched_at TEXT,
+    medline TEXT
   );
 
   -- Reference list of MeSH descriptors (from NLM's yearly desc<year>.xml) for
@@ -829,8 +840,10 @@ export function setLastPollAttemptAt(iso: string): void {
 // ---------- journals ----------
 
 // Journal rows carry the catalog's metric (when the nlm_id matches a catalog
-// entry whose metric has been fetched) so the client can sort by impact.
-const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, j.medline_indexed, c.metric
+// entry whose metric has been fetched) so the client can sort by impact, and
+// what the catalog says MEDLINE has to do with the journal, which tells one
+// it used to index from one it never has (see Journal.medline).
+const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, j.medline_indexed, c.metric, c.medline
    FROM journals j LEFT JOIN journal_catalog c ON c.nlm_id = j.nlm_id`;
 
 // SQLite has no boolean type, so medline_indexed round-trips as 1/0/NULL. The
@@ -2673,9 +2686,11 @@ export interface CatalogRow {
   issn_online: string;
   metric: number | null;
   metric_fetched_at: string | null;
+  // Null until NLM's list of indexed journals has been read: not known yet.
+  medline: MedlineStatus | null;
 }
 
-export type CatalogSeed = Omit<CatalogRow, "metric" | "metric_fetched_at">;
+export type CatalogSeed = Omit<CatalogRow, "metric" | "metric_fetched_at" | "medline">;
 
 export function journalCatalogCount(): number {
   return (db.prepare("SELECT COUNT(*) AS c FROM journal_catalog").get() as { c: number }).c;
@@ -2684,6 +2699,7 @@ export function journalCatalogCount(): number {
 // Refreshes must update identity columns in place (NLM revises titles,
 // abbreviations and ISSNs) while leaving metric/metric_fetched_at alone — the
 // OpenAlex cache lives in the same table and must survive a catalog refresh.
+// medline is left alone for the same reason, and is NULL on a row that is new.
 // Rows missing from a newer J_Medline are kept rather than deleted: stale
 // extras are harmless to autocomplete, and never deleting means a truncated
 // download can't hollow out the catalog.
@@ -2712,7 +2728,39 @@ export function getCatalogLoadedAt(): string {
   return row?.value ?? "";
 }
 
+// What MEDLINE has to do with every journal in the catalog, from NLM's list of
+// the ones it has ever indexed: `indexed` is that list by NLM id, true for a
+// journal indexed now. Each row on it becomes 'current' or 'former', and every
+// other row 'never'.
+//
+// The whole list or none of it. A journal missing from a partial list would be
+// marked 'never' and dropped from the picker, so the caller hands over a
+// complete one (fetchMedlineIndexing throws on a short one) and the marking is
+// one transaction, stamped inside it as a catalog load is.
+export const setCatalogIndexing = transaction((indexed: Map<string, boolean>) => {
+  db.exec("UPDATE journal_catalog SET medline = 'never'");
+  const mark = db.prepare("UPDATE journal_catalog SET medline = ? WHERE nlm_id = ?");
+  for (const [nlmId, current] of indexed) mark.run(current ? "current" : "former", nlmId);
+  setSettingStmt.run("journal_indexing_loaded_at", new Date().toISOString());
+});
+
+// When NLM's list of indexed journals was last read (ISO timestamp; "" before
+// the first time). Importer-managed, like the catalog's own.
+export function getIndexingLoadedAt(): string {
+  const row = getSettingStmt.get("journal_indexing_loaded_at") as { value: string } | undefined;
+  return row?.value ?? "";
+}
+
+const CATALOG_NAME_MATCH =
+  "(title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' OR iso_abbr LIKE ? ESCAPE '\\')";
+
 // Autocomplete: match title/abbreviation, prefix matches first, then shortest title.
+//
+// Without the journals MEDLINE has never indexed. This is what a topic's
+// journals are picked from, a topic is MeSH headings, and none of their papers
+// carry one: listed, they are polled for as long as the topic lasts and add
+// nothing. They are over half the catalog, and crowded the ones worth listing
+// out of the pool the caller ranks. A row not marked yet is kept.
 export function searchCatalog(q: string, limit = 10): CatalogRow[] {
   const esc = escapeLike(q);
   const like = `%${esc}%`;
@@ -2720,11 +2768,24 @@ export function searchCatalog(q: string, limit = 10): CatalogRow[] {
   return db
     .prepare(
       `SELECT * FROM journal_catalog
-       WHERE title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' OR iso_abbr LIKE ? ESCAPE '\\'
+       WHERE ${CATALOG_NAME_MATCH} AND medline IS NOT 'never'
        ORDER BY CASE WHEN title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, length(title)
        LIMIT ?`
     )
     .all(like, like, like, prefix, prefix, limit) as unknown as CatalogRow[];
+}
+
+// How many journals the same search matches and searchCatalog leaves out, so
+// the picker can say why a journal somebody knows the name of isn't offered.
+export function countNeverIndexedMatches(q: string): number {
+  const like = `%${escapeLike(q)}%`;
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM journal_catalog WHERE ${CATALOG_NAME_MATCH} AND medline = 'never'`
+      )
+      .get(like, like, like) as { c: number }
+  ).c;
 }
 
 export function findCatalogByNlmId(nlmId: string): CatalogRow | undefined {

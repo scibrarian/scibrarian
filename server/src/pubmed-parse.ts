@@ -157,6 +157,26 @@ export function parseJournalIds(body: unknown): string[] {
   return out;
 }
 
+// One page of NLM Catalog summaries, as the journals on it: each one's NLM id,
+// and whether NLM indexes it for MEDLINE now (`currentindexingstatus`, "Y" or
+// "N"). The NLM id comes from the summary because the catalog's own record
+// ids are not it — the Lancet is 2985213R, and record 446079. Error stubs and
+// docs without an id are skipped, which the caller notices as a short count.
+export function parseIndexingPage(body: unknown): { nlmId: string; current: boolean }[] {
+  type Doc = { error?: string; nlmuniqueid?: string; currentindexingstatus?: string };
+  const result = (body as { result?: Record<string, Doc | string[]> })?.result;
+  if (!result) return [];
+  const uids = Array.isArray(result.uids) ? result.uids : [];
+  const out: { nlmId: string; current: boolean }[] = [];
+  for (const uid of uids) {
+    const doc = result[uid];
+    if (!doc || Array.isArray(doc) || typeof doc !== "object") continue;
+    if (doc.error || !doc.nlmuniqueid) continue;
+    out.push({ nlmId: doc.nlmuniqueid, current: doc.currentindexingstatus === "Y" });
+  }
+  return out;
+}
+
 // ---------- efetch (abstract + journal identity + MeSH filing) ----------
 
 export interface ArticleXml {

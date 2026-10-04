@@ -16,6 +16,7 @@ import {
   createCollection,
   countTopicArticles,
   createTopic,
+  countNeverIndexedMatches,
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
@@ -747,7 +748,11 @@ api.get(
         abbr: r.med_abbr || r.iso_abbr,
         issn: r.issn_print || r.issn_online,
         metric: round1(r.metric),
+        medline: r.medline,
       })),
+      // The journals this matched and left out (see searchCatalog), for the
+      // pane to say so where it would have said nothing matched.
+      neverIndexed: countNeverIndexedMatches(q),
     });
   })
 );

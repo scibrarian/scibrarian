@@ -6,6 +6,7 @@ import {
   MESH_STATUS_UNAVAILABLE,
   meshOutlook,
   ncbiErrorFromBody,
+  parseIndexingPage,
   parseJournalIds,
   parsePubDate,
   parseSummaries,
@@ -330,6 +331,39 @@ describe("parseJournalIds", () => {
     expect(parseJournalIds({})).toEqual([]);
     expect(parseJournalIds(null)).toEqual([]);
     expect(parseJournalIds({ result: {} })).toEqual([]);
+  });
+});
+
+describe("parseIndexingPage", () => {
+  // An NLM Catalog page as esummary returns it: the Lancet, indexed now, under
+  // a record id that isn't its NLM id; Arch Intern Med, which ceased in 2012;
+  // an error stub; and a record with no NLM id.
+  const body = {
+    result: {
+      uids: ["446079", "372440", "7", "8"],
+      "446079": { uid: "446079", nlmuniqueid: "2985213R", currentindexingstatus: "Y" },
+      "372440": { uid: "372440", nlmuniqueid: "0372440", currentindexingstatus: "N" },
+      "7": { uid: "7", error: "cannot get document summary" },
+      "8": { uid: "8", currentindexingstatus: "Y" },
+    },
+  };
+
+  it("names each journal by its NLM id, and says whether it is indexed now", () => {
+    expect(parseIndexingPage(body)).toEqual([
+      { nlmId: "2985213R", current: true },
+      { nlmId: "0372440", current: false },
+    ]);
+  });
+
+  it("takes a journal with no status given as one not indexed now", () => {
+    const bare = { result: { uids: ["1"], "1": { uid: "1", nlmuniqueid: "0000001" } } };
+    expect(parseIndexingPage(bare)).toEqual([{ nlmId: "0000001", current: false }]);
+  });
+
+  it("returns empty for bodies without a result or uids", () => {
+    expect(parseIndexingPage({})).toEqual([]);
+    expect(parseIndexingPage(null)).toEqual([]);
+    expect(parseIndexingPage({ result: {} })).toEqual([]);
   });
 });
 

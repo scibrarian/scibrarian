@@ -1,20 +1,23 @@
 import {
   bulkUpsertCatalog,
   getCatalogLoadedAt,
+  getIndexingLoadedAt,
   getSetting,
   journalCatalogCount,
+  setCatalogIndexing,
   setCatalogMetric,
   type CatalogRow,
   type CatalogSeed,
 } from "./db.js";
 import { DOWNLOAD_TIMEOUT_MS, fetchWithTimeout } from "./http.js";
+import { fetchMedlineIndexing } from "./pubmed.js";
 import { errMessage } from "./util.js";
 
 // NLM's authoritative journals list (full title, MEDLINE abbreviation, ISSNs).
 // Despite the name this is every journal PubMed knows (~38k, preprint servers
 // and PMC-only titles included), not the ~5.2k currently indexed for MEDLINE —
 // so presence here says a journal exists, never that its papers carry MeSH
-// headings. `isMedlineIndexed` (pubmed.ts) answers that, and has to ask NLM.
+// headings. That is a second list, read after this one (loadIndexing below).
 const J_MEDLINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/J_Medline.txt";
 // OpenAlex journal-level metrics (open, CC0). We use 2-yr mean citedness.
 const OPENALEX = "https://api.openalex.org/sources";
@@ -62,6 +65,10 @@ function startLoad(): Promise<void> {
       const rows = parseJMedline(await res.text());
       bulkUpsertCatalog(rows);
       console.log(`[journals] catalog loaded: ${rows.length} journals`);
+      // After the catalog and not part of loading it: a search waits on this
+      // promise when the catalog is empty, and shouldn't wait out a second
+      // list it can do without.
+      void loadIndexing();
     } catch (err) {
       console.warn("[journals] catalog load failed:", errMessage(err));
     } finally {
@@ -69,6 +76,40 @@ function startLoad(): Promise<void> {
     }
   })();
   return loading;
+}
+
+// ---------- which of them MEDLINE indexes ----------
+
+let indexing: Promise<void> | null = null;
+
+// Mark every catalog row with what MEDLINE has to do with it, from NLM's list
+// of the journals it has ever indexed (fetchMedlineIndexing). Read with each
+// catalog load, since rows new to the catalog arrive unmarked and NLM takes
+// journals on and drops them between loads.
+//
+// A failure is not fatal and marks nothing: rows keep what they had, the
+// picker goes on offering the ones not marked yet, and the next startup or
+// daily tick tries again, because nothing was stamped.
+function loadIndexing(): Promise<void> {
+  if (indexing) return indexing;
+  indexing = (async () => {
+    try {
+      console.log("[journals] reading NLM's list of MEDLINE journals…");
+      const indexed = await fetchMedlineIndexing();
+      setCatalogIndexing(indexed);
+      console.log(`[journals] MEDLINE indexing loaded: ${indexed.size} journals indexed now or once`);
+    } catch (err) {
+      console.warn("[journals] MEDLINE indexing load failed:", errMessage(err));
+    } finally {
+      indexing = null;
+    }
+  })();
+  return indexing;
+}
+
+function withinTtl(iso: string): boolean {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) && Date.now() - ms < CATALOG_TTL_DAYS * 86_400_000;
 }
 
 // Populate the catalog from NLM on first use. Safe to call repeatedly and
@@ -85,11 +126,13 @@ export function ensureCatalogLoaded(): Promise<void> {
 // older than CATALOG_TTL_DAYS, upserting in place so cached OpenAlex metrics
 // survive (see bulkUpsertCatalog). A failed refresh leaves the current catalog
 // serving; the next startup or daily tick retries.
+//
+// A fresh catalog can still be missing its indexing — that list is a second
+// download, and fails on its own — so it is asked about separately.
 export function refreshCatalogIfStale(): Promise<void> {
-  const loadedMs = Date.parse(getCatalogLoadedAt());
-  const fresh =
-    Number.isFinite(loadedMs) && Date.now() - loadedMs < CATALOG_TTL_DAYS * 86_400_000;
-  if (fresh && journalCatalogCount() > 0) return Promise.resolve();
+  if (withinTtl(getCatalogLoadedAt()) && journalCatalogCount() > 0) {
+    return withinTtl(getIndexingLoadedAt()) ? Promise.resolve() : loadIndexing();
+  }
   return startLoad();
 }
 

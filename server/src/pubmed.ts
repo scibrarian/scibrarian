@@ -5,6 +5,7 @@ import {
   esearchError,
   ncbiErrorFromBody,
   parseArticleSet,
+  parseIndexingPage,
   parseJournalIds,
   parseSummaries,
 } from "./pubmed-parse.js";
@@ -434,5 +435,58 @@ export async function isMedlineIndexed(nlmId: string): Promise<boolean | null> {
     console.warn(`[pubmed] MEDLINE indexing check failed for ${nlmId}: ${errMessage(err)}`);
     return null;
   }
+}
+
+// Summaries per request: esummary's ceiling for JSON.
+const INDEXING_PAGE = 500;
+
+// Every journal NLM has ever indexed for MEDLINE, by NLM id: true for one it
+// indexes now, false for one it used to. A journal absent from this has never
+// been indexed, which is what the catalog search goes by (searchCatalog).
+//
+// The answer isMedlineIndexed gives for one journal, for all of them at once:
+// the picker ranks fifty candidates a keystroke and can't ask about each. The
+// NLM Catalog's `reportedmedline` filter is the list — about 15,500 journals,
+// of which `currentlyindexed` is 5,200 — held on the History server and read
+// back as summaries a page at a time, some thirty requests in all.
+//
+// Throws rather than return part of the list: every journal missing from it
+// would be taken for one MEDLINE never indexed.
+export async function fetchMedlineIndexing(): Promise<Map<string, boolean>> {
+  const search = await eutilsJson<{
+    esearchresult?: { count?: string; webenv?: string; querykey?: string };
+  }>(
+    "esearch.fcgi",
+    new URLSearchParams({
+      db: "nlmcatalog",
+      retmode: "json",
+      retmax: "0",
+      usehistory: "y",
+      term: "reportedmedline",
+    })
+  );
+  const { count, webenv, querykey } = search.esearchresult ?? {};
+  const total = Number(count);
+  if (!webenv || !querykey || !Number.isFinite(total) || total <= 0) {
+    throw safeError("NLM's list of MEDLINE journals came back empty.");
+  }
+  const indexed = new Map<string, boolean>();
+  for (let start = 0; start < total; start += INDEXING_PAGE) {
+    const params = new URLSearchParams({
+      db: "nlmcatalog",
+      retmode: "json",
+      query_key: querykey,
+      WebEnv: webenv,
+      retstart: String(start),
+      retmax: String(INDEXING_PAGE),
+    });
+    for (const j of parseIndexingPage(await eutilsJson("esummary.fcgi", params))) {
+      indexed.set(j.nlmId, j.current);
+    }
+  }
+  if (indexed.size < total) {
+    throw safeError(`NLM's list of MEDLINE journals came back short: ${indexed.size} of ${total}.`);
+  }
+  return indexed;
 }
 
