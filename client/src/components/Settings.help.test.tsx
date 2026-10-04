@@ -20,7 +20,6 @@ afterEach(cleanup);
 // pro={null} so ProPanel never mounts: it fetches on its own and has nothing to
 // do with any of this.
 const api = vi.hoisted(() => ({
-  getTopics: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -51,7 +50,6 @@ const NO_CACHE: ViewerCache = {
 };
 
 async function renderSettings(settings: AppSettings = SHARED) {
-  api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(settings);
   api.updateSettings.mockReset();
   api.updateSettings.mockImplementation(async (patch: Partial<AppSettings>) => ({ ...settings, ...patch }));
@@ -59,11 +57,14 @@ async function renderSettings(settings: AppSettings = SHARED) {
     <Settings
       pro={null}
       viewerCache={NO_CACHE}
+      topics={[]}
+      topicsError={null}
+      onAddTopic={() => {}}
+      onEditTopic={() => {}}
       onDataChanged={() => {}}
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}
       onPapersRemoved={() => {}}
-      onTopicSaved={() => {}}
       onLibraryReset={() => {}}
     />
   );

@@ -16,9 +16,11 @@ import {
   createCollection,
   countTopicArticles,
   createTopic,
+  countNeverIndexedMatches,
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
+  dropUnheldArticles,
   removeCollectionPapers,
   removeTopicWithArticles,
   renameTopic,
@@ -114,6 +116,7 @@ import {
   isValidCron,
   nothingToPoll,
   pollAll,
+  pollRunning,
   pollTopic,
   rescheduleFromSettings,
   warmCitations,
@@ -330,6 +333,49 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
   return true;
 }
 
+// ---------- papers nothing holds ----------
+
+// Requests here that have found a paper stored and have yet to attach what it
+// is stored for: pasted links, which read which of their papers the library
+// has, wait on PubMed for the rest, and bookmark them all after the wait. A
+// count for the reason transfersInFlight is one (pro-storage.ts): two can be
+// out at once.
+let attaching = 0;
+
+async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
+  attaching++;
+  try {
+    return await work();
+  } finally {
+    attaching--;
+  }
+}
+
+// Delete the papers nothing holds any longer, after a removal that may have let
+// go of some. dropUnheldArticles says why this is not part of the removal: a
+// paper is stored before what it is stored for is attached to it, and one swept
+// in between leaves a file matched to a paper that isn't there.
+//
+// So it is skipped, not waited for, while anything is part way through that: an
+// import, a copy arriving from another library, a poll, or one of the requests
+// counted above. Nothing is lost by a skip. The sweep is of the whole library,
+// so the next removal to find the server idle takes what this one left, and a
+// start takes the rest.
+//
+// A removal that says how much it took doesn't call this when it took nothing:
+// the sweep reads every stored paper, and there is nothing new for it to find.
+//
+// It can't fail the removal it follows: that has happened, and what a failed
+// sweep leaves behind is rows nobody can see.
+function sweepUnheld(): void {
+  if (attaching > 0 || anyImportRunning() || anyTransferInFlight() || pollRunning()) return;
+  try {
+    dropUnheldArticles();
+  } catch (err) {
+    console.warn(`[routes] sweeping papers nothing holds failed: ${errMessage(err)}`);
+  }
+}
+
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
 // need minted links (token mode) or open directly (tokenless single-user or
 // an open library).
@@ -469,13 +515,6 @@ async function resolveScope(body: unknown): Promise<{ scope: TopicScope } | Refu
   return { scope: { allPubmed: false, journals } };
 }
 
-// A journal's name is unique in `journals`, and two catalog entries can share
-// one. The index is the arbiter; this turns its error into something sayable
-// (see rethrowUnlessUnique).
-function rethrowUnlessJournalNameClash(err: unknown, res: Response): void {
-  rethrowUnlessUnique(err, res, "Two of those journals go by the same name. Remove one of them.");
-}
-
 const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, journals: topicJournals(id) });
 
 // badName for a topic, with the longer cap a topic's name gets (see
@@ -514,12 +553,8 @@ api.post(
     const scoped = await resolveScope(req.body);
     if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
     if (taken()) return;
-    try {
-      const topic = createTopic(name, term, headings, scoped.scope);
-      res.status(201).json(topicDetail(topic.id));
-    } catch (err) {
-      rethrowUnlessJournalNameClash(err, res);
-    }
+    const topic = createTopic(name, term, headings, scoped.scope);
+    res.status(201).json(topicDetail(topic.id));
   })
 );
 
@@ -599,6 +634,19 @@ api.patch(
 
     let removed: JournalRemovalResult = { deletedArticles: 0, removedFromInterests: 0 };
     if (req.body?.allPubmed !== undefined || req.body?.journals !== undefined) {
+      // A scope is replaced whole, so half of one is refused rather than
+      // completed: a list with no `journals` would resolve to an empty one and
+      // take every paper out of the topic, with no count shown ahead of it. An
+      // empty list is still there to be asked for, by name.
+      //
+      // A list, and nothing that could pass for one left out: a client that
+      // writes a list it doesn't have as null, or as "", was completed the same
+      // way, which a test for `undefined` let through.
+      if (req.body.allPubmed !== true && !Array.isArray(req.body.journals)) {
+        return res
+          .status(400)
+          .json({ error: "'journals' must be an array unless 'allPubmed' is true." });
+      }
       const scoped = await resolveScope(req.body);
       if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
       // Asked again, as POST /topics asks twice: resolving the journals can
@@ -607,17 +655,13 @@ api.patch(
       // leaves the scope unchanged too; nothing from here to the rename waits
       // on anything outside this process.
       if (renaming && nameTaken(res, "topic", topicByName(name), id)) return;
-      try {
-        const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
-        if (result === null) {
-          return res
-            .status(409)
-            .json({ error: "A check for new papers is running. Try again in a moment." });
-        }
-        removed = result;
-      } catch (err) {
-        return rethrowUnlessJournalNameClash(err, res);
+      const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
+      if (result === null) {
+        return res
+          .status(409)
+          .json({ error: "A check for new papers is running. Try again in a moment." });
       }
+      removed = result;
     }
     // Last, so a scope that was refused doesn't leave the topic renamed.
     if (renaming) renameTopic(id, name);
@@ -708,7 +752,11 @@ api.get(
         abbr: r.med_abbr || r.iso_abbr,
         issn: r.issn_print || r.issn_online,
         metric: round1(r.metric),
+        medline: r.medline,
       })),
+      // The journals this matched and left out (see searchCatalog), for the
+      // pane to say so where it would have said nothing matched.
+      neverIndexed: countNeverIndexedMatches(q),
     });
   })
 );
@@ -1036,18 +1084,11 @@ function nameTaken(
 
 // The lookup above and the write below aren't atomic, so two same-name requests
 // can both pass the check. The unique index is the real arbiter; translate its
-// error into the same 409 the check would have sent.
-function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
-  rethrowUnlessUnique(err, res, `That ${label} name is already taken.`);
-}
-
-// A unique index's refusal as the 409 it stands for, saying `error`. One
-// reading of what such a refusal looks like, for the section names above and
-// for a topic's journals (rethrowUnlessJournalNameClash). Anything else is the
+// error into the same 409 the check would have sent. Anything else is the
 // error middleware's to log and answer.
-function rethrowUnlessUnique(err: unknown, res: Response, error: string): void {
+function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
   if (!/UNIQUE/i.test(errMessage(err))) throw err;
-  res.status(409).json({ error });
+  res.status(409).json({ error: `That ${label} name is already taken.` });
 }
 
 // ---------- bookmark folders (saved papers) ----------
@@ -1086,9 +1127,11 @@ api.put("/bookmark-folders/:id", (req, res) => {
 });
 
 api.delete("/bookmark-folders/:id", (req, res) => {
-  // The folder's bookmark rows cascade; the papers they pointed at stay.
+  // The folder's bookmark rows cascade; the papers they pointed at stay, but
+  // for the ones nothing else holds, which the sweep takes.
   deleteBookmarkFolder(Number(req.params.id));
   res.status(204).end();
+  sweepUnheld();
 });
 
 // Every (folder, paper) pair in one payload. Deliberately not folded into
@@ -1159,7 +1202,9 @@ api.post(
     }
     if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
     const batch = lines.slice(0, MAX_LINKS_PER_REQUEST);
-    const results = await addLinksToFolder(id, batch);
+    // Counted as attaching: it reads which of the papers are stored, waits on
+    // PubMed for the rest, and bookmarks the stored ones after the wait.
+    const results = await whileAttaching(() => addLinksToFolder(id, batch));
     if (!results) {
       return res.status(404).json({ error: "This folder was deleted while the links were being looked up." });
     }
@@ -1168,6 +1213,9 @@ api.post(
   })
 );
 
+// No sweep after this one. It is the toggle in Interests, pressed a paper at a
+// time, and a paper listed there is in a topic's feed: taking it off a folder
+// leaves it held.
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
   removeBookmark(Number(req.params.id), String(req.params.pmid));
   res.status(204).end();
@@ -1190,7 +1238,9 @@ api.post("/bookmark-folders/:id/papers/remove", (req, res) => {
     return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
   }
   const pmids = raw.map((p) => String(p).trim()).filter(Boolean);
-  res.json({ removed: removeBookmarks(id, pmids) });
+  const removed = removeBookmarks(id, pmids);
+  res.json({ removed });
+  if (removed > 0) sweepUnheld();
 });
 
 // ---------- collections (uploaded PDF libraries) ----------
@@ -1271,6 +1321,7 @@ api.delete(
     deleteCollection(Number(req.params.id));
     await discardOrphanedCheckouts();
     res.status(204).end();
+    sweepUnheld();
   })
 );
 
@@ -1512,13 +1563,18 @@ api.post(
     if (articles.length === 0) {
       return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
     }
+    // Stored and matched with nothing awaited in between, so there is no instant
+    // at which the paper is stored and the file doesn't hold it yet, for the
+    // sweep of papers nothing holds to take it in. Its citation counts follow.
     upsertArticles(articles);
-    await warmCitations([pmid], "manual match");
     setFileMatched(fileId, pmid, "manual");
+    await warmCitations([pmid], "manual match");
     // Return the same shape as the files list (content_hash stripped, exists
     // added), not the raw row. getCollectionFile can't be missing here — the
     // row was verified above and setFileMatched only updates it.
     res.json(apiFile(getCollectionFile(fileId)!));
+    // For the paper the file was matched to before, if this was a second match.
+    if (file.pmid && file.pmid !== pmid) sweepUnheld();
   })
 );
 
@@ -1530,6 +1586,7 @@ api.delete(
     deleteCollectionFile(Number(req.params.fileId));
     await discardOrphanedCheckouts();
     res.status(204).end();
+    sweepUnheld();
   })
 );
 
@@ -1565,6 +1622,7 @@ api.post(
     const removal = removeCollectionPapers(id, pmids);
     await discardOrphanedCheckouts();
     res.json(removal);
+    if (removal.removed > 0) sweepUnheld();
   })
 );
 

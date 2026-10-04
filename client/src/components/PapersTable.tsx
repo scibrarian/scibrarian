@@ -14,7 +14,7 @@ import {
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
-import { ConfirmDialog, FOLDER_ONLY_NOTE, STORED_COPIES_NOTE } from "./Dialogs";
+import { ConfirmDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import { NewFolderDialog } from "./FolderMenu";
 import { useFacetHold, useMeshFacets } from "./MeshFilter";
 import { PaperFilters } from "./PaperFilters";
@@ -653,11 +653,17 @@ export function PapersTable({
           themselves are articles rows the whole app shares — a topic feed may
           have put them there, and another collection may hold its own copy — so
           "delete this paper" would promise something this does not do. A
-          folder's side of it is smaller still: the entry on its list. */}
+          folder's side of it is smaller still: the entry on its list, which the
+          title says, with no line under it. It used to add that the papers stay
+          in the app. One that only this entry held does not: the sweep that
+          follows the removal deletes it (see dropUnheldArticles in db.ts), and
+          how a paper is stored is not the reader's to weigh. */}
       <ConfirmDialog
         open={confirmingRemove}
-        title={`Remove ${onScreen.size} paper${onScreen.size === 1 ? "" : "s"}?`}
-        message={removeFrom?.place === "folder" ? FOLDER_ONLY_NOTE : STORED_COPIES_NOTE}
+        title={`Remove ${onScreen.size} paper${onScreen.size === 1 ? "" : "s"}${
+          removeFrom?.place === "folder" ? " from this folder" : ""
+        }?`}
+        message={removeFrom?.place === "folder" ? undefined : STORED_COPIES_NOTE}
         confirmLabel="Remove"
         danger
         onConfirm={() => void removeSelected()}

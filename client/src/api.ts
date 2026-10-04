@@ -169,7 +169,12 @@ export const api = {
     ),
   // A topic's name, where it searches, or both — whichever the change names.
   // A change of scope can take papers out of the topic, which `removed` counts.
-  updateTopic: (id: number, change: { name?: string } & Partial<TopicScopeInput>) =>
+  // The scope goes whole or not at all: the server replaces it, and refuses a
+  // list that names no journals.
+  updateTopic: (
+    id: number,
+    change: { name?: string } & (TopicScopeInput | { allPubmed?: never; journals?: never })
+  ) =>
     req<TopicUpdateResponse>(`/api/topics/${id}`, {
       method: "PATCH",
       body: JSON.stringify(change),

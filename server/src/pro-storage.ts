@@ -211,7 +211,9 @@ let transfersInFlight = 0;
 /**
  * Whether a copy into this library is part-written right now.
  *
- * Read by the reset route, which refuses rather than deleting underneath one.
+ * Read by the reset route, which refuses rather than deleting underneath one,
+ * and by the sweep of papers nothing holds, which skips its turn (sweepUnheld
+ * in routes.ts).
  * Nothing else should branch on this: it answers "is this a safe instant to
  * destroy everything", not "is the library busy" — it is false again the moment
  * the last transfer settles, which is far too sharp an edge to drive a UI from.

@@ -26,6 +26,7 @@ import type {
   Journal,
   JournalRemovalResult,
   LibraryStats,
+  MedlineStatus,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
@@ -60,6 +61,9 @@ export function transaction<A extends unknown[], R>(fn: (...args: A) => R): (...
     }
   };
 }
+
+// `n` placeholders for an IN list of that many bound values.
+const marks = (n: number) => Array(n).fill("?").join(",");
 
 // Named because it is run twice: by the schema below, and again by the rebuild
 // in migrations when an existing index was built with another tokenizer. The
@@ -109,6 +113,12 @@ db.exec(`
   -- deleted with the last of those rows (DROP_UNLISTED_JOURNALS), so this never
   -- holds a journal that nothing searches.
   --
+  -- nlm_id is the journal, and what is unique here (idx_journals_nlm_id). The
+  -- name is not: it is NLM's abbreviation as it stood when the journal was
+  -- first listed, kept to show, and a second journal that goes by one already
+  -- here is still a journal a topic can list. A poll searches by the id too
+  -- (buildTerm), so two of a name are searched apart.
+  --
   -- medline_indexed: does NLM currently index this journal for MEDLINE? 1/0, or
   -- NULL for "not established yet" — the add-time check couldn't reach NCBI.
   -- Only 0 is worth showing the user: topics are MeSH terms and an unindexed
@@ -118,7 +128,7 @@ db.exec(`
   -- every topic has dropped it and one lists it again.
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     nlm_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     medline_indexed INTEGER
@@ -230,11 +240,28 @@ db.exec(`
     fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- paper_citations is keyed on a PMID and carries no foreign key, so this is
+  -- what a cascade would have been: a paper's counts go when the paper does,
+  -- whichever statement deleted it. upsertCitations is the other half, and
+  -- writes none for a paper that isn't stored.
+  CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN
+    DELETE FROM paper_citations WHERE pmid = old.pmid;
+  END;
+
   -- Reference list of journals (from NLM's J_Medline.txt) for autocomplete and
   -- validation. Re-downloaded and upserted in place once stale (see
   -- journal-catalog.ts); journal_catalog_loaded_at (in settings) tracks the
   -- last load. metric = OpenAlex 2yr mean citedness, fetched + cached lazily
   -- and preserved across catalog refreshes.
+  --
+  -- medline: what MEDLINE has to do with the journal, which J_Medline.txt
+  -- doesn't say. 'current' — NLM indexes it now. 'former' — it did once, so the
+  -- papers from those years carry MeSH headings and match a topic, and no new
+  -- one will. 'never' — none of its papers carry any, and it can add nothing
+  -- to a topic, so the picker leaves it out (searchCatalog). NULL until NLM's
+  -- list of the journals it has indexed has been read (setCatalogIndexing),
+  -- which is "not known yet" and not 'never'. Kept across catalog refreshes,
+  -- as metric is.
   CREATE TABLE IF NOT EXISTS journal_catalog (
     nlm_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -243,7 +270,8 @@ db.exec(`
     issn_print TEXT NOT NULL DEFAULT '',
     issn_online TEXT NOT NULL DEFAULT '',
     metric REAL,
-    metric_fetched_at TEXT
+    metric_fetched_at TEXT,
+    medline TEXT
   );
 
   -- Reference list of MeSH descriptors (from NLM's yearly desc<year>.xml) for
@@ -380,7 +408,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id);
-  CREATE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id);
   CREATE INDEX IF NOT EXISTS idx_mesh_descriptors_name ON mesh_descriptors(name COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_term ON mesh_entry_terms(term COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_ui ON mesh_entry_terms(ui);
@@ -504,6 +532,36 @@ const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFil
 const UNSAVED_ARTICLES = `pmid NOT IN ${HELD_PAPERS}
    AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
 
+// A paper nothing holds: in no topic's feed, with no file in the Library, on no
+// folder's list. Every screen lists papers by one of those three, so its row is
+// one nobody can reach or remove.
+const UNHELD_ARTICLES = `pmid NOT IN (SELECT pmid FROM article_topics)
+   AND ${UNSAVED_ARTICLES}`;
+
+// Delete the papers nothing holds, and answer with how many. What was counted
+// about each goes with it (the articles_ad trigger).
+//
+// Letting go of a paper doesn't delete it. A folder's entry removed, a file
+// taken out of a collection or matched to another paper: each leaves the row
+// where it was, and a folder filled from pasted links and then emptied left one
+// for every link.
+//
+// A sweep, rather than a delete wherever a paper is let go of. A paper is
+// stored before the file it is stored for is matched to it, with requests to
+// PubMed and iCite in between — an import, a manual match, a pull from an
+// organization's library. A delete on release could take the paper in that
+// gap: remove a bookmark while its PDF is importing, and the file is then
+// matched to a PMID with no row, which hides it from every holdings query (see
+// ensureArticle in pro-storage.ts).
+//
+// So it runs only when nothing is in that gap, which is its callers' to know:
+// at startup (index.ts), where nothing can be and an import cut short asks
+// PubMed again, and after a removal that finds the server idle (sweepUnheld in
+// routes.ts).
+export function dropUnheldArticles(): number {
+  return Number(db.prepare(`DELETE FROM articles WHERE ${UNHELD_ARTICLES}`).run().changes);
+}
+
 // ---------- settings ----------
 
 const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
@@ -604,7 +662,7 @@ export function topicByHeadings(uis: string[]): Topic | undefined {
       `${TOPIC_SELECT}
        WHERE (SELECT COUNT(*) FROM topic_terms tt WHERE tt.topic_id = t.id) = ?
          AND (SELECT COUNT(*) FROM topic_terms tt
-              WHERE tt.topic_id = t.id AND tt.ui IN (${uis.map(() => "?").join(",")})) = ?`
+              WHERE tt.topic_id = t.id AND tt.ui IN (${marks(uis.length)})) = ?`
     )
     .get(uis.length, ...uis, uis.length) as TopicRow | undefined;
   return row && toTopic(row);
@@ -783,8 +841,10 @@ export function setLastPollAttemptAt(iso: string): void {
 // ---------- journals ----------
 
 // Journal rows carry the catalog's metric (when the nlm_id matches a catalog
-// entry whose metric has been fetched) so the client can sort by impact.
-const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, j.medline_indexed, c.metric
+// entry whose metric has been fetched) so the client can sort by impact, and
+// what the catalog says MEDLINE has to do with the journal, which tells one
+// it used to index from one it never has (see Journal.medline).
+const JOURNAL_SELECT = `SELECT j.id, j.name, j.nlm_id, j.created_at, j.medline_indexed, c.metric, c.medline
    FROM journals j LEFT JOIN journal_catalog c ON c.nlm_id = j.nlm_id`;
 
 // SQLite has no boolean type, so medline_indexed round-trips as 1/0/NULL. The
@@ -858,8 +918,6 @@ export const markJournalsScanned = transaction((topicId: number, journalIds: num
 });
 
 // ---------- changing what a topic searches ----------
-
-const marks = (n: number) => Array(n).fill("?").join(",");
 
 // The papers in a topic's feed, with the journal each is filed under to test.
 const TOPIC_LINKS = `SELECT at.pmid FROM article_topics at
@@ -1240,7 +1298,7 @@ export const saveArticleMesh = transaction((rows: ArticleMeshInsert[]) => {
 // Everything outside it is treated as still in flight, matching meshOutlook —
 // the two readings of PubMed's status vocabulary have to agree, so the SQL side
 // derives its list from the same constant rather than repeating the strings.
-const SETTLED_PLACEHOLDERS = MESH_SETTLED_STATUSES.map(() => "?").join(",");
+const SETTLED_PLACEHOLDERS = marks(MESH_SETTLED_STATUSES.length);
 const SETTLED_PARAMS = [...MESH_SETTLED_STATUSES];
 
 // The backfill's work list: articles nobody has fetched headings for, plus ones
@@ -1413,7 +1471,7 @@ function meshPredicate(
   if (!uis || uis.length === 0) return "";
   const wanted = [...new Set(uis)];
   params.push(...wanted, wanted.length);
-  const placeholders = wanted.map(() => "?").join(",");
+  const placeholders = marks(wanted.length);
   return `a.pmid IN (SELECT am.pmid FROM article_mesh am
                      WHERE am.ui IN (${placeholders})${major ? " AND am.major = 1" : ""}
                      GROUP BY am.pmid HAVING COUNT(*) = ?)`;
@@ -1792,8 +1850,8 @@ export function suggestTopicsFromLibrary(limit = 12): TopicSuggestion[] {
               COUNT(*) AS papers, SUM(am.major) AS majorPapers
        FROM ${HELD_PAPERS} held
        JOIN article_mesh am ON am.pmid = held.pmid
-       WHERE am.ui NOT IN (${excluded.map(() => "?").join(",")})
-         AND am.name NOT IN (${excludedNames.map(() => "?").join(",")})
+       WHERE am.ui NOT IN (${marks(excluded.length)})
+         AND am.name NOT IN (${marks(excludedNames.length)})
          AND NOT EXISTS (
            SELECT 1 FROM topic_terms tt
            WHERE tt.ui = am.ui
@@ -2036,9 +2094,13 @@ export function getCitations(pmids: string[]): Map<string, CitationInfo> {
   return out;
 }
 
+// Only for a paper that is stored. The counts are asked of iCite and written
+// when it answers, and a paper deleted in that wait would be given a row after
+// the articles_ad trigger had been and gone.
 const upsertCitationStmt = db.prepare(`
   INSERT INTO paper_citations (pmid, citation_count, references_json, fetched_at)
-  VALUES (@pmid, @citation_count, @references_json, datetime('now'))
+  SELECT @pmid, @citation_count, @references_json, datetime('now')
+  WHERE EXISTS (SELECT 1 FROM articles WHERE pmid = @pmid)
   ON CONFLICT(pmid) DO UPDATE SET
     citation_count = excluded.citation_count,
     references_json = excluded.references_json,
@@ -2097,8 +2159,9 @@ export function renameBookmarkFolder(id: number, name: string): void {
 
 // Delete a folder and, by cascade, its bookmark rows. The papers themselves are
 // untouched — they're shared cache, still reachable from any topic feed or
-// collection that has them. Nothing else to clean up: unlike a collection, a
-// folder owns no blobs.
+// collection that has them, and one nothing else has goes with the sweep that
+// follows (dropUnheldArticles). Nothing else to clean up: unlike a collection,
+// a folder owns no blobs.
 export function deleteBookmarkFolder(id: number): void {
   db.prepare("DELETE FROM bookmark_folders WHERE id = ?").run(id);
 }
@@ -2225,7 +2288,9 @@ export function deleteCollection(id: number): void {
   // it), then blobs nothing else references are GC'd — here, not at call
   // sites, so a deletion path can't forget the dance and leak blobs.
   const hashes = hashesForCollection(id);
-  // collection_files rows cascade; cached articles/paper_citations stay.
+  // collection_files rows cascade; cached articles/paper_citations stay, until
+  // the sweep that follows takes the papers nothing else holds
+  // (dropUnheldArticles), and their counts with them.
   db.prepare("DELETE FROM collections WHERE id = ?").run(id);
   gcBlobsIfOrphaned(hashes);
 }
@@ -2622,9 +2687,11 @@ export interface CatalogRow {
   issn_online: string;
   metric: number | null;
   metric_fetched_at: string | null;
+  // Null until NLM's list of indexed journals has been read: not known yet.
+  medline: MedlineStatus | null;
 }
 
-export type CatalogSeed = Omit<CatalogRow, "metric" | "metric_fetched_at">;
+export type CatalogSeed = Omit<CatalogRow, "metric" | "metric_fetched_at" | "medline">;
 
 export function journalCatalogCount(): number {
   return (db.prepare("SELECT COUNT(*) AS c FROM journal_catalog").get() as { c: number }).c;
@@ -2633,6 +2700,7 @@ export function journalCatalogCount(): number {
 // Refreshes must update identity columns in place (NLM revises titles,
 // abbreviations and ISSNs) while leaving metric/metric_fetched_at alone — the
 // OpenAlex cache lives in the same table and must survive a catalog refresh.
+// medline is left alone for the same reason, and is NULL on a row that is new.
 // Rows missing from a newer J_Medline are kept rather than deleted: stale
 // extras are harmless to autocomplete, and never deleting means a truncated
 // download can't hollow out the catalog.
@@ -2661,7 +2729,39 @@ export function getCatalogLoadedAt(): string {
   return row?.value ?? "";
 }
 
+// What MEDLINE has to do with every journal in the catalog, from NLM's list of
+// the ones it has ever indexed: `indexed` is that list by NLM id, true for a
+// journal indexed now. Each row on it becomes 'current' or 'former', and every
+// other row 'never'.
+//
+// The whole list or none of it. A journal missing from a partial list would be
+// marked 'never' and dropped from the picker, so the caller hands over a
+// complete one (fetchMedlineIndexing throws on a short one) and the marking is
+// one transaction, stamped inside it as a catalog load is.
+export const setCatalogIndexing = transaction((indexed: Map<string, boolean>) => {
+  db.exec("UPDATE journal_catalog SET medline = 'never'");
+  const mark = db.prepare("UPDATE journal_catalog SET medline = ? WHERE nlm_id = ?");
+  for (const [nlmId, current] of indexed) mark.run(current ? "current" : "former", nlmId);
+  setSettingStmt.run("journal_indexing_loaded_at", new Date().toISOString());
+});
+
+// When NLM's list of indexed journals was last read (ISO timestamp; "" before
+// the first time). Importer-managed, like the catalog's own.
+export function getIndexingLoadedAt(): string {
+  const row = getSettingStmt.get("journal_indexing_loaded_at") as { value: string } | undefined;
+  return row?.value ?? "";
+}
+
+const CATALOG_NAME_MATCH =
+  "(title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' OR iso_abbr LIKE ? ESCAPE '\\')";
+
 // Autocomplete: match title/abbreviation, prefix matches first, then shortest title.
+//
+// Without the journals MEDLINE has never indexed. This is what a topic's
+// journals are picked from, a topic is MeSH headings, and none of their papers
+// carry one: listed, they are polled for as long as the topic lasts and add
+// nothing. They are over half the catalog, and crowded the ones worth listing
+// out of the pool the caller ranks. A row not marked yet is kept.
 export function searchCatalog(q: string, limit = 10): CatalogRow[] {
   const esc = escapeLike(q);
   const like = `%${esc}%`;
@@ -2669,11 +2769,24 @@ export function searchCatalog(q: string, limit = 10): CatalogRow[] {
   return db
     .prepare(
       `SELECT * FROM journal_catalog
-       WHERE title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' OR iso_abbr LIKE ? ESCAPE '\\'
+       WHERE ${CATALOG_NAME_MATCH} AND medline IS NOT 'never'
        ORDER BY CASE WHEN title LIKE ? ESCAPE '\\' OR med_abbr LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END, length(title)
        LIMIT ?`
     )
     .all(like, like, like, prefix, prefix, limit) as unknown as CatalogRow[];
+}
+
+// How many journals the same search matches and searchCatalog leaves out, so
+// the picker can say why a journal somebody knows the name of isn't offered.
+export function countNeverIndexedMatches(q: string): number {
+  const like = `%${escapeLike(q)}%`;
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM journal_catalog WHERE ${CATALOG_NAME_MATCH} AND medline = 'never'`
+      )
+      .get(like, like, like) as { c: number }
+  ).c;
 }
 
 export function findCatalogByNlmId(nlmId: string): CatalogRow | undefined {
@@ -2853,7 +2966,8 @@ function libraryStats(): LibraryStats {
 // cascades to them: none carries a foreign key (each is keyed by something it
 // only softly references — a PMID or a content hash), which is exactly what
 // lets them outlive the row that caused them, and exactly why a wipe has to
-// name them.
+// name them. paper_citations is emptied with articles now, by a trigger
+// (articles_ad), and stays named: a wipe shouldn't rest on that.
 //
 // What is *not* here is not here on purpose:
 //

@@ -10,6 +10,7 @@ export interface JournalSuggestion {
   abbr: string;
   issn: string;
   metric: number | null; // OpenAlex 2-yr mean citedness, unrounded
+  medline: CatalogRow["medline"];
 }
 
 export interface Candidate {
@@ -58,5 +59,6 @@ export function toSuggestion({ row }: Candidate): JournalSuggestion {
     abbr: row.med_abbr || row.iso_abbr,
     issn: row.issn_print || row.issn_online,
     metric: row.metric,
+    medline: row.medline,
   };
 }

@@ -105,17 +105,17 @@ export async function pollTopic(id: number): Promise<PollResult> {
     //
     // Searching all of PubMed is one search from the same watermark, which a
     // change of scope clears: a poll vouches only for the scope it ran under.
-    const searches: { journals: string[]; mhdaSince?: string }[] = [];
+    const searches: { journals: typeof journals; mhdaSince?: string }[] = [];
     if (allPubmed) {
       searches.push({ journals: [], mhdaSince: since ? mhdaWindowStart(since) : undefined });
     } else {
       const scanned = scannedJournalIds(id);
       const unscanned = since ? journals.filter((j) => !scanned.has(j.id)) : journals;
       const caughtUp = journals.filter((j) => !unscanned.includes(j));
-      if (unscanned.length > 0) searches.push({ journals: unscanned.map((j) => j.name) });
+      if (unscanned.length > 0) searches.push({ journals: unscanned });
       if (caughtUp.length > 0) {
         searches.push({
-          journals: caughtUp.map((j) => j.name),
+          journals: caughtUp,
           mhdaSince: since ? mhdaWindowStart(since) : undefined,
         });
       }
@@ -212,6 +212,14 @@ export async function pollAll(): Promise<PollResult[]> {
 // not stacked. The check-and-set is race-free on Node's single thread since no
 // await sits between them.
 let isPolling = false;
+
+// Whether anything holds the poll lock now. For the sweep of papers nothing
+// holds, which skips its turn rather than run under a poll: a poll reads which
+// papers are stored, waits on PubMed, and only then links the stored ones to
+// its topic, and a paper swept in that wait fails the link's foreign key.
+export function pollRunning(): boolean {
+  return isPolling;
+}
 
 // Run `fn` under the poll lock. Returns null if a poll is already in progress.
 export async function withPollLock<T>(fn: () => Promise<T>): Promise<T | null> {

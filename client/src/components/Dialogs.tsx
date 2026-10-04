@@ -118,16 +118,6 @@ export function ModalShell({
 export const STORED_COPIES_NOTE =
   "Any stored PDF copies are deleted, unless another collection also holds the same file.";
 
-/**
- * The same question for a bookmark folder, where the answer is that nothing is
- * destroyed: a folder is a list, and taking a paper off it leaves the paper —
- * and any other folder's entry for it — where it was. Said in the terms the
- * folder's own delete dialog uses, so the two agree on what a folder owns, and
- * without a pronoun for the papers, since the title above it may count one.
- */
-export const FOLDER_ONLY_NOTE =
-  "Only this folder's list changes. The papers themselves stay in the app.";
-
 // Confirmation dialog. Cancel is the first tabbable thing in it, so it takes
 // initial focus and Enter never destroys anything by default — which holds only
 // because ModalFrame puts its × last; see the note there.
@@ -142,7 +132,9 @@ export function ConfirmDialog({
 }: {
   open: boolean;
   title: string;
-  message: string;
+  // What a yes does beyond what the title says. Left out where the title says
+  // all of it, and then no line is drawn.
+  message?: string;
   confirmLabel: string;
   danger?: boolean;
   onConfirm: () => void;
@@ -172,7 +164,7 @@ export function ConfirmDialog({
   const confirm = open ? onConfirm : undefined;
   return (
     <ModalShell open={open} onClose={onCancel} title={shown.title}>
-      <p className="modal-message">{shown.message}</p>
+      {shown.message && <p className="modal-message">{shown.message}</p>}
       <div className="modal-actions">
         <button type="button" onClick={onCancel}>
           Cancel

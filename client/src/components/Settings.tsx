@@ -14,13 +14,11 @@ import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
-import { TopicDialog, type TopicSaveOutcome } from "./TopicDialog";
 import { ProPanel } from "./ProPanel";
 import type { ViewerCache } from "../lib/viewerCache";
 import type {
   AppSettings,
   Topic,
-  TopicDetail,
   ProCollectionStamp,
   ProStatus,
 } from "../types";
@@ -80,11 +78,14 @@ function scopeLine(t: Topic): string {
 export function Settings({
   pro,
   viewerCache,
+  topics,
+  topicsError,
+  onAddTopic,
+  onEditTopic,
   onDataChanged,
   onPairingChanged,
   onSharingChanged,
   onPapersRemoved,
-  onTopicSaved,
   onLibraryReset,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
@@ -94,6 +95,21 @@ export function Settings({
   // from the same reading this panel prints, and either can clear it. Inert on
   // every other build, where the section that uses it is not drawn.
   viewerCache: ViewerCache;
+  // The topics, which are the shell's: its section bar draws from the same
+  // list, and one reading can't disagree with itself. Adding and editing go to
+  // the shell's dialog for the same reason — there is one, wired once. This
+  // panel used to keep a list and a dialog of its own, and every save fetched
+  // the topics twice.
+  topics: Topic[];
+  // Why the shell's last reading of them failed, or null when it didn't. The
+  // list above is then whatever the reading before it left: with a topic just
+  // removed still on it, or empty because nothing has been read at all. This
+  // panel reported that when the list was its own, and went quiet when it
+  // stopped being.
+  topicsError: string | null;
+  onAddTopic: () => void;
+  onEditTopic: (topic: Topic) => void;
+  // Read the topics again: after a removal here, and when asked to try again.
   onDataChanged: () => void;
   // This instance connected to an organization's library or left one, so the
   // `pro` block above is now stale. Passed straight through to the panel that
@@ -107,10 +123,6 @@ export function Settings({
   // Papers left the Interests feeds (a topic removed): the app refreshes the
   // paper views and reports the count.
   onPapersRemoved: (count: number) => void;
-  // A topic was saved from this panel's dialog. The shell reloads what it
-  // draws from topics and says whatever the save has to say — see
-  // describeTopicSave.
-  onTopicSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
   // The library was deleted outright. Separate from onPapersRemoved, which the
   // panel could otherwise have reused: that one describes papers leaving the
   // topic feeds, and the shell answers it by reloading them. Here every source
@@ -122,7 +134,6 @@ export function Settings({
   // notice at the top of a page the reader has scrolled to the bottom of.
   onLibraryReset: () => void;
 }) {
-  const [topics, setTopics] = useState<Topic[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
@@ -136,8 +147,6 @@ export function Settings({
   // whenever it arrived. See `ready` below.
   const [proReady, setProReady] = useState(false);
 
-  // The topic dialog: closed, creating a topic, or editing this one.
-  const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -180,9 +189,9 @@ export function Settings({
   } | null>(null);
 
   function reload() {
-    Promise.all([api.getTopics(), api.getSettings()])
-      .then(([d, s]) => {
-        setTopics(d);
+    api
+      .getSettings()
+      .then((s) => {
         setSettings(s);
         setBaseline(s);
       })
@@ -197,16 +206,6 @@ export function Settings({
   }
 
   useEffect(reload, []);
-
-  // The topics alone, after a change that touched nothing else: one saved, or
-  // one removed. reload() fetches the settings too and puts them back over the
-  // Polling & NCBI form, taking any edit there not yet saved.
-  function reloadTopics() {
-    api
-      .getTopics()
-      .then(setTopics)
-      .catch((e) => setError(errorMessage(e)));
-  }
 
   // A fresh reading for a panel that is about to print one. The shell re-reads
   // when the window regains focus, which covers the cache growing; this covers
@@ -241,7 +240,6 @@ export function Settings({
     setTopicToRemove(null);
     try {
       const res = await api.deleteTopic(topicToRemove.topic.id);
-      reloadTopics();
       onDataChanged();
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
@@ -271,11 +269,11 @@ export function Settings({
     try {
       const deleted = await api.resetLibrary();
       setResetResult({ kind: "info", message: describeResetDone(deleted) });
-      // This panel's own list first — the topics it is still showing are
-      // gone — then ProPanel, which is counting over collections
-      // that went with them, then the shell, which owns every other view of all
-      // of it.
-      reload();
+      // ProPanel first, which is counting over collections that went with
+      // them, then the shell, which owns the topics listed here and every other
+      // view of all of it. Nothing of this panel's own: the settings are what a
+      // reset keeps, and reading them again would only put the stored copy back
+      // over an edit not yet saved.
       setProReloadToken((n) => n + 1);
       onLibraryReset();
     } catch (err) {
@@ -353,8 +351,8 @@ export function Settings({
 
   // Every panel waits for the slowest of them.
   //
-  // These load from two independent places — one Promise.all here for the
-  // topics and settings, and the Pro panel's own reload
+  // These load from two independent places — the settings here, and the Pro
+  // panel's own reload
   // — and each used to reveal itself the moment its own data landed. The result
   // was a column that resettled two or three times: the Pro panel would paint
   // its unpaired form, then Sharing would arrive underneath and shove it, and
@@ -393,7 +391,7 @@ export function Settings({
           <h2>Topics</h2>
           <InfoTip text={HELP.topics} />
         </div>
-        <button type="button" className="accent-btn" onClick={() => setTopicDialog("new")}>
+        <button type="button" className="accent-btn" onClick={onAddTopic}>
           Add topic…
         </button>
 
@@ -407,6 +405,20 @@ export function Settings({
             ))
           ) : (
             <>
+              {/* First, so it is in view however long the list under it is, and
+                  in the list, since it is the list that it qualifies. */}
+              {topicsError != null && (
+                <li>
+                  <span className="hint warn" role="alert">
+                    Couldn’t load the topics: {topicsError}
+                  </span>
+                  <div className="list-actions">
+                    <button className="link-btn" onClick={onDataChanged}>
+                      Try again
+                    </button>
+                  </div>
+                </li>
+              )}
               {topics.map((d) => (
                 <li key={d.id}>
                   <span title={d.term}>
@@ -416,7 +428,7 @@ export function Settings({
                   {/* A div for the reason .list-label is one: a span in a list
                       row is stacked into a column. */}
                   <div className="list-actions">
-                    <button className="link-btn" onClick={() => setTopicDialog(d)}>
+                    <button className="link-btn" onClick={() => onEditTopic(d)}>
                       Edit
                     </button>
                     <button className="link-btn danger" onClick={() => askRemoveTopic(d)}>
@@ -425,7 +437,11 @@ export function Settings({
                   </div>
                 </li>
               ))}
-              {topics.length === 0 && <li className="muted">No topics yet.</li>}
+              {/* Not said of a list that couldn't be read: that there are none
+                  is a claim, and a failed request is no ground for it. */}
+              {topics.length === 0 && topicsError == null && (
+                <li className="muted">No topics yet.</li>
+              )}
             </>
           )}
         </ul>
@@ -724,16 +740,6 @@ export function Settings({
         />
       </section>
 
-      <TopicDialog
-        open={topicDialog != null}
-        topic={topicDialog === "new" ? null : topicDialog}
-        topics={topics}
-        onClose={() => setTopicDialog(null)}
-        onSaved={(saved, outcome) => {
-          reloadTopics();
-          onTopicSaved(saved, outcome);
-        }}
-      />
       <ConfirmDialog
         open={topicToRemove != null}
         title={topicToRemove ? `Remove "${topicToRemove.topic.name}"?` : ""}

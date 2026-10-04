@@ -21,7 +21,6 @@ afterEach(() => {
 // pro={null} so ProPanel never mounts: it fetches on its own and has nothing to
 // do with any of this.
 const api = vi.hoisted(() => ({
-  getTopics: vi.fn(),
   getSettings: vi.fn(),
   cacheStats: vi.fn(),
   clearCache: vi.fn(),
@@ -51,11 +50,14 @@ function Shell() {
       <Settings
         pro={null}
         viewerCache={viewerCache}
+        topics={[]}
+        topicsError={null}
+        onAddTopic={() => {}}
+        onEditTopic={() => {}}
         onDataChanged={() => {}}
         onPairingChanged={() => {}}
         onSharingChanged={() => {}}
         onPapersRemoved={() => {}}
-        onTopicSaved={() => {}}
         onLibraryReset={() => {}}
       />
       <ClearCacheDialog viewerCache={viewerCache} />
@@ -64,7 +66,6 @@ function Shell() {
 }
 
 function renderSettings() {
-  api.getTopics.mockResolvedValue([]);
   api.getSettings.mockResolvedValue(DESKTOP);
   return render(<Shell />);
 }
@@ -80,7 +81,10 @@ describe("the cached copies section when the reading fails", () => {
     await waitFor(() => expect(screen.getByText(/could not be read just now/i)).toBeTruthy());
     // Pressing it is how the reader finds out what is there, since clearing
     // reports what it did. Disabled here was a dead end with no way out of it.
-    expect(clearButton().disabled).toBe(false);
+    // Waited for, as pressClear does: the sentence is drawn the moment the
+    // reading fails, and the button comes on with the rest of the page, a
+    // commit later (see useReveal). Asked at once, it was now and then still off.
+    await waitFor(() => expect(clearButton().disabled).toBe(false));
     // And no size claimed that nothing supports.
     expect(screen.queryByText(/Currently/)).toBeNull();
     expect(screen.queryByText(/Nothing is cached right now/)).toBeNull();
@@ -100,7 +104,7 @@ describe("the cached copies section when the reading fails", () => {
     renderSettings();
 
     await waitFor(() => expect(screen.getByText(/changes that are not in the library/)).toBeTruthy());
-    expect(clearButton().disabled).toBe(false);
+    await waitFor(() => expect(clearButton().disabled).toBe(false));
   });
 });
 

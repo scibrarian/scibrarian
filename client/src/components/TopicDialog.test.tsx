@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { medlineNote } from "./JournalPanes";
 import { TopicDialog, describeTopicSave } from "./TopicDialog";
 import { withAnExitAnimation } from "./test-exit-animation";
 import { MAX_TOPIC_HEADINGS } from "../../../shared/limits";
-import type { Journal, JournalSearchResult, MeshSearchResult, Topic, TopicDetail } from "../types";
+import type {
+  Journal,
+  JournalSearchResult,
+  MedlineStatus,
+  MeshSearchResult,
+  Topic,
+  TopicDetail,
+} from "../types";
 
 // jsdom has no layout, so no scrollIntoView, which the typeahead's highlight
 // calls to stay in view.
@@ -42,13 +50,22 @@ const hit = (ui: string, name: string): MeshSearchResult => ({ ui, name, synonym
 const ATHERO = hit("D050197", "Atherosclerosis");
 const SLEEP = hit("D012890", "Sleep");
 
-const journal = (id: number, nlm_id: string, name: string, indexed = true): Journal => ({
+// A stored journal: what NLM answered when it was listed, and what the catalog
+// says of it now, which is nothing unless a test gives it something.
+const journal = (
+  id: number,
+  nlm_id: string,
+  name: string,
+  indexed = true,
+  medline: MedlineStatus | null = null
+): Journal => ({
   id,
   nlm_id,
   name,
   metric: 5,
   created_at: "2026-10-01 00:00:00",
   medline_indexed: indexed,
+  medline,
 });
 const LANCET = journal(1, "2985213R", "Lancet");
 const BMJ = journal(2, "8900488", "BMJ");
@@ -58,6 +75,16 @@ const CIRC: JournalSearchResult = {
   abbr: "Circulation",
   issn: "",
   metric: 30,
+  medline: "current",
+};
+// Ceased in 2012: MEDLINE indexed it until then.
+const ARCHIVES: JournalSearchResult = {
+  nlm_id: "0372440",
+  title: "Archives of internal medicine",
+  abbr: "Arch Intern Med",
+  issn: "",
+  metric: null,
+  medline: "former",
 };
 
 const TOPIC: Topic = {
@@ -87,7 +114,7 @@ beforeEach(() => {
   api.getTopic.mockResolvedValue(DETAIL);
   api.updateTopic.mockImplementation(async () => ({ topic: DETAIL, removed: NOTHING_REMOVED }));
   api.scopeChangeCount.mockResolvedValue({ count: 0 });
-  api.searchJournals.mockResolvedValue({ results: [CIRC] });
+  api.searchJournals.mockResolvedValue({ results: [CIRC], neverIndexed: 0 });
   api.suggestJournals.mockResolvedValue({ results: [] });
 });
 
@@ -207,7 +234,12 @@ describe("creating a topic", () => {
       { allPubmed: true, journals: [] },
       undefined
     );
-    expect(onSaved.mock.calls[0][1]).toEqual({ created: true, removed: 0, unindexed: [] });
+    expect(onSaved.mock.calls[0][1]).toEqual({
+      created: true,
+      removed: 0,
+      lapsed: [],
+      unindexed: [],
+    });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -248,8 +280,30 @@ describe("creating a topic", () => {
       { allPubmed: false, journals: [CIRC.nlm_id] },
       undefined
     );
-    // What NLM said about a journal just listed travels out with the save.
-    expect(onSaved.mock.calls[0][1].unindexed).toEqual(["Circulation"]);
+    // What NLM said about a journal just listed travels out with the save. Not
+    // indexed now is all it said, with the catalog silent, so that is all that
+    // is claimed: not that it never was.
+    expect(onSaved.mock.calls[0][1]).toMatchObject({ lapsed: ["Circulation"], unindexed: [] });
+  });
+
+  it("tells a journal MEDLINE used to index from one it never has, in what a save reports", async () => {
+    api.createTopic.mockImplementation(async () => ({
+      ...TOPIC,
+      journalCount: 3,
+      journals: [
+        journal(9, CIRC.nlm_id, "Circulation", true, "current"),
+        journal(10, ARCHIVES.nlm_id, "Arch Intern Med", false, "former"),
+        journal(11, "101596737", "Cureus", false, "never"),
+      ],
+    }));
+    const { onSaved } = open();
+    await pick("Atherosclerosis");
+    fireEvent.click(submit("Create topic"));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(onSaved.mock.calls[0][1]).toMatchObject({
+      lapsed: ["Arch Intern Med"],
+      unindexed: ["Cureus"],
+    });
   });
 
   it("reports a refusal and stays open", async () => {
@@ -322,6 +376,110 @@ describe("editing a topic", () => {
     expect(auto().disabled).toBe(false);
   });
 
+  it("says so when the stored scope can't be had, and still saves a new name", async () => {
+    // A load that failed used to read as one that never ended: the list stayed
+    // a skeleton and Save stayed off, even for a name, which waits on no list.
+    api.getTopic.mockRejectedValue(new Error("network"));
+    const { onSaved } = open(TOPIC);
+    expect((await screen.findByRole("alert")).textContent).toContain("network");
+    // No panes to call the list empty: nothing has said that it is.
+    expect(screen.queryByRole("region", { name: "This topic's journals" })).toBeNull();
+    // Still held: a scope saved now would replace one nobody has seen.
+    expect(scopeRadio("All of PubMed").disabled).toBe(true);
+    expect(scopeRadio("Only these journals").disabled).toBe(true);
+
+    fireEvent.change(nameBox(), { target: { value: "Arteries at night" } });
+    fireEvent.click(submit("Save"));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(api.updateTopic).toHaveBeenCalledWith(7, { name: "Arteries at night" });
+  });
+
+  it("reports no journal as just listed when all it saved was a name", async () => {
+    // A name can be saved with the stored list not here, and what was "just
+    // listed" used to be worked out from that list: with none, every journal on
+    // the topic was, and a rename warned about journals listed long before.
+    api.getTopic.mockRejectedValue(new Error("network"));
+    api.updateTopic.mockImplementation(async () => ({
+      topic: {
+        ...TOPIC,
+        name: "Arteries at night",
+        journals: [
+          journal(3, ARCHIVES.nlm_id, "Arch Intern Med", false, "former"),
+          journal(4, "101596737", "Cureus", false, "never"),
+        ],
+      },
+      removed: NOTHING_REMOVED,
+    }));
+    const { onSaved } = open(TOPIC);
+    await screen.findByRole("alert");
+    fireEvent.change(nameBox(), { target: { value: "Arteries at night" } });
+    fireEvent.click(submit("Save"));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(onSaved.mock.calls[0][1]).toEqual({
+      created: false,
+      removed: 0,
+      lapsed: [],
+      unindexed: [],
+    });
+  });
+
+  it("marks a journal MEDLINE no longer indexes, in the catalog and once it is listed", async () => {
+    // Said before the journal is listed. It used to be found out from the
+    // notice after the save, which called it one that can't match any topic.
+    api.searchJournals.mockResolvedValue({ results: [ARCHIVES, CIRC], neverIndexed: 0 });
+    open(TOPIC);
+    await listLoaded();
+    fireEvent.change(within(catalogPane()).getByRole("searchbox"), { target: { value: "ci" } });
+    const offered = await within(catalogPane()).findByRole("checkbox", {
+      name: /^Archives of Internal Medicine/,
+    });
+    // One short word on the row, which the name shares it with, and the rest
+    // behind a hover: said in full it left room for six letters of the name.
+    const mark = within(offered.closest("li")!).getByText("old").closest(".mesh-warn")!;
+    expect(mark.getAttribute("title")).toBe(
+      "Older papers only. MEDLINE doesn't index Archives of Internal Medicine now: papers from the years it did still match a topic, and no new ones will be added."
+    );
+    // Read aloud, it is said in full: a hover is no use to someone who can't
+    // see the word it explains.
+    expect((offered as HTMLInputElement).labels![0].textContent).toContain("older papers only");
+    expect(within(mark as HTMLElement).getByText("old").getAttribute("aria-hidden")).toBe("true");
+    // One it indexes now carries no mark.
+    const circ = within(catalogPane()).getByRole("checkbox", { name: /^Circulation/ });
+    expect(circ.closest("li")!.querySelector(".mesh-warn")).toBeNull();
+
+    fireEvent.click(offered);
+    fireEvent.click(screen.getByRole("button", { name: /^Add/ }));
+    const row = within(listPane()).getByRole("checkbox", { name: /^Arch Intern Med/ }).closest("li")!;
+    expect(within(row).getByText("old")).toBeTruthy();
+  });
+
+  it("marks a journal MEDLINE has never indexed as one with no MeSH", async () => {
+    api.getTopic.mockResolvedValue({
+      ...TOPIC,
+      journals: [LANCET, journal(4, "101596737", "Cureus", false, "never")],
+    });
+    open(TOPIC);
+    await waitFor(() => expect(listed()).toEqual(["Cureus", "Lancet"]));
+    const row = within(listPane()).getByRole("checkbox", { name: /^Cureus/ }).closest("li")!;
+    const mark = within(row).getByText("no MeSH");
+    expect(mark.getAttribute("title")).toBe(
+      "MEDLINE has never indexed Cureus, so its papers carry no MeSH headings and it can't match any topic."
+    );
+    const lancet = within(listPane()).getByRole("checkbox", { name: /^Lancet/ }).closest("li")!;
+    expect(lancet.querySelector(".mesh-warn")).toBeNull();
+  });
+
+  it("asks for the stored scope again when told to", async () => {
+    api.getTopic.mockRejectedValueOnce(new Error("network"));
+    open(TOPIC);
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    await listLoaded();
+    expect(api.getTopic).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(scopeRadio("All of PubMed").disabled).toBe(false);
+    expect(scopeRadio("Only these journals").disabled).toBe(false);
+  });
+
   it("saves a new name, and only a new one, without touching the scope", async () => {
     const { onSaved } = open(TOPIC);
     await listLoaded();
@@ -361,7 +519,12 @@ describe("editing a topic", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.updateTopic).toHaveBeenCalledWith(7, { allPubmed: false, journals: [BMJ.nlm_id] });
-    expect(onSaved.mock.calls[0][1]).toEqual({ created: false, removed: 214, unindexed: [] });
+    expect(onSaved.mock.calls[0][1]).toEqual({
+      created: false,
+      removed: 214,
+      lapsed: [],
+      unindexed: [],
+    });
   });
 
   it("changes nothing when that question is answered no", async () => {
@@ -380,6 +543,20 @@ describe("editing a topic", () => {
     // The dropped journal is still dropped, and still within reach to put back.
     expect(listed()).toEqual(["BMJ"]);
     expect(within(catalogPane()).getByRole("checkbox", { name: /^Lancet/ })).toBeTruthy();
+  });
+
+  it("shows a dropped journal under the name it was listed by", async () => {
+    // The left pane title-cases what the catalog sends, and did the same to a
+    // stored name on its way back there: "Zhonghua yi xue za zhi" left the
+    // list and turned up beside it as "Zhonghua Yi Xue Za Zhi".
+    const zhonghua = journal(3, "7511141", "Zhonghua yi xue za zhi");
+    api.getTopic.mockResolvedValue({ ...DETAIL, journals: [BMJ, zhonghua] });
+    open(TOPIC);
+    await waitFor(() => expect(listed()).toEqual(["BMJ", "Zhonghua yi xue za zhi"]));
+    drop("Zhonghua");
+    expect(
+      within(catalogPane()).getByRole("checkbox", { name: /^Zhonghua yi xue za zhi/ })
+    ).toBeTruthy();
   });
 
   it("doesn't ask when the change takes nothing out", async () => {
@@ -425,7 +602,7 @@ describe("editing a topic", () => {
   it("says it is searching the catalog from the first keystroke, not that nothing matched", async () => {
     // The search waits out a debounce before it leaves. Until it does, nothing
     // is loading and nothing has been found, which used to read as "No matches."
-    let answer!: (r: { results: JournalSearchResult[] }) => void;
+    let answer!: (r: { results: JournalSearchResult[]; neverIndexed: number }) => void;
     api.searchJournals.mockReturnValue(new Promise((r) => (answer = r)));
     open(TOPIC);
     await listLoaded();
@@ -436,8 +613,37 @@ describe("editing a topic", () => {
     // Still searching once the request is out, and only then an answer.
     await waitFor(() => expect(api.searchJournals).toHaveBeenCalledWith("zzzz", 30));
     expect(within(catalogPane()).getByText("Searching…")).toBeTruthy();
-    answer({ results: [] });
+    answer({ results: [], neverIndexed: 0 });
     await within(catalogPane()).findByText("No matches.");
+  });
+
+  it("says why, when all a search matches are journals MEDLINE has never indexed", async () => {
+    // The catalog search leaves those out. "No matches." for a journal the
+    // reader can name — a preprint server — read as a catalog that didn't know it.
+    api.searchJournals.mockResolvedValue({ results: [], neverIndexed: 1 });
+    open(TOPIC);
+    await listLoaded();
+    const box = within(catalogPane()).getByRole("searchbox");
+    fireEvent.change(box, { target: { value: "biorxiv" } });
+    await within(catalogPane()).findByText(
+      "1 journal matches, but MEDLINE has never indexed it, so it can't add papers to a topic."
+    );
+    expect(within(catalogPane()).queryByText("No matches.")).toBeNull();
+
+    api.searchJournals.mockResolvedValue({ results: [], neverIndexed: 3 });
+    fireEvent.change(box, { target: { value: "rxiv" } });
+    await within(catalogPane()).findByText(
+      "3 journals match, but MEDLINE has never indexed them, so they can't add papers to a topic."
+    );
+  });
+
+  it("says nothing of them when the search has journals to offer", async () => {
+    api.searchJournals.mockResolvedValue({ results: [CIRC], neverIndexed: 4 });
+    open(TOPIC);
+    await listLoaded();
+    fireEvent.change(within(catalogPane()).getByRole("searchbox"), { target: { value: "circ" } });
+    await within(catalogPane()).findByRole("checkbox", { name: /^Circulation/ });
+    expect(within(catalogPane()).queryByText(/never indexed/)).toBeNull();
   });
 
   it("dismisses a notice without saving or closing", async () => {
@@ -510,7 +716,7 @@ describe("editing a topic", () => {
   });
 });
 
-// The dialog on its way out. Both callers clear the topic in the update that
+// The dialog on its way out. The shell clears the topic in the update that
 // closes it, and it stays on screen for its exit after that — as a dialog for
 // no topic, which is the New topic form. Cancel on an edit flashed that form.
 describe("a topic dialog while it closes", () => {
@@ -547,18 +753,49 @@ describe("where the focus starts", () => {
 });
 
 describe("what a save has to say", () => {
+  const QUIET = { created: true, removed: 0, lapsed: [], unindexed: [] };
+
   it("is nothing when nothing left and nothing needs a warning", () => {
-    expect(describeTopicSave(TOPIC, { created: true, removed: 0, unindexed: [] })).toBeNull();
+    expect(describeTopicSave(TOPIC, QUIET)).toBeNull();
   });
 
   it("counts the papers that left the topic", () => {
-    expect(describeTopicSave(TOPIC, { created: false, removed: 214, unindexed: [] })).toBe(
+    expect(describeTopicSave(TOPIC, { ...QUIET, created: false, removed: 214 })).toBe(
       "Removed 214 papers from “Plaque and rest”."
     );
   });
 
-  it("warns about journals MEDLINE doesn't index", () => {
-    const said = describeTopicSave(TOPIC, { created: true, removed: 0, unindexed: ["PLoS One"] });
-    expect(said).toMatch(/MEDLINE doesn't index PLoS One\. Its papers carry no MeSH headings/);
+  it("says a journal MEDLINE used to index adds its older papers and no new ones", () => {
+    // Not that it can't match a topic, which is what it used to be told.
+    expect(describeTopicSave(TOPIC, { ...QUIET, lapsed: ["Arch Intern Med"] })).toBe(
+      "MEDLINE doesn't index Arch Intern Med now. " +
+        "Papers from the years it did still match, and no new ones will be added."
+    );
+  });
+
+  it("warns that a journal MEDLINE has never indexed adds nothing", () => {
+    expect(describeTopicSave(TOPIC, { ...QUIET, unindexed: ["Cureus"] })).toBe(
+      "MEDLINE has never indexed Cureus. Its papers carry no MeSH headings, " +
+        "so it can't match a topic and won't add anything to Interests."
+    );
+    expect(describeTopicSave(TOPIC, { ...QUIET, unindexed: ["Cureus", "bioRxiv"] })).toMatch(
+      /never indexed Cureus, bioRxiv\. Their papers carry no MeSH headings, so they can't/
+    );
+  });
+});
+
+describe("what there is to say about a journal and MEDLINE", () => {
+  it("is the catalog's word where it has one", () => {
+    expect(medlineNote({ medline: "current", medline_indexed: false })).toBeNull();
+    expect(medlineNote({ medline: "former", medline_indexed: true })).toBe("lapsed");
+    expect(medlineNote({ medline: "never", medline_indexed: null })).toBe("never");
+  });
+
+  it("is what NLM answered when the journal was listed, where the catalog is silent", () => {
+    // Not indexed then, and whether it ever was isn't known: the weaker claim.
+    expect(medlineNote({ medline: null, medline_indexed: false })).toBe("lapsed");
+    expect(medlineNote({ medline: null, medline_indexed: true })).toBeNull();
+    // Nobody has asked: nothing to warn about.
+    expect(medlineNote({ medline: null, medline_indexed: null })).toBeNull();
   });
 });

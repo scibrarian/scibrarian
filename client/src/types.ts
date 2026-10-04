@@ -29,6 +29,7 @@ import type {
   LinkAnswer,
   LinkOutcome,
   LinkedPaper,
+  MedlineStatus,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
@@ -94,6 +95,7 @@ export type {
   LinkAnswer,
   LinkOutcome,
   LinkedPaper,
+  MedlineStatus,
   MeshDescriptorRef,
   MeshFacet,
   MeshFiling,
@@ -140,10 +142,16 @@ export interface JournalSearchResult {
   abbr: string;
   issn: string;
   metric: number | null; // OpenAlex 2-yr mean citedness
+  // What MEDLINE has to do with the journal; null while the catalog doesn't
+  // say. Never 'never' from a search, which leaves those out.
+  medline: MedlineStatus | null;
 }
 
 export interface JournalSearchResponse {
   results: JournalSearchResult[];
+  // Journals the search matched and left out of `results`: ones MEDLINE has
+  // never indexed, whose papers carry no MeSH headings and can't match a topic.
+  neverIndexed: number;
 }
 
 // What /api/journals/suggest ("Auto") returns for a set of headings: catalog

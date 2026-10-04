@@ -6,7 +6,13 @@ import { useHeldWhile } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
 import { InfoTip } from "./InfoTip";
-import { JournalPanes, listedFromStored, type ListedJournal } from "./JournalPanes";
+import {
+  JournalPanes,
+  listedFromStored,
+  medlineNote,
+  type ListedJournal,
+  type MedlineNote,
+} from "./JournalPanes";
 import { Typeahead } from "./Typeahead";
 import {
   MAX_TOPIC_HEADINGS,
@@ -52,28 +58,36 @@ export interface TopicSaveOutcome {
   created: boolean;
   // Papers a change of scope took out of the topic's feed.
   removed: number;
-  // Journals just listed that MEDLINE doesn't index, by name.
+  // Journals just listed that MEDLINE doesn't index now, by name: the ones it
+  // used to, and the ones it never has (see medlineNote).
+  lapsed: string[];
   unindexed: string[];
 }
 
 // That outcome as a sentence or two, or null when there is nothing to say.
-// Shared by the two places the dialog is opened from, which show it in the
-// shell's notice: a warning inside a dialog that has just closed is one nobody
-// reads.
+// For the shell's notice, wherever the dialog was opened from: a warning
+// inside a dialog that has just closed is one nobody reads.
 export function describeTopicSave(topic: Topic, outcome: TopicSaveOutcome): string | null {
   const parts: string[] = [];
   if (outcome.removed > 0) {
     parts.push(`Removed ${plural(outcome.removed, "paper")} from “${topic.name}”.`);
   }
-  // Journals PubMed carries but MEDLINE doesn't index. Topics are MeSH headings
-  // and only MEDLINE-indexed records get them, so these match no topic however
-  // long they are polled. Still worth keeping for a library built by PDF
-  // import, which doesn't go through a topic at all — hence a warning, not a
-  // refusal.
+  // Journals MEDLINE doesn't index now. Topics are MeSH headings and only the
+  // papers MEDLINE indexed carry them, so one it used to index brings in the
+  // papers of those years and nothing after.
+  if (outcome.lapsed.length > 0) {
+    parts.push(
+      `MEDLINE doesn't index ${outcome.lapsed.join(", ")} now. ` +
+        "Papers from the years it did still match, and no new ones will be added."
+    );
+  }
+  // And one it has never indexed matches no topic however long it is polled.
+  // The catalog search leaves these out, so one gets here on a list copied
+  // from another topic.
   if (outcome.unindexed.length > 0) {
     const one = outcome.unindexed.length === 1;
     parts.push(
-      `MEDLINE doesn't index ${outcome.unindexed.join(", ")}. ` +
+      `MEDLINE has never indexed ${outcome.unindexed.join(", ")}. ` +
         `${one ? "Its papers carry" : "Their papers carry"} no MeSH headings, so ` +
         `${one ? "it" : "they"} can't match a topic and won't add anything to Interests.`
     );
@@ -101,8 +115,8 @@ export function TopicDialog({
   // the dialog closes.
   onSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
 }) {
-  // The topic this opening is about, kept through the close. Both callers clear
-  // their topic in the same update that closes the dialog, and the dialog stays
+  // The topic this opening is about, kept through the close. The shell clears
+  // its topic in the same update that closes the dialog, and the dialog stays
   // on screen after that for as long as its exit animation runs — as a dialog
   // for no topic, which is the New topic form. Cancel on an edit flashed that
   // form on the way out.
@@ -130,6 +144,12 @@ export function TopicDialog({
   const [confirm, setConfirm] = useState<{ title: string; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why the stored scope didn't come, when it didn't. Kept apart from `error`,
+  // which the banner shows and anyone can dismiss: this one stands where the
+  // journals would be, beside the button that asks again. `attempt` counts the
+  // askings, so each is a run of the effect that fetches.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   const editing = topic != null;
 
@@ -149,6 +169,7 @@ export function TopicDialog({
     setConfirm(null);
     setSaving(false);
     setError(null);
+    setLoadError(null);
     // Keyed on which topic, not on the object: the shell reloads its topics
     // when a check for new papers lands, which hands this a new object for the
     // same topic and would otherwise wipe a name half typed.
@@ -170,11 +191,11 @@ export function TopicDialog({
         setAllPubmed(detail.all_pubmed);
         setJournals(list);
       })
-      .catch((e) => active && setError(errorMessage(e)));
+      .catch((e) => active && setLoadError(errorMessage(e)));
     return () => {
       active = false;
     };
-  }, [open, topicId]);
+  }, [open, topicId, attempt]);
 
   // Topics the Library's own filing points at, so the first heading doesn't
   // have to be guessed cold. Advisory: the dialog is whole without them.
@@ -249,13 +270,19 @@ export function TopicDialog({
   const rescoped =
     stored != null &&
     (allPubmed !== stored.allPubmed || (!allPubmed && !sameJournals(journals, stored.journals)));
-  // The stored scope of the topic being edited is still on its way. It replaces
-  // whatever the dialog shows when it lands, so until then the scope is held
-  // still: a radio switched or a journal added first would be put back.
-  const loading = topic != null && stored == null;
+  // The stored scope of the topic being edited isn't here: on its way, or it
+  // didn't come. It replaces whatever the dialog shows when it lands, so until
+  // then the scope is held still: a radio switched or a journal added first
+  // would be put back.
+  const unscoped = topic != null && stored == null;
+  // On its way, which is not the same as not coming: a load that failed used to
+  // read as one that never ended.
+  const loading = unscoped && loadError == null;
 
+  // A name can be saved without the stored scope: `rescoped` is false until it
+  // arrives, so that request carries the name and nothing else.
   const canSave = topic
-    ? stored != null && typedName !== "" && (renamed || rescoped)
+    ? typedName !== "" && (renamed || rescoped)
     : headings.length > 0;
 
   async function commit() {
@@ -266,10 +293,8 @@ export function TopicDialog({
       let saved: TopicDetail;
       let removed = 0;
       if (topic) {
-        const res = await api.updateTopic(topic.id, {
-          ...(renamed ? { name: typedName } : {}),
-          ...(rescoped ? scope : {}),
-        });
+        const change = renamed ? { name: typedName } : {};
+        const res = await api.updateTopic(topic.id, rescoped ? { ...change, ...scope } : change);
         saved = res.topic;
         removed = res.removed.removedFromInterests;
       } else {
@@ -282,12 +307,23 @@ export function TopicDialog({
         );
       }
       // Only the journals this save listed: one already on the topic said its
-      // piece when it was added.
+      // piece when it was added. A save that left the scope alone listed none,
+      // and that is asked outright, not left to `before`: a name can be saved
+      // ahead of the stored list arriving, and with nothing known to be on the
+      // topic already, every journal on it read as just listed.
       const before = new Set((stored?.journals ?? []).map((j) => j.nlm_id));
-      const unindexed = saved.journals
-        .filter((j) => j.medline_indexed === false && !(j.nlm_id && before.has(j.nlm_id)))
-        .map((j) => j.name);
-      onSaved(saved, { created: topic == null, removed, unindexed });
+      const listed =
+        topic == null || rescoped
+          ? saved.journals.filter((j) => !(j.nlm_id && before.has(j.nlm_id)))
+          : [];
+      const named = (note: MedlineNote) =>
+        listed.filter((j) => medlineNote(j) === note).map((j) => j.name);
+      onSaved(saved, {
+        created: topic == null,
+        removed,
+        lapsed: named("lapsed"),
+        unindexed: named("never"),
+      });
       onClose();
     } catch (err) {
       setError(errorMessage(err));
@@ -465,7 +501,7 @@ export function TopicDialog({
                 name="topic-scope"
                 checked={allPubmed}
                 onChange={() => setAllPubmed(true)}
-                disabled={saving || loading}
+                disabled={saving || unscoped}
               />
               All of PubMed
             </label>
@@ -475,12 +511,30 @@ export function TopicDialog({
                 name="topic-scope"
                 checked={!allPubmed}
                 onChange={() => setAllPubmed(false)}
-                disabled={saving || loading}
+                disabled={saving || unscoped}
               />
               Only these journals
             </label>
           </div>
-          {!allPubmed && (
+          {/* In the journals' place, not above empty panes: "No journals chosen
+              yet." is a claim about the topic, and a request that never
+              answered is no ground for it. */}
+          {loadError != null && (
+            <p className="topic-scope-failed" role="alert">
+              Couldn’t load this topic’s journals: {loadError}{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setLoadError(null);
+                  setAttempt((n) => n + 1);
+                }}
+                disabled={saving}
+              >
+                Try again
+              </button>
+            </p>
+          )}
+          {!allPubmed && loadError == null && (
             <JournalPanes
               original={stored?.journals ?? []}
               value={journals}

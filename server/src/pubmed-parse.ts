@@ -35,11 +35,33 @@ export function topicTerm(headings: MeshDescriptorRef[], field: "MeSH" | "majr" 
     .join(" AND ");
 }
 
-export function buildTerm(topicTerm: string, journalNames: string[]): string {
+// A journal as a search names it.
+export interface JournalRef {
+  name: string;
+  nlm_id: string | null;
+}
+
+// A topic's term, narrowed to a list of journals where it has one.
+//
+// Each journal by its NLM id ([jid]) and not by its name. The id is the
+// journal. The name is NLM's abbreviation as it stood when the journal was
+// first listed, kept to show: two journals may go by one, and NLM revises
+// them. PubMed returns the same papers either way — the same count for each of
+// sixteen journals asked both ways on 2026-10-04, ids ending in R and of
+// sixteen digits among them — and an id it doesn't know matches nothing, as a
+// name it doesn't know did.
+//
+// By name only for a journal stored with no id, which predates NLM
+// resolution. An id is letters and digits; anything else is stripped, so a
+// stored one can't break out of the field qualifier and change the query.
+export function buildTerm(topicTerm: string, journals: JournalRef[]): string {
   const term = topicTerm.trim();
-  if (journalNames.length === 0) return term;
-  const journalClause = journalNames
-    .map((n) => `"${n.replace(/"/g, "")}"[Journal]`)
+  if (journals.length === 0) return term;
+  const journalClause = journals
+    .map((j) => {
+      const id = (j.nlm_id ?? "").replace(/[^A-Za-z0-9]/g, "");
+      return id ? `"${id}"[jid]` : `"${j.name.replace(/"/g, "")}"[Journal]`;
+    })
     .join(" OR ");
   return `(${term}) AND (${journalClause})`;
 }
@@ -153,6 +175,26 @@ export function parseJournalIds(body: unknown): string[] {
     if (!doc || Array.isArray(doc) || typeof doc !== "object") continue;
     if (doc.error || !doc.nlmuniqueid) continue;
     out.push(doc.nlmuniqueid);
+  }
+  return out;
+}
+
+// One page of NLM Catalog summaries, as the journals on it: each one's NLM id,
+// and whether NLM indexes it for MEDLINE now (`currentindexingstatus`, "Y" or
+// "N"). The NLM id comes from the summary because the catalog's own record
+// ids are not it — the Lancet is 2985213R, and record 446079. Error stubs and
+// docs without an id are skipped, which the caller notices as a short count.
+export function parseIndexingPage(body: unknown): { nlmId: string; current: boolean }[] {
+  type Doc = { error?: string; nlmuniqueid?: string; currentindexingstatus?: string };
+  const result = (body as { result?: Record<string, Doc | string[]> })?.result;
+  if (!result) return [];
+  const uids = Array.isArray(result.uids) ? result.uids : [];
+  const out: { nlmId: string; current: boolean }[] = [];
+  for (const uid of uids) {
+    const doc = result[uid];
+    if (!doc || Array.isArray(doc) || typeof doc !== "object") continue;
+    if (doc.error || !doc.nlmuniqueid) continue;
+    out.push({ nlmId: doc.nlmuniqueid, current: doc.currentindexingstatus === "Y" });
   }
   return out;
 }

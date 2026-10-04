@@ -2455,7 +2455,8 @@ code {
 }
 
 .jm-auto button,
-.jm-auto select {
+.jm-auto select,
+.topic-scope-failed button {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -2468,7 +2469,8 @@ code {
 }
 
 .jm-auto button:disabled,
-.jm-auto select:disabled {
+.jm-auto select:disabled,
+.topic-scope-failed button:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -2803,6 +2805,18 @@ button.info-tip:focus-visible {
 .topic-scope input {
   margin: 0;
   accent-color: var(--accent);
+}
+
+/* In the journals' place when the topic's stored scope couldn't be fetched. Its
+   button is dressed as Auto is (see .jm-auto button). */
+.topic-scope-failed {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--warn);
 }
 
 .topic-form .jm {

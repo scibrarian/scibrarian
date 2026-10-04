@@ -6,6 +6,7 @@ import {
   MESH_STATUS_UNAVAILABLE,
   meshOutlook,
   ncbiErrorFromBody,
+  parseIndexingPage,
   parseJournalIds,
   parsePubDate,
   parseSummaries,
@@ -18,9 +19,40 @@ describe("buildTerm", () => {
     expect(buildTerm("  neoplasms[MeSH Terms]  ", [])).toBe("neoplasms[MeSH Terms]");
   });
 
-  it("ANDs the term with an OR-clause of journal names, stripping quotes", () => {
-    expect(buildTerm("neoplasms[MeSH Terms]", ["Lancet", 'The "BMJ"'])).toBe(
-      '(neoplasms[MeSH Terms]) AND ("Lancet"[Journal] OR "The BMJ"[Journal])'
+  it("ANDs the term with an OR-clause of the journals, each by its NLM id", () => {
+    // Not by name: the id is the journal, and two may go by one name.
+    expect(
+      buildTerm("neoplasms[MeSH Terms]", [
+        { name: "Lancet", nlm_id: "2985213R" },
+        { name: "Respir Res Clin Pract", nlm_id: "9919269228506676" },
+      ])
+    ).toBe('(neoplasms[MeSH Terms]) AND ("2985213R"[jid] OR "9919269228506676"[jid])');
+  });
+
+  it("searches two journals of one name apart", () => {
+    const nursing = (nlm_id: string) => buildTerm("x[MeSH]", [{ name: "Nursing", nlm_id }]);
+    expect(nursing("0000001")).toBe('(x[MeSH]) AND ("0000001"[jid])');
+    expect(nursing("0000002")).toBe('(x[MeSH]) AND ("0000002"[jid])');
+  });
+
+  it("falls back to the name, quotes stripped, for a journal stored with no id", () => {
+    expect(
+      buildTerm("neoplasms[MeSH Terms]", [
+        { name: "Lancet", nlm_id: "2985213R" },
+        { name: 'The "BMJ"', nlm_id: null },
+      ])
+    ).toBe('(neoplasms[MeSH Terms]) AND ("2985213R"[jid] OR "The BMJ"[Journal])');
+  });
+
+  it("keeps an id from breaking out of its field", () => {
+    // Letters and digits are all an NLM id has. One stored with more can't
+    // close the quote and add a clause of its own.
+    expect(buildTerm("x[MeSH]", [{ name: "Lancet", nlm_id: '2985213R"[jid] OR all[sb] OR "' }])).toBe(
+      '(x[MeSH]) AND ("2985213RjidORallsbOR"[jid])'
+    );
+    // And one that is nothing but those falls back to the name.
+    expect(buildTerm("x[MeSH]", [{ name: "Lancet", nlm_id: '"' }])).toBe(
+      '(x[MeSH]) AND ("Lancet"[Journal])'
     );
   });
 });
@@ -48,8 +80,13 @@ describe("topicTerm", () => {
 
   it("survives buildTerm's journal clause as one requirement", () => {
     // The AND inside the term must not bind to the journals' OR.
-    expect(buildTerm(topicTerm([ATHERO, SLEEP]), ["Lancet", "BMJ"])).toBe(
-      '("Sleep"[MeSH] AND "Atherosclerosis"[MeSH]) AND ("Lancet"[Journal] OR "BMJ"[Journal])'
+    expect(
+      buildTerm(topicTerm([ATHERO, SLEEP]), [
+        { name: "Lancet", nlm_id: "2985213R" },
+        { name: "BMJ", nlm_id: "8900488" },
+      ])
+    ).toBe(
+      '("Sleep"[MeSH] AND "Atherosclerosis"[MeSH]) AND ("2985213R"[jid] OR "8900488"[jid])'
     );
   });
 });
@@ -330,6 +367,39 @@ describe("parseJournalIds", () => {
     expect(parseJournalIds({})).toEqual([]);
     expect(parseJournalIds(null)).toEqual([]);
     expect(parseJournalIds({ result: {} })).toEqual([]);
+  });
+});
+
+describe("parseIndexingPage", () => {
+  // An NLM Catalog page as esummary returns it: the Lancet, indexed now, under
+  // a record id that isn't its NLM id; Arch Intern Med, which ceased in 2012;
+  // an error stub; and a record with no NLM id.
+  const body = {
+    result: {
+      uids: ["446079", "372440", "7", "8"],
+      "446079": { uid: "446079", nlmuniqueid: "2985213R", currentindexingstatus: "Y" },
+      "372440": { uid: "372440", nlmuniqueid: "0372440", currentindexingstatus: "N" },
+      "7": { uid: "7", error: "cannot get document summary" },
+      "8": { uid: "8", currentindexingstatus: "Y" },
+    },
+  };
+
+  it("names each journal by its NLM id, and says whether it is indexed now", () => {
+    expect(parseIndexingPage(body)).toEqual([
+      { nlmId: "2985213R", current: true },
+      { nlmId: "0372440", current: false },
+    ]);
+  });
+
+  it("takes a journal with no status given as one not indexed now", () => {
+    const bare = { result: { uids: ["1"], "1": { uid: "1", nlmuniqueid: "0000001" } } };
+    expect(parseIndexingPage(bare)).toEqual([{ nlmId: "0000001", current: false }]);
+  });
+
+  it("returns empty for bodies without a result or uids", () => {
+    expect(parseIndexingPage({})).toEqual([]);
+    expect(parseIndexingPage(null)).toEqual([]);
+    expect(parseIndexingPage({ result: {} })).toEqual([]);
   });
 });
 

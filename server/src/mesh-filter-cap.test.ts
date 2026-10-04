@@ -1,6 +1,6 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 // What the subject filter does with more descriptors than it will take.
@@ -22,6 +22,15 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // another file set is still in force and every request 401s before it is read.
 process.env.ADMIN_TOKEN = "mesh-filter-cap-token";
 const HEADERS = { "x-admin-token": "mesh-filter-cap-token" };
+
+// The paper below has no citation counts, and the route that lists it asks
+// iCite for them before it answers: a request to icite.od.nih.gov from inside
+// a test, which a slow answer would time out. The counts are no part of what
+// is asked here.
+vi.mock("./icite.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./icite.js")>();
+  return { ...actual, ensureCitations: async () => {} };
+});
 
 let db: Db;
 let server: Server;

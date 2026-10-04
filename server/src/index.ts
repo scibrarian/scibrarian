@@ -13,7 +13,7 @@ import {
   PORT,
   setBoundPort,
 } from "./config.js";
-import { db, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
+import { db, dropUnheldArticles, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
 import { api, isAdminRequest } from "./routes.js";
 import { loadPro, proInstalled } from "./pro-hooks.js";
 import {
@@ -301,6 +301,23 @@ export async function start(options: StartOptions = {}): Promise<{ port: number;
         "from the edge login by design. Set ADMIN_TOKEN in server/.env (any value " +
         "will do for local development)."
     );
+  }
+
+  // The papers nothing holds any longer, taken now because now is when nothing
+  // is half way through storing one: before the bind, so no import or manual
+  // match can be running, and before loadPro, which arms Pro's sweep and its
+  // pulls. See dropUnheldArticles.
+  //
+  // It can't fail the start, as it can't fail a removal (sweepUnheld in
+  // routes.ts): what a failed sweep leaves behind is rows nobody can see, and
+  // the next removal to find the server idle, or the next start, takes them.
+  try {
+    const papers = dropUnheldArticles();
+    if (papers > 0) {
+      console.log(`[db] removed at startup — stored papers nothing held: ${papers}`);
+    }
+  } catch (err) {
+    console.warn(`[db] sweeping papers nothing holds failed at startup: ${errMessage(err)}`);
   }
 
   // Before the bind, so no request can arrive at a half-registered Pro router.

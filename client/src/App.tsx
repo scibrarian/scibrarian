@@ -77,6 +77,11 @@ function sameStamps(a: ProCollectionStamp[], b: ProCollectionStamp[]): boolean {
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
+  // Why the last reading of the topics failed, or null when it didn't. A read
+  // that fails leaves `topics` as it was — empty at first, or with a topic
+  // just removed still on it — and Settings, which lists them, has to be able
+  // to say that its list is not the truth.
+  const [topicsError, setTopicsError] = useState<string | null>(null);
   const [folders, setFolders] = useState<BookmarkFolder[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mode, setMode] = useState<Mode>("papers");
@@ -106,9 +111,12 @@ export default function App() {
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
-  // The topic dialog as the section bar opens it: closed, creating a topic, or
-  // editing this one. Settings has its own, over its own list.
+  // The topic dialog, the only one: closed, creating a topic, or editing this
+  // one. The section bar opens it, and so does the list in Settings.
   const [topicDialog, setTopicDialog] = useState<Topic | "new" | null>(null);
+  // Which of the two opened it. A ref, not state: nothing draws from it, and it
+  // is read once, when a topic is saved (see openTopicDialog).
+  const topicDialogInSettings = useRef(false);
   // "Do I already have this?" lives in the header rather than inside a
   // section: the question arrives from outside the app (an assignment, a
   // reference list someone sent) and has to be askable without first navigating
@@ -166,10 +174,14 @@ export default function App() {
   const stampsRead = useRef(0);
   const [unlocking, setUnlocking] = useState(false);
 
-  function loadTopics(): Promise<Topic[]> {
+  // The topics, read again. Answers with them, or with null when they couldn't
+  // be read: the list is then left as it was, and a caller that goes on to
+  // count what it got back has nothing to count.
+  function loadTopics(): Promise<Topic[] | null> {
     return api
       .getTopics()
       .then((ds) => {
+        setTopicsError(null);
         setTopics(ds);
         // Keep the selection valid against the fresh list: creating the first
         // topic selects it, deleting the active one falls back to the first
@@ -179,7 +191,10 @@ export default function App() {
         );
         return ds;
       })
-      .catch(() => []);
+      .catch((e) => {
+        setTopicsError(errorMessage(e));
+        return null;
+      });
   }
 
   function loadFolders(): Promise<BookmarkFolder[]> {
@@ -380,7 +395,7 @@ export default function App() {
         // to the first section with anything in it, which made where the app
         // opened depend on what you happened to have filed.
         if (fs.length > 0) setActiveFolderId(fs[0].id);
-        if (ds.length > 0) setActiveTopicId(ds[0].id);
+        if (ds && ds.length > 0) setActiveTopicId(ds[0].id);
         if (cs.length > 0) setActiveCollectionId(cs[0].id);
         // In the batch with everything above, and with whatever a loader set
         // on its way here. `loaded` follows once that has committed.
@@ -436,7 +451,16 @@ export default function App() {
     }
   }
 
-  // A topic was created or edited, in the dialog here or the one in Settings.
+  // Open the topic dialog, from the section bar or from the list in Settings.
+  // Where from decides one thing: a topic made from the section bar is where
+  // the reader goes next, and one made in Settings leaves them at the list it
+  // has just joined, as it did when Settings had a dialog of its own.
+  function openTopicDialog(which: Topic | "new", inSettings = false) {
+    topicDialogInSettings.current = inSettings;
+    setTopicDialog(which);
+  }
+
+  // A topic was created or edited.
   // Its row is stale either way; its papers are stale only if a change of scope
   // took some out, and then only its own feed is — no other topic was touched.
   async function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
@@ -706,10 +730,12 @@ export default function App() {
       const res = await api.refresh(activeTopicId ?? undefined);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
-      const after = countPapers(await loadTopics());
+      const fresh = await loadTopics();
       // Polling only adds, but papers can leave the feeds between refreshes
-      // (e.g. a journal removal); surface that instead of just "Added 0".
-      const removed = Math.max(0, before + added - after);
+      // (e.g. a journal removal); surface that instead of just "Added 0". Not
+      // when the topics couldn't be read again: there is no count to compare
+      // with then, and taken as none it reported every paper as removed.
+      const removed = fresh ? Math.max(0, before + added - countPapers(fresh)) : 0;
       let msg = `Added ${added} new paper${added === 1 ? "" : "s"}.`;
       if (removed > 0) msg += ` Removed ${removed} paper${removed === 1 ? "" : "s"}.`;
       // PubMed hands over at most the first 9,999 records per query, so a broad
@@ -1182,8 +1208,8 @@ export default function App() {
           onSelectCollection={selectCollection}
           onCreateFolder={() => setNamingFolder(true)}
           onCreateCollection={() => setNamingCollection(true)}
-          onAddTopic={() => setTopicDialog("new")}
-          onEditTopic={() => activeTopic && setTopicDialog(activeTopic)}
+          onAddTopic={() => openTopicDialog("new")}
+          onEditTopic={() => activeTopic && openTopicDialog(activeTopic)}
           onShareError={setStatus}
         />
       </div>
@@ -1232,8 +1258,11 @@ export default function App() {
           <Settings
             pro={pro}
             viewerCache={viewerCache}
+            topics={topics}
+            topicsError={topicsError}
+            onAddTopic={() => openTopicDialog("new", true)}
+            onEditTopic={(topic) => openTopicDialog(topic, true)}
             onDataChanged={loadTopics}
-            onTopicSaved={handleTopicSaved}
             onPairingChanged={handlePairingChanged}
             onSharingChanged={handleSharingChanged}
             onPapersRemoved={(count) => {
@@ -1379,9 +1408,12 @@ export default function App() {
         onClose={() => setTopicDialog(null)}
         onSaved={(saved, outcome) => {
           // A new topic is where the reader goes next: it has no papers until
-          // it is checked, and its own view is where that button is.
+          // it is checked, and its own view is where that button is. Unless it
+          // was made in Settings — read now, before the wait, while the answer
+          // is still this opening's.
+          const stay = topicDialogInSettings.current;
           void handleTopicSaved(saved, outcome).then(
-            () => outcome.created && selectTopic(saved.id)
+            () => outcome.created && !stay && selectTopic(saved.id)
           );
         }}
       />

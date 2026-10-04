@@ -11,6 +11,7 @@ const row = (nlm_id: string, title: string, metric: number | null): CatalogRow =
   issn_online: "",
   metric,
   metric_fetched_at: null,
+  medline: "current",
 });
 
 describe("topByCount", () => {
@@ -57,6 +58,7 @@ describe("toSuggestion", () => {
       abbr: "Journal Nine abbr",
       issn: "issn-9",
       metric: 2.5,
+      medline: "current",
     });
   });
 });

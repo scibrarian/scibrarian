@@ -55,10 +55,23 @@ vi.mock("./pubmed.js", async (importOriginal) => {
   };
 });
 
+// The vocabulary is seeded below (seedMesh), and that is all of it there is to
+// load. Left alone, the first route to read a heading asks NLM which MeSH year
+// is current before it answers: a request to nlmpubs.nlm.nih.gov from inside a
+// test. On a slow day it outlasted that test's five seconds, and the topic it
+// went on to create landed in the next test, which was refused as a duplicate.
+// From the day NLM publishes a year newer than the one seeded, it would have
+// downloaded that year over the seed.
+vi.mock("./mesh-catalog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mesh-catalog.js")>();
+  return { ...actual, ensureMeshLoaded: async () => {} };
+});
+
 let db: Db;
 let server: Server;
 let base: string;
 let withPollLock: typeof import("./poller.js").withPollLock;
+let pollTopic: typeof import("./poller.js").pollTopic;
 
 const TERM = '"Adipose Tissue"[MeSH]';
 const ADIPOSE = { ui: "D000273", name: "Adipose Tissue" };
@@ -129,7 +142,7 @@ beforeAll(async () => {
   // index.ts builds the app at module scope and only listens inside start(),
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
-  ({ withPollLock } = await import("./poller.js"));
+  ({ withPollLock, pollTopic } = await import("./poller.js"));
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -299,6 +312,42 @@ describe("removing a topic", () => {
   });
 });
 
+describe("two journals that go by one name", () => {
+  // A journal is its NLM id. Its name is NLM's abbreviation, kept to show — and
+  // was what `journals` held unique, so a journal that shared one with a
+  // journal some topic already listed could be listed by nobody.
+  const NURSING = { nlmId: "0000001", name: "Nursing", medlineIndexed: true };
+  const NAMESAKE = { nlmId: "0000002", name: "Nursing", medlineIndexed: true };
+
+  it("are two journals, each on the list that asked for it", () => {
+    const a = db.createTopic("Adipose Tissue", TERM, [], list(NURSING)).id;
+    const b = db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(LANCET)).id;
+    change(b, list(LANCET, NAMESAKE));
+
+    expect(db.topicJournals(a).map((j) => j.nlm_id)).toEqual([NURSING.nlmId]);
+    expect(db.topicJournals(b).map((j) => j.nlm_id)).toEqual([LANCET.nlmId, NAMESAKE.nlmId]);
+    expect(journalRows()).toEqual(["Lancet", "Nursing", "Nursing"]);
+  });
+
+  it("and one journal is one row, whatever it is called the second time", () => {
+    db.createTopic("Adipose Tissue", TERM, [], list(NURSING));
+    expect(() => db.createJournal("Nursing (Lond)", NURSING.nlmId)).toThrow(/UNIQUE/);
+  });
+
+  it("are searched for apart, each topic for the one it lists", async () => {
+    // A poll searched by name, so the topic listing one got the papers of
+    // both, and dropping its journal later took only that journal's back out.
+    const a = db.createTopic("Adipose Tissue", TERM, [], list(NURSING)).id;
+    const b = db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(NAMESAKE)).id;
+    await pollTopic(a);
+    await pollTopic(b);
+    expect(ncbi.calls.map((c) => c.term)).toEqual([
+      `(${TERM}) AND ("${NURSING.nlmId}"[jid])`,
+      `("Obesity"[MeSH]) AND ("${NAMESAKE.nlmId}"[jid])`,
+    ]);
+  });
+});
+
 describe("the routes", () => {
   const create = (body: Record<string, unknown>) =>
     request("POST", "/topics", { headings: [ADIPOSE.ui], ...body });
@@ -380,6 +429,35 @@ describe("the routes", () => {
     const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
     const res = await request("PATCH", `/topics/${t}`, { name: "Fat", allPubmed: true });
     expect((await res.json()).topic).toMatchObject({ name: "Fat", all_pubmed: true });
+  });
+
+  it("refuse a list that names no journals, and change nothing", async () => {
+    // Half a scope used to be completed as an empty list, which took every
+    // paper out of the topic with no count shown ahead of it.
+    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
+    db.saveArticles([article("2", LANCET.nlmId)], t);
+
+    const res = await request("PATCH", `/topics/${t}`, { name: "Fat", allPubmed: false });
+    expect(res.status).toBe(400);
+    expect(exists("2")).toBe(true);
+    // Not half applied: the name that came with the refused scope isn't taken.
+    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
+
+    // Nor is a list written as something that isn't one: null is what a client
+    // with no list to send often writes, and it was completed the same way.
+    for (const journals of [null, "", "2985213R", {}]) {
+      const half = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals });
+      expect(half.status).toBe(400);
+      expect((await request("PATCH", `/topics/${t}`, { journals })).status).toBe(400);
+    }
+    expect(exists("2")).toBe(true);
+    expect(db.getTopic(t)).toMatchObject({ journalCount: 1 });
+
+    // An empty list asked for by name is a scope like any other.
+    const emptied = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals: [] });
+    expect(emptied.status).toBe(200);
+    expect(db.getTopic(t)).toMatchObject({ all_pubmed: false, journalCount: 0 });
+    expect(exists("2")).toBe(false);
   });
 
   it("refuse a change of scope while a poll holds the lock, and change nothing", async () => {

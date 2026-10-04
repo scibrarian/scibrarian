@@ -33,8 +33,10 @@ export function isImportRunning(collectionId: number): boolean {
   return jobs.get(collectionId)?.state === "running";
 }
 
-// The same question asked about every shelf at once, for the one caller that
-// cannot name a collection: a whole-library reset.
+// The same question asked about every shelf at once, for the callers that
+// cannot name a collection: a whole-library reset, and the sweep of papers
+// nothing holds (sweepUnheld in routes.ts), which an import's stored and not
+// yet matched papers would otherwise be among.
 //
 // An import is the only work in this process that writes rows on a timer of its
 // own making — it matches, calls setFileMatched, and stores extracted text long
