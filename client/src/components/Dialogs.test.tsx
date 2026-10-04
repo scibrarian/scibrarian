@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { PromptDialog } from "./Dialogs";
+import { ConfirmDialog, PromptDialog } from "./Dialogs";
+import { withAnExitAnimation } from "./test-exit-animation";
 
 afterEach(cleanup);
 
@@ -81,5 +82,57 @@ describe("PromptDialog's pinned option row", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Local notes" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(onSubmit).toHaveBeenCalledWith("Local notes", false);
+  });
+});
+
+// A ConfirmDialog on its way out, which is when its words used to change.
+//
+// The answer to one is usually what changes the thing it asked about. The
+// table's "Remove 2 papers?" is titled from the ticks, and removing clears
+// them, so for the length of its exit the dialog read "Remove 0 papers?".
+//
+// The button follows the ticks here too, which no caller's does. It is held
+// with the rest, and a fixture that kept it constant could not show that.
+const removal = (open: boolean, ticked: number) => (
+  <ConfirmDialog
+    open={open}
+    title={`Remove ${ticked} papers?`}
+    message={ticked > 0 ? "Only this folder's list changes." : ""}
+    confirmLabel={ticked > 0 ? "Remove" : "Nothing to remove"}
+    danger={ticked > 0}
+    onConfirm={() => {}}
+    onCancel={() => {}}
+  />
+);
+
+describe("a ConfirmDialog while it closes", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the words it was answered with", () => {
+    withAnExitAnimation();
+    const { rerender } = render(removal(true, 2));
+    expect(screen.getByRole("heading", { name: "Remove 2 papers?" })).toBeTruthy();
+
+    // Answered: it closes, and a moment later what it asked about is gone.
+    rerender(removal(false, 2));
+    rerender(removal(false, 0));
+    expect(screen.getByText("Remove 2 papers?")).toBeTruthy();
+    expect(screen.getByText("Only this folder's list changes.")).toBeTruthy();
+    expect(screen.queryByText("Remove 0 papers?")).toBeNull();
+    // The button too: what it said, and that it was the dangerous one.
+    expect(screen.getByRole("button", { name: "Remove" }).className).toBe("danger");
+    expect(screen.queryByRole("button", { name: "Nothing to remove" })).toBeNull();
+  });
+
+  it("asks afresh the next time it opens", () => {
+    withAnExitAnimation();
+    const { rerender } = render(removal(true, 2));
+    rerender(removal(false, 0));
+    // Still up, and still the old question: the state the next opening has to
+    // leave. Without this the test passes on a dialog that was never held.
+    expect(screen.getByText("Remove 2 papers?")).toBeTruthy();
+    rerender(removal(true, 5));
+    expect(screen.getByRole("heading", { name: "Remove 5 papers?" })).toBeTruthy();
+    expect(screen.queryByText("Remove 2 papers?")).toBeNull();
   });
 });

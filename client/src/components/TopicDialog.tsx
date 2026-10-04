@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, plural } from "../lib/format";
+import { useHeldWhile } from "../lib/hooks";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
 import { InfoTip } from "./InfoTip";
@@ -105,8 +106,7 @@ export function TopicDialog({
   // on screen after that for as long as its exit animation runs — as a dialog
   // for no topic, which is the New topic form. Cancel on an edit flashed that
   // form on the way out.
-  const [topic, setTopic] = useState(current);
-  if (open && topic !== current) setTopic(current);
+  const topic = useHeldWhile(open, current);
 
   const [headings, setHeadings] = useState<MeshDescriptorRef[]>([]);
   const [query, setQuery] = useState("");

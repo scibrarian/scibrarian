@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState, type FormEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useHeldWhile } from "../lib/hooks";
 
 // Radix-backed replacements for window.prompt/confirm. Radix supplies the
 // behavior a hand-rolled modal misses — focus trap, Escape, focus restore, aria
@@ -147,15 +148,31 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  // What it asked, as of the last render it was open for.
+  //
+  // Answering closes it, and it stays painted for its exit after that (see
+  // .modal[data-state="closed"]). Drawn from its props, it spent that exit
+  // rewording itself, because the answer is usually what changes the thing the
+  // question was about: "Remove 2 papers?" read "Remove 0 papers?" once the
+  // ticks were cleared, and a title built from the topic being removed went
+  // blank, and its message with it. A closing dialog is a picture of what was
+  // asked, so it keeps the words it was answered with until it next opens.
+  // Held a field at a time: see useHeldWhile for why not as one object.
+  const shown = {
+    title: useHeldWhile(open, title),
+    message: useHeldWhile(open, message),
+    confirmLabel: useHeldWhile(open, confirmLabel),
+    danger: useHeldWhile(open, danger),
+  };
   return (
-    <ModalShell open={open} onClose={onCancel} title={title}>
-      <p className="modal-message">{message}</p>
+    <ModalShell open={open} onClose={onCancel} title={shown.title}>
+      <p className="modal-message">{shown.message}</p>
       <div className="modal-actions">
         <button type="button" onClick={onCancel}>
           Cancel
         </button>
-        <button type="button" className={danger ? "danger" : "primary"} onClick={onConfirm}>
-          {confirmLabel}
+        <button type="button" className={shown.danger ? "danger" : "primary"} onClick={onConfirm}>
+          {shown.confirmLabel}
         </button>
       </div>
     </ModalShell>

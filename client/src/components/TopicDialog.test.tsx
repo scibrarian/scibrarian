@@ -2,6 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { TopicDialog, describeTopicSave } from "./TopicDialog";
+import { withAnExitAnimation } from "./test-exit-animation";
 import { MAX_TOPIC_HEADINGS } from "../../../shared/limits";
 import type { Journal, JournalSearchResult, MeshSearchResult, Topic, TopicDetail } from "../types";
 
@@ -506,6 +507,27 @@ describe("editing a topic", () => {
     await act(async () => answer({ results: [CIRC] }));
     expect(listed()).toEqual(["Lancet"]);
     expect(submit("Save").disabled).toBe(true);
+  });
+});
+
+// The dialog on its way out. Both callers clear the topic in the update that
+// closes it, and it stays on screen for its exit after that — as a dialog for
+// no topic, which is the New topic form. Cancel on an edit flashed that form.
+describe("a topic dialog while it closes", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("is still the dialog for the topic it was editing", async () => {
+    withAnExitAnimation();
+    const rest = { topics: [TOPIC], onClose: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<TopicDialog open topic={TOPIC} {...rest} />);
+    await listLoaded();
+
+    rerender(<TopicDialog open={false} topic={null} {...rest} />);
+    expect(screen.getByRole("heading", { name: "Edit topic" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "New topic" })).toBeNull();
+    // And is the edit form under that heading, not the one that picks headings.
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   });
 });
 

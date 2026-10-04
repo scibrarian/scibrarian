@@ -12,6 +12,24 @@ export function useDebounced<T>(value: T, ms: number): T {
   return debounced;
 }
 
+// The given value, as of the last render `live` was true for.
+//
+// For what stays on screen after the thing it was about has gone. A dialog is
+// painted for the length of its exit, and its callers clear what it asked about
+// in the same update that closes it; read live, it spent that exit as a dialog
+// about nothing (see ConfirmDialog and TopicDialog).
+//
+// State set during render rather than a ref written during one. React answers
+// the set by rendering again before anything is painted, and a render it throws
+// away takes the state with it, where a ref would stay written. Compared by
+// identity, so an object has to come from a prop or from state: one built in
+// the calling render is new on every pass, and would set without end.
+export function useHeldWhile<T>(live: boolean, value: T): T {
+  const [held, setHeld] = useState(value);
+  if (live && !Object.is(held, value)) setHeld(value);
+  return live ? value : held;
+}
+
 // Whether a media query matches, kept current as it changes. False, and
 // inert, where there is no matchMedia (jsdom): the two callers below are a
 // colour the canvas picks and a column the table drops, and a test runtime

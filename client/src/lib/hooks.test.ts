@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import {
   useCachedFetch,
+  useHeldWhile,
   useMediaQuery,
   useRecent,
   useReveal,
@@ -303,6 +304,39 @@ describe("warmCache", () => {
     await warmCache(cache, "a", 0, fetcher);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(cache.get("a")).toEqual({ token: 0, data: "warmed" });
+  });
+});
+
+describe("useHeldWhile", () => {
+  type Held = { live: boolean; value: string };
+  const hold = (initial: Held) =>
+    renderHook(({ live, value }: Held) => useHeldWhile(live, value), { initialProps: initial });
+
+  it("follows the value for as long as it is live", () => {
+    const { result, rerender } = hold({ live: true, value: "Remove 2 papers?" });
+    expect(result.current).toBe("Remove 2 papers?");
+    rerender({ live: true, value: "Remove 3 papers?" });
+    expect(result.current).toBe("Remove 3 papers?");
+  });
+
+  it("keeps the last live value once it is not", () => {
+    // Closed and cleared in one update, which is how a dialog's callers do it,
+    // and cleared again after: neither reaches what is still on screen.
+    const { result, rerender } = hold({ live: true, value: "Remove 2 papers?" });
+    rerender({ live: false, value: "Remove 0 papers?" });
+    expect(result.current).toBe("Remove 2 papers?");
+    rerender({ live: false, value: "" });
+    expect(result.current).toBe("Remove 2 papers?");
+  });
+
+  it("takes up the value again when it next goes live", () => {
+    const { result, rerender } = hold({ live: true, value: "Remove 2 papers?" });
+    rerender({ live: false, value: "" });
+    rerender({ live: true, value: "Remove 5 papers?" });
+    expect(result.current).toBe("Remove 5 papers?");
+    // And that is what it holds from then on, not the first one.
+    rerender({ live: false, value: "" });
+    expect(result.current).toBe("Remove 5 papers?");
   });
 });
 
