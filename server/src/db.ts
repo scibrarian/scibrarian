@@ -61,6 +61,9 @@ export function transaction<A extends unknown[], R>(fn: (...args: A) => R): (...
   };
 }
 
+// `n` placeholders for an IN list of that many bound values.
+const marks = (n: number) => Array(n).fill("?").join(",");
+
 // Named because it is run twice: by the schema below, and again by the rebuild
 // in migrations when an existing index was built with another tokenizer. The
 // tokenizer, and why it doesn't stem, is FTS_TOKENIZE in fts-query.ts.
@@ -109,6 +112,11 @@ db.exec(`
   -- deleted with the last of those rows (DROP_UNLISTED_JOURNALS), so this never
   -- holds a journal that nothing searches.
   --
+  -- nlm_id is the journal, and what is unique here (idx_journals_nlm_id). The
+  -- name is not: it is NLM's abbreviation as it stood when the journal was
+  -- first listed, kept to show, and a second journal that goes by one already
+  -- here is still a journal a topic can list.
+  --
   -- medline_indexed: does NLM currently index this journal for MEDLINE? 1/0, or
   -- NULL for "not established yet" — the add-time check couldn't reach NCBI.
   -- Only 0 is worth showing the user: topics are MeSH terms and an unindexed
@@ -118,7 +126,7 @@ db.exec(`
   -- every topic has dropped it and one lists it again.
   CREATE TABLE IF NOT EXISTS journals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     nlm_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     medline_indexed INTEGER
@@ -380,7 +388,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_title ON journal_catalog(title COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_journal_catalog_abbr ON journal_catalog(med_abbr COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_articles_nlm_id ON articles(nlm_id);
-  CREATE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_journals_nlm_id ON journals(nlm_id);
   CREATE INDEX IF NOT EXISTS idx_mesh_descriptors_name ON mesh_descriptors(name COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_term ON mesh_entry_terms(term COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_mesh_entry_terms_ui ON mesh_entry_terms(ui);
@@ -604,7 +612,7 @@ export function topicByHeadings(uis: string[]): Topic | undefined {
       `${TOPIC_SELECT}
        WHERE (SELECT COUNT(*) FROM topic_terms tt WHERE tt.topic_id = t.id) = ?
          AND (SELECT COUNT(*) FROM topic_terms tt
-              WHERE tt.topic_id = t.id AND tt.ui IN (${uis.map(() => "?").join(",")})) = ?`
+              WHERE tt.topic_id = t.id AND tt.ui IN (${marks(uis.length)})) = ?`
     )
     .get(uis.length, ...uis, uis.length) as TopicRow | undefined;
   return row && toTopic(row);
@@ -858,8 +866,6 @@ export const markJournalsScanned = transaction((topicId: number, journalIds: num
 });
 
 // ---------- changing what a topic searches ----------
-
-const marks = (n: number) => Array(n).fill("?").join(",");
 
 // The papers in a topic's feed, with the journal each is filed under to test.
 const TOPIC_LINKS = `SELECT at.pmid FROM article_topics at
@@ -1240,7 +1246,7 @@ export const saveArticleMesh = transaction((rows: ArticleMeshInsert[]) => {
 // Everything outside it is treated as still in flight, matching meshOutlook —
 // the two readings of PubMed's status vocabulary have to agree, so the SQL side
 // derives its list from the same constant rather than repeating the strings.
-const SETTLED_PLACEHOLDERS = MESH_SETTLED_STATUSES.map(() => "?").join(",");
+const SETTLED_PLACEHOLDERS = marks(MESH_SETTLED_STATUSES.length);
 const SETTLED_PARAMS = [...MESH_SETTLED_STATUSES];
 
 // The backfill's work list: articles nobody has fetched headings for, plus ones
@@ -1413,7 +1419,7 @@ function meshPredicate(
   if (!uis || uis.length === 0) return "";
   const wanted = [...new Set(uis)];
   params.push(...wanted, wanted.length);
-  const placeholders = wanted.map(() => "?").join(",");
+  const placeholders = marks(wanted.length);
   return `a.pmid IN (SELECT am.pmid FROM article_mesh am
                      WHERE am.ui IN (${placeholders})${major ? " AND am.major = 1" : ""}
                      GROUP BY am.pmid HAVING COUNT(*) = ?)`;
@@ -1792,8 +1798,8 @@ export function suggestTopicsFromLibrary(limit = 12): TopicSuggestion[] {
               COUNT(*) AS papers, SUM(am.major) AS majorPapers
        FROM ${HELD_PAPERS} held
        JOIN article_mesh am ON am.pmid = held.pmid
-       WHERE am.ui NOT IN (${excluded.map(() => "?").join(",")})
-         AND am.name NOT IN (${excludedNames.map(() => "?").join(",")})
+       WHERE am.ui NOT IN (${marks(excluded.length)})
+         AND am.name NOT IN (${marks(excludedNames.length)})
          AND NOT EXISTS (
            SELECT 1 FROM topic_terms tt
            WHERE tt.ui = am.ui

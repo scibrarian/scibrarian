@@ -469,13 +469,6 @@ async function resolveScope(body: unknown): Promise<{ scope: TopicScope } | Refu
   return { scope: { allPubmed: false, journals } };
 }
 
-// A journal's name is unique in `journals`, and two catalog entries can share
-// one. The index is the arbiter; this turns its error into something sayable
-// (see rethrowUnlessUnique).
-function rethrowUnlessJournalNameClash(err: unknown, res: Response): void {
-  rethrowUnlessUnique(err, res, "Two of those journals go by the same name. Remove one of them.");
-}
-
 const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, journals: topicJournals(id) });
 
 // badName for a topic, with the longer cap a topic's name gets (see
@@ -514,12 +507,8 @@ api.post(
     const scoped = await resolveScope(req.body);
     if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
     if (taken()) return;
-    try {
-      const topic = createTopic(name, term, headings, scoped.scope);
-      res.status(201).json(topicDetail(topic.id));
-    } catch (err) {
-      rethrowUnlessJournalNameClash(err, res);
-    }
+    const topic = createTopic(name, term, headings, scoped.scope);
+    res.status(201).json(topicDetail(topic.id));
   })
 );
 
@@ -599,6 +588,15 @@ api.patch(
 
     let removed: JournalRemovalResult = { deletedArticles: 0, removedFromInterests: 0 };
     if (req.body?.allPubmed !== undefined || req.body?.journals !== undefined) {
+      // A scope is replaced whole, so half of one is refused rather than
+      // completed: a list with no `journals` would resolve to an empty one and
+      // take every paper out of the topic, with no count shown ahead of it. An
+      // empty list is still there to be asked for, by name.
+      if (req.body.allPubmed !== true && req.body.journals === undefined) {
+        return res
+          .status(400)
+          .json({ error: "'journals' is required unless 'allPubmed' is true." });
+      }
       const scoped = await resolveScope(req.body);
       if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
       // Asked again, as POST /topics asks twice: resolving the journals can
@@ -607,17 +605,13 @@ api.patch(
       // leaves the scope unchanged too; nothing from here to the rename waits
       // on anything outside this process.
       if (renaming && nameTaken(res, "topic", topicByName(name), id)) return;
-      try {
-        const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
-        if (result === null) {
-          return res
-            .status(409)
-            .json({ error: "A check for new papers is running. Try again in a moment." });
-        }
-        removed = result;
-      } catch (err) {
-        return rethrowUnlessJournalNameClash(err, res);
+      const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
+      if (result === null) {
+        return res
+          .status(409)
+          .json({ error: "A check for new papers is running. Try again in a moment." });
       }
+      removed = result;
     }
     // Last, so a scope that was refused doesn't leave the topic renamed.
     if (renaming) renameTopic(id, name);
@@ -1036,18 +1030,11 @@ function nameTaken(
 
 // The lookup above and the write below aren't atomic, so two same-name requests
 // can both pass the check. The unique index is the real arbiter; translate its
-// error into the same 409 the check would have sent.
-function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
-  rethrowUnlessUnique(err, res, `That ${label} name is already taken.`);
-}
-
-// A unique index's refusal as the 409 it stands for, saying `error`. One
-// reading of what such a refusal looks like, for the section names above and
-// for a topic's journals (rethrowUnlessJournalNameClash). Anything else is the
+// error into the same 409 the check would have sent. Anything else is the
 // error middleware's to log and answer.
-function rethrowUnlessUnique(err: unknown, res: Response, error: string): void {
+function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
   if (!/UNIQUE/i.test(errMessage(err))) throw err;
-  res.status(409).json({ error });
+  res.status(409).json({ error: `That ${label} name is already taken.` });
 }
 
 // ---------- bookmark folders (saved papers) ----------

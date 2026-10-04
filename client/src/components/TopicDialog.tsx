@@ -130,6 +130,12 @@ export function TopicDialog({
   const [confirm, setConfirm] = useState<{ title: string; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why the stored scope didn't come, when it didn't. Kept apart from `error`,
+  // which the banner shows and anyone can dismiss: this one stands where the
+  // journals would be, beside the button that asks again. `attempt` counts the
+  // askings, so each is a run of the effect that fetches.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   const editing = topic != null;
 
@@ -149,6 +155,7 @@ export function TopicDialog({
     setConfirm(null);
     setSaving(false);
     setError(null);
+    setLoadError(null);
     // Keyed on which topic, not on the object: the shell reloads its topics
     // when a check for new papers lands, which hands this a new object for the
     // same topic and would otherwise wipe a name half typed.
@@ -170,11 +177,11 @@ export function TopicDialog({
         setAllPubmed(detail.all_pubmed);
         setJournals(list);
       })
-      .catch((e) => active && setError(errorMessage(e)));
+      .catch((e) => active && setLoadError(errorMessage(e)));
     return () => {
       active = false;
     };
-  }, [open, topicId]);
+  }, [open, topicId, attempt]);
 
   // Topics the Library's own filing points at, so the first heading doesn't
   // have to be guessed cold. Advisory: the dialog is whole without them.
@@ -249,13 +256,19 @@ export function TopicDialog({
   const rescoped =
     stored != null &&
     (allPubmed !== stored.allPubmed || (!allPubmed && !sameJournals(journals, stored.journals)));
-  // The stored scope of the topic being edited is still on its way. It replaces
-  // whatever the dialog shows when it lands, so until then the scope is held
-  // still: a radio switched or a journal added first would be put back.
-  const loading = topic != null && stored == null;
+  // The stored scope of the topic being edited isn't here: on its way, or it
+  // didn't come. It replaces whatever the dialog shows when it lands, so until
+  // then the scope is held still: a radio switched or a journal added first
+  // would be put back.
+  const unscoped = topic != null && stored == null;
+  // On its way, which is not the same as not coming: a load that failed used to
+  // read as one that never ended.
+  const loading = unscoped && loadError == null;
 
+  // A name can be saved without the stored scope: `rescoped` is false until it
+  // arrives, so that request carries the name and nothing else.
   const canSave = topic
-    ? stored != null && typedName !== "" && (renamed || rescoped)
+    ? typedName !== "" && (renamed || rescoped)
     : headings.length > 0;
 
   async function commit() {
@@ -266,10 +279,8 @@ export function TopicDialog({
       let saved: TopicDetail;
       let removed = 0;
       if (topic) {
-        const res = await api.updateTopic(topic.id, {
-          ...(renamed ? { name: typedName } : {}),
-          ...(rescoped ? scope : {}),
-        });
+        const change = renamed ? { name: typedName } : {};
+        const res = await api.updateTopic(topic.id, rescoped ? { ...change, ...scope } : change);
         saved = res.topic;
         removed = res.removed.removedFromInterests;
       } else {
@@ -465,7 +476,7 @@ export function TopicDialog({
                 name="topic-scope"
                 checked={allPubmed}
                 onChange={() => setAllPubmed(true)}
-                disabled={saving || loading}
+                disabled={saving || unscoped}
               />
               All of PubMed
             </label>
@@ -475,12 +486,30 @@ export function TopicDialog({
                 name="topic-scope"
                 checked={!allPubmed}
                 onChange={() => setAllPubmed(false)}
-                disabled={saving || loading}
+                disabled={saving || unscoped}
               />
               Only these journals
             </label>
           </div>
-          {!allPubmed && (
+          {/* In the journals' place, not above empty panes: "No journals chosen
+              yet." is a claim about the topic, and a request that never
+              answered is no ground for it. */}
+          {loadError != null && (
+            <p className="topic-scope-failed" role="alert">
+              Couldn’t load this topic’s journals: {loadError}{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setLoadError(null);
+                  setAttempt((n) => n + 1);
+                }}
+                disabled={saving}
+              >
+                Try again
+              </button>
+            </p>
+          )}
+          {!allPubmed && loadError == null && (
             <JournalPanes
               original={stored?.journals ?? []}
               value={journals}

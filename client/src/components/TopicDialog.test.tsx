@@ -322,6 +322,35 @@ describe("editing a topic", () => {
     expect(auto().disabled).toBe(false);
   });
 
+  it("says so when the stored scope can't be had, and still saves a new name", async () => {
+    // A load that failed used to read as one that never ended: the list stayed
+    // a skeleton and Save stayed off, even for a name, which waits on no list.
+    api.getTopic.mockRejectedValue(new Error("network"));
+    const { onSaved } = open(TOPIC);
+    expect((await screen.findByRole("alert")).textContent).toContain("network");
+    // No panes to call the list empty: nothing has said that it is.
+    expect(screen.queryByRole("region", { name: "This topic's journals" })).toBeNull();
+    // Still held: a scope saved now would replace one nobody has seen.
+    expect(scopeRadio("All of PubMed").disabled).toBe(true);
+    expect(scopeRadio("Only these journals").disabled).toBe(true);
+
+    fireEvent.change(nameBox(), { target: { value: "Arteries at night" } });
+    fireEvent.click(submit("Save"));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(api.updateTopic).toHaveBeenCalledWith(7, { name: "Arteries at night" });
+  });
+
+  it("asks for the stored scope again when told to", async () => {
+    api.getTopic.mockRejectedValueOnce(new Error("network"));
+    open(TOPIC);
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    await listLoaded();
+    expect(api.getTopic).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(scopeRadio("All of PubMed").disabled).toBe(false);
+    expect(scopeRadio("Only these journals").disabled).toBe(false);
+  });
+
   it("saves a new name, and only a new one, without touching the scope", async () => {
     const { onSaved } = open(TOPIC);
     await listLoaded();
@@ -380,6 +409,20 @@ describe("editing a topic", () => {
     // The dropped journal is still dropped, and still within reach to put back.
     expect(listed()).toEqual(["BMJ"]);
     expect(within(catalogPane()).getByRole("checkbox", { name: /^Lancet/ })).toBeTruthy();
+  });
+
+  it("shows a dropped journal under the name it was listed by", async () => {
+    // The left pane title-cases what the catalog sends, and did the same to a
+    // stored name on its way back there: "Zhonghua yi xue za zhi" left the
+    // list and turned up beside it as "Zhonghua Yi Xue Za Zhi".
+    const zhonghua = journal(3, "7511141", "Zhonghua yi xue za zhi");
+    api.getTopic.mockResolvedValue({ ...DETAIL, journals: [BMJ, zhonghua] });
+    open(TOPIC);
+    await waitFor(() => expect(listed()).toEqual(["BMJ", "Zhonghua yi xue za zhi"]));
+    drop("Zhonghua");
+    expect(
+      within(catalogPane()).getByRole("checkbox", { name: /^Zhonghua yi xue za zhi/ })
+    ).toBeTruthy();
   });
 
   it("doesn't ask when the change takes nothing out", async () => {

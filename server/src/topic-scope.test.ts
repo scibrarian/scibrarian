@@ -299,6 +299,29 @@ describe("removing a topic", () => {
   });
 });
 
+describe("two journals that go by one name", () => {
+  // A journal is its NLM id. Its name is NLM's abbreviation, kept to show — and
+  // was what `journals` held unique, so a journal that shared one with a
+  // journal some topic already listed could be listed by nobody.
+  const NURSING = { nlmId: "0000001", name: "Nursing", medlineIndexed: true };
+  const NAMESAKE = { nlmId: "0000002", name: "Nursing", medlineIndexed: true };
+
+  it("are two journals, each on the list that asked for it", () => {
+    const a = db.createTopic("Adipose Tissue", TERM, [], list(NURSING)).id;
+    const b = db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(LANCET)).id;
+    change(b, list(LANCET, NAMESAKE));
+
+    expect(db.topicJournals(a).map((j) => j.nlm_id)).toEqual([NURSING.nlmId]);
+    expect(db.topicJournals(b).map((j) => j.nlm_id)).toEqual([LANCET.nlmId, NAMESAKE.nlmId]);
+    expect(journalRows()).toEqual(["Lancet", "Nursing", "Nursing"]);
+  });
+
+  it("and one journal is one row, whatever it is called the second time", () => {
+    db.createTopic("Adipose Tissue", TERM, [], list(NURSING));
+    expect(() => db.createJournal("Nursing (Lond)", NURSING.nlmId)).toThrow(/UNIQUE/);
+  });
+});
+
 describe("the routes", () => {
   const create = (body: Record<string, unknown>) =>
     request("POST", "/topics", { headings: [ADIPOSE.ui], ...body });
@@ -380,6 +403,25 @@ describe("the routes", () => {
     const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
     const res = await request("PATCH", `/topics/${t}`, { name: "Fat", allPubmed: true });
     expect((await res.json()).topic).toMatchObject({ name: "Fat", all_pubmed: true });
+  });
+
+  it("refuse a list that names no journals, and change nothing", async () => {
+    // Half a scope used to be completed as an empty list, which took every
+    // paper out of the topic with no count shown ahead of it.
+    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
+    db.saveArticles([article("2", LANCET.nlmId)], t);
+
+    const res = await request("PATCH", `/topics/${t}`, { name: "Fat", allPubmed: false });
+    expect(res.status).toBe(400);
+    expect(exists("2")).toBe(true);
+    // Not half applied: the name that came with the refused scope isn't taken.
+    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
+
+    // An empty list asked for by name is a scope like any other.
+    const emptied = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals: [] });
+    expect(emptied.status).toBe(200);
+    expect(db.getTopic(t)).toMatchObject({ all_pubmed: false, journalCount: 0 });
+    expect(exists("2")).toBe(false);
   });
 
   it("refuse a change of scope while a poll holds the lock, and change nothing", async () => {

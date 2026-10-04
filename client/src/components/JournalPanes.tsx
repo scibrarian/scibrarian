@@ -373,7 +373,10 @@ export function JournalPanes({
             {leftRows.map((r) =>
               renderRow({
                 key: r.nlm_id,
-                name: titleCaseJournal(r.title),
+                // A dropped journal goes by the name it had on the right, as
+                // stored. That is no catalog title to be cased, and cased it
+                // read as another journal than the one just removed.
+                name: droppedIds.has(r.nlm_id) ? r.title : titleCaseJournal(r.title),
                 metric: r.metric,
                 selected: leftSelected.has(r.nlm_id),
                 onToggle: () => setLeftSelected(toggled(leftSelected, r.nlm_id)),
