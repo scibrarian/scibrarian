@@ -164,6 +164,12 @@ export function ConfirmDialog({
     confirmLabel: useHeldWhile(open, confirmLabel),
     danger: useHeldWhile(open, danger),
   };
+  // And it is answered once. The button outlives the answer by that same exit,
+  // still painted and still taking a click, so the second half of a
+  // double-click reached the caller again — a removal sent twice, whose second
+  // reply ("nothing was removed") replaced the first. Cancel is left live:
+  // closing what is already closing changes nothing.
+  const confirm = open ? onConfirm : undefined;
   return (
     <ModalShell open={open} onClose={onCancel} title={shown.title}>
       <p className="modal-message">{shown.message}</p>
@@ -171,7 +177,7 @@ export function ConfirmDialog({
         <button type="button" onClick={onCancel}>
           Cancel
         </button>
-        <button type="button" className={shown.danger ? "danger" : "primary"} onClick={onConfirm}>
+        <button type="button" className={shown.danger ? "danger" : "primary"} onClick={confirm}>
           {shown.confirmLabel}
         </button>
       </div>
@@ -238,7 +244,9 @@ export function PromptDialog({
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const v = value.trim();
-    if (v) onSubmit(v, checked);
+    // Only while open, for ConfirmDialog's reason: the form stays up for its
+    // exit with the name still in the box, and a second click resubmitted it.
+    if (open && v) onSubmit(v, checked);
   }
 
   return (

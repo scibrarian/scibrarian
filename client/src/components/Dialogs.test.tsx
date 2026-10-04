@@ -93,14 +93,14 @@ describe("PromptDialog's pinned option row", () => {
 //
 // The button follows the ticks here too, which no caller's does. It is held
 // with the rest, and a fixture that kept it constant could not show that.
-const removal = (open: boolean, ticked: number) => (
+const removal = (open: boolean, ticked: number, onConfirm = () => {}) => (
   <ConfirmDialog
     open={open}
     title={`Remove ${ticked} papers?`}
     message={ticked > 0 ? "Only this folder's list changes." : ""}
     confirmLabel={ticked > 0 ? "Remove" : "Nothing to remove"}
     danger={ticked > 0}
-    onConfirm={() => {}}
+    onConfirm={onConfirm}
     onCancel={() => {}}
   />
 );
@@ -134,5 +134,46 @@ describe("a ConfirmDialog while it closes", () => {
     rerender(removal(true, 5));
     expect(screen.getByRole("heading", { name: "Remove 5 papers?" })).toBeTruthy();
     expect(screen.queryByText("Remove 2 papers?")).toBeNull();
+  });
+
+  // The other thing its exit left live was the button. A closing dialog is
+  // still painted and still takes a click, so the second half of a double-click
+  // reached the caller again — and removing twice is not removing once: the
+  // second answer came back "nothing was removed" and replaced the first.
+  it("is answered once, though a second click lands on its way out", () => {
+    withAnExitAnimation();
+    const onConfirm = vi.fn();
+    const { rerender } = render(removal(true, 2, onConfirm));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    rerender(removal(false, 2, onConfirm));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The same stretch for a PromptDialog, where the second click is a second
+// submit: the box still holds the name, so "Create" asked for the collection
+// twice, and the second answer was a refusal of the name the first had taken.
+describe("a PromptDialog while it closes", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("submits once, though a second click lands on its way out", () => {
+    withAnExitAnimation();
+    const onSubmit = vi.fn();
+    const naming = (open: boolean) => (
+      <PromptDialog
+        open={open}
+        title="New collection"
+        submitLabel="Create"
+        onSubmit={onSubmit}
+        onCancel={() => {}}
+      />
+    );
+    const { rerender } = render(naming(true));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Trial data" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    rerender(naming(false));
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });
