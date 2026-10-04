@@ -59,6 +59,7 @@ let db: Db;
 let server: Server;
 let base: string;
 let withPollLock: typeof import("./poller.js").withPollLock;
+let pollTopic: typeof import("./poller.js").pollTopic;
 
 const TERM = '"Adipose Tissue"[MeSH]';
 const ADIPOSE = { ui: "D000273", name: "Adipose Tissue" };
@@ -129,7 +130,7 @@ beforeAll(async () => {
   // index.ts builds the app at module scope and only listens inside start(),
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
-  ({ withPollLock } = await import("./poller.js"));
+  ({ withPollLock, pollTopic } = await import("./poller.js"));
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -320,6 +321,19 @@ describe("two journals that go by one name", () => {
     db.createTopic("Adipose Tissue", TERM, [], list(NURSING));
     expect(() => db.createJournal("Nursing (Lond)", NURSING.nlmId)).toThrow(/UNIQUE/);
   });
+
+  it("are searched for apart, each topic for the one it lists", async () => {
+    // A poll searched by name, so the topic listing one got the papers of
+    // both, and dropping its journal later took only that journal's back out.
+    const a = db.createTopic("Adipose Tissue", TERM, [], list(NURSING)).id;
+    const b = db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(NAMESAKE)).id;
+    await pollTopic(a);
+    await pollTopic(b);
+    expect(ncbi.calls.map((c) => c.term)).toEqual([
+      `(${TERM}) AND ("${NURSING.nlmId}"[jid])`,
+      `("Obesity"[MeSH]) AND ("${NAMESAKE.nlmId}"[jid])`,
+    ]);
+  });
 });
 
 describe("the routes", () => {
@@ -416,6 +430,16 @@ describe("the routes", () => {
     expect(exists("2")).toBe(true);
     // Not half applied: the name that came with the refused scope isn't taken.
     expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
+
+    // Nor is a list written as something that isn't one: null is what a client
+    // with no list to send often writes, and it was completed the same way.
+    for (const journals of [null, "", "2985213R", {}]) {
+      const half = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals });
+      expect(half.status).toBe(400);
+      expect((await request("PATCH", `/topics/${t}`, { journals })).status).toBe(400);
+    }
+    expect(exists("2")).toBe(true);
+    expect(db.getTopic(t)).toMatchObject({ journalCount: 1 });
 
     // An empty list asked for by name is a scope like any other.
     const emptied = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals: [] });

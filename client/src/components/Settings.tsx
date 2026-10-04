@@ -79,6 +79,7 @@ export function Settings({
   pro,
   viewerCache,
   topics,
+  topicsError,
   onAddTopic,
   onEditTopic,
   onDataChanged,
@@ -100,8 +101,15 @@ export function Settings({
   // panel used to keep a list and a dialog of its own, and every save fetched
   // the topics twice.
   topics: Topic[];
+  // Why the shell's last reading of them failed, or null when it didn't. The
+  // list above is then whatever the reading before it left: with a topic just
+  // removed still on it, or empty because nothing has been read at all. This
+  // panel reported that when the list was its own, and went quiet when it
+  // stopped being.
+  topicsError: string | null;
   onAddTopic: () => void;
   onEditTopic: (topic: Topic) => void;
+  // Read the topics again: after a removal here, and when asked to try again.
   onDataChanged: () => void;
   // This instance connected to an organization's library or left one, so the
   // `pro` block above is now stale. Passed straight through to the panel that
@@ -397,6 +405,20 @@ export function Settings({
             ))
           ) : (
             <>
+              {/* First, so it is in view however long the list under it is, and
+                  in the list, since it is the list that it qualifies. */}
+              {topicsError != null && (
+                <li>
+                  <span className="hint warn" role="alert">
+                    Couldn’t load the topics: {topicsError}
+                  </span>
+                  <div className="list-actions">
+                    <button className="link-btn" onClick={onDataChanged}>
+                      Try again
+                    </button>
+                  </div>
+                </li>
+              )}
               {topics.map((d) => (
                 <li key={d.id}>
                   <span title={d.term}>
@@ -415,7 +437,11 @@ export function Settings({
                   </div>
                 </li>
               ))}
-              {topics.length === 0 && <li className="muted">No topics yet.</li>}
+              {/* Not said of a list that couldn't be read: that there are none
+                  is a claim, and a failed request is no ground for it. */}
+              {topics.length === 0 && topicsError == null && (
+                <li className="muted">No topics yet.</li>
+              )}
             </>
           )}
         </ul>

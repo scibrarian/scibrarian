@@ -51,6 +51,7 @@ function Shell() {
         pro={null}
         viewerCache={viewerCache}
         topics={[]}
+        topicsError={null}
         onAddTopic={() => {}}
         onEditTopic={() => {}}
         onDataChanged={() => {}}

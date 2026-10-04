@@ -62,8 +62,14 @@ type Spec = typeof LANCET;
 const list = (...journals: Spec[]) => ({ allPubmed: false as const, journals });
 const ALL_PUBMED = { allPubmed: true as const };
 
+// A search of these journals, named here as they are listed and searched for
+// by their NLM ids, as a poll does.
+const BY_NAME: Record<string, Spec> = { Lancet: LANCET, BMJ };
 const search = (journals: string[], since?: string, term = TERM) => ({
-  term: buildTerm(term, journals),
+  term: buildTerm(
+    term,
+    journals.map((name) => ({ name, nlm_id: BY_NAME[name].nlmId }))
+  ),
   since,
 });
 

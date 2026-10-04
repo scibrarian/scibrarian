@@ -116,7 +116,8 @@ db.exec(`
   -- nlm_id is the journal, and what is unique here (idx_journals_nlm_id). The
   -- name is not: it is NLM's abbreviation as it stood when the journal was
   -- first listed, kept to show, and a second journal that goes by one already
-  -- here is still a journal a topic can list.
+  -- here is still a journal a topic can list. A poll searches by the id too
+  -- (buildTerm), so two of a name are searched apart.
   --
   -- medline_indexed: does NLM currently index this journal for MEDLINE? 1/0, or
   -- NULL for "not established yet" — the add-time check couldn't reach NCBI.

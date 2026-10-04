@@ -638,10 +638,14 @@ api.patch(
       // completed: a list with no `journals` would resolve to an empty one and
       // take every paper out of the topic, with no count shown ahead of it. An
       // empty list is still there to be asked for, by name.
-      if (req.body.allPubmed !== true && req.body.journals === undefined) {
+      //
+      // A list, and nothing that could pass for one left out: a client that
+      // writes a list it doesn't have as null, or as "", was completed the same
+      // way, which a test for `undefined` let through.
+      if (req.body.allPubmed !== true && !Array.isArray(req.body.journals)) {
         return res
           .status(400)
-          .json({ error: "'journals' is required unless 'allPubmed' is true." });
+          .json({ error: "'journals' must be an array unless 'allPubmed' is true." });
       }
       const scoped = await resolveScope(req.body);
       if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });

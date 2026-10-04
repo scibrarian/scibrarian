@@ -97,6 +97,7 @@ function Shell() {
         pro={null}
         viewerCache={NO_CACHE}
         topics={topics}
+        topicsError={null}
         onAddTopic={() => {}}
         onEditTopic={setEditing}
         onDataChanged={load}

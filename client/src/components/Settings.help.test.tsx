@@ -58,6 +58,7 @@ async function renderSettings(settings: AppSettings = SHARED) {
       pro={null}
       viewerCache={NO_CACHE}
       topics={[]}
+      topicsError={null}
       onAddTopic={() => {}}
       onEditTopic={() => {}}
       onDataChanged={() => {}}

@@ -19,9 +19,40 @@ describe("buildTerm", () => {
     expect(buildTerm("  neoplasms[MeSH Terms]  ", [])).toBe("neoplasms[MeSH Terms]");
   });
 
-  it("ANDs the term with an OR-clause of journal names, stripping quotes", () => {
-    expect(buildTerm("neoplasms[MeSH Terms]", ["Lancet", 'The "BMJ"'])).toBe(
-      '(neoplasms[MeSH Terms]) AND ("Lancet"[Journal] OR "The BMJ"[Journal])'
+  it("ANDs the term with an OR-clause of the journals, each by its NLM id", () => {
+    // Not by name: the id is the journal, and two may go by one name.
+    expect(
+      buildTerm("neoplasms[MeSH Terms]", [
+        { name: "Lancet", nlm_id: "2985213R" },
+        { name: "Respir Res Clin Pract", nlm_id: "9919269228506676" },
+      ])
+    ).toBe('(neoplasms[MeSH Terms]) AND ("2985213R"[jid] OR "9919269228506676"[jid])');
+  });
+
+  it("searches two journals of one name apart", () => {
+    const nursing = (nlm_id: string) => buildTerm("x[MeSH]", [{ name: "Nursing", nlm_id }]);
+    expect(nursing("0000001")).toBe('(x[MeSH]) AND ("0000001"[jid])');
+    expect(nursing("0000002")).toBe('(x[MeSH]) AND ("0000002"[jid])');
+  });
+
+  it("falls back to the name, quotes stripped, for a journal stored with no id", () => {
+    expect(
+      buildTerm("neoplasms[MeSH Terms]", [
+        { name: "Lancet", nlm_id: "2985213R" },
+        { name: 'The "BMJ"', nlm_id: null },
+      ])
+    ).toBe('(neoplasms[MeSH Terms]) AND ("2985213R"[jid] OR "The BMJ"[Journal])');
+  });
+
+  it("keeps an id from breaking out of its field", () => {
+    // Letters and digits are all an NLM id has. One stored with more can't
+    // close the quote and add a clause of its own.
+    expect(buildTerm("x[MeSH]", [{ name: "Lancet", nlm_id: '2985213R"[jid] OR all[sb] OR "' }])).toBe(
+      '(x[MeSH]) AND ("2985213RjidORallsbOR"[jid])'
+    );
+    // And one that is nothing but those falls back to the name.
+    expect(buildTerm("x[MeSH]", [{ name: "Lancet", nlm_id: '"' }])).toBe(
+      '(x[MeSH]) AND ("Lancet"[Journal])'
     );
   });
 });
@@ -49,8 +80,13 @@ describe("topicTerm", () => {
 
   it("survives buildTerm's journal clause as one requirement", () => {
     // The AND inside the term must not bind to the journals' OR.
-    expect(buildTerm(topicTerm([ATHERO, SLEEP]), ["Lancet", "BMJ"])).toBe(
-      '("Sleep"[MeSH] AND "Atherosclerosis"[MeSH]) AND ("Lancet"[Journal] OR "BMJ"[Journal])'
+    expect(
+      buildTerm(topicTerm([ATHERO, SLEEP]), [
+        { name: "Lancet", nlm_id: "2985213R" },
+        { name: "BMJ", nlm_id: "8900488" },
+      ])
+    ).toBe(
+      '("Sleep"[MeSH] AND "Atherosclerosis"[MeSH]) AND ("2985213R"[jid] OR "8900488"[jid])'
     );
   });
 });

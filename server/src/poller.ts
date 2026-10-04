@@ -105,17 +105,17 @@ export async function pollTopic(id: number): Promise<PollResult> {
     //
     // Searching all of PubMed is one search from the same watermark, which a
     // change of scope clears: a poll vouches only for the scope it ran under.
-    const searches: { journals: string[]; mhdaSince?: string }[] = [];
+    const searches: { journals: typeof journals; mhdaSince?: string }[] = [];
     if (allPubmed) {
       searches.push({ journals: [], mhdaSince: since ? mhdaWindowStart(since) : undefined });
     } else {
       const scanned = scannedJournalIds(id);
       const unscanned = since ? journals.filter((j) => !scanned.has(j.id)) : journals;
       const caughtUp = journals.filter((j) => !unscanned.includes(j));
-      if (unscanned.length > 0) searches.push({ journals: unscanned.map((j) => j.name) });
+      if (unscanned.length > 0) searches.push({ journals: unscanned });
       if (caughtUp.length > 0) {
         searches.push({
-          journals: caughtUp.map((j) => j.name),
+          journals: caughtUp,
           mhdaSince: since ? mhdaWindowStart(since) : undefined,
         });
       }

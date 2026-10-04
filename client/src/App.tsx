@@ -77,6 +77,11 @@ function sameStamps(a: ProCollectionStamp[], b: ProCollectionStamp[]): boolean {
 
 export default function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
+  // Why the last reading of the topics failed, or null when it didn't. A read
+  // that fails leaves `topics` as it was — empty at first, or with a topic
+  // just removed still on it — and Settings, which lists them, has to be able
+  // to say that its list is not the truth.
+  const [topicsError, setTopicsError] = useState<string | null>(null);
   const [folders, setFolders] = useState<BookmarkFolder[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [mode, setMode] = useState<Mode>("papers");
@@ -169,10 +174,14 @@ export default function App() {
   const stampsRead = useRef(0);
   const [unlocking, setUnlocking] = useState(false);
 
-  function loadTopics(): Promise<Topic[]> {
+  // The topics, read again. Answers with them, or with null when they couldn't
+  // be read: the list is then left as it was, and a caller that goes on to
+  // count what it got back has nothing to count.
+  function loadTopics(): Promise<Topic[] | null> {
     return api
       .getTopics()
       .then((ds) => {
+        setTopicsError(null);
         setTopics(ds);
         // Keep the selection valid against the fresh list: creating the first
         // topic selects it, deleting the active one falls back to the first
@@ -182,7 +191,10 @@ export default function App() {
         );
         return ds;
       })
-      .catch(() => []);
+      .catch((e) => {
+        setTopicsError(errorMessage(e));
+        return null;
+      });
   }
 
   function loadFolders(): Promise<BookmarkFolder[]> {
@@ -383,7 +395,7 @@ export default function App() {
         // to the first section with anything in it, which made where the app
         // opened depend on what you happened to have filed.
         if (fs.length > 0) setActiveFolderId(fs[0].id);
-        if (ds.length > 0) setActiveTopicId(ds[0].id);
+        if (ds && ds.length > 0) setActiveTopicId(ds[0].id);
         if (cs.length > 0) setActiveCollectionId(cs[0].id);
         // In the batch with everything above, and with whatever a loader set
         // on its way here. `loaded` follows once that has committed.
@@ -718,10 +730,12 @@ export default function App() {
       const res = await api.refresh(activeTopicId ?? undefined);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
-      const after = countPapers(await loadTopics());
+      const fresh = await loadTopics();
       // Polling only adds, but papers can leave the feeds between refreshes
-      // (e.g. a journal removal); surface that instead of just "Added 0".
-      const removed = Math.max(0, before + added - after);
+      // (e.g. a journal removal); surface that instead of just "Added 0". Not
+      // when the topics couldn't be read again: there is no count to compare
+      // with then, and taken as none it reported every paper as removed.
+      const removed = fresh ? Math.max(0, before + added - countPapers(fresh)) : 0;
       let msg = `Added ${added} new paper${added === 1 ? "" : "s"}.`;
       if (removed > 0) msg += ` Removed ${removed} paper${removed === 1 ? "" : "s"}.`;
       // PubMed hands over at most the first 9,999 records per query, so a broad
@@ -1245,6 +1259,7 @@ export default function App() {
             pro={pro}
             viewerCache={viewerCache}
             topics={topics}
+            topicsError={topicsError}
             onAddTopic={() => openTopicDialog("new", true)}
             onEditTopic={(topic) => openTopicDialog(topic, true)}
             onDataChanged={loadTopics}
