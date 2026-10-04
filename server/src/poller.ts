@@ -213,6 +213,14 @@ export async function pollAll(): Promise<PollResult[]> {
 // await sits between them.
 let isPolling = false;
 
+// Whether anything holds the poll lock now. For the sweep of papers nothing
+// holds, which skips its turn rather than run under a poll: a poll reads which
+// papers are stored, waits on PubMed, and only then links the stored ones to
+// its topic, and a paper swept in that wait fails the link's foreign key.
+export function pollRunning(): boolean {
+  return isPolling;
+}
+
 // Run `fn` under the poll lock. Returns null if a poll is already in progress.
 export async function withPollLock<T>(fn: () => Promise<T>): Promise<T | null> {
   if (isPolling) return null;

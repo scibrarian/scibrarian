@@ -10,7 +10,7 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // wrong is silent. Two directions, both of them:
 //
 // Too little, and the reset lies. A table nobody remembered to name survives
-// with rows in it — pdf_text and paper_citations are the candidates, since
+// with rows in it — pdf_text and viewer_checkouts are the candidates, since
 // neither carries a foreign key and so nothing cascades to them — and the
 // library that was supposedly deleted keeps answering full-text searches with
 // documents that no longer exist. The blobs are the same failure on disk: rows

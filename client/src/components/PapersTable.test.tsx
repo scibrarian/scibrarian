@@ -210,9 +210,11 @@ describe("removing papers from a bookmark folder", () => {
     fireEvent.click(container.querySelector<HTMLInputElement>(".select-cell input")!);
     fireEvent.click(await screen.findByText(/Remove 1 selected/));
 
-    // Nothing is deleted from a folder, so the collection's line about stored
-    // PDF copies would be a warning about something that cannot happen.
-    expect(await screen.findByText(/Only this folder's list changes/)).toBeTruthy();
+    // No file is deleted from a folder, so the collection's line about stored
+    // PDF copies would be a warning about something that cannot happen. The
+    // title says all there is to say, and no line is drawn under it.
+    const title = await screen.findByRole("heading", { name: "Remove 1 paper from this folder?" });
+    expect(title.closest(".modal")!.querySelector(".modal-message")).toBeNull();
     expect(screen.queryByText(/stored PDF copies/)).toBeNull();
   });
 

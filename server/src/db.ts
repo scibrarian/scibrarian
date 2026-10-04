@@ -238,6 +238,14 @@ db.exec(`
     fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- paper_citations is keyed on a PMID and carries no foreign key, so this is
+  -- what a cascade would have been: a paper's counts go when the paper does,
+  -- whichever statement deleted it. upsertCitations is the other half, and
+  -- writes none for a paper that isn't stored.
+  CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN
+    DELETE FROM paper_citations WHERE pmid = old.pmid;
+  END;
+
   -- Reference list of journals (from NLM's J_Medline.txt) for autocomplete and
   -- validation. Re-downloaded and upserted in place once stale (see
   -- journal-catalog.ts); journal_catalog_loaded_at (in settings) tracks the
@@ -511,6 +519,36 @@ const HELD_PAPERS = `(SELECT DISTINCT pmid FROM collection_files WHERE ${heldFil
 // and missed by another.
 const UNSAVED_ARTICLES = `pmid NOT IN ${HELD_PAPERS}
    AND pmid NOT IN (SELECT pmid FROM bookmarks)`;
+
+// A paper nothing holds: in no topic's feed, with no file in the Library, on no
+// folder's list. Every screen lists papers by one of those three, so its row is
+// one nobody can reach or remove.
+const UNHELD_ARTICLES = `pmid NOT IN (SELECT pmid FROM article_topics)
+   AND ${UNSAVED_ARTICLES}`;
+
+// Delete the papers nothing holds, and answer with how many. What was counted
+// about each goes with it (the articles_ad trigger).
+//
+// Letting go of a paper doesn't delete it. A folder's entry removed, a file
+// taken out of a collection or matched to another paper: each leaves the row
+// where it was, and a folder filled from pasted links and then emptied left one
+// for every link.
+//
+// A sweep, rather than a delete wherever a paper is let go of. A paper is
+// stored before the file it is stored for is matched to it, with requests to
+// PubMed and iCite in between — an import, a manual match, a pull from an
+// organization's library. A delete on release could take the paper in that
+// gap: remove a bookmark while its PDF is importing, and the file is then
+// matched to a PMID with no row, which hides it from every holdings query (see
+// ensureArticle in pro-storage.ts).
+//
+// So it runs only when nothing is in that gap, which is its callers' to know:
+// at startup (index.ts), where nothing can be and an import cut short asks
+// PubMed again, and after a removal that finds the server idle (sweepUnheld in
+// routes.ts).
+export function dropUnheldArticles(): number {
+  return Number(db.prepare(`DELETE FROM articles WHERE ${UNHELD_ARTICLES}`).run().changes);
+}
 
 // ---------- settings ----------
 
@@ -2042,9 +2080,13 @@ export function getCitations(pmids: string[]): Map<string, CitationInfo> {
   return out;
 }
 
+// Only for a paper that is stored. The counts are asked of iCite and written
+// when it answers, and a paper deleted in that wait would be given a row after
+// the articles_ad trigger had been and gone.
 const upsertCitationStmt = db.prepare(`
   INSERT INTO paper_citations (pmid, citation_count, references_json, fetched_at)
-  VALUES (@pmid, @citation_count, @references_json, datetime('now'))
+  SELECT @pmid, @citation_count, @references_json, datetime('now')
+  WHERE EXISTS (SELECT 1 FROM articles WHERE pmid = @pmid)
   ON CONFLICT(pmid) DO UPDATE SET
     citation_count = excluded.citation_count,
     references_json = excluded.references_json,
@@ -2103,8 +2145,9 @@ export function renameBookmarkFolder(id: number, name: string): void {
 
 // Delete a folder and, by cascade, its bookmark rows. The papers themselves are
 // untouched — they're shared cache, still reachable from any topic feed or
-// collection that has them. Nothing else to clean up: unlike a collection, a
-// folder owns no blobs.
+// collection that has them, and one nothing else has goes with the sweep that
+// follows (dropUnheldArticles). Nothing else to clean up: unlike a collection,
+// a folder owns no blobs.
 export function deleteBookmarkFolder(id: number): void {
   db.prepare("DELETE FROM bookmark_folders WHERE id = ?").run(id);
 }
@@ -2231,7 +2274,9 @@ export function deleteCollection(id: number): void {
   // it), then blobs nothing else references are GC'd — here, not at call
   // sites, so a deletion path can't forget the dance and leak blobs.
   const hashes = hashesForCollection(id);
-  // collection_files rows cascade; cached articles/paper_citations stay.
+  // collection_files rows cascade; cached articles/paper_citations stay, until
+  // the sweep that follows takes the papers nothing else holds
+  // (dropUnheldArticles), and their counts with them.
   db.prepare("DELETE FROM collections WHERE id = ?").run(id);
   gcBlobsIfOrphaned(hashes);
 }
@@ -2859,7 +2904,8 @@ function libraryStats(): LibraryStats {
 // cascades to them: none carries a foreign key (each is keyed by something it
 // only softly references — a PMID or a content hash), which is exactly what
 // lets them outlive the row that caused them, and exactly why a wipe has to
-// name them.
+// name them. paper_citations is emptied with articles now, by a trigger
+// (articles_ad), and stays named: a wipe shouldn't rest on that.
 //
 // What is *not* here is not here on purpose:
 //

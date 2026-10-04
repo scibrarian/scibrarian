@@ -19,6 +19,7 @@ import {
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
+  dropUnheldArticles,
   removeCollectionPapers,
   removeTopicWithArticles,
   renameTopic,
@@ -114,6 +115,7 @@ import {
   isValidCron,
   nothingToPoll,
   pollAll,
+  pollRunning,
   pollTopic,
   rescheduleFromSettings,
   warmCitations,
@@ -328,6 +330,49 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
     return false;
   }
   return true;
+}
+
+// ---------- papers nothing holds ----------
+
+// Requests here that have found a paper stored and have yet to attach what it
+// is stored for: pasted links, which read which of their papers the library
+// has, wait on PubMed for the rest, and bookmark them all after the wait. A
+// count for the reason transfersInFlight is one (pro-storage.ts): two can be
+// out at once.
+let attaching = 0;
+
+async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
+  attaching++;
+  try {
+    return await work();
+  } finally {
+    attaching--;
+  }
+}
+
+// Delete the papers nothing holds any longer, after a removal that may have let
+// go of some. dropUnheldArticles says why this is not part of the removal: a
+// paper is stored before what it is stored for is attached to it, and one swept
+// in between leaves a file matched to a paper that isn't there.
+//
+// So it is skipped, not waited for, while anything is part way through that: an
+// import, a copy arriving from another library, a poll, or one of the requests
+// counted above. Nothing is lost by a skip. The sweep is of the whole library,
+// so the next removal to find the server idle takes what this one left, and a
+// start takes the rest.
+//
+// A removal that says how much it took doesn't call this when it took nothing:
+// the sweep reads every stored paper, and there is nothing new for it to find.
+//
+// It can't fail the removal it follows: that has happened, and what a failed
+// sweep leaves behind is rows nobody can see.
+function sweepUnheld(): void {
+  if (attaching > 0 || anyImportRunning() || anyTransferInFlight() || pollRunning()) return;
+  try {
+    dropUnheldArticles();
+  } catch (err) {
+    console.warn(`[routes] sweeping papers nothing holds failed: ${errMessage(err)}`);
+  }
 }
 
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
@@ -1073,9 +1118,11 @@ api.put("/bookmark-folders/:id", (req, res) => {
 });
 
 api.delete("/bookmark-folders/:id", (req, res) => {
-  // The folder's bookmark rows cascade; the papers they pointed at stay.
+  // The folder's bookmark rows cascade; the papers they pointed at stay, but
+  // for the ones nothing else holds, which the sweep takes.
   deleteBookmarkFolder(Number(req.params.id));
   res.status(204).end();
+  sweepUnheld();
 });
 
 // Every (folder, paper) pair in one payload. Deliberately not folded into
@@ -1146,7 +1193,9 @@ api.post(
     }
     if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
     const batch = lines.slice(0, MAX_LINKS_PER_REQUEST);
-    const results = await addLinksToFolder(id, batch);
+    // Counted as attaching: it reads which of the papers are stored, waits on
+    // PubMed for the rest, and bookmarks the stored ones after the wait.
+    const results = await whileAttaching(() => addLinksToFolder(id, batch));
     if (!results) {
       return res.status(404).json({ error: "This folder was deleted while the links were being looked up." });
     }
@@ -1155,6 +1204,9 @@ api.post(
   })
 );
 
+// No sweep after this one. It is the toggle in Interests, pressed a paper at a
+// time, and a paper listed there is in a topic's feed: taking it off a folder
+// leaves it held.
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
   removeBookmark(Number(req.params.id), String(req.params.pmid));
   res.status(204).end();
@@ -1177,7 +1229,9 @@ api.post("/bookmark-folders/:id/papers/remove", (req, res) => {
     return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
   }
   const pmids = raw.map((p) => String(p).trim()).filter(Boolean);
-  res.json({ removed: removeBookmarks(id, pmids) });
+  const removed = removeBookmarks(id, pmids);
+  res.json({ removed });
+  if (removed > 0) sweepUnheld();
 });
 
 // ---------- collections (uploaded PDF libraries) ----------
@@ -1258,6 +1312,7 @@ api.delete(
     deleteCollection(Number(req.params.id));
     await discardOrphanedCheckouts();
     res.status(204).end();
+    sweepUnheld();
   })
 );
 
@@ -1499,13 +1554,18 @@ api.post(
     if (articles.length === 0) {
       return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
     }
+    // Stored and matched with nothing awaited in between, so there is no instant
+    // at which the paper is stored and the file doesn't hold it yet, for the
+    // sweep of papers nothing holds to take it in. Its citation counts follow.
     upsertArticles(articles);
-    await warmCitations([pmid], "manual match");
     setFileMatched(fileId, pmid, "manual");
+    await warmCitations([pmid], "manual match");
     // Return the same shape as the files list (content_hash stripped, exists
     // added), not the raw row. getCollectionFile can't be missing here — the
     // row was verified above and setFileMatched only updates it.
     res.json(apiFile(getCollectionFile(fileId)!));
+    // For the paper the file was matched to before, if this was a second match.
+    if (file.pmid && file.pmid !== pmid) sweepUnheld();
   })
 );
 
@@ -1517,6 +1577,7 @@ api.delete(
     deleteCollectionFile(Number(req.params.fileId));
     await discardOrphanedCheckouts();
     res.status(204).end();
+    sweepUnheld();
   })
 );
 
@@ -1552,6 +1613,7 @@ api.post(
     const removal = removeCollectionPapers(id, pmids);
     await discardOrphanedCheckouts();
     res.json(removal);
+    if (removal.removed > 0) sweepUnheld();
   })
 );
 

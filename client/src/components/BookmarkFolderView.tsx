@@ -110,7 +110,7 @@ export function BookmarkFolderView({
       <ConfirmDialog
         open={confirmingDelete}
         title="Delete folder?"
-        message="The folder and its list of saved papers are removed. The papers themselves stay in the app."
+        message="The folder and its list of saved papers are removed."
         confirmLabel="Delete"
         danger
         onConfirm={remove}
