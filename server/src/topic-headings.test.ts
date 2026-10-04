@@ -28,6 +28,14 @@ vi.mock("./pubmed.js", async (importOriginal) => {
     },
   };
 });
+// The vocabulary is seeded below (seedMesh), and that is all of it there is to
+// load. Left alone, the first route to read a heading asks NLM which MeSH year
+// is current before it answers, from inside a test — see topic-scope.test.ts,
+// where a slow answer failed two.
+vi.mock("./mesh-catalog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mesh-catalog.js")>();
+  return { ...actual, ensureMeshLoaded: async () => {} };
+});
 
 let db: Db;
 let server: Server;

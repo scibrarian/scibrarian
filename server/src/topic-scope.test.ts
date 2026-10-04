@@ -55,6 +55,18 @@ vi.mock("./pubmed.js", async (importOriginal) => {
   };
 });
 
+// The vocabulary is seeded below (seedMesh), and that is all of it there is to
+// load. Left alone, the first route to read a heading asks NLM which MeSH year
+// is current before it answers: a request to nlmpubs.nlm.nih.gov from inside a
+// test. On a slow day it outlasted that test's five seconds, and the topic it
+// went on to create landed in the next test, which was refused as a duplicate.
+// From the day NLM publishes a year newer than the one seeded, it would have
+// downloaded that year over the seed.
+vi.mock("./mesh-catalog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mesh-catalog.js")>();
+  return { ...actual, ensureMeshLoaded: async () => {} };
+});
+
 let db: Db;
 let server: Server;
 let base: string;
