@@ -12,7 +12,7 @@
 
 services:
   scibrarian:
-    # Pin a release with SCIBRARIAN_TAG in .env (a version like 0.5.0, or a
+    # Pin a release with SCIBRARIAN_TAG in .env (a version like 2.0.0, or a
     # sha-… tag). `always` because a version tag is re-pushed as fixes land, so
     # a plain `up -d` would otherwise keep running the cached image.
     image: ghcr.io/scibrarian/scibrarian:${SCIBRARIAN_TAG:-latest}

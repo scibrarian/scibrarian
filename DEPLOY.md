@@ -4,7 +4,8 @@ Scibrarian is built for a **single owner on a trusted network**. Every *write*
 (adding topics/journals, uploading PDFs, changing settings) requires an
 `ADMIN_TOKEN`, but by design **every read is unauthenticated** — anyone who can
 reach the port can view your topics, papers, abstracts, and graphs. Stored PDFs
-are the exception: they're owner-only, or reachable via an expiring share link.
+are the exception: they're owner-only, unless you hand out an expiring share
+link or turn on **Open Library** in Settings → Sharing.
 
 Pick the exposure model that matches who needs access.
 
@@ -23,11 +24,6 @@ no source checkout, no toolchain, no build. Tags:
 
 CI builds and pushes these on every green `main` commit (`linux/amd64` and
 `linux/arm64`).
-
-> **One-time, after the first publish:** GHCR packages start **private**. Open
-> the package on GitHub → *Package settings* → *Change visibility* → **Public**,
-> or every server will need `docker login ghcr.io` with a
-> `read:packages` token before it can pull.
 
 ---
 
@@ -55,9 +51,12 @@ brute-force, and you get HTTPS with no domain or certificates to manage.
    You'll get a `https://<host>.<tailnet>.ts.net` URL that only your devices can
    reach.
 
-To share a specific PDF or collection with an outsider, use the app's built-in
-**share links** (per file, or a whole collection as a zip) instead of opening
-the instance. Rotating `ADMIN_TOKEN` invalidates all outstanding links.
+To share a specific PDF or collection, use the app's built-in **share links**
+(per file, or a whole collection as a zip), or turn on **Open Library** in
+Settings → Sharing to let everyone who can reach the instance download stored
+PDFs. A share link carries the address you copied it from, so under this option
+it opens only for devices on your tailnet — for readers outside it, use
+Option B. Rotating `ADMIN_TOKEN` invalidates all outstanding links.
 
 ---
 
@@ -67,6 +66,13 @@ For when viewers can't install a VPN client. Caddy terminates TLS with automatic
 Let's Encrypt certificates and reverse-proxies to the app; the app port is never
 published to the host. An HTTP basic-auth login sits in front of the whole site
 so the public read surface isn't wide open.
+
+> **In a hurry?** On a fresh Ubuntu server,
+> [`setup.sh.example`](setup.sh.example) does steps 2–5 below in one run, Docker
+> install included: fill in its config block and run it as root. It generates
+> the `ADMIN_TOKEN` and the edge password and leaves them in
+> `/root/credentials.txt`. Point DNS at the server first (step 1) — the script
+> checks, and stops if the name doesn't resolve to the box.
 
 ### Prerequisites
 - A server with a **public IP** (a cloud VPS is the easy path).
@@ -101,7 +107,7 @@ Edit `.env`:
 ADMIN_TOKEN=<paste `openssl rand -hex 32`>
 DOMAIN=scibrarian.example.com
 ACME_EMAIL=you@example.com
-#SCIBRARIAN_TAG=0.5.0     # uncomment to pin a release instead of `latest`
+#SCIBRARIAN_TAG=2.0.0     # uncomment to pin a release instead of `latest`
 ```
 
 ### 4. Set the edge password
@@ -144,9 +150,10 @@ Concrete provisioning for **Option B** on AWS — from a blank instance to a liv
 
 ### 1. Launch the instance
 - **AMI:** Ubuntu Server 24.04 LTS (or 22.04 LTS).
-- **Type:** `t3.micro` (1 GB RAM) is enough — nothing is compiled on the box, so
-  the old build-memory ceiling is gone. `t4g.micro` (Graviton/arm64) works too;
-  the image is published for both architectures.
+- **Type:** `t3.small` (2 GB RAM). Nothing is compiled on the box, so the old
+  build-memory ceiling is gone, but a 1 GB `t3.micro` has no headroom without
+  swap. `t4g.small` (Graviton/arm64) works too; the image is published for both
+  architectures.
 - **Storage:** 20 GB gp3 gives comfortable headroom for images and uploaded PDFs.
 
 ### 2. Security group (inbound rules)
