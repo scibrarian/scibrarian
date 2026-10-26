@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, plural } from "../lib/format";
@@ -150,6 +150,9 @@ export function TopicDialog({
   // askings, so each is a run of the effect that fetches.
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // The field the dialog opens on: the heading search for a new topic, the
+  // name for one being edited.
+  const firstField = useRef<HTMLInputElement>(null);
 
   const editing = topic != null;
 
@@ -390,14 +393,15 @@ export function TopicDialog({
         open={open}
         onClose={() => !saving && onClose()}
         title={topic ? "Edit topic" : "New topic"}
+        initialFocus={firstField}
       >
         <form className="topic-form" onSubmit={save}>
           <Banner kind="error" message={error} onDismiss={() => setError(null)} />
 
           {/* The icon here is the dialog's first tab stop, and Radix opens a
-              dialog on its first tab stop — so the field it explains, the
-              heading search for a new topic and the name for one being edited,
-              takes the focus itself with autoFocus, which Radix leaves alone. */}
+              dialog on its first tab stop — so the dialog names the field it
+              explains as the one to open on (see firstField). Opening on the
+              icon brings up its help, which nobody asked for. */}
           <div className="topic-label first">
             <span id="topic-headings-label">MeSH headings</span>
             <InfoTip text={topic ? FIXED : ALL_REQUIRED} />
@@ -436,7 +440,7 @@ export function TopicDialog({
                 idleItems={libraryPicks}
                 idleLabel={libraryNote}
                 disabled={full}
-                autoFocus
+                inputRef={firstField}
                 placeholder={
                   full
                     ? `${MAX_TOPIC_HEADINGS} of ${MAX_TOPIC_HEADINGS} headings`
@@ -481,7 +485,7 @@ export function TopicDialog({
           </label>
           <input
             id="topic-name"
-            autoFocus={topic != null}
+            ref={topic ? firstField : undefined}
             value={shownName}
             onChange={(e) => {
               setName(e.target.value);

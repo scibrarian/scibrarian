@@ -1,4 +1,4 @@
-import { KeyboardEvent, ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { KeyboardEvent, ReactNode, Ref, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDebounced } from "../lib/hooks";
 
 // A controlled ARIA combobox: the parent owns the input text (value/onChange) so
@@ -31,9 +31,9 @@ interface TypeaheadProps<T> {
   // The box takes nothing more — the topic dialog's, once a topic has as many
   // headings as it may. The placeholder is where the parent says why.
   disabled?: boolean;
-  // Focused when it mounts — the topic dialog's, whose first tab stop is the
-  // info icon ahead of it.
-  autoFocus?: boolean;
+  // The input itself — for the topic dialog, which opens on it rather than on
+  // its first tab stop, the info icon ahead of it.
+  inputRef?: Ref<HTMLInputElement>;
 }
 
 export function Typeahead<T>({
@@ -50,7 +50,7 @@ export function Typeahead<T>({
   idleItems,
   idleLabel,
   disabled = false,
-  autoFocus = false,
+  inputRef,
 }: TypeaheadProps<T>) {
   const [results, setResults] = useState<T[]>([]);
   // The results list is a combobox popup: it hides on Escape/blur (dismissed)
@@ -177,6 +177,7 @@ export function Typeahead<T>({
       }}
     >
       <input
+        ref={inputRef}
         value={value}
         onChange={(e) => {
           onChange(e.target.value);
@@ -196,7 +197,6 @@ export function Typeahead<T>({
         }}
         placeholder={placeholder}
         disabled={disabled}
-        autoFocus={autoFocus}
         autoComplete="off"
         role="combobox"
         aria-expanded={listOpen}

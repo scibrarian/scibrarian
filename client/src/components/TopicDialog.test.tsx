@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { medlineNote } from "./JournalPanes";
 import { TopicDialog, describeTopicSave } from "./TopicDialog";
@@ -749,6 +751,49 @@ describe("where the focus starts", () => {
   it("is the name, for a topic being edited", async () => {
     open(TOPIC);
     await waitFor(() => expect(document.activeElement).toBe(nameBox()));
+  });
+
+  // The section bar's "Add topic…" is a row in a menu, and Radix runs a row's
+  // onSelect before closing the menu, its focus trap still set. The dialog
+  // mounted inside that, the trap pulled the field's autoFocus back to the row,
+  // and the dialog then opened on its first tab stop — the icon, whose help
+  // came up unasked.
+  it("is the heading search, when a menu row opens it", async () => {
+    function FromAMenu() {
+      const [shown, setShown] = useState(false);
+      return (
+        <>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>Topics</DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content>
+                <DropdownMenu.Item onSelect={() => setShown(true)}>Add topic…</DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+          <TopicDialog
+            open={shown}
+            topic={null}
+            topics={[]}
+            onClose={() => setShown(false)}
+            onSaved={vi.fn()}
+          />
+        </>
+      );
+    }
+    render(<FromAMenu />);
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Topics" }),
+      new MouseEvent("pointerdown", { bubbles: true })
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add topic…" }));
+
+    // The menu hands the focus back to its trigger a task after it has gone.
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+
+    expect(document.activeElement).toBe(search());
+    expect(document.querySelector(".tip-bubble")).toBeNull();
   });
 });
 

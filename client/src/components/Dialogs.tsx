@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useLayoutEffect, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useHeldWhile } from "../lib/hooks";
@@ -12,11 +12,14 @@ export function ModalFrame({
   open,
   onClose,
   wide = false,
+  initialFocus,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   wide?: boolean;
+  // The field to open on, where it isn't the first tab stop.
+  initialFocus?: RefObject<HTMLElement>;
   children: ReactNode;
 }) {
   return (
@@ -26,6 +29,18 @@ export function ModalFrame({
           <Dialog.Content
             className={wide ? "modal wide" : "modal"}
             aria-describedby={undefined}
+            // In place of Radix's focus on the first tab stop, not by autoFocus
+            // on the field. autoFocus lands while the dialog is still mounting,
+            // and a menu row that opens a dialog runs before Radix closes the
+            // menu: the menu's focus trap, still set, pulled the field's focus
+            // back to the row, and the dialog then opened on its first tab stop
+            // after all. This runs once the dialog's own trap has taken over.
+            onOpenAutoFocus={(e) => {
+              const field = initialFocus?.current;
+              if (!field) return;
+              e.preventDefault();
+              field.focus();
+            }}
             // Clicking the backdrop no longer dismisses. Radix offers it by
             // default and for a menu it is right, but every dialog in this app
             // holds something a stray click should not throw away: a half-typed
@@ -82,16 +97,18 @@ export function ModalShell({
   onClose,
   title,
   wide = false,
+  initialFocus,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   wide?: boolean;
+  initialFocus?: RefObject<HTMLElement>;
   children: ReactNode;
 }) {
   return (
-    <ModalFrame open={open} onClose={onClose} wide={wide}>
+    <ModalFrame open={open} onClose={onClose} wide={wide} initialFocus={initialFocus}>
       <Dialog.Title className="modal-heading">{title}</Dialog.Title>
       {children}
     </ModalFrame>

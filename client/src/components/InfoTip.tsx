@@ -28,8 +28,8 @@ const MARGIN = 8;
 //
 // The icon is a button and a tab stop, so the help is there for a keyboard as
 // well as a mouse. A dialog focuses its first tabbable element when it opens,
-// so a dialog with one of these ahead of its first field gives that field
-// autoFocus (see TopicDialog).
+// so a dialog with one of these ahead of its first field names that field as
+// its initialFocus (see ModalFrame and TopicDialog).
 //
 // The text is the button's name, which is what a screen reader reads, and so
 // not also its description: Radix would point aria-describedby at the bubble,
