@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage, plural } from "./lib/format";
 import { useReveal } from "./lib/hooks";
+import { createImportJobs } from "./lib/import-jobs";
 import { showToast } from "./lib/toast";
 import { useViewerCache } from "./lib/viewerCache";
 import type {
@@ -109,6 +110,18 @@ export default function App() {
   // Cache invalidation for the paper views, held per source rather than as one
   // global counter (see lib/reload).
   const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
+  // Scans over collections, followed here so that one which ends after its
+  // collection has been left still refreshes what it changed (see
+  // lib/import-jobs). Made once, so it reaches handleImportSettled through a
+  // ref rather than holding the first render's.
+  const importSettled = useRef(handleImportSettled);
+  useEffect(() => {
+    importSettled.current = handleImportSettled;
+  });
+  const [importJobs] = useState(() =>
+    createImportJobs(api.getImportStatus, (id) => importSettled.current(id))
+  );
+  useEffect(() => importJobs.stop, [importJobs]);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
   // The topic dialog, the only one: closed, creating a topic, or editing this
@@ -645,6 +658,14 @@ export default function App() {
     await loadCollections();
   }
 
+  // A scan ended, over a collection that need not be the one on screen any
+  // more. The refresh handleCollectionChanged makes, for that collection.
+  function handleImportSettled(collectionId: number) {
+    reloadSource({ allCollections: true });
+    reloadSource({ collection: collectionId });
+    void loadCollections();
+  }
+
   // Try a pasted admin token: store it, then let the server judge it.
   async function unlock(token: string) {
     setUnlocking(false);
@@ -841,8 +862,12 @@ export default function App() {
         : activeCollection?.heldCount === 0
       : activeFolder?.paperCount === 0;
   // What the action row says about the source on its left, in every section:
-  // the picker badge's count, written out, and for a collection its files
-  // where those outnumber its papers. The row is held open for the actions on
+  // the picker badge's count, written out; for a collection, the papers its
+  // table lists and nothing about the files behind them, so two copies of one
+  // paper count once. Files that found no paper are
+  // CollectionView's to count, for an admin only, because it reads them off the
+  // file list: these totals can't tell a file the scan looked at from one it
+  // never reached. The row is held open for the actions on
   // its right (see .source-head), and for a viewer — or for every collection
   // at once — nothing lands there, which left it a blank band between the
   // section bar and the search box on every page. A line that is always
@@ -863,11 +888,7 @@ export default function App() {
         ? collections.length > 0
           ? plural(collections.length, "collection")
           : null
-        : activeCollection &&
-          plural(activeCollection.heldCount, "paper") +
-            (activeCollection.fileCount > activeCollection.heldCount
-              ? ` · ${plural(activeCollection.fileCount, "file")}`
-              : "")
+        : activeCollection && plural(activeCollection.heldCount, "paper")
       : activeFolder && plural(activeFolder.paperCount, "paper");
   const showViewControls = !showSettings && source != null;
   const sourceId = source ? sourceKey(source) : null;
@@ -1347,10 +1368,7 @@ export default function App() {
                 : null
             }
             reloadToken={reloadToken}
-            // The graph fills the main area itself, so the collection's long
-            // unmatched-files list is suppressed under it; the action row and
-            // any live import progress still show, as they do in every view.
-            showUnmatched={viewMode !== "graph"}
+            importJobs={importJobs}
             onChanged={handleCollectionChanged}
             onDeleted={async () => {
               const cs = await loadCollections();

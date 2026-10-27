@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { FilePlus } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
-import { useCachedFetch, type FetchCache } from "../lib/hooks";
+import { useCachedFetch, useHeldWhile, type FetchCache } from "../lib/hooks";
+import { useImportJob, type ImportJobs } from "../lib/import-jobs";
 import { Banner } from "./Banner";
-import { ConfirmDialog, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
+import { ConfirmDialog, ModalShell, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import type {
   CollectionFile,
   CollectionFilesResponse,
-  ImportJob,
   ImportStatus,
   ProCollectionStamp,
 } from "../types";
@@ -28,23 +28,15 @@ function nameList(files: File[], max = 3): string {
   return shown.join(", ") + (rest > 0 ? ` and ${rest} more` : "");
 }
 
-// Consecutive failed status polls before we give up on a running import. A
-// single blip must not freeze the progress UI, but a truly-dead server
-// shouldn't be polled forever either. At the 1s tick this is ~5s of retries.
-const MAX_POLL_FAILURES = 5;
-
 // "3 files" / "1 file".
 function fileCount(n: number): string {
   return `${n} file${n === 1 ? "" : "s"}`;
 }
 
-// What a finished scan actually did, for the banner that replaces the upload's.
-// Only the tallies — which files ended up unmatched is the section below's job,
-// and it lists them by name.
-function scanSummary(job: ImportJob): string {
-  const parts = [`${job.matched} matched`, `${job.unmatched} unmatched`];
-  if (job.errors) parts.push(`${job.errors} unreadable`);
-  return `Scanned ${fileCount(job.total)}: ${parts.join(", ")}.`;
+// A file with no paper behind it: the scan found none, couldn't read it, or
+// never reached it.
+function isUnresolved(f: CollectionFile): boolean {
+  return f.match_status === "unmatched" || f.match_status === "error" || f.match_status === "pending";
 }
 
 // Cache the last file listing per collection, same pattern as papersCache:
@@ -55,7 +47,7 @@ function scanSummary(job: ImportJob): string {
 const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 
 // The collection management shell: upload/import/rename/delete chrome and the
-// unmatched-files section, wrapped around whichever analysis module (table or
+// unmatched-files dialog, wrapped around whichever analysis module (table or
 // timeline) is active — those render as `children` and fetch their own paper
 // rows from /api/papers.
 export function CollectionView({
@@ -64,7 +56,7 @@ export function CollectionView({
   summary,
   stamp,
   reloadToken,
-  showUnmatched = true,
+  importJobs,
   onChanged,
   onDeleted,
   children,
@@ -96,10 +88,8 @@ export function CollectionView({
    */
   stamp: ProCollectionStamp | null;
   reloadToken: number;
-  // The unmatched-files section is the one piece of chrome that doesn't suit
-  // every view — a long list under a full-height graph. The action row and
-  // import progress are not gated: they belong wherever the collection is.
-  showUnmatched?: boolean;
+  // App's, so a scan goes on being followed after this view has gone.
+  importJobs: ImportJobs;
   onChanged: () => void;
   onDeleted: () => void;
   children: ReactNode;
@@ -108,7 +98,7 @@ export function CollectionView({
   const [notice, setNotice] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
+  const watched = useImportJob(importJobs, collectionId);
   // Files sent so far, while a selection is being uploaded. Non-null *is* the
   // "upload in progress" flag: the bytes are still going up, nothing has been
   // scanned, and the rows the server already has say nothing yet about whether
@@ -120,8 +110,12 @@ export function CollectionView({
   // Whether the resume probe below has answered for this collection yet — that
   // is, whether we know if a scan is working on the rows we're looking at.
   const [scanChecked, setScanChecked] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const filesInputRef = useRef<HTMLInputElement | null>(null);
+  // The unmatched-files dialog, opened from the count in the summary line, and
+  // what its rows last failed with, shown inside it where the page's own
+  // banner would be behind it.
+  const [showingUnmatched, setShowingUnmatched] = useState(false);
+  const [unmatchedError, setUnmatchedError] = useState<string | null>(null);
 
   // The file listing is fully derived: mutations never set it directly, they
   // call onChanged() and the token bump refetches it here.
@@ -141,90 +135,52 @@ export function CollectionView({
     setFilesStale(false);
   }, [filesData]);
 
-  // The latest onChanged, reachable from the interval without being one of its
-  // dependencies. App declares it as a plain function in its body, so it is a
-  // new value on every App render; depending on it directly rebuilt
-  // startPolling, and the resume effect below with it, on every App-level state
-  // change. That effect's cleanup clears a live interval and its body fires
-  // another status request — measured at one stray GET /import/status per view
-  // toggle or dialog open, with no import running at all.
-  //
-  // Written in an effect rather than during render: assigning to a ref while
-  // rendering is a side effect, and this only has to be current by the time the
-  // interval next ticks.
-  const onChangedRef = useRef(onChanged);
-  useEffect(() => {
-    onChangedRef.current = onChanged;
-  });
-
-  // Poll import status while a job runs; refresh files + everything else
-  // (via onChanged) when it finishes.
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
   // What the last selection left behind — files ignored for not being PDFs,
-  // files skipped for being too large. It is reported when the upload finishes
-  // and again when the scan does, because the scan's summary replaces that
-  // first banner and these are the one part of it the scan can't restate: the
-  // job only ever saw the files that made it in.
+  // files skipped for being too large. Reported once the selection has run its
+  // course: when its scan finishes, or by the upload itself when that added
+  // nothing or failed. Kept here because the scan can't restate them: the job
+  // only ever saw the files that made it in.
   const selectionNotesRef = useRef("");
 
   // The one place a settled job becomes a message. Two things can be the first
-  // to see a job finish — the poll below, and the status read right after
-  // starting one that was over before the first tick — and both have to say so,
-  // or the banner is left claiming a scan is still running long after it ended.
+  // to see a job finish — App's poll, seen below as the status leaving
+  // 'running', and the status read right after starting one that was over
+  // before the first tick — and both have to come here, or a failed scan goes
+  // unreported and its pre-scan rows are shown as its answer.
   const reportSettled = useCallback((s: ImportStatus) => {
     // The caller refreshes the file list next, and until that lands the rows on
     // screen are the pre-scan ones — all 'pending', none of them yet an answer.
     setFilesStale(true);
-    if (s.state === "done") setNotice(scanSummary(s) + selectionNotesRef.current);
-    else if (s.state === "error") setError((s.error ?? "The scan failed.") + selectionNotesRef.current);
+    const notes = selectionNotesRef.current;
+    if (s.state === "done") {
+      // Only for what nothing else on screen mentions: the files the selection
+      // left behind, which never reached the scan. What the scan did shows for
+      // itself — the papers it matched in the table, the files it couldn't in
+      // the summary line's counts (see unmatchedCount), which stay true after a
+      // reload or a trip to another tab where a banner about the scan would
+      // not. A scan that only matched papers already here changes neither, and
+      // says nothing: there is nothing new to point at.
+      if (notes) setNotice(notes.trim());
+    } else if (s.state === "error") setError((s.error ?? "The scan failed.") + notes);
   }, []);
 
-  const startPolling = useCallback(() => {
-    stopPolling();
-    // Captured once rather than read through the prop inside the interval: an
-    // import job belongs to a collection, so there is nothing to poll when the
-    // Library is showing all of them.
-    const id = collectionId;
-    if (id == null) return;
-    // Scoped to this polling session (reset each startPolling). inFlight stops
-    // slow responses from stacking requests — without it, several polls can be
-    // outstanding at once and each fires onChanged() when the job completes.
-    let inFlight = false;
-    let failures = 0;
-    pollRef.current = setInterval(async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const s = await api.getImportStatus(id);
-        failures = 0;
-        setImportStatus(s);
-        if (s.state === "done" || s.state === "error" || s.state === "idle") {
-          stopPolling();
-          reportSettled(s);
-          onChangedRef.current();
-        }
-      } catch {
-        // A transient failure must not freeze the progress bar: keep polling
-        // and retry next tick. Only give up after several failures in a row —
-        // then clear the stuck "running" UI so it doesn't hang forever.
-        if (++failures >= MAX_POLL_FAILURES) {
-          stopPolling();
-          setImportStatus(null);
-          setError("Lost contact with the import job. Reload to check its status.");
-        }
-      } finally {
-        inFlight = false;
-      }
-    }, 1000);
-    // Deliberately not onChanged: see onChangedRef above. The poll's identity
-    // tracks what it polls — the collection — and nothing else.
-  }, [collectionId, reportSettled, stopPolling]);
+  // A scan this view was watching has ended. App polls it and refreshes the
+  // collection when it does (see lib/import-jobs), so what is left here is
+  // reportSettled's part: the selection's notes or the scan's error, and
+  // holding the pre-scan rows back until the fresh list lands.
+  //
+  // Before paint, not after: the render that first sees the scan over still
+  // has those rows, every one 'pending', and with nothing running any more a
+  // passive effect would paint them for a frame as files never scanned.
+  const lastWatched = useRef(watched);
+  useLayoutEffect(() => {
+    const was = lastWatched.current;
+    lastWatched.current = watched;
+    if (was?.state !== "running" || !watched || watched.state === "running") return;
+    if (watched.state === "lost") {
+      setError("Lost contact with the import job. Reload to check its status.");
+    } else reportSettled(watched);
+  }, [watched, reportSettled]);
 
   // Resume the progress UI if an import is already running for this collection.
   //
@@ -232,21 +188,12 @@ export function CollectionView({
   // scanChecked is set either way. Entering a collection mid-scan paints the
   // cached file list — every row 'pending' — before this comes back, and a
   // pending row means nothing until it is known whether something is working
-  // on it.
+  // on it. Asked on every entry rather than taken from what App last heard,
+  // which may predate a scan started since.
   useEffect(() => {
-    if (collectionId == null) return stopPolling;
-    api
-      .getImportStatus(collectionId)
-      .then((s) => {
-        if (s.state === "running") {
-          setImportStatus(s);
-          startPolling();
-        }
-      })
-      .catch(() => {})
-      .finally(() => setScanChecked(true));
-    return stopPolling;
-  }, [collectionId, startPolling, stopPolling]);
+    if (collectionId == null) return;
+    void importJobs.check(collectionId).then(() => setScanChecked(true));
+  }, [collectionId, importJobs]);
 
   // Upload the picked PDFs in batches, then kick off the scan/match job.
   //
@@ -322,8 +269,7 @@ export function CollectionView({
     try {
       await api.startImport(collectionId);
       started = await api.getImportStatus(collectionId);
-      setImportStatus(started);
-      if (started.state === "running") startPolling();
+      importJobs.follow(collectionId, started);
     } catch (e) {
       failure ??= e; // the upload error, if there was one, is the more useful
     } finally {
@@ -349,10 +295,11 @@ export function CollectionView({
       return;
     }
     // Nothing is said about a successful upload. The progress bar reported it
-    // as it happened and the scan's summary lands on top of it seconds later,
-    // so an "Added N files" banner in between is a message whose whole life is
-    // spent being superseded. Only a selection that added nothing needs a
-    // banner, because for that one the bar and the summary both say nothing.
+    // as it happened and the scan's outcome lands seconds later, as papers in
+    // the table and counts in the summary line, so an "Added N files" banner in
+    // between is a message whose whole life is spent being superseded. Only a
+    // selection that added nothing needs a banner, because
+    // for that one the bar and the scan both say nothing.
     if (added === 0) {
       setNotice(
         (skipped > 0 ? "Those files are already in this collection." : "No PDFs found in the selection.") +
@@ -387,13 +334,36 @@ export function CollectionView({
     }
   }
 
-  const unresolved = files.filter(
-    (f) => f.match_status === "unmatched" || f.match_status === "error" || f.match_status === "pending"
-  );
+  // The dialog's "Scan them": a scan over the files an earlier one stopped
+  // before reaching. The two requests handleImport makes after an upload,
+  // which is all re-adding files ever did for these — a scan takes every file
+  // still waiting, and only those.
+  async function scanUnscanned() {
+    if (collectionId == null) return;
+    setUnmatchedError(null);
+    // An earlier upload's notes belong to that upload, not to this scan.
+    selectionNotesRef.current = "";
+    try {
+      await api.startImport(collectionId);
+      const started = await api.getImportStatus(collectionId);
+      importJobs.follow(collectionId, started);
+      // Over before it could be followed, so nothing else will report it or
+      // refresh what it changed.
+      if (started.state !== "running") {
+        reportSettled(started);
+        onChanged();
+      }
+    } catch (e) {
+      setUnmatchedError(errorMessage(e));
+    }
+  }
+
+  const unresolved = files.filter(isUnresolved);
 
   // Narrow away the "idle" sentinel so the live-job fields (total, processed, …)
-  // are available; when idle there's no progress to show anyway.
-  const job = importStatus && importStatus.state !== "idle" ? importStatus : null;
+  // are available; when idle there's no progress to show anyway, nor once the
+  // poll has lost contact.
+  const job = watched && watched.state !== "idle" && watched.state !== "lost" ? watched : null;
   const running = job?.state === "running";
   const progressPct = job && job.total ? Math.round((job.processed / job.total) * 100) : 0;
 
@@ -401,8 +371,8 @@ export function CollectionView({
   const anyPending = files.some((f) => f.match_status === "pending");
 
   // Whether the file list can be trusted to say what it says. Until it can, the
-  // unmatched section is withheld entirely and the progress bar stands in for
-  // it — so no file is ever listed as having no PubMed ID before the scanner
+  // unmatched files are withheld entirely and the progress bar stands in for
+  // them — so no file is ever listed as having no PubMed ID before the scanner
   // has looked at it. Three ways the list can be ahead of the truth:
   //
   //  - bytes are still going up, or a scan is running over them;
@@ -414,10 +384,39 @@ export function CollectionView({
   //    reloading the page during one, paints before that answer arrives.
   //
   // Deliberately not gated on the file list's `loading` instead: that is true
-  // of *every* refetch, including the one a manual match triggers, and
-  // unmounting the section there discards whatever PMIDs are half-typed into
-  // its other rows.
+  // of *every* refetch, including the one a manual match triggers, and closing
+  // the dialog there discards whatever PMIDs are half-typed into its other rows.
   const settling = uploading != null || running || filesStale || (!scanChecked && anyPending);
+
+  // Files the scan couldn't place, counted onto the end of the summary line.
+  // That line is the one part of the page always at the top, so it is where
+  // they get noticed, and a few words there don't push the papers down for as
+  // long as the files stay unmatched, which a list above the table would. Held
+  // back by `settling`, so it never counts a file a running scan has yet to
+  // reach; admin-only, because nobody else can match one.
+  //
+  // Files no scan reached at all are counted apart, as not scanned: the app
+  // closed during the scan, or PubMed failed part way through it. Counted as
+  // unmatched, they read as files the scanner had opened and failed on.
+  //
+  // Both open the files in a dialog rather than linking down to a section under
+  // the papers. A long collection renders its papers a page at a time as the
+  // reader scrolls, so a section below them moved away from a scroll aimed at
+  // it, and the graph has no room under it for one at all.
+  const counted = isAdmin && !settling;
+  const unscannedCount = counted ? unresolved.filter((f) => f.match_status === "pending").length : 0;
+  const unmatchedCount = counted ? unresolved.length - unscannedCount : 0;
+
+  // The dialog closes itself once nothing is left in it — the last file
+  // matched or removed, or a scan started over the rest — and stays closed
+  // when more turn up later.
+  const anyUnresolved = unmatchedCount + unscannedCount > 0;
+  if (showingUnmatched && !anyUnresolved) setShowingUnmatched(false);
+
+  function showUnmatched() {
+    setUnmatchedError(null);
+    setShowingUnmatched(true);
+  }
 
   return (
     <div className="source-view">
@@ -447,7 +446,27 @@ export function CollectionView({
             the organisation it is paired with. */}
         {(summary || stamp) && (
           <div className="source-meta">
-            {summary && <span className="source-summary">{summary}</span>}
+            {summary && (
+              <span className="source-summary">
+                {summary}
+                {unmatchedCount > 0 && (
+                  <>
+                    {" · "}
+                    <button type="button" className="link-btn" onClick={showUnmatched}>
+                      {unmatchedCount} unmatched
+                    </button>
+                  </>
+                )}
+                {unscannedCount > 0 && (
+                  <>
+                    {" · "}
+                    <button type="button" className="link-btn" onClick={showUnmatched}>
+                      {unscannedCount} not scanned
+                    </button>
+                  </>
+                )}
+              </span>
+            )}
             {stamp && (
               <span
                 className={stamp.active ? "from-org" : "from-org from-org-faded"}
@@ -537,8 +556,16 @@ export function CollectionView({
 
       {children}
 
-      {isAdmin && showUnmatched && !settling && unresolved.length > 0 && (
-        <UnresolvedFiles files={unresolved} onChanged={onChanged} onError={setError} />
+      {isAdmin && (
+        <UnresolvedFiles
+          open={showingUnmatched && anyUnresolved}
+          files={files}
+          error={unmatchedError}
+          onClose={() => setShowingUnmatched(false)}
+          onScan={scanUnscanned}
+          onChanged={onChanged}
+          onError={setUnmatchedError}
+        />
       )}
 
       <PromptDialog
@@ -564,37 +591,89 @@ export function CollectionView({
 }
 
 function UnresolvedFiles({
+  open,
   files,
+  error,
+  onClose,
+  onScan,
   onChanged,
   onError,
 }: {
+  open: boolean;
+  // The collection's whole listing, held by identity while the dialog closes
+  // (see below), which a list filtered for it on every render can't be.
   files: CollectionFile[];
+  error: string | null;
+  onClose: () => void;
+  onScan: () => Promise<void>;
   onChanged: () => void;
-  onError: (msg: string) => void;
+  onError: (msg: string | null) => void;
 }) {
-  // Rows the scan never reached, because it died or was never started over
-  // them. Only reachable once nothing is in flight (see `settling`), so their
-  // presence here means stranded, not "in progress" — and they need a different
-  // sentence, since nothing has yet looked for a PubMed ID on them.
-  const queued = files.filter((f) => f.match_status === "pending").length;
+  const [scanning, setScanning] = useState(false);
+  const unscannedId = useId();
+  const unmatchedId = useId();
+  // The rows it was showing, kept through its exit. It closes itself when the
+  // last one is matched, and read live it would spend its fade as an empty list.
+  const unresolved = useHeldWhile(open, files).filter(isUnresolved);
+  // In two groups, because they need different things. Rows no scan reached
+  // need a scan, and nothing has yet looked for a PubMed ID on them. Only
+  // reachable once nothing is in flight (see `settling`), so their presence
+  // here means stranded, not "in progress". The rest were looked at and need a
+  // PMID from the reader: scanning the same bytes again finds the same nothing.
+  const unscanned = unresolved.filter((f) => f.match_status === "pending");
+  const unmatched = unresolved.filter((f) => f.match_status !== "pending");
+
+  async function scan() {
+    setScanning(true);
+    try {
+      await onScan();
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  const rows = (list: CollectionFile[]) => (
+    <ul className="unmatched-list">
+      {list.map((f) => (
+        <UnmatchedRow key={f.id} file={f} onChanged={onChanged} onError={onError} />
+      ))}
+    </ul>
+  );
 
   return (
-    <section className="unmatched">
-      <h3>
-        Unmatched files <span className="count">{files.length}</span>
-      </h3>
-      <p className="hint">
-        The scanner couldn't find a PubMed ID on these files' first pages (common for scanned or
-        older PDFs). Paste a PMID to match one manually.
-        {queued > 0 &&
-          ` ${fileCount(queued)} below ${queued === 1 ? "was" : "were"} never scanned — add files again to resume.`}
-      </p>
-      <ul className="unmatched-list">
-        {files.map((f) => (
-          <UnmatchedRow key={f.id} file={f} onChanged={onChanged} onError={onError} />
-        ))}
-      </ul>
-    </section>
+    <ModalShell open={open} onClose={onClose} title="Unmatched files" wide>
+      <Banner kind="error" message={error} onDismiss={() => onError(null)} />
+      <div className="unmatched-groups">
+        {unscanned.length > 0 && (
+          <section className="unmatched" aria-labelledby={unscannedId}>
+            <div className="unmatched-head">
+              <h3 id={unscannedId}>
+                Not scanned <span className="count">{unscanned.length}</span>
+              </h3>
+              {/* Disabled for the two requests that start it, which a second
+                  click would only meet with "already running". */}
+              <button onClick={scan} disabled={scanning}>
+                Scan them
+              </button>
+            </div>
+            <p className="hint">The scan stopped before reaching these.</p>
+            {rows(unscanned)}
+          </section>
+        )}
+        {unmatched.length > 0 && (
+          <section className="unmatched" aria-labelledby={unmatchedId}>
+            <h3 id={unmatchedId}>
+              No PubMed ID found <span className="count">{unmatched.length}</span>
+            </h3>
+            <p className="hint">
+              The scanner couldn't find a PubMed ID on these files' first pages (common for scanned
+              or older PDFs). Paste a PMID to match one manually.
+            </p>
+            {rows(unmatched)}
+          </section>
+        )}
+      </div>
+    </ModalShell>
   );
 }
 
@@ -641,7 +720,6 @@ function UnmatchedRow({
       <div className="unmatched-name">
         {file.file_name}
         {!file.exists && <span className="file-missing">file missing</span>}
-        {file.match_status === "pending" && <span className="file-queued">not scanned</span>}
         {file.match_status === "error" && file.match_error && (
           <span className="unmatched-error" title={file.match_error}>
             {file.match_error}
