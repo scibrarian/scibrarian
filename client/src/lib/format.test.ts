@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   describeCacheCleared,
   describeRef,
-  describeRemoval,
-  describeResetDone,
   describeSweep,
   formatAuthors,
   errorMessage,
@@ -206,106 +204,6 @@ describe("titleCaseJournal", () => {
 
   it("passes the empty string through", () => {
     expect(titleCaseJournal("")).toBe("");
-  });
-});
-
-// Three counts that disagree in both directions, and a sentence that has to be
-// true under every combination of them. The one it used to get wrong is the
-// shortfall: reporting what the request carried rather than what came back said
-// work happened that hadn't.
-describe("describeRemoval", () => {
-  it("reports the plain case with one number", () => {
-    expect(describeRemoval(5, 5, 5)).toBe("Removed 5 papers from this collection.");
-  });
-
-  it("says paper, singular, for one", () => {
-    expect(describeRemoval(1, 1, 1)).toBe("Removed 1 paper from this collection.");
-  });
-
-  // A collection holding a preprint and the published PDF of one article: one
-  // paper ticked, two rows gone. Without the file count the notice sits above
-  // two fewer rows claiming one.
-  it("names the file count when a doubled article sends it past the papers", () => {
-    expect(describeRemoval(1, 2, 1)).toBe(
-      "Removed 1 paper from this collection (2 stored files)."
-    );
-  });
-
-  it("stays quiet about files when they match the papers", () => {
-    expect(describeRemoval(3, 3, 3)).not.toContain("stored files");
-  });
-
-  // The finding. Five ticked, another tab got three of them first: the notice
-  // used to read "Removed 5 papers" over two vanished rows.
-  it("reports what was removed, not what was asked for", () => {
-    expect(describeRemoval(5, 2, 2)).toBe(
-      "Removed 2 papers from this collection. 3 had already left."
-    );
-  });
-
-  it("handles a shortfall and a doubled article at once", () => {
-    expect(describeRemoval(5, 3, 2)).toBe(
-      "Removed 2 papers from this collection (3 stored files). 3 had already left."
-    );
-  });
-
-  // The rule these two have to agree on. They report the same rows from
-  // opposite ends of the app — a reset says what it destroyed, a removal says
-  // what it took off one shelf — and they disagreed about how to write a
-  // four-digit number for as long as each spelled the pluralisation out for
-  // itself. Asserted across both, because either alone goes green on its own
-  // spelling.
-  it("writes a large count the way the reset report writes it", () => {
-    expect(describeRemoval(1204, 1204, 1204)).toBe(
-      "Removed 1,204 papers from this collection."
-    );
-    expect(
-      describeResetDone({
-        topics: 0,
-        journals: 0,
-        papers: 1204,
-        folders: 0,
-        collections: 0,
-        files: 0,
-      })
-    ).toBe("Deleted 1,204 papers.");
-  });
-
-  it("never claims a removal when nothing was there", () => {
-    expect(describeRemoval(4, 0, 0)).toBe(
-      "Nothing was removed — those papers had already left this collection."
-    );
-    expect(describeRemoval(1, 0, 0)).toBe(
-      "Nothing was removed — that paper had already left this collection."
-    );
-  });
-
-  // A bookmark folder is the other place papers are ticked out of. One count
-  // there, passed as both, so the sentence is the plain one or the shortfall.
-  it("names the folder when that is what the papers left", () => {
-    expect(describeRemoval(3, 3, 3, "folder")).toBe("Removed 3 papers from this folder.");
-    expect(describeRemoval(3, 2, 2, "folder")).toBe(
-      "Removed 2 papers from this folder. 1 had already left."
-    );
-    expect(describeRemoval(1, 0, 0, "folder")).toBe(
-      "Nothing was removed — that paper had already left this folder."
-    );
-  });
-
-  // The property under all of it: the sentence may never name a number larger
-  // than what actually happened, whatever the three counts are.
-  it("never reports more papers than the server removed", () => {
-    for (const asked of [0, 1, 2, 5, 40]) {
-      for (const papers of [0, 1, 2, 5, 40]) {
-        for (const removed of [papers, papers + 1, papers * 2]) {
-          if (papers > asked) continue; // the server can't hold more than was asked for
-          const line = describeRemoval(asked, removed, papers);
-          const claimed = Number(/Removed (\d+) paper/.exec(line)?.[1] ?? 0);
-          expect(claimed).toBe(papers);
-          expect(claimed).toBeLessThanOrEqual(asked);
-        }
-      }
-    }
   });
 });
 

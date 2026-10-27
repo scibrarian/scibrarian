@@ -274,8 +274,8 @@ export function useCachedFetch<T>(
   // is already the new answer while `data` is still the old one. Reading
   // `loading` off `hit` alone reported "landed" over the previous token's
   // contents, and a caller that decides something once on that edge decided it
-  // against stale rows (see settleRemovalNotice, which drops a removal's
-  // confirmation when the reload comes back with the removed rows still in it).
+  // against stale rows (see removalSettled, which would release a removal's
+  // dimmed rows a moment before the list without them is on screen).
   const shownToken = entry && entry.key === key ? entry.token : hit !== undefined ? token : null;
   const loading = shownToken !== token && error == null;
 

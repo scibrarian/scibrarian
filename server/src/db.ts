@@ -2656,15 +2656,24 @@ export interface PdfTextInsert {
 // Store (or replace) one PDF's extracted text. Replace rather than ignore, so
 // re-running extraction after an extractor improvement actually updates the
 // index; the AFTER UPDATE trigger re-indexes it.
+//
+// Only for a blob some file still names — the question countFilesByHash asks.
+// The text is parsed from the blob and written when the parse finishes, and a
+// file deleted in that wait has already had gcBlobsIfOrphaned clear its hash's
+// text, which nothing does again: stored after it, the text would answer
+// searches for good. Asked at the write rather than by each caller, so a scan,
+// a check-in and any delete that lands during either are covered without
+// having to know about each other.
 export function savePdfText(t: PdfTextInsert): void {
   db.prepare(
     `INSERT INTO pdf_text (content_hash, text, pages, truncated, chars)
-     VALUES (?, ?, ?, ?, ?)
+     SELECT ?, ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM collection_files WHERE content_hash = ?)
      ON CONFLICT(content_hash) DO UPDATE SET
        text = excluded.text, pages = excluded.pages,
        truncated = excluded.truncated, chars = excluded.chars,
        extracted_at = datetime('now')`
-  ).run(t.contentHash, t.text, t.pages, Number(t.truncated), t.text.length);
+  ).run(t.contentHash, t.text, t.pages, Number(t.truncated), t.text.length, t.contentHash);
 }
 
 // Insert/refresh articles without linking them to a topic (collections track
