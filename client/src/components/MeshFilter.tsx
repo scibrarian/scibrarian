@@ -7,7 +7,7 @@ import { sourceKey } from "../lib/papers";
 import type { MeshDescriptorRef, MeshFiling, MeshHeadingsResponse, PaperSource } from "../types";
 
 // Facet lists per (source, search). Module-level like the other caches here, so
-// reopening the dropdown — or flipping between Papers, Timeline and Graph —
+// reopening the dropdown — or flipping between Table, Timeline and Graph —
 // paints from memory instead of refetching a list that hasn't changed.
 const facetCache: FetchCache<MeshHeadingsResponse> = new Map();
 

@@ -1,5 +1,4 @@
 import type { CSSProperties, ReactNode } from "react";
-import { SEARCH_PLACEHOLDER_FULL_TEXT } from "../lib/papers";
 import { ALL_JOURNALS_LABEL } from "./JournalFilter";
 import { ALL_SUBJECTS_LABEL } from "./MeshFilter";
 
@@ -60,18 +59,13 @@ export function ToolbarSkeleton() {
       <input
         className="search"
         type="search"
-        // The full-text wording, which is a guess: this draws before the
-        // bootstrap has said which section it landed in. It is the right
-        // guess, because the bootstrap prefers the Library whenever a
-        // collection exists (see App), and collections are exactly the sources
-        // that carry PDFs. Being wrong costs only the sentence — .search is
-        // width: 100%, so unlike FilterSkeleton's label this placeholder sizes
-        // nothing and a mismatch slides no neighbour sideways on the handoff.
-        //
-        // Read from lib rather than written out again here, which is the rule
-        // FilterSkeleton's `label` prop exists for: one sentence with two
-        // readers drifts, and the stand-in is the copy nobody re-reads.
-        placeholder={SEARCH_PLACEHOLDER_FULL_TEXT}
+        // No placeholder. A sentence would make this the one part of the
+        // stand-in that looks ready, when it takes no input — the rule the
+        // section switch follows too (see SectionNav). It would also be a
+        // guess: this draws before the bootstrap has said which section it
+        // landed in, so it can't know whether there is PDF text to search.
+        // Leaving it out sizes nothing, since .search is width: 100%, so the
+        // real box brings its sentence with it and nothing beside it moves.
         readOnly
         aria-hidden="true"
         tabIndex={-1}

@@ -91,7 +91,7 @@ export default function App() {
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
   const [activeCollectionId, setActiveCollectionId] = useState<CollectionSelection | null>(null);
   // Each section remembers its own view, and every one of them opens on
-  // Papers. Interests used to open on Timeline, on the grounds that what it is
+  // Table. Interests used to open on Timeline, on the grounds that what it is
   // for — reading what's new — is the one question a date axis answers. That
   // held for the view in isolation and not for moving between views: switching
   // section changed the shape of the page as well as its contents, so the

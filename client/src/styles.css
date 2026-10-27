@@ -414,7 +414,7 @@ body {
    beside the thing clicked rather than a screen away from it.
 
    The cost, measured rather than assumed: a centred pill lands across
-   .view-toggle and hides Papers and Timeline for as long as it shows. Nothing
+   .view-toggle and hides Table and Timeline for as long as it shows. Nothing
    is blocked by that — this is pointer-events: none, and .toast-dismiss below
    is the only part that takes a click — but the switcher is covered, so the
    placement is a trade and not a free win.

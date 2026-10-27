@@ -10,18 +10,15 @@ import { useCachedFetch, warmCache, type FetchCache } from "./hooks";
 // sourceKey itself.
 export { sourceHasFiles, sourceKey };
 
-// The search box's two placeholders. Here rather than inline because the
-// toolbar is drawn twice — once by PaperFilters, which knows its source, and a
-// paint earlier by ToolbarSkeleton, which does not — so the sentence has two
-// readers and a rename reaching only one of them leaves the other promising
-// something different. sourceHasFiles, just above, is what picks between them:
-// collections search the body text of the PDFs they hold, topics and bookmark
-// folders have no files behind their papers.
+// The search box's two placeholders. sourceHasFiles, just above, is what picks
+// between them: collections search the body text of the PDFs they hold, topics
+// and bookmark folders have no files behind their papers. ToolbarSkeleton's
+// stand-in for the box shows neither, having no source to pick by (see there).
 export const SEARCH_PLACEHOLDER = "Search titles, abstracts & authors…";
 export const SEARCH_PLACEHOLDER_FULL_TEXT = "Search titles, abstracts, authors & PDF text…";
 
 // Cache the last successful fetch per (source, search). Remounting a view —
-// flipping between Papers/Timeline, or clicking back into a section — then
+// flipping between Table/Timeline, or clicking back into a section — then
 // paints from cache instead of refetching. The Table and Timeline modules share
 // this cache because they read the same endpoint with the same key. reloadToken
 // is this source's alone (see lib/reload), bumped whenever its data changes —
@@ -43,9 +40,9 @@ function papersKey(
 }
 
 // Filter state for one paper source, owned above the views (in App) instead of
-// inside them. Each view unmounts as you flip Papers / Timeline / Graph, so
+// inside them. Each view unmounts as you flip Table / Timeline / Graph, so
 // state held in a view was silently discarded on every switch — typing a search
-// in Timeline and moving to Papers used to start over from an unfiltered list.
+// in Timeline and moving to Table used to start over from an unfiltered list.
 export function usePaperFilters(source: PaperSource) {
   const key = sourceKey(source);
   // Journals the user has turned off (empty = show all).

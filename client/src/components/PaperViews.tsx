@@ -10,7 +10,7 @@ import type { ViewMode } from "./ViewSwitcher";
 
 // The graph view alone pulls in the force-graph + graphology libraries — the
 // bulk of the JS bundle. Load it as a separate chunk on demand, so opening
-// Papers or Timeline never downloads the graph engine; it arrives only when a
+// Table or Timeline never downloads the graph engine; it arrives only when a
 // viewer actually switches to Graph.
 const CitationGraph = lazy(() =>
   import("./CitationGraph").then((m) => ({ default: m.CitationGraph }))
@@ -21,7 +21,7 @@ const CitationGraph = lazy(() =>
 // The filters live here, one level above the views, precisely because only one
 // view is mounted at a time: state held inside a view is destroyed the moment
 // you switch to another. Hoisting it here is what lets a search term, journal
-// selection, or citation threshold survive Papers -> Timeline -> Graph.
+// selection, or citation threshold survive Table -> Timeline -> Graph.
 //
 // It also gives the filter hook a source that is known to exist, which App
 // cannot guarantee (no topic/collection selected yet) without calling a hook

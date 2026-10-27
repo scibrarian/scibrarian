@@ -7,12 +7,12 @@ export type ViewMode = "table" | "timeline" | "graph";
 // only change a new view needs on the control side — see the note below on
 // when this should stop being a segmented control.
 const VIEWS: { value: ViewMode; label: string }[] = [
-  { value: "table", label: "Papers" },
+  { value: "table", label: "Table" },
   { value: "timeline", label: "Timeline" },
   { value: "graph", label: "Graph" },
 ];
 
-// The Papers / Timeline / Graph switch. A Radix ToggleGroup rather than plain
+// The Table / Timeline / Graph switch. A Radix ToggleGroup rather than plain
 // buttons: type="single" gives radiogroup/radio semantics (so the active view
 // is exposed to screen readers, which a CSS `.active` class alone was not) plus
 // roving focus — the group is one tab stop and arrow keys move within it.
