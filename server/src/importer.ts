@@ -25,6 +25,29 @@ import { chunk, errMessage, safeMessage } from "./util.js";
 
 const jobs = new Map<number, ImportJob>();
 
+// Each job's run, so cancelImport can wait for one to stop.
+const runs = new WeakMap<ImportJob, Promise<void>>();
+
+// Jobs whose collection is being deleted under them. See cancelImport.
+const cancelled = new WeakSet<ImportJob>();
+
+class ImportCancelled extends Error {}
+
+// Called after every await in a run that waits on something outside this
+// process — a PDF read, a PubMed request, a citation fetch. Those are the only
+// points at which a delete can have happened since the run last looked, so
+// stopping at one keeps a cancelled run from reading on, asking PubMed on and
+// matching files that are gone.
+//
+// They are not what keeps a delete clean, so a missed one costs work rather
+// than leaving anything behind. savePdfText stores no text for a blob no file
+// names, and upsertCitations no counts for a paper that isn't stored — which is
+// why the counts a fetch already in flight brings back can still be written:
+// they go with their papers in the sweep.
+function stopIfCancelled(job: ImportJob): void {
+  if (cancelled.has(job)) throw new ImportCancelled();
+}
+
 export function getImportStatus(collectionId: number): ImportJob | null {
   return jobs.get(collectionId) ?? null;
 }
@@ -79,8 +102,27 @@ export function startImport(collectionId: number, collectionName: string): Impor
     finishedAt: null,
   };
   jobs.set(collectionId, job);
-  void runImport(job, pending, collectionName);
+  runs.set(job, runImport(job, pending, collectionName));
   return job;
+}
+
+// Stop the scan over a collection that is being deleted, resolving once it has
+// stopped. The flag is set before this first awaits, so a caller that deletes
+// in the same tick has the scan stop at the next check it reaches: the scan
+// only resumes from an await, and the delete has finished by then.
+//
+// Left running, a scan went on over rows that were gone. Most of its writes
+// were updates that matched nothing, but the PDF it was reading at the time had
+// its text stored again after the delete had cleared it, with nothing left that
+// would ever remove it, and the papers it went on matching were stored for
+// nothing to hold.
+export async function cancelImport(collectionId: number): Promise<void> {
+  const job = jobs.get(collectionId);
+  if (!job) return;
+  cancelled.add(job);
+  await runs.get(job);
+  // Its tallies are for a collection that no longer exists.
+  if (jobs.get(collectionId) === job) jobs.delete(collectionId);
 }
 
 interface Candidate {
@@ -107,6 +149,9 @@ async function runImport(
           // to see, and the capped full text for the search index.
           extracted = await extractPdf(blobPath(f.content_hash));
         } catch (err) {
+          // First, because a delete takes the blobs: a cancelled scan's next
+          // read fails, and that is not a PDF that couldn't be read.
+          stopIfCancelled(job);
           // match_error is rendered verbatim next to the file in the UI, and the
           // raw pdfjs/fs message names the blob path — which embeds the
           // content_hash that apiFile() strips precisely because it feeds the
@@ -118,6 +163,7 @@ async function runImport(
           job.processed++;
           continue;
         }
+        stopIfCancelled(job);
 
         // Indexed even when the file goes on to be unmatched. The text belongs
         // to the blob, not to whether we could pin it to a PubMed record, and
@@ -159,6 +205,7 @@ async function runImport(
       // 2) Resolve the batch against PubMed and warm citations for new matches.
       const newlyMatched = await resolveCandidates(candidates, job);
       await warmCitations(newlyMatched, label);
+      stopIfCancelled(job);
 
       // Per batch, not only when the whole job ends. Resolution is one throttled
       // esearch per candidate DOI, so a few thousand files is a job measured in
@@ -172,6 +219,9 @@ async function runImport(
     job.state = "done";
   } catch (err) {
     job.state = "error";
+    // Nothing reads a cancelled job, which cancelImport drops the moment the
+    // run settles, and nothing went wrong that the log would want.
+    if (err instanceof ImportCancelled) return;
     // Served by /collections/:id/import/status, so scrub it like any other
     // client-facing body; the log keeps the real cause.
     console.warn(`[import] ${label}: failed: ${errMessage(err)}`);
@@ -190,20 +240,22 @@ async function runImport(
     // failed part way still matched everything up to the failure, and those
     // files are as eligible as any other. Gated on matched > 0 because a run
     // that matched nothing created no candidate, and the hint would only wake a
-    // sweep to re-derive the same empty queue.
-    if (job.matched > 0) hintProSync("import finished");
+    // sweep to re-derive the same empty queue. Nor after a cancel: the files it
+    // matched went with their collection.
+    if (job.matched > 0 && !cancelled.has(job)) hintProSync("import finished");
   }
 }
 
 // Ensure metadata exists locally for these candidate PMIDs; returns the subset
 // that PubMed actually recognizes. This is what keeps a garbage regex hit from
 // ever entering a collection.
-async function validatePmids(pmids: string[]): Promise<Set<string>> {
+async function validatePmids(pmids: string[], job: ImportJob): Promise<Set<string>> {
   const distinct = [...new Set(pmids)];
   const valid = existingPmids(distinct);
   const unknown = distinct.filter((p) => !valid.has(p));
   for (const batch of chunk(unknown, EUTILS_BATCH)) {
     const articles = await fetchArticles(batch);
+    stopIfCancelled(job);
     upsertArticles(articles);
     for (const a of articles) valid.add(a.pmid);
   }
@@ -217,7 +269,8 @@ async function resolveCandidates(candidates: Candidate[], job: ImportJob): Promi
   const matchedPmids: string[] = [];
 
   const validRegexPmids = await validatePmids(
-    candidates.filter((c) => c.pmid).map((c) => c.pmid!)
+    candidates.filter((c) => c.pmid).map((c) => c.pmid!),
+    job
   );
 
   const needDoi: Candidate[] = [];
@@ -240,6 +293,7 @@ async function resolveCandidates(candidates: Candidate[], job: ImportJob): Promi
   for (const c of needDoi) {
     for (const doi of c.dois) {
       const pmid = await resolveDoiToPmid(doi);
+      stopIfCancelled(job);
       if (pmid) {
         doiResolved.set(c, pmid);
         break;
@@ -247,7 +301,7 @@ async function resolveCandidates(candidates: Candidate[], job: ImportJob): Promi
     }
   }
 
-  const validDoiPmids = await validatePmids([...doiResolved.values()]);
+  const validDoiPmids = await validatePmids([...doiResolved.values()], job);
   for (const c of needDoi) {
     const pmid = doiResolved.get(c);
     if (pmid && validDoiPmids.has(pmid)) {
