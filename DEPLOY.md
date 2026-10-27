@@ -19,7 +19,7 @@ no source checkout, no toolchain, no build. Tags:
 | Tag | Points at |
 |-----|-----------|
 | `latest` | the newest commit on `main` |
-| `2.0.1` | the current release — re-pushed as fixes land within that version |
+| `2.1.0` | the current release — re-pushed as fixes land within that version |
 | `sha-<commit>` | one exact build; never moves, so it's what you pin or roll back to |
 
 CI builds and pushes these on every green `main` commit (`linux/amd64` and
@@ -107,7 +107,7 @@ Edit `.env`:
 ADMIN_TOKEN=<paste `openssl rand -hex 32`>
 DOMAIN=scibrarian.example.com
 ACME_EMAIL=you@example.com
-#SCIBRARIAN_TAG=2.0.1     # uncomment to pin a release instead of `latest`
+#SCIBRARIAN_TAG=2.1.0     # uncomment to pin a release instead of `latest`
 ```
 
 ### 4. Set the edge password

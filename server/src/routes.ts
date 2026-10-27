@@ -97,6 +97,7 @@ import { splitRefs } from "./citation-ref.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
   anyImportRunning,
+  cancelImport,
   clearImportJobs,
   getImportStatus,
   isImportRunning,
@@ -1318,9 +1319,18 @@ api.delete(
     // checked-out copies of those rows are the half it cannot reach — see
     // discardOrphanedCheckouts, and the note on the dialog that promises "any
     // stored PDF copies are deleted".
-    deleteCollection(Number(req.params.id));
+    //
+    // A scan over the collection is told to stop in the same tick as the
+    // delete, which is what keeps it from writing after it (see cancelImport).
+    // Its stopping is waited for after the response, so a PubMed request it is
+    // part way through doesn't hold the delete up, and before the sweep, which
+    // skips its turn while any scan is running.
+    const id = Number(req.params.id);
+    const scanStopped = cancelImport(id);
+    deleteCollection(id);
     await discardOrphanedCheckouts();
     res.status(204).end();
+    await scanStopped;
     sweepUnheld();
   })
 );

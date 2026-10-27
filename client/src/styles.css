@@ -3447,6 +3447,15 @@ html {
   white-space: nowrap;
 }
 
+/* A collection's unmatched files, counted at the end of the line as a link
+   that opens them. In the line's own type, so the accent is the one thing that
+   sets it apart. */
+.source-summary .link-btn {
+  font-family: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
+
 /* The margin-left reset undoes the 8px .from-org carries for sitting after a
    paper title, where it is a suffix; here it follows the summary at the box's
    own gap, or starts the row. */
@@ -3823,26 +3832,19 @@ html {
   vertical-align: middle;
 }
 
-/* Same pill as .file-missing, in the muted palette: a file the scan never
-   reached is unfinished business, not a fault like a missing blob. */
-.file-queued {
-  display: inline-block;
-  margin-left: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-  background: var(--border);
-  border-radius: 999px;
-  padding: 1px 8px;
-  vertical-align: middle;
-}
-
 /* unmatched files */
 
-.unmatched {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px 18px;
+/* Both groups scroll together inside the dialog, which has no height of its
+   own to stop at. The padding, taken back at the sides by the margin, is room
+   for focus rings, which a scroll box would otherwise clip. */
+.unmatched-groups {
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
 .unmatched h3 {
@@ -3860,6 +3862,19 @@ html {
   font-size: 11px;
   padding: 1px 8px;
   font-weight: 700;
+}
+
+/* A group's heading with its one action, "Scan them", at the far end. */
+.unmatched-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.unmatched-head h3 {
+  margin: 0;
 }
 
 .unmatched-list {
@@ -3909,7 +3924,8 @@ html {
   width: 110px;
 }
 
-.unmatched-controls > button:not(.link-btn) {
+.unmatched-controls > button:not(.link-btn),
+.unmatched-head > button {
   background: var(--accent);
   color: #fff;
   border: none;
@@ -3919,7 +3935,8 @@ html {
   cursor: pointer;
 }
 
-.unmatched-controls > button:disabled {
+.unmatched-controls > button:disabled,
+.unmatched-head > button:disabled {
   opacity: 0.5;
   cursor: default;
 }

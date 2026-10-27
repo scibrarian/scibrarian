@@ -113,6 +113,8 @@ describe("opening a library indexed under porter", () => {
 
   it("keeps the pdf_text triggers feeding the new index", () => {
     const hash = "b".repeat(64);
+    // savePdfText stores text only for a blob some file names.
+    db!.addCollectionFiles(db!.createCollection("Rebuilt").id, [{ hash, name: "b.pdf" }]);
     db!.savePdfText({
       contentHash: hash,
       text: "Glomerular filtration declined.",
