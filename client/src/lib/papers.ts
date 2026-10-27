@@ -10,13 +10,10 @@ import { useCachedFetch, warmCache, type FetchCache } from "./hooks";
 // sourceKey itself.
 export { sourceHasFiles, sourceKey };
 
-// The search box's two placeholders. Here rather than inline because the
-// toolbar is drawn twice — once by PaperFilters, which knows its source, and a
-// paint earlier by ToolbarSkeleton, which does not — so the sentence has two
-// readers and a rename reaching only one of them leaves the other promising
-// something different. sourceHasFiles, just above, is what picks between them:
-// collections search the body text of the PDFs they hold, topics and bookmark
-// folders have no files behind their papers.
+// The search box's two placeholders. sourceHasFiles, just above, is what picks
+// between them: collections search the body text of the PDFs they hold, topics
+// and bookmark folders have no files behind their papers. ToolbarSkeleton's
+// stand-in for the box shows neither, having no source to pick by (see there).
 export const SEARCH_PLACEHOLDER = "Search titles, abstracts & authors…";
 export const SEARCH_PLACEHOLDER_FULL_TEXT = "Search titles, abstracts, authors & PDF text…";
 
