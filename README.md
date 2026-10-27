@@ -6,7 +6,7 @@ on your laptop or on a server you control.
 
 - Two workspaces: **Interests** (topics you follow) and **Library** (papers you
   already have), each with a picker for the topic or collection in view.
-- Every workspace renders three ways — **Papers** (sortable table), **Timeline**
+- Every workspace renders three ways — **Table** (sortable), **Timeline**
   (reverse-chronological), and **Graph** — switched from the header.
 - A topic is one or more MeSH headings — a paper has to carry all of them — and
   searches either all of PubMed or a list of journals of its own. Add one from
@@ -54,7 +54,7 @@ Then open the UI URL printed by Vite (default http://localhost:5173).
    *New England Journal of Medicine*, *Lancet*, *JAMA*, *Nature Medicine*) — a broad
    topic needs a list, since PubMed returns at most 9,999 papers for one search.
 4. Click **Check for new papers**. Pick a topic from the dropdown to see its
-   papers, and switch between Papers / Timeline / Graph in the header.
+   papers, and switch between Table / Timeline / Graph in the header.
 
 ## Tests
 

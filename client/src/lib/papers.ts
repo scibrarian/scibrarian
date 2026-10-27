@@ -21,7 +21,7 @@ export const SEARCH_PLACEHOLDER = "Search titles, abstracts & authors…";
 export const SEARCH_PLACEHOLDER_FULL_TEXT = "Search titles, abstracts, authors & PDF text…";
 
 // Cache the last successful fetch per (source, search). Remounting a view —
-// flipping between Papers/Timeline, or clicking back into a section — then
+// flipping between Table/Timeline, or clicking back into a section — then
 // paints from cache instead of refetching. The Table and Timeline modules share
 // this cache because they read the same endpoint with the same key. reloadToken
 // is this source's alone (see lib/reload), bumped whenever its data changes —
@@ -43,9 +43,9 @@ function papersKey(
 }
 
 // Filter state for one paper source, owned above the views (in App) instead of
-// inside them. Each view unmounts as you flip Papers / Timeline / Graph, so
+// inside them. Each view unmounts as you flip Table / Timeline / Graph, so
 // state held in a view was silently discarded on every switch — typing a search
-// in Timeline and moving to Papers used to start over from an unfiltered list.
+// in Timeline and moving to Table used to start over from an unfiltered list.
 export function usePaperFilters(source: PaperSource) {
   const key = sourceKey(source);
   // Journals the user has turned off (empty = show all).
