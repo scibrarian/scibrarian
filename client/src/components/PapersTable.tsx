@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronUp, ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Bookmarking } from "../lib/bookmarking";
-import { describeRemoval, errorMessage, formatAuthors } from "../lib/format";
+import { errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList, useMediaQuery, useReveal } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import {
+  removalSettled,
   selectionOnScreen,
-  settleRemovalNotice,
   usePapers,
   type PaperFilterState,
 } from "../lib/papers";
@@ -129,26 +129,17 @@ export function PapersTable({
   const sortDir = sortHidden ? DEFAULT_SORT.dir : pickedSortDir;
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  // A removal's message, held back until the rows it is about have gone.
+  // What reloadToken read when a removal answered, while the rows it dimmed wait
+  // for the refetch that drops them — 584ms after the answer on a local server,
+  // measured. Kept so the wait can tell its own refresh from a later one.
   //
-  // The two used to land separately and the page moved twice for one action:
-  // the banner appeared the moment the request answered, pushing the table
-  // down ~55px while it still showed every row that had just been deleted, and
-  // the rows left when the refetch behind it landed — 584ms later on a local
-  // server, measured. Two shifts in opposite directions, half a second apart,
-  // for something the user did once.
-  //
-  // Waiting is the same answer Settings' `ready` gate gives: one coordinated
-  // change beats two that settle independently. The button holds its "Removing…"
-  // label throughout, so the wait is accounted for rather than silent.
-  //
-  // `token` is what reloadToken read when the removal answered, so the message
-  // can tell its own refresh from a later one and not outlive it.
-  const [pendingNotice, setPendingNotice] = useState<{
-    text: string;
-    pmids: string[];
-    token: number;
-  } | null>(null);
+  // A removal that worked says nothing. The rows leaving are the report, after
+  // a confirmation that already said what would go, and a banner on top only
+  // pushed the table down to repeat it — or to explain a difference nobody can
+  // act on: two copies of one paper, or a paper another tab removed first,
+  // both of which end with the ticked papers gone as asked. A request that
+  // fails still says so, below, and a refetch that fails has usePapers' own.
+  const [removalToken, setRemovalToken] = useState<number | null>(null);
   // The paper waiting on a new folder, if any — one prompt for the table
   // rather than one per row (see NewFolderDialog).
   const [namingFor, setNamingFor] = useState<string | null>(null);
@@ -229,15 +220,13 @@ export function PapersTable({
   // are handled below instead.
   useEffect(() => setSelected(new Set()), [fetchKey, reloadToken]);
 
-  // A held message belongs to the source it was measured against, so a switch
-  // away discards it rather than letting it surface over a different set of
-  // papers. Keyed on `fetchKey` alone and deliberately *not* on `reloadToken`:
-  // the removal that holds the message is what bumps that token, so including
-  // it here would throw every message away one render after it was set.
-  // The dimmed rows go with it, and for the same reason: a pmid held over from
-  // the last source would dim whichever paper happens to share it here.
+  // A removal's wait belongs to the source it was made in, so a switch away
+  // ends it. Keyed on `fetchKey` alone and deliberately *not* on `reloadToken`:
+  // the removal is what bumps that token, so including it here would end every
+  // wait one render after it began. The dimmed rows go with it: a pmid held
+  // over from the last source would dim whichever paper happens to share it here.
   useEffect(() => {
-    setPendingNotice(null);
+    setRemovalToken(null);
     setLeaving(new Set());
   }, [fetchKey]);
 
@@ -247,28 +236,16 @@ export function PapersTable({
   // filter hid it, and whether or not this component knows that filter exists.
   const onScreen = useMemo(() => selectionOnScreen(selected, visible), [selected, visible]);
 
-  // Act on the held message once settleRemovalNotice has an answer for it. The
-  // rule itself lives beside the intersection it is built from — see there for
-  // why the wait is bounded by the reload rather than by the rows leaving.
-  //
-  // Only the two things that belong to this component are here: which message
-  // gets published, and the dimmed rows going with it. They are released on
-  // every way out that isn't "wait", so nothing un-dims a moment before it
+  // Release the dimmed rows once removalSettled says the removal's refetch is
+  // over — see there for why the wait is bounded by the reload rather than by
+  // the rows leaving. Released then, nothing un-dims a moment before it
   // disappears, and a paper filed back into the collection later doesn't arrive
   // still faded.
   useEffect(() => {
-    if (!pendingNotice) return;
-    const outcome = settleRemovalNotice(pendingNotice, {
-      token: reloadToken,
-      loading: reloading,
-      error,
-      visible,
-    });
-    if (outcome === "wait") return;
-    if (outcome === "publish") setNotice(pendingNotice.text);
-    setPendingNotice(null);
+    if (removalToken == null || !removalSettled(removalToken, reloadToken, reloading)) return;
+    setRemovalToken(null);
     setLeaving(new Set());
-  }, [pendingNotice, visible, reloadToken, reloading, error]);
+  }, [removalToken, reloadToken, reloading]);
 
   // The whole filtered set, not the rows rendered so far: the table lazy-renders
   // (see useIncrementalList), so selecting "all" from `shown` would silently
@@ -308,28 +285,11 @@ export function PapersTable({
     // warning — the one thing the dim exists to prevent.
     setLeaving((prev) => new Set([...prev, ...batch]));
     try {
-      // What happened, from the server, rather than the length of what was
-      // sent. The two disagree in both directions — a collection holding two
-      // copies of one article removes more files than papers, and anything that
-      // got there first (another tab, a second window, an import cleanup)
-      // removes fewer papers than were ticked. See describeRemoval.
-      let text: string;
-      if (removeFrom.place === "collection") {
-        const { removed, papers } = await api.removeCollectionPapers(removeFrom.id, batch);
-        text = describeRemoval(batch.length, removed, papers);
-      } else {
-        // A folder holds a paper once, so it has the one count and only the
-        // shortfall to report.
-        const { removed } = await api.removeBookmarks(removeFrom.id, batch);
-        text = describeRemoval(batch.length, removed, removed, "folder");
-      }
-      setPendingNotice({
-        text,
-        pmids: batch,
-        // Read before the callback below bumps it, which is the point: the
-        // refresh this message waits for is the next one, not this one.
-        token: reloadToken,
-      });
+      if (removeFrom.place === "collection") await api.removeCollectionPapers(removeFrom.id, batch);
+      else await api.removeBookmarks(removeFrom.id, batch);
+      // Read before the callback below bumps it, which is the point: the
+      // refresh the dimmed rows wait for is the next one, not this one.
+      setRemovalToken(reloadToken);
       setSelected(new Set());
       // The papers list, the source's count in the picker and — for a
       // collection — the file list in the view above are all now stale, and

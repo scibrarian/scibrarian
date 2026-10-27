@@ -133,13 +133,12 @@ describe("removing papers from a collection", () => {
     await removal.land({ ok: true, value: { removed: 2, papers: 2 } });
 
     await waitFor(() => expect(screen.queryByText("Paper 1")).toBeNull());
-    // findBy, not getBy: the banner takes its own copy of the message in an
-    // effect, so the text arrives a tick after the rows go.
-    expect(await screen.findByText("Removed 2 papers from this collection.")).toBeTruthy();
     expect(dimmed(container)).toBe(0);
+    // The rows leaving are the report: nothing is said on top of them.
+    expect(container.querySelector(".banner")).toBeNull();
   });
 
-  it("releases the dim when the reload fails, and claims nothing", async () => {
+  it("releases the dim when the reload fails", async () => {
     // The hang this covers. usePapers keeps the last good list on screen when a
     // reload fails, so the removed rows are still there — and the token moved by
     // exactly one, so the escape for a later refresh was never going to fire
@@ -155,10 +154,8 @@ describe("removing papers from a collection", () => {
     await screen.findByText("Couldn't load.");
     // The rows are still on screen, because the list on screen is the stale one.
     expect(screen.getByText("Paper 1")).toBeTruthy();
-    // But nothing is still pretending to be on its way out...
+    // But nothing is still pretending to be on its way out.
     await waitFor(() => expect(dimmed(container)).toBe(0));
-    // ...and no success is claimed over rows that are visibly still there.
-    expect(screen.queryByText(/^Removed 2 papers/)).toBeNull();
   });
 
   it("puts the rows back to full strength when the request itself fails", async () => {
@@ -180,7 +177,7 @@ describe("removing papers from a collection", () => {
 
 // The same control over a folder. What differs is everything the table says and
 // calls, and none of how it behaves — so this pins the differences and leaves
-// the dim, the held notice and the failure paths to the block above.
+// the dim and the failure paths to the block above.
 describe("removing papers from a bookmark folder", () => {
   let nextFolder = 900;
   let folder: number;
@@ -218,7 +215,7 @@ describe("removing papers from a bookmark folder", () => {
     expect(screen.queryByText(/stored PDF copies/)).toBeNull();
   });
 
-  it("removes through the folder's route and reports what left it", async () => {
+  it("removes through the folder's route, and says nothing once they've gone", async () => {
     const removal = deferred<{ removed: number }>();
     api.getPapers.mockResolvedValueOnce(THREE).mockResolvedValueOnce({
       papers: [paper("3")],
@@ -237,25 +234,8 @@ describe("removing papers from a bookmark folder", () => {
     await removal.land({ ok: true, value: { removed: 2 } });
 
     await waitFor(() => expect(screen.queryByText("Paper 1")).toBeNull());
-    expect(await screen.findByText("Removed 2 papers from this folder.")).toBeTruthy();
     expect(dimmed(container)).toBe(0);
-  });
-
-  it("reports the shortfall when another tab got to one of them first", async () => {
-    const removal = deferred<{ removed: number }>();
-    api.getPapers.mockResolvedValueOnce(THREE).mockResolvedValueOnce({
-      papers: [paper("3")],
-      journals: ["Lancet"],
-    });
-    api.removeBookmarks.mockReturnValue(removal.promise);
-
-    const { container } = render(<Host source={source} />);
-    await tickTwoAndConfirm(container);
-    await removal.land({ ok: true, value: { removed: 1 } });
-
-    expect(
-      await screen.findByText("Removed 1 paper from this folder. 1 had already left.")
-    ).toBeTruthy();
+    expect(container.querySelector(".banner")).toBeNull();
   });
 });
 

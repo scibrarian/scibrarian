@@ -226,16 +226,8 @@ export function selectionOnScreen(
   return onScreen;
 }
 
-/** What a removal's held confirmation should do, now that a reload has been asked for. */
-export type RemovalNoticeOutcome = "wait" | "publish" | "drop";
-
 /**
- * Decide the fate of a removal's held confirmation.
- *
- * `wait` leaves it held; `publish` shows it; `drop` throws it away. Both of the
- * last two also mean "release the dimmed rows", which is why this answers with
- * an outcome rather than a boolean — the caller must not be able to publish
- * without releasing, or to release without having decided.
+ * Whether a removal's reload is over, so the rows it dimmed can be released.
  *
  * Pure and exported for the same reason selectionOnScreen is: what it decides is
  * when a table stops looking mid-action, and that has to be one rule rather than
@@ -252,34 +244,18 @@ export type RemovalNoticeOutcome = "wait" | "publish" | "drop";
  * Held for exactly one reload: the one the removal itself started, which is the
  * token it recorded plus the single bump handleCollectionChanged makes to this
  * source's key (bumpSource and bumpAll each move tokenFor by one). Past that,
- * something else refreshed the list, and publishing then put "Removed 5 papers
- * from this collection." over a table the user had not touched in minutes.
+ * something else refreshed the list, and the removal's wait is over whatever
+ * that list shows.
  *
- * An error publishes nothing — usePapers puts its own message in the same banner
- * slot, and claiming a success above rows that are still there is the thing this
- * exists to prevent — but it does end the wait.
- *
- * A filter that hides the rows counts as gone, which is correct: the shift being
- * avoided is the table moving, and a hidden row moves it just as a deleted one
- * does.
+ * `loading` goes true the moment the token moves and stays there until this
+ * token's own data lands, so waiting on it is what keeps the rows dimmed until
+ * the list without them is on screen: released earlier, they came back to full
+ * strength a moment before they went. A reload that fails ends it too, with the
+ * rows still there and no longer dimmed.
  */
-export function settleRemovalNotice(
-  held: { pmids: readonly string[]; token: number },
-  reload: {
-    token: number;
-    loading: boolean;
-    error: string | null;
-    visible: readonly { pmid: string }[];
-  }
-): RemovalNoticeOutcome {
-  if (reload.token > held.token + 1) return "drop";
-  // `loading` goes true the moment the token moves and stays there until this
-  // token's own data lands, which is what makes `visible` below safe to read:
-  // until then it is the pre-removal list, held over by usePapers so a refetch
-  // doesn't flash a skeleton.
-  if (reload.token !== held.token + 1 || reload.loading) return "wait";
-  if (reload.error) return "drop";
-  return selectionOnScreen(new Set(held.pmids), reload.visible).size === 0 ? "publish" : "drop";
+export function removalSettled(heldToken: number, token: number, loading: boolean): boolean {
+  if (token > heldToken + 1) return true;
+  return token === heldToken + 1 && !loading;
 }
 
 export type PaperFilterState = ReturnType<typeof usePaperFilters>;
@@ -385,7 +361,7 @@ export function usePapers(
     // says "there is nothing to show", which is false for the whole of a reload
     // that has a previous list to hold over — so anything that has to decide
     // something once, at the moment a reload lands, has to read this instead.
-    // settleRemovalNotice is the caller that does.
+    // removalSettled is the caller that does.
     reloading: loading,
     error,
     allDeselected,
