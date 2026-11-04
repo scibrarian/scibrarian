@@ -3403,6 +3403,11 @@ html {
    refresh, a collection's uploads, a folder's rename — which is what puts the
    filters and papers below at the same vertical position everywhere. */
 .source-view {
+  /* For .drop-overlay, which covers it. Nothing else inside moves for it: the
+     rest of what is absolutely positioned in here is placed against a nearer
+     positioned box of its own, or (.sr-only) sets no offsets and stays where
+     it would have been. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -3495,6 +3500,54 @@ html {
 .source-actions > button:not(.link-btn):disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* Files dragged over a collection: the whole view, outlined and washed in the
+   accent, with where they will go said in the middle. Out of flow, so neither
+   the papers nor the .source-view gap move when it comes and goes.
+
+   pointer-events: none is what keeps it working. A drag over a box that took
+   the pointer would land on the box and not on the view, and the view's
+   dragenter/dragleave count — see CollectionView's dragDepth — would see the
+   pointer leave everything under it the moment the overlay appeared.
+
+   Above the papers table's sticky header (positioned, no z-index) and below
+   the sticky .section-bar (20) and everything that opens over the page. */
+.drop-overlay {
+  position: absolute;
+  inset: -8px;
+  z-index: 10;
+  pointer-events: none;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  background: rgba(234, 241, 255, 0.85);
+}
+
+/* Sticky inside the overlay, so a drop on a collection scrolled far down its
+   papers still shows where it goes: the label holds 40% of the way down the
+   screen wherever the view is scrolled to, and on a view too short to reach
+   that far it stops at the overlay's bottom edge. */
+.drop-overlay-label {
+  position: sticky;
+  top: 40vh;
+  display: block;
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  margin: 56px auto 0;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+@media (prefers-color-scheme: dark) {
+  .drop-overlay {
+    background: rgba(30, 41, 64, 0.85);
+  }
 }
 
 /* import progress */

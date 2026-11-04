@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { CollectionView } from "./CollectionView";
 import { createImportJobs, type ImportJobs } from "../lib/import-jobs";
+import { dataTransfer, fileEntry, folderEntry } from "../lib/test-drops";
 import type { CollectionFile, ImportJob } from "../types";
 
 // The collection shell around an import: what it says when a scan finishes,
@@ -88,6 +89,7 @@ function View({
   return (
     <CollectionView
       collectionId={id}
+      name="Cardiology"
       isAdmin={isAdmin}
       summary="1 paper"
       stamp={null}
@@ -233,6 +235,102 @@ describe("what a finished scan says", () => {
     const picked = [pdf("a.pdf"), pdf("b.pdf"), text("notes.txt"), text("todo.txt")];
     await scan(picked, job({ total: 2, processed: 2, matched: 2 }));
     expect(screen.getByText("Ignored 2 files that aren't PDFs.")).toBeTruthy();
+  });
+});
+
+describe("files dropped onto a collection", () => {
+  // The view, with uploads that take whatever is sent and a scan that is over
+  // before the first poll. Returns the element drops land on.
+  async function view({ isAdmin = true } = {}): Promise<HTMLElement> {
+    api.getImportStatus.mockResolvedValueOnce({ state: "idle" }).mockResolvedValue(job({}));
+    api.uploadFiles.mockImplementation(async (_id: number, files: File[]) => ({
+      added: files.length,
+      skipped: 0,
+    }));
+    api.startImport.mockResolvedValue({ jobId: "job", total: 1 });
+    const { container } = render(<View id={nextId++} isAdmin={isAdmin} />);
+    await settle();
+    return container.firstElementChild as HTMLElement;
+  }
+
+  const sent = () =>
+    api.uploadFiles.mock.calls.flatMap((call) => (call[1] as File[]).map((f) => f.name)).sort();
+  const overlay = () => screen.queryByText("Drop PDFs or folders to add them to “Cardiology”");
+
+  it("adds dropped PDFs at once, as picking them does", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf"), fileEntry("b.pdf")]) });
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf", "b.pdf"]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks before adding what a folder holds, naming the folder and the collection", async () => {
+    const target = await view();
+    const tree = folderEntry("Downloads", [
+      fileEntry("a.pdf"),
+      fileEntry("notes.txt"),
+      folderEntry("2024", [fileEntry("b.pdf")]),
+    ]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([tree]) });
+    const dialog = await screen.findByRole("dialog", {
+      name: "Add 2 PDFs from “Downloads” to “Cardiology”?",
+    });
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf", "b.pdf"]);
+  });
+
+  it("adds nothing when the question is turned down", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Downloads", [fileEntry("a.pdf")])]) });
+    const dialog = await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("says a dropped folder held no PDFs, without asking about it", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Notes", [fileEntry("notes.txt")])]) });
+    expect(await screen.findByText(/^No PDFs found in the selection\./)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("names what a dropped folder held that couldn't be read", async () => {
+    const target = await view();
+    const tree = folderEntry("Downloads", [fileEntry("a.pdf"), fileEntry("locked.pdf", { unreadable: true })]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([tree]) });
+    const dialog = await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect(await screen.findByText("Couldn't read 1 item in the dropped folders.")).toBeTruthy();
+  });
+
+  it("shows where the drop goes for as long as files are over the view", async () => {
+    const target = await view();
+    const inside = target.querySelector(".source-head")!;
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).not.toBeNull();
+    // Crossing into something inside the view leaves the view's own box, and
+    // isn't leaving the view.
+    fireEvent.dragEnter(inside, { dataTransfer: dt });
+    fireEvent.dragLeave(target, { dataTransfer: dt });
+    expect(overlay()).not.toBeNull();
+    fireEvent.dragLeave(inside, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+  });
+
+  it("takes nothing from a viewer, and leaves the drop to be turned away", async () => {
+    const target = await view({ isAdmin: false });
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    // Not cancelled here, which is what tells refuseStrayDrops it is its to refuse.
+    expect(fireEvent.drop(target, { dataTransfer: dt })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
   });
 });
 
