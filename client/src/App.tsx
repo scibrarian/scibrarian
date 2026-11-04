@@ -122,6 +122,17 @@ export default function App() {
     createImportJobs(api.getImportStatus, (id) => importSettled.current(id))
   );
   useEffect(() => importJobs.stop, [importJobs]);
+  // The same for reference files imported into bookmark folders, whose lookups
+  // fill a folder for minutes after the import that started them. A store of
+  // their own, because the two are keyed by ids from different tables.
+  const folderImportSettled = useRef(handleFolderImportSettled);
+  useEffect(() => {
+    folderImportSettled.current = handleFolderImportSettled;
+  });
+  const [folderImportJobs] = useState(() =>
+    createImportJobs(api.getFolderImportStatus, (id) => folderImportSettled.current(id))
+  );
+  useEffect(() => folderImportJobs.stop, [folderImportJobs]);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
   // The topic dialog, the only one: closed, creating a topic, or editing this
@@ -660,6 +671,15 @@ export default function App() {
 
   // A scan ended, over a collection that need not be the one on screen any
   // more. The refresh handleCollectionChanged makes, for that collection.
+  // A folder's import finished looking its entries up. The three a bulk save
+  // refreshes — the folder's list, its count, and the map of what is saved —
+  // for the folder it filled, which need not be the one on screen.
+  function handleFolderImportSettled(folderId: number) {
+    reloadSource({ folder: folderId });
+    void loadBookmarks();
+    void loadFolders();
+  }
+
   function handleImportSettled(collectionId: number) {
     reloadSource({ allCollections: true });
     reloadSource({ collection: collectionId });
@@ -1384,6 +1404,7 @@ export default function App() {
             folderId={activeFolderId!}
             isAdmin={isAdmin}
             summary={sourceSummary}
+            importJobs={folderImportJobs}
             onChanged={handleFolderChanged}
             // The saved-papers map as well as the folder's list and count, the
             // same three a bulk save refreshes: a paper added here may be on

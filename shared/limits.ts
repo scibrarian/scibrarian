@@ -11,6 +11,16 @@
 // before batching; this is the backstop.
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
+// Largest reference file a folder import will read. RIS carries abstracts, so
+// an EndNote library of a few thousand entries runs to megabytes; this is well
+// past that and still bounded, since the file is read into memory whole.
+export const MAX_IMPORT_BYTES = 32 * 1024 * 1024;
+
+// Most entries one import may bring in. Each entry with only a DOI is its own
+// throttled PubMed search, so this many is the better part of an hour without
+// an NCBI API key; a larger library goes in as several files.
+export const MAX_IMPORT_ENTRIES = 5000;
+
 // Most files one upload request may carry. The client batches well below this;
 // it exists so a hand-rolled request can't hand multer an unbounded multipart
 // body.

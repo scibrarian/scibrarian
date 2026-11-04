@@ -19,6 +19,7 @@ import type {
   Article,
   BookmarkEntry,
   BookmarkFolder,
+  BookmarkImport,
   Collection,
   CollectionFile,
   Topic,
@@ -350,6 +351,35 @@ db.exec(`
     PRIMARY KEY (folder_id, pmid),
     FOREIGN KEY (folder_id) REFERENCES bookmark_folders(id) ON DELETE CASCADE,
     FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
+  );
+
+  -- Entries read from a reference file imported into a folder (see
+  -- reference-file.ts) that are not bookmarks yet. A row exists only while it
+  -- needs something: 'pending' until the import has looked it up on PubMed,
+  -- then deleted the moment it becomes a bookmark, or left 'unmatched' with the
+  -- reason, for the reader to give it a PMID or remove it. title/authors/
+  -- journal/year are only for showing it in that list; the paper's own record
+  -- comes from PubMed.
+  --
+  -- key is the entry's identity within its folder — its PMID, else its DOI,
+  -- else its title and year — so importing the same file twice doesn't list an
+  -- unmatched entry twice. A new table, so CREATE ... IF NOT EXISTS is its
+  -- migration: an existing database gains it at the next start.
+  CREATE TABLE IF NOT EXISTS bookmark_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    authors TEXT NOT NULL DEFAULT '',
+    journal TEXT NOT NULL DEFAULT '',
+    year TEXT NOT NULL DEFAULT '',
+    doi TEXT,                                  -- lowercased
+    pmid TEXT,                                 -- as the file gave it; not yet a stored paper
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending|unmatched
+    reason TEXT NOT NULL DEFAULT '',           -- no-identifier|not-in-pubmed|ambiguous-doi
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (folder_id, key),
+    FOREIGN KEY (folder_id) REFERENCES bookmark_folders(id) ON DELETE CASCADE
   );
 
   -- Two collections (or two bookmark folders) sharing a name are
@@ -2217,6 +2247,108 @@ export function linkedPapersByPmids(pmids: string[]): LinkedPaperRow[] {
              WHERE a.pmid IN (${ph})`
   );
 }
+
+// ---------- bookmark imports (entries read from a reference file) ----------
+
+export interface BookmarkImportInsert {
+  key: string;
+  title: string;
+  authors: string;
+  journal: string;
+  year: string;
+  doi: string | null;
+  pmid: string | null;
+}
+
+const IMPORT_SELECT = `SELECT id, folder_id, title, authors, journal, year, doi, pmid, status, reason, added_at
+                       FROM bookmark_imports`;
+
+// An entry with nothing to look it up by is unmatched from the start; no lookup
+// would ever change that.
+//
+// Importing a file again meets the entries it listed last time. One still
+// unmatched with a DOI or PMID goes back to pending, because a paper PubMed had
+// no record of then may be indexed now; one with neither stays as it is. Either
+// way it stays one row.
+const insertImportStmt = db.prepare(`
+  INSERT INTO bookmark_imports (folder_id, key, title, authors, journal, year, doi, pmid, status, reason)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (folder_id, key) DO UPDATE SET status = 'pending', reason = ''
+    WHERE status = 'unmatched' AND (pmid IS NOT NULL OR doi IS NOT NULL)
+`);
+
+export const addBookmarkImports = transaction((folderId: number, entries: BookmarkImportInsert[]): void => {
+  for (const e of entries) {
+    const lookable = e.pmid != null || e.doi != null;
+    insertImportStmt.run(
+      folderId,
+      e.key,
+      e.title,
+      e.authors,
+      e.journal,
+      e.year,
+      e.doi,
+      e.pmid,
+      lookable ? "pending" : "unmatched",
+      lookable ? "" : "no-identifier"
+    );
+  }
+});
+
+export function listBookmarkImports(folderId: number): BookmarkImport[] {
+  return db
+    .prepare(`${IMPORT_SELECT} WHERE folder_id = ? ORDER BY id`)
+    .all(folderId) as unknown as BookmarkImport[];
+}
+
+export function pendingBookmarkImports(folderId: number): BookmarkImport[] {
+  return db
+    .prepare(`${IMPORT_SELECT} WHERE folder_id = ? AND status = 'pending' ORDER BY id`)
+    .all(folderId) as unknown as BookmarkImport[];
+}
+
+export function getBookmarkImport(id: number): BookmarkImport | undefined {
+  return db.prepare(`${IMPORT_SELECT} WHERE id = ?`).get(id) as BookmarkImport | undefined;
+}
+
+export function deleteBookmarkImport(id: number): void {
+  db.prepare("DELETE FROM bookmark_imports WHERE id = ?").run(id);
+}
+
+// The unmatched dialog's "Remove all". Pending rows are left: they are still
+// waiting on a lookup, and are listed and removed apart from these.
+export function deleteUnmatchedBookmarkImports(folderId: number): number {
+  return Number(
+    db.prepare("DELETE FROM bookmark_imports WHERE folder_id = ? AND status = 'unmatched'").run(folderId)
+      .changes
+  );
+}
+
+const deleteImportStmt = db.prepare("DELETE FROM bookmark_imports WHERE id = ?");
+const missImportStmt = db.prepare(
+  "UPDATE bookmark_imports SET status = 'unmatched', reason = ? WHERE id = ?"
+);
+
+/**
+ * Settle one round of an import's lookup: the entries PubMed found become
+ * bookmarks and their rows go, and the ones it didn't are marked unmatched with
+ * the reason. Returns the PMIDs newly bookmarked, for warming their citations.
+ *
+ * The papers found must already be stored — the caller upserts them in the
+ * same tick, with nothing awaited in between, so the sweep of papers nothing
+ * holds can't take one before its bookmark exists.
+ */
+export const settleBookmarkImports = transaction(
+  (folderId: number, found: { id: number; pmid: string }[], missed: { id: number; reason: string }[]) => {
+    const added: string[] = [];
+    for (const f of found) {
+      if (Number(insertBookmarkStmt.run(folderId, f.pmid).changes) > 0) added.push(f.pmid);
+      deleteImportStmt.run(f.id);
+    }
+    for (const m of missed) missImportStmt.run(m.reason, m.id);
+    return added;
+  }
+);
 
 const deleteBookmarkStmt = db.prepare("DELETE FROM bookmarks WHERE folder_id = ? AND pmid = ?");
 

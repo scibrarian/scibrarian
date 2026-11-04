@@ -195,6 +195,10 @@ export interface CollectionFile {
 
 // A live PDF-import job's status, tracked server-side and streamed to the
 // client while the scan runs.
+//
+// A folder's reference-file import reports in the same shape, so the client
+// follows both with one store (lib/import-jobs): there `total` and `processed`
+// count entries looked up on PubMed, `errors` stays 0 and `currentFile` null.
 export interface ImportJob {
   jobId: string;
   state: "running" | "done" | "error";
@@ -484,6 +488,42 @@ export interface AddLinksResponse {
   results: LinkAnswer[];
   // Lines past the per-request cap, which this request did not touch.
   truncated: number;
+}
+
+// Why an imported entry didn't become a bookmark: it named no paper at all, or
+// named one PubMed has no single record for.
+export type ImportReason = "no-identifier" | "not-in-pubmed" | "ambiguous-doi" | "";
+
+// One entry from an imported reference file that is not a bookmark yet — see
+// bookmark_imports in db.ts. 'pending' until the import has looked it up.
+export interface BookmarkImport {
+  id: number;
+  folder_id: number;
+  title: string;
+  authors: string;
+  journal: string;
+  year: string;
+  doi: string | null;
+  pmid: string | null;
+  status: "pending" | "unmatched";
+  reason: ImportReason;
+  added_at: string;
+}
+
+// What POST /bookmark-folders/:id/imports read out of the file, and the lookup
+// it started over what it kept.
+export interface FolderImportResponse {
+  // Entries in the file.
+  read: number;
+  // Left out because their type says they aren't journal articles.
+  notArticles: number;
+  // Left out for carrying nothing to look up or show: no title, DOI or PMID.
+  blank: number;
+  // Kept, and still to be looked up.
+  queued: number;
+  // Kept with no DOI or PMID, so listed as unmatched straight away.
+  noIdentifier: number;
+  status: ImportStatus;
 }
 
 // A minted expiring download link for one stored PDF. `path` is relative so
