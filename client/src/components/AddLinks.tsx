@@ -82,6 +82,10 @@ export function AddLinks({
     const submitted = text;
     const capped = lines.slice(0, MAX_LINKS);
     const done: LinkAnswer[] = [];
+    // Lines answered without getting into the folder, in paste order.
+    const missed: string[] = [];
+    // The first line of the paste that no batch has answered.
+    let next = 0;
     let over = lines.length - capped.length;
     let added = false;
     setError(null);
@@ -90,24 +94,21 @@ export function AddLinks({
     try {
       for (let i = 0; i < capped.length; i += MAX_LINKS_PER_REQUEST) {
         setProgress({ done: i, total: capped.length });
-        const res = await api.addBookmarkLinks(folderId, capped.slice(i, i + MAX_LINKS_PER_REQUEST));
+        const batch = capped.slice(i, i + MAX_LINKS_PER_REQUEST);
+        const res = await api.addBookmarkLinks(folderId, batch);
         if (res.results.some((a) => a.outcome === "added")) added = true;
         if (!mounted.current) return;
         done.push(...res.results);
         over += res.truncated;
+        // One answer per line, in order; a line past the answers was cut.
+        missed.push(...batch.filter((_, j) => !landed(res.results[j])));
+        next = i + batch.length;
         setAnswers([...done]);
         setSkipped(over);
       }
-      // Every line is in the folder, so nothing in the box is left to do: it
-      // empties for the next paste, and Add can't send the same list again.
-      // Otherwise the box keeps them — a line that didn't get in is corrected
-      // there, and lines never sent have no row to be recovered from.
-      if (over === 0 && done.every((a) => a.outcome === "added" || a.outcome === "already-saved")) {
-        // Unless it was edited while the batches went.
-        setText((t) => (t === submitted ? "" : t));
-        // Add is disabled with the box empty; the next paste goes here.
-        inputRef.current?.focus();
-      }
+      // Every line is in the folder, so the box empties (below), and Add is
+      // disabled with it empty; the next paste goes here.
+      if (missed.length === 0 && next === lines.length) inputRef.current?.focus();
     } catch (err) {
       if (!mounted.current) return;
       const left = capped.length - done.length;
@@ -122,7 +123,18 @@ export function AddLinks({
       // starts overlapped, and an older one landing last showed papers just
       // saved as unsaved.
       if (added) onAdded();
-      if (mounted.current) setProgress(null);
+      if (mounted.current) {
+        setProgress(null);
+        // The box keeps only what is left to do: the lines that came back
+        // without getting in, to be corrected there, then every line not yet
+        // sent, past the limit or after a batch that failed, which has no row
+        // to be recovered from. Kept whole, the next Add sent the first 300
+        // again, all saved already, and never reached the lines after them.
+        // A paste that got nothing in is left as typed, and so is a box
+        // edited while the batches went.
+        const left = [...missed, ...lines.slice(next)];
+        if (left.length < lines.length) setText((t) => (t === submitted ? left.join("\n") : t));
+      }
     }
   }
 
@@ -192,6 +204,11 @@ export function AddLinks({
       )}
     </ModalShell>
   );
+}
+
+// In the folder now, whether this paste put it there or it already was.
+function landed(answer: LinkAnswer | undefined): boolean {
+  return answer?.outcome === "added" || answer?.outcome === "already-saved";
 }
 
 // "wasn’t" or "weren’t", to follow a count.

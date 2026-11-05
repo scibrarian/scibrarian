@@ -45,6 +45,11 @@ const LINES = Array.from(
   (_, i) => `https://pubmed.ncbi.nlm.nih.gov/${40000000 + i}/`
 );
 
+// A paste of n lines, numbered apart from LINES — for one past the limit.
+function longPaste(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => `https://pubmed.ncbi.nlm.nih.gov/${41000000 + i}/`);
+}
+
 let batches: ReturnType<typeof deferred<AddLinksResponse>>[];
 
 beforeEach(() => {
@@ -71,6 +76,14 @@ function paste(lines: string[]) {
 
 // Lets the loop run on past a settled request to its next await.
 const settle = () => act(async () => {});
+
+// Lands each batch of a paste as it is sent, every line of it added.
+async function landAll(lines: string[]) {
+  for (let i = 0; i < Math.min(lines.length, MAX_LINKS); i += MAX_LINKS_PER_REQUEST) {
+    batches.at(-1)!.resolve(response(lines.slice(i, i + MAX_LINKS_PER_REQUEST)));
+    await settle();
+  }
+}
 
 describe("AddLinks' batches", () => {
   it("sends them in turn and refreshes the folder once, after the last", async () => {
@@ -130,30 +143,52 @@ describe("AddLinks' paste box and rows", () => {
     expect(document.activeElement).toBe(box());
   });
 
-  it("keeps the box when a line didn't get in", async () => {
-    paste(LINES.slice(0, 2));
+  it("keeps only the lines that didn't get in", async () => {
+    paste(LINES.slice(0, 3));
     batches[0].resolve({
-      results: [answer(LINES[0], "added"), answer(LINES[1], "not-in-pubmed")],
+      results: [
+        answer(LINES[0], "added"),
+        answer(LINES[1], "not-in-pubmed"),
+        answer(LINES[2], "already-saved"),
+      ],
       truncated: 0,
     });
     await settle();
-    expect(box().value).toBe(LINES.slice(0, 2).join("\n"));
+    expect(box().value).toBe(LINES[1]);
   });
 
-  it("keeps the box when lines were never sent", async () => {
-    paste(LINES.slice(0, 2));
-    batches[0].resolve({ results: [answer(LINES[0], "added")], truncated: 1 });
-    await settle();
-    expect(box().value).toBe(LINES.slice(0, 2).join("\n"));
+  it("keeps the lines past the limit, and sends them next", async () => {
+    const long = longPaste(MAX_LINKS + 2);
+    paste(long);
+    await landAll(long);
+    expect(box().value).toBe(long.slice(MAX_LINKS).join("\n"));
+    // Kept whole, Add sent the first 300 again and never reached these.
+    fireEvent.submit(box().closest("form")!);
+    expect(addBookmarkLinks).toHaveBeenLastCalledWith(7, long.slice(MAX_LINKS));
   });
 
-  it("keeps the box when a batch failed", async () => {
+  it("keeps what a failed batch never sent, after the lines that didn't get in", async () => {
     paste(LINES);
-    batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
+    batches[0].resolve({
+      results: LINES.slice(0, MAX_LINKS_PER_REQUEST).map((l, i) =>
+        answer(l, i === 3 ? "not-in-pubmed" : "added")
+      ),
+      truncated: 0,
+    });
     await settle();
     batches[1].reject(new Error("Couldn’t reach PubMed."));
     await settle();
-    expect(box().value).toBe(LINES.join("\n"));
+    expect(box().value).toBe([LINES[3], ...LINES.slice(MAX_LINKS_PER_REQUEST)].join("\n"));
+  });
+
+  it("leaves the box as typed when nothing got in", async () => {
+    render(<AddLinks open onClose={() => {}} folderId={7} onAdded={() => {}} />);
+    const typed = `  ${LINES[0]}\n\n${LINES[1]}`;
+    fireEvent.change(box(), { target: { value: typed } });
+    fireEvent.submit(box().closest("form")!);
+    batches[0].reject(new Error("Couldn’t reach PubMed."));
+    await settle();
+    expect(box().value).toBe(typed);
   });
 
   it("keeps an edit made while the batches went", async () => {
@@ -178,15 +213,9 @@ describe("AddLinks' paste box and rows", () => {
   });
 
   it("takes the last paste's over-the-limit line down with its rows", async () => {
-    const long = Array.from(
-      { length: MAX_LINKS + 1 },
-      (_, i) => `https://pubmed.ncbi.nlm.nih.gov/${41000000 + i}/`
-    );
+    const long = longPaste(MAX_LINKS + 1);
     paste(long);
-    for (let i = 0; i < MAX_LINKS; i += MAX_LINKS_PER_REQUEST) {
-      batches.at(-1)!.resolve(response(long.slice(i, i + MAX_LINKS_PER_REQUEST)));
-      await settle();
-    }
+    await landAll(long);
     expect(screen.getByText(/1 more line wasn’t added/)).toBeTruthy();
     // A paste under the limit, which never hit it.
     submit(LINES.slice(0, 1));
