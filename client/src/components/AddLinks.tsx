@@ -52,6 +52,7 @@ export function AddLinks({
   // Set on mount as well as cleared on unmount, for StrictMode's
   // mount-unmount-mount.
   const mounted = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -69,16 +70,20 @@ export function AddLinks({
   // and the rows arriving are the progress. A batch that fails stops the run
   // but keeps what the earlier ones did — those papers are saved, and their
   // rows are the only record of which lines got in.
+  //
+  // The last paste's rows stay up until the first batch replaces them. Taken
+  // down at the start, the modal shrank to the paste box and grew back when
+  // the answers came, and since it is centred, the whole dialog moved with it,
+  // Add button and all: a flash on a quick paste, like one already saved.
   async function add(e: FormEvent) {
     e.preventDefault();
     if (lines.length === 0 || progress) return;
+    const submitted = text;
     const capped = lines.slice(0, MAX_LINKS);
     const done: LinkAnswer[] = [];
     let over = lines.length - capped.length;
     let added = false;
     setError(null);
-    setAnswers(null);
-    setSkipped(over);
     try {
       for (let i = 0; i < capped.length; i += MAX_LINKS_PER_REQUEST) {
         setProgress({ done: i, total: capped.length });
@@ -90,9 +95,22 @@ export function AddLinks({
         setAnswers([...done]);
         setSkipped(over);
       }
+      // Every line is in the folder, so nothing in the box is left to do: it
+      // empties for the next paste, and Add can't send the same list again.
+      // Otherwise the box keeps them — a line that didn't get in is corrected
+      // there, and lines never sent have no row to be recovered from.
+      if (over === 0 && done.every((a) => a.outcome === "added" || a.outcome === "already-saved")) {
+        // Unless it was edited while the batches went.
+        setText((t) => (t === submitted ? "" : t));
+        // Add is disabled with the box empty; the next paste goes here.
+        inputRef.current?.focus();
+      }
     } catch (err) {
       if (!mounted.current) return;
       const left = capped.length - done.length;
+      // Nothing of this paste came back, so the rows on screen are the last
+      // one's, and under this one's error they'd read as its answers.
+      if (done.length === 0) setAnswers(null);
       setError(
         done.length > 0
           ? `${errorMessage(err)} The ${plural(left, "line")} after the first ${done.length} ${wasnt(left)} added.`
@@ -125,6 +143,7 @@ export function AddLinks({
           looked up on PubMed and saved into this folder.
         </label>
         <textarea
+          ref={inputRef}
           id="add-links-input"
           className="have-input"
           value={text}

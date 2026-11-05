@@ -57,11 +57,15 @@ beforeEach(() => {
   });
 });
 
+function submit(lines: string[]) {
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: lines.join("\n") } });
+  fireEvent.submit(screen.getByRole("textbox").closest("form")!);
+}
+
 function paste(lines: string[]) {
   const onAdded = vi.fn();
   const view = render(<AddLinks open onClose={() => {}} folderId={7} onAdded={onAdded} />);
-  fireEvent.change(screen.getByRole("textbox"), { target: { value: lines.join("\n") } });
-  fireEvent.submit(screen.getByRole("textbox").closest("form")!);
+  submit(lines);
   return { onAdded, view };
 }
 
@@ -108,5 +112,77 @@ describe("AddLinks' batches", () => {
     await settle();
     expect(onAdded).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Couldn’t reach PubMed/)).toBeTruthy();
+  });
+});
+
+describe("AddLinks' paste box and rows", () => {
+  const box = () => screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  it("empties the box once every line is in the folder, and puts the cursor in it", async () => {
+    paste(LINES.slice(0, 2));
+    box().blur();
+    batches[0].resolve({
+      results: [answer(LINES[0], "added"), answer(LINES[1], "already-saved")],
+      truncated: 0,
+    });
+    await settle();
+    expect(box().value).toBe("");
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("keeps the box when a line didn't get in", async () => {
+    paste(LINES.slice(0, 2));
+    batches[0].resolve({
+      results: [answer(LINES[0], "added"), answer(LINES[1], "not-in-pubmed")],
+      truncated: 0,
+    });
+    await settle();
+    expect(box().value).toBe(LINES.slice(0, 2).join("\n"));
+  });
+
+  it("keeps the box when lines were never sent", async () => {
+    paste(LINES.slice(0, 2));
+    batches[0].resolve({ results: [answer(LINES[0], "added")], truncated: 1 });
+    await settle();
+    expect(box().value).toBe(LINES.slice(0, 2).join("\n"));
+  });
+
+  it("keeps the box when a batch failed", async () => {
+    paste(LINES);
+    batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
+    await settle();
+    batches[1].reject(new Error("Couldn’t reach PubMed."));
+    await settle();
+    expect(box().value).toBe(LINES.join("\n"));
+  });
+
+  it("keeps an edit made while the batches went", async () => {
+    paste(LINES.slice(0, 1));
+    fireEvent.change(box(), { target: { value: "edited" } });
+    batches[0].resolve(response(LINES.slice(0, 1)));
+    await settle();
+    expect(box().value).toBe("edited");
+  });
+
+  it("leaves the last paste's rows up until the next one's land", async () => {
+    paste(LINES.slice(0, 2));
+    batches[0].resolve(response(LINES.slice(0, 2)));
+    await settle();
+    submit(LINES.slice(2, 3));
+    // Taken down here, the modal shrank and grew back: a flash on a quick one.
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    batches[1].resolve(response(LINES.slice(2, 3), "already-saved"));
+    await settle();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("takes the last paste's rows down when the next one fails before any land", async () => {
+    paste(LINES.slice(0, 2));
+    batches[0].resolve(response(LINES.slice(0, 2)));
+    await settle();
+    submit(LINES.slice(2, 3));
+    batches[1].reject(new Error("Couldn’t reach PubMed."));
+    await settle();
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
   });
 });
