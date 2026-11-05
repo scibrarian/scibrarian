@@ -53,6 +53,7 @@ export function AddLinks({
   // mount-unmount-mount.
   const mounted = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -106,9 +107,6 @@ export function AddLinks({
         setAnswers([...done]);
         setSkipped(over);
       }
-      // Every line is in the folder, so the box empties (below), and Add is
-      // disabled with it empty; the next paste goes here.
-      if (missed.length === 0 && next === lines.length) inputRef.current?.focus();
     } catch (err) {
       if (!mounted.current) return;
       const left = capped.length - done.length;
@@ -134,6 +132,16 @@ export function AddLinks({
         // edited while the batches went.
         const left = [...missed, ...lines.slice(next)];
         if (left.length < lines.length) setText((t) => (t === submitted ? left.join("\n") : t));
+        // Back to the box for whatever is typed next, a fresh paste or a
+        // correction, if the run left focus nowhere: Add had it and was
+        // disabled under it, which drops it to the page, or to the dialog
+        // itself once Radix sees a node inside it removed. Where the reader
+        // moved it while the batches went, it stays.
+        const at = document.activeElement;
+        const dialog = inputRef.current?.closest("[role=dialog]");
+        if (!at || at === document.body || at === addRef.current || at === dialog) {
+          inputRef.current?.focus();
+        }
       }
     }
   }
@@ -148,7 +156,7 @@ export function AddLinks({
   }
 
   return (
-    <ModalShell open={open} onClose={onClose} title={ADD_LINKS_TITLE} wide>
+    <ModalShell open={open} onClose={onClose} title={ADD_LINKS_TITLE} wide initialFocus={inputRef}>
       <form className="have-form" onSubmit={add}>
         <label htmlFor="add-links-input" className="hint">
           Paste DOIs or PubMed links — one per line, up to {MAX_LINKS} at a time. Each paper is
@@ -162,7 +170,6 @@ export function AddLinks({
           onChange={(e) => setText(e.target.value)}
           placeholder={PLACEHOLDER}
           rows={5}
-          autoFocus
           spellCheck={false}
         />
         <div className="modal-actions">
@@ -171,7 +178,12 @@ export function AddLinks({
               Clear
             </button>
           )}
-          <button type="submit" className="primary" disabled={lines.length === 0 || progress != null}>
+          <button
+            ref={addRef}
+            type="submit"
+            className="primary"
+            disabled={lines.length === 0 || progress != null}
+          >
             {progress && <span className="btn-spinner" aria-hidden="true" />}
             {progress
               ? progress.total > MAX_LINKS_PER_REQUEST

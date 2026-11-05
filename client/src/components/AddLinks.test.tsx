@@ -232,3 +232,72 @@ describe("AddLinks' paste box and rows", () => {
     expect(screen.queryAllByRole("listitem")).toHaveLength(0);
   });
 });
+
+// Add is disabled while a paste runs, so whoever pressed it from the keyboard
+// is left with focus on nothing; the box is where they type next.
+describe("AddLinks' focus", () => {
+  const box = () => screen.getByRole("textbox") as HTMLTextAreaElement;
+  const addButton = () => screen.getByRole("button", { name: /^Add/ });
+
+  it("opens on the box", async () => {
+    render(<AddLinks open onClose={() => {}} folderId={7} onAdded={() => {}} />);
+    await settle();
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("goes back to the box when lines are left in it to correct", async () => {
+    paste(LINES.slice(0, 2));
+    box().blur();
+    batches[0].resolve({
+      results: [answer(LINES[0], "added"), answer(LINES[1], "not-in-pubmed")],
+      truncated: 0,
+    });
+    await settle();
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("goes back to the box after a batch failed", async () => {
+    paste(LINES);
+    box().blur();
+    batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
+    await settle();
+    batches[1].reject(new Error("Couldn’t reach PubMed."));
+    await settle();
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("takes it back from the Add button the run disabled", async () => {
+    render(<AddLinks open onClose={() => {}} folderId={7} onAdded={() => {}} />);
+    fireEvent.change(box(), { target: { value: LINES[0] } });
+    addButton().focus();
+    fireEvent.submit(box().closest("form")!);
+    batches[0].resolve(response(LINES.slice(0, 1)));
+    await settle();
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("takes it back from the dialog, where the rows coming down put it", async () => {
+    paste(LINES.slice(0, 2));
+    batches[0].resolve(response(LINES.slice(0, 2)));
+    await settle();
+    box().blur();
+    submit(LINES.slice(2, 3));
+    await settle();
+    // Radix's trap, finding focus on the page as nodes leave the dialog.
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    batches[1].resolve(response(LINES.slice(2, 3)));
+    await settle();
+    expect(document.activeElement).toBe(box());
+  });
+
+  it("stays where the reader moved it while the batches went", async () => {
+    paste(LINES);
+    batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
+    await settle();
+    const title = screen.getAllByRole("button", { name: "Paper" })[0];
+    title.focus();
+    batches[1].resolve(response(LINES.slice(MAX_LINKS_PER_REQUEST)));
+    await settle();
+    expect(document.activeElement).toBe(title);
+  });
+});
