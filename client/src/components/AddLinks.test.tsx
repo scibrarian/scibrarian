@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
+import { MAX_LINKS, MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
 import type { AddLinksResponse, LinkAnswer, LinkOutcome } from "../types";
 import { AddLinks } from "./AddLinks";
 
@@ -164,16 +164,33 @@ describe("AddLinks' paste box and rows", () => {
     expect(box().value).toBe("edited");
   });
 
-  it("leaves the last paste's rows up until the next one's land", async () => {
+  it("takes the last paste's rows down as the next one starts", async () => {
     paste(LINES.slice(0, 2));
     batches[0].resolve(response(LINES.slice(0, 2)));
     await settle();
     submit(LINES.slice(2, 3));
-    // Taken down here, the modal shrank and grew back: a flash on a quick one.
-    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    // Left up under "Adding…", they read as this paste's answers.
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.queryByText(/added to this folder/)).toBeNull();
     batches[1].resolve(response(LINES.slice(2, 3), "already-saved"));
     await settle();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("takes the last paste's over-the-limit line down with its rows", async () => {
+    const long = Array.from(
+      { length: MAX_LINKS + 1 },
+      (_, i) => `https://pubmed.ncbi.nlm.nih.gov/${41000000 + i}/`
+    );
+    paste(long);
+    for (let i = 0; i < MAX_LINKS; i += MAX_LINKS_PER_REQUEST) {
+      batches.at(-1)!.resolve(response(long.slice(i, i + MAX_LINKS_PER_REQUEST)));
+      await settle();
+    }
+    expect(screen.getByText(/1 more line wasn’t added/)).toBeTruthy();
+    // A paste under the limit, which never hit it.
+    submit(LINES.slice(0, 1));
+    expect(screen.queryByText(/more line/)).toBeNull();
   });
 
   it("takes the last paste's rows down when the next one fails before any land", async () => {

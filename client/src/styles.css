@@ -4139,6 +4139,44 @@ html {
   overflow-y: auto;
 }
 
+/* The paste dialogs hang from a fixed top edge rather than centring like the
+   rest, because their height changes while they are in use: the last paste's
+   answers come down as a new one starts, then arrive a batch at a time.
+   Centred, each change moved the whole dialog, the paste box and the Add
+   button with it. Pinned, only the bottom edge moves.
+
+   Hung this far down, a full list no longer fits a window under about 900px
+   tall, so the dialog is a column in which the list alone gives way: it
+   shrinks to the room left under the paste box and scrolls in that, rather
+   than the dialog scrolling around a list that scrolls too. The dialog still
+   scrolls itself if the box alone doesn't fit. */
+.modal-backdrop:has(> .modal > .have-form) {
+  align-items: flex-start;
+  padding-top: 10vh;
+}
+
+.modal:has(> .have-form) {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(90vh - 20px);
+  overflow-y: auto;
+}
+
+.modal:has(> .have-form) > * {
+  flex-shrink: 0;
+}
+
+.modal:has(> .have-form) > .have-results {
+  flex-shrink: 1;
+  min-height: 0;
+}
+
+/* A column doesn't collapse margins, so the banner's would add to the list's
+   16px rather than merge into it. */
+.modal:has(> .have-form) > .banner:has(+ .have-results) {
+  margin-bottom: 0;
+}
+
 .have-summary {
   margin: 0 0 12px;
   font-size: 14px;

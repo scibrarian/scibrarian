@@ -71,10 +71,11 @@ export function AddLinks({
   // but keeps what the earlier ones did — those papers are saved, and their
   // rows are the only record of which lines got in.
   //
-  // The last paste's rows stay up until the first batch replaces them. Taken
-  // down at the start, the modal shrank to the paste box and grew back when
-  // the answers came, and since it is centred, the whole dialog moved with it,
-  // Add button and all: a flash on a quick paste, like one already saved.
+  // The last paste's rows come down as this one starts. Left up under
+  // "Adding…", they read as this paste's answers — a reader closing the
+  // dialog mid-run took the old "2 of 2 added" for the new list. The dialog
+  // hangs from its top edge (the rule beside .have-results in styles.css), so
+  // taking them down moves only its bottom, not the box and the Add button.
   async function add(e: FormEvent) {
     e.preventDefault();
     if (lines.length === 0 || progress) return;
@@ -84,6 +85,8 @@ export function AddLinks({
     let over = lines.length - capped.length;
     let added = false;
     setError(null);
+    setAnswers(null);
+    setSkipped(over);
     try {
       for (let i = 0; i < capped.length; i += MAX_LINKS_PER_REQUEST) {
         setProgress({ done: i, total: capped.length });
@@ -108,9 +111,6 @@ export function AddLinks({
     } catch (err) {
       if (!mounted.current) return;
       const left = capped.length - done.length;
-      // Nothing of this paste came back, so the rows on screen are the last
-      // one's, and under this one's error they'd read as its answers.
-      if (done.length === 0) setAnswers(null);
       setError(
         done.length > 0
           ? `${errorMessage(err)} The ${plural(left, "line")} after the first ${done.length} ${wasnt(left)} added.`
