@@ -91,6 +91,13 @@ import {
   IS_DESKTOP,
   UPLOAD_TMP_DIR,
 } from "./config.js";
+import {
+  isEmailAddress,
+  mailConfig,
+  sendTestEmail,
+  smtpPort,
+  type MailSettings,
+} from "./alerts.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
 import { addLinksToFolder } from "./bookmark-links.js";
 import { splitRefs } from "./citation-ref.js";
@@ -1701,7 +1708,48 @@ const SETTING_RULES = {
   poll_enabled: { kind: "boolean" },
   library_open: { kind: "boolean" },
   ncbi_api_key: { kind: "secret", expose: "has_api_key" },
+  alert_email_enabled: { kind: "boolean" },
+  alert_email_to: { kind: "string", validate: validEmailOrBlank("send alerts to") },
+  smtp_host: { kind: "string" },
+  smtp_port: {
+    kind: "string",
+    validate: (v) => (smtpPort(v) === null ? "The port must be a number from 1 to 65535." : null),
+  },
+  smtp_user: { kind: "string" },
+  smtp_pass: { kind: "secret", expose: "has_smtp_pass" },
+  smtp_from: { kind: "string", validate: validEmailOrBlank("send from") },
 } satisfies Record<keyof Settings, SettingRule>;
+
+function validEmailOrBlank(purpose: string) {
+  return (v: string) =>
+    v && !isEmailAddress(v) ? `The address to ${purpose} isn't an email address.` : null;
+}
+
+// The mail settings a request would leave saved: its own values over the
+// stored ones. A blank password keeps the stored one, as it does on a save.
+function mailSettingsAfter(body: Record<string, unknown>): MailSettings {
+  const s = getSettings();
+  const pick = (key: keyof MailSettings) => {
+    const v = body[key];
+    return typeof v === "string" && (key !== "smtp_pass" || v.trim()) ? v.trim() : s[key];
+  };
+  return {
+    alert_email_to: pick("alert_email_to"),
+    smtp_host: pick("smtp_host"),
+    smtp_port: pick("smtp_port"),
+    smtp_user: pick("smtp_user"),
+    smtp_pass: pick("smtp_pass"),
+    smtp_from: pick("smtp_from"),
+  };
+}
+
+// The viewer cache's 404, the other way round: email alerts are a server
+// build's, since the desktop app only polls while someone is looking at it.
+function noEmailAlerts(res: Response): boolean {
+  if (!IS_DESKTOP) return false;
+  res.status(404).json({ error: "Email alerts are only available on a server." });
+  return true;
+}
 
 const SETTING_KEYS = Object.keys(SETTING_RULES) as (keyof Settings)[];
 
@@ -1744,6 +1792,18 @@ api.put("/settings", (req, res) => {
       if (err) return res.status(400).json({ error: err });
     }
   }
+  // Alerts that are on have to be able to send, judged on what the save would
+  // leave rather than on the fields it carries. Turned on without a mail server,
+  // they would fail in the log after every scheduled check while the switch
+  // said all was well.
+  const enabledAfter =
+    typeof body.alert_email_enabled === "boolean"
+      ? body.alert_email_enabled
+      : getSettings().alert_email_enabled === "1";
+  if (enabledAfter) {
+    const config = mailConfig(mailSettingsAfter(body));
+    if (typeof config === "string") return res.status(400).json({ error: config });
+  }
   for (const key of SETTING_KEYS) {
     const rule: SettingRule = SETTING_RULES[key];
     const value = body[key];
@@ -1759,6 +1819,18 @@ api.put("/settings", (req, res) => {
   rescheduleFromSettings();
   res.json(settingsResponse());
 });
+
+// Send a test email with the mail settings in the body, which are the dialog's
+// and may not have been saved. Admin-only by the gate above, being a POST: it
+// sends with the stored password.
+api.post(
+  "/settings/test-email",
+  asyncHandler(async (req, res) => {
+    if (noEmailAlerts(res)) return;
+    await sendTestEmail(mailSettingsAfter((req.body ?? {}) as Record<string, unknown>));
+    res.json({ ok: true });
+  })
+);
 
 // ---------- workspaces (desktop only) ----------
 

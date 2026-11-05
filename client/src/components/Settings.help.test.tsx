@@ -33,6 +33,13 @@ const SHARED: AppSettings = {
   poll_enabled: false,
   library_open: false,
   has_api_key: false,
+  alert_email_enabled: false,
+  alert_email_to: "",
+  smtp_host: "",
+  smtp_port: "",
+  smtp_user: "",
+  smtp_from: "",
+  has_smtp_pass: false,
   share_urls: ["http://192.168.1.50:3001"],
   desktop: false,
 };

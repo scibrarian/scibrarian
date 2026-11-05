@@ -1125,6 +1125,28 @@ export function getArticleAbstracts(pmids: string[]): { pmid: string; abstract: 
   );
 }
 
+// What the scheduled-poll email prints of each paper it lists (see alerts.ts).
+// Unknown pmids are simply absent, as above.
+export interface AlertArticle {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  pub_date: string;
+  pub_date_display: string;
+  authors: string[];
+  url: string;
+}
+
+export function alertArticles(pmids: string[]): AlertArticle[] {
+  const rows = queryByIds<Omit<AlertArticle, "authors"> & { authors: string }>(
+    pmids,
+    (ph) =>
+      `SELECT pmid, title, journal_name, pub_date, pub_date_display, authors, url
+       FROM articles WHERE pmid IN (${ph})`
+  );
+  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
+}
+
 const upsertArticleStmt = db.prepare(`
   INSERT INTO articles (pmid, title, abstract, journal_name, nlm_id, authors, pub_date, pub_date_display, doi, url)
   VALUES (@pmid, @title, @abstract, @journal_name, @nlm_id, @authors, @pub_date, @pub_date_display, @doi, @url)

@@ -197,12 +197,31 @@ export interface AppSettings {
   poll_enabled: boolean;
   library_open: boolean;
   has_api_key: boolean;
+  // Email alerts after scheduled checks, and the mail server they go out
+  // through. Server builds only; see EmailAlertsDialog.
+  alert_email_enabled: boolean;
+  alert_email_to: string;
+  smtp_host: string;
+  smtp_port: string;
+  smtp_user: string;
+  smtp_from: string;
+  has_smtp_pass: boolean;
   // URLs where other machines can reach this server; empty when bound to loopback.
   share_urls: string[];
   // True in the desktop build, which is loopback-only by construction — so
   // share_urls is always empty there and can never be filled in.
   desktop: boolean;
 }
+
+// What the email alerts dialog edits, and what a test email is sent with. The
+// password is write-only, like the API key: blank keeps the stored one.
+export type MailSettingsDraft = Pick<
+  AppSettings,
+  "alert_email_to" | "smtp_host" | "smtp_port" | "smtp_user" | "smtp_from"
+> & { smtp_pass?: string };
+
+// A settings save. Patch semantics: only the keys sent are changed.
+export type SettingsUpdate = Partial<AppSettings> & { ncbi_api_key?: string; smtp_pass?: string };
 
 export interface BookmarkFolder extends BookmarkFolderRow {
   paperCount: number;

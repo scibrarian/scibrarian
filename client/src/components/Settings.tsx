@@ -12,6 +12,7 @@ import {
 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
+import { alertSettingsOf, EmailAlertsDialog } from "./EmailAlertsDialog";
 import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { ProPanel } from "./ProPanel";
@@ -54,6 +55,9 @@ const HELP = {
   polling:
     "When on, every topic is checked for new papers on the schedule below; “Check for new " +
     "papers” works either way. A topic with no journals chosen is skipped.",
+  alerts:
+    "One email after each scheduled check that finds something, covering every topic. " +
+    "Needs scheduled polling on.",
   email:
     "Optional but recommended. Sent to NCBI and OpenAlex so they can contact you before " +
     "blocking access if requests ever exceed their limits.",
@@ -73,6 +77,13 @@ function scopeLine(t: Topic): string {
   if (!canPoll(t)) return "No journals chosen yet · nothing to check";
   const scope = t.all_pubmed ? "All of PubMed" : plural(t.journalCount, "journal");
   return t.articleCount == null ? scope : `${scope} · ${plural(t.articleCount, "paper")}`;
+}
+
+// What the email alerts are set to, beside the button that changes them.
+function alertsLine(s: AppSettings): string {
+  if (!s.alert_email_enabled) return "Off";
+  if (!s.poll_enabled) return "On, but scheduled polling is off, so none are sent";
+  return `On · sent to ${s.alert_email_to}`;
 }
 
 export function Settings({
@@ -151,6 +162,7 @@ export function Settings({
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [editingAlerts, setEditingAlerts] = useState(false);
   // The topic warning depends on an article count fetched *before* the dialog
   // opens, so the pending removal carries its message along.
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
@@ -314,6 +326,16 @@ export function Settings({
       setSettings(before);
       setError(errorMessage(err));
     }
+  }
+
+  // The email alerts dialog saved its own keys. Patched in rather than taken
+  // whole, as the Open Library switch is, so an unsaved edit in the form stays.
+  function alertsSaved(updated: AppSettings) {
+    const alerts = alertSettingsOf(updated);
+    setSettings((s) => (s ? { ...s, ...alerts } : updated));
+    setBaseline((b) => (b ? { ...b, ...alerts } : updated));
+    setEditingAlerts(false);
+    setSavedMsg("Email alerts saved.");
   }
 
   async function saveSettings(e: FormEvent) {
@@ -482,6 +504,36 @@ export function Settings({
               />
               <span className="hint">{CRON_HINT}</span>
             </label>
+            {/* Server builds only, on `=== false` for Sharing's reason. The
+                desktop app sends nothing: it polls while its window is open,
+                so the reader is already looking at what an email would say. */}
+            {settings.desktop === false && (
+              <div className="field alerts-row">
+                <span className="label-line">
+                  <span>Email alerts</span>
+                  <InfoTip id="settings-alerts-help" text={HELP.alerts} />
+                </span>
+                <span className="switch-row">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    aria-describedby="settings-alerts-state settings-alerts-help"
+                    onClick={() => setEditingAlerts(true)}
+                    disabled={!settings.poll_enabled}
+                  >
+                    Configure email alerts…
+                  </button>
+                  <span
+                    id="settings-alerts-state"
+                    className={
+                      settings.alert_email_enabled && !settings.poll_enabled ? "hint warn" : "hint"
+                    }
+                  >
+                    {alertsLine(settings)}
+                  </span>
+                </span>
+              </div>
+            )}
             <div className="field">
               <span className="label-line">
                 <label htmlFor="settings-ncbi-email">Contact email</label>
@@ -740,6 +792,14 @@ export function Settings({
         />
       </section>
 
+      {settings?.desktop === false && (
+        <EmailAlertsDialog
+          open={editingAlerts}
+          settings={settings}
+          onSaved={alertsSaved}
+          onClose={() => setEditingAlerts(false)}
+        />
+      )}
       <ConfirmDialog
         open={topicToRemove != null}
         title={topicToRemove ? `Remove "${topicToRemove.topic.name}"?` : ""}

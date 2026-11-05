@@ -1,4 +1,5 @@
 import cron, { ScheduledTask } from "node-cron";
+import { sendPollAlert } from "./alerts.js";
 import { DEFAULT_POLL_CRON } from "./config.js";
 import {
   existingPmids,
@@ -25,14 +26,11 @@ import { chunk, errMessage, safeMessage } from "./util.js";
 import { canPoll } from "../../shared/topic.js";
 
 // Link existing articles to a topic without refetching them from PubMed.
-// Returns how many links were newly created — a (pmid, topic) link that
-// already existed isn't one — so a poll can count these toward its "added"
-// delta.
-const linkKnown = transaction((pmids: string[], topicId: number): number => {
-  let linked = 0;
-  for (const pmid of pmids) linked += Number(linkToTopic(pmid, topicId));
-  return linked;
-});
+// Returns the ones newly linked — a (pmid, topic) link that already existed
+// isn't one — so a poll can count these toward its "added" delta.
+const linkKnown = transaction((pmids: string[], topicId: number): string[] =>
+  pmids.filter((pmid) => linkToTopic(pmid, topicId))
+);
 
 // Warm the citation cache for newly added papers so the graph view doesn't
 // have to fetch them on first load. Scoped to the caller's delta (a poll or a
@@ -73,16 +71,38 @@ export function nothingToPoll(): string | null {
     : "No topic has journals chosen. Edit a topic to add some, or to search all of PubMed.";
 }
 
+// One topic's poll in the detail the scheduled-poll email needs and the client
+// doesn't: which papers it added, and whether it listed a whole history to do
+// it. Kept beside the PollResult rather than on it, since that goes to the
+// client whole and a first poll can add thousands.
+export interface TopicPoll {
+  result: PollResult;
+  addedPmids: string[];
+  // "full" is the topic's first poll, or its first since a change of scope;
+  // "partial" is a topic already polled that has journals it never searched.
+  // Either way some of what it added is back catalogue rather than new.
+  history: "full" | "partial" | null;
+}
+
 export async function pollTopic(id: number): Promise<PollResult> {
+  return (await pollTopicTracked(id)).result;
+}
+
+async function pollTopicTracked(id: number): Promise<TopicPoll> {
   const topic = getTopic(id);
   if (!topic) {
-    return { topicId: id, topicName: `#${id}`, found: 0, added: 0, error: "Topic not found" };
+    return {
+      result: { topicId: id, topicName: `#${id}`, found: 0, added: 0, error: "Topic not found" },
+      addedPmids: [],
+      history: null,
+    };
   }
   const result: PollResult = { topicId: id, topicName: topic.name, found: 0, added: 0 };
+  const poll: TopicPoll = { result, addedPmids: [], history: null };
   try {
     if (!canPoll(topic)) {
       result.error = NO_JOURNALS_CHOSEN;
-      return result;
+      return poll;
     }
     // The topic's scope as it stands, read once. It can't change under this
     // poll: every change to it takes the poll lock (see setTopicScope).
@@ -119,7 +139,9 @@ export async function pollTopic(id: number): Promise<PollResult> {
           mhdaSince: since ? mhdaWindowStart(since) : undefined,
         });
       }
+      if (since && unscanned.length > 0) poll.history = "partial";
     }
+    if (!since) poll.history = "full";
 
     // PubMed serves at most the first 9,999 records for a query (see
     // MAX_RESULTS), so a topic broad enough to exceed that gets a partial feed
@@ -150,11 +172,15 @@ export async function pollTopic(id: number): Promise<PollResult> {
     const known = existingPmids(pmids);
     const newPmids = pmids.filter((p) => !known.has(p));
 
+    // Recorded a batch at a time, like `added`, so a poll that fails partway
+    // still reports the papers it did store.
     const savedPmids: string[] = [];
     for (const batch of chunk(newPmids, EUTILS_BATCH)) {
       const articles = await fetchArticles(batch);
       saveArticles(articles, id);
-      savedPmids.push(...articles.map((a) => a.pmid));
+      const saved = articles.map((a) => a.pmid);
+      savedPmids.push(...saved);
+      poll.addedPmids.push(...saved);
       result.added += articles.length;
     }
 
@@ -164,7 +190,9 @@ export async function pollTopic(id: number): Promise<PollResult> {
     // it wasn't fetched from PubMed. Without this the banner shows "Added 0"
     // while the feed grew.
     const alreadyKnown = pmids.filter((p) => known.has(p));
-    result.added += linkKnown(alreadyKnown, id);
+    const linked = linkKnown(alreadyKnown, id);
+    result.added += linked.length;
+    poll.addedPmids.push(...linked);
 
     // Warm the citation cache for just-added papers (brand new, so always
     // missing) so their graph opens instantly. Best-effort: a failure must not
@@ -185,24 +213,28 @@ export async function pollTopic(id: number): Promise<PollResult> {
     console.warn(`[poll] ${topic.name}: ${errMessage(err)}`);
     result.error = safeMessage(err);
   }
-  return result;
+  return poll;
 }
 
 export async function pollAll(): Promise<PollResult[]> {
+  return (await pollAllTracked()).map((p) => p.result);
+}
+
+async function pollAllTracked(): Promise<TopicPoll[]> {
   // Stamped up front, not on completion: the desktop launch catch-up reads this
   // to decide whether to poll, and quitting the app mid-poll must not leave it
   // looking like no attempt was ever made — that would poll again on the next
   // launch, and the next. The cost is that an interrupted run waits for the
   // schedule (or the next stale window) rather than resuming on relaunch.
   setLastPollAttemptAt(new Date().toISOString());
-  const results: PollResult[] = [];
+  const polls: TopicPoll[] = [];
   for (const topic of listTopics()) {
     // A topic with no journals chosen is left out rather than reported: asked
     // for by name it says why it can't be checked, but in a check of everything
     // it is not a failure, and would be the same sentence once a topic.
-    if (canPoll(topic)) results.push(await pollTopic(topic.id));
+    if (canPoll(topic)) polls.push(await pollTopicTracked(topic.id));
   }
-  return results;
+  return polls;
 }
 
 // Serialize every poll — scheduled and manual — through one flag so runs can't
@@ -429,21 +461,25 @@ export async function runPoll(label: string): Promise<void> {
       console.log(`[scheduler] ${label} poll skipped: no topic has anything to search`);
       return;
     }
-    const results = await withPollLock(() => {
+    const polls = await withPollLock(() => {
       console.log(`[scheduler] running ${label} poll...`);
-      return pollAll();
+      return pollAllTracked();
     });
-    if (results === null) {
+    if (polls === null) {
       console.log(`[scheduler] ${label} poll skipped: a poll is already running`);
       return;
     }
-    const added = results.reduce((s, r) => s + r.added, 0);
+    const added = polls.reduce((s, p) => s + p.result.added, 0);
     console.log(
-      `[scheduler] poll complete: ${added} new paper(s) across ${results.length} topic(s)`
+      `[scheduler] poll complete: ${added} new paper(s) across ${polls.length} topic(s)`
     );
-    for (const r of results) {
+    for (const { result: r } of polls) {
       if (r.error) console.warn(`[scheduler]   ${r.topicName}: ${r.error}`);
     }
+    // After the lock is let go, so a slow mail server holds up nothing. Every
+    // caller of this is a poll nobody is watching, which is the one kind worth
+    // an email; a manual check reports to the page that asked for it.
+    await sendPollAlert(polls);
   } catch (err) {
     console.error(`[scheduler] ${label} poll failed: ${errMessage(err)}`);
   }
