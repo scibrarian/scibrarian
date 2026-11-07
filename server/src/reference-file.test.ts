@@ -72,8 +72,33 @@ describe("RIS", () => {
   });
 
   it("doesn't read a PMID out of an abstract or a title", () => {
-    const text = `TY  - JOUR\nTI  - Follow-up to PMID: 11111111\nAB  - As reported (PMID: 22222222).\nER  - `;
+    const text =
+      `TY  - JOUR\nTI  - Follow-up to PMID: 11111111\nST  - Follow-up to PMID: 11111111\n` +
+      `AB  - As reported (PMID: 22222222).\nER  - `;
     expect(parseReferenceFile(text)!.entries[0].pmid).toBeNull();
+  });
+
+  // A record imported from PubMed carries its comments and corrections as
+  // notes, each naming the other paper by PMID.
+  const COMMENT = "N1  - Comment in: N Engl J Med. 2021;384:1576. PMID: 33596348\n";
+
+  it("takes the record's own accession number over a PMID its notes mention", () => {
+    const text = `TY  - JOUR\nTI  - A trial\n${COMMENT}AN  - 33301246\nDB  - PubMed\nER  - `;
+    expect(parseReferenceFile(text)!.entries[0].pmid).toBe("33301246");
+  });
+
+  it("reads a PMID from a note only when the note opens with it", () => {
+    const pmid = (note: string) => parseReferenceFile(`TY  - JOUR\nTI  - A trial\n${note}ER  - `)!.entries[0].pmid;
+    expect(pmid(COMMENT)).toBeNull();
+    expect(pmid("N1  - PMID: 33301246\n")).toBe("33301246");
+    // Zotero writes its notes as HTML.
+    expect(pmid("N1  - <div><p>PMID: 33301246</p></div>\n")).toBe("33301246");
+  });
+
+  it("takes the year from the first date that has one", () => {
+    const [entry] = parseReferenceFile(`TY  - JOUR\nTI  - Forthcoming\nPY  - In press\nDA  - 2024/02/01\nER  - `)!
+      .entries;
+    expect(entry.year).toBe("2024");
   });
 
   it("marks books, chapters, reports and web pages as not articles, and keeps the rest", () => {
@@ -140,6 +165,13 @@ LID - S0140-6736(21)00234-8 [pii]
         article: true,
       },
     ]);
+  });
+
+  // MEDLINE_PMID_RE starts a record on "PMID-33301246"; the line has to be
+  // read too, or the record starts and its PMID is lost.
+  it("reads tags written without the space after the hyphen", () => {
+    const [entry] = parseReferenceFile("PMID-33301246\nTI  -A trial\nDP  -2020 Dec 31\n")!.entries;
+    expect(entry).toMatchObject({ pmid: "33301246", title: "A trial", year: "2020" });
   });
 });
 

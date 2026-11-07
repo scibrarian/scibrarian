@@ -1,4 +1,4 @@
-import { findDoi, labelledPmid } from "./identifiers.js";
+import { findDoi, labelledPmid, PMID_LABEL_RE } from "./identifiers.js";
 
 // Read a reference manager's export into the entries a bookmark folder import
 // looks up: RIS, which EndNote, Zotero and Mendeley all write, and PubMed's own
@@ -66,6 +66,11 @@ function authorLine(names: string[]): string {
 const YEAR_RE = /\b(1[89]\d{2}|20\d{2})\b/;
 const yearOf = (date: string): string => YEAR_RE.exec(date)?.[1] ?? "";
 
+// The year of the first of the tags that has one. A date field can be filled
+// and still hold no year — "PY  - In press" — and the next one may.
+const yearIn = (fields: Fields, ...tags: string[]): string =>
+  all(fields, ...tags).map(yearOf).find((year) => year !== "") ?? "";
+
 // ---------- RIS ----------
 
 // "TY  - JOUR": two characters, two spaces, a hyphen. Exporters disagree about
@@ -120,7 +125,16 @@ const NOT_ARTICLES = new Set([
 
 // Fields that are prose, where "PMID" or a PubMed address could turn up as part
 // of a sentence about some other paper.
-const RIS_PROSE = new Set(["AB", "N2", "TI", "T1", "T2", "T3", "KW", "CT", "BT"]);
+const RIS_PROSE = new Set(["AB", "N2", "TI", "T1", "T2", "T3", "ST", "KW", "CT", "BT"]);
+
+// Notes: the reader's own, or a database's remarks on the record, which name
+// other papers by PMID as a matter of course — "Comment in: N Engl J Med.
+// 2021;384:1576. PMID: 33596348". Read only when the note opens with the label,
+// as one recording the paper's own PMID does. Zotero writes its notes as HTML.
+const RIS_NOTES = new Set(["N1", "RN"]);
+const NOTE_PMID_RE = new RegExp(String.raw`^\s*` + PMID_LABEL_RE.source, PMID_LABEL_RE.flags);
+const notePmid = (note: string): string | null =>
+  NOTE_PMID_RE.exec(note.replace(/<[^>]*>/g, " "))?.[1] ?? null;
 
 // The database an accession number belongs to, when the record says.
 const PUBMED_DB_RE = /pubmed|medline|\bnlm\b/i;
@@ -130,7 +144,7 @@ function risEntry(fields: Fields): FileEntry {
     title: first(fields, "TI", "T1", "CT", "BT"),
     authors: authorLine(all(fields, "AU", "A1")),
     journal: first(fields, "T2", "JO", "JF", "JA", "J2", "J1"),
-    year: yearOf(first(fields, "PY", "Y1", "DA")),
+    year: yearIn(fields, "PY", "Y1", "DA"),
     doi: risDoi(fields),
     pmid: risPmid(fields),
     article: !NOT_ARTICLES.has(first(fields, "TY").toUpperCase()),
@@ -150,27 +164,34 @@ function risDoi(fields: Fields): string | null {
   return null;
 }
 
-// RIS has no PMID field, so a record says it has one in one of three ways:
+// RIS has no PMID field, so a record says it has one in one of three ways,
+// read in this order, the record's own word first:
 //
-//  - a PubMed address among its links or notes, or a value labelled "PMID";
 //  - its accession number (AN), when the record names PubMed or MEDLINE as the
 //    database it came from (DB, or DP for the provider). EndNote and Zotero
-//    both write a PubMed record's PMID there.
+//    both write a PubMed record's PMID there;
+//  - a PubMed address among its links, or a value labelled "PMID" in a field
+//    that is neither prose nor a note;
+//  - a note that opens with a "PMID" label (see RIS_NOTES).
 //
 // An accession number is taken only with that database beside it. Without it
 // AN is any database's number — Web of Science's, Embase's, CINAHL's — and
 // read as a PMID it names a different paper that really exists.
 function risPmid(fields: Fields): string | null {
+  if (PUBMED_DB_RE.test(all(fields, "DB", "DP").join(" "))) {
+    const an = /^\d{1,8}$/.exec(first(fields, "AN"));
+    if (an) return an[0];
+  }
   for (const [tag, values] of fields) {
-    if (RIS_PROSE.has(tag)) continue;
+    if (RIS_PROSE.has(tag) || RIS_NOTES.has(tag)) continue;
     for (const value of values) {
       const pmid = labelledPmid(value);
       if (pmid) return pmid;
     }
   }
-  if (PUBMED_DB_RE.test(all(fields, "DB", "DP").join(" "))) {
-    const an = /^\d{1,8}$/.exec(first(fields, "AN"));
-    if (an) return an[0];
+  for (const note of all(fields, ...RIS_NOTES)) {
+    const pmid = notePmid(note);
+    if (pmid) return pmid;
   }
   return null;
 }
@@ -178,8 +199,10 @@ function risPmid(fields: Fields): string | null {
 // ---------- MEDLINE (PubMed format, .nbib) ----------
 
 // "PMID- 33301246", "TI  - ...", "FAU - ...": a tag padded to four characters,
-// a hyphen and a space. Continuation lines are indented six spaces.
-const MEDLINE_TAG_RE = /^([A-Z]{2,4})\s*- (.*)$/;
+// a hyphen and a space. Continuation lines are indented six spaces. The space
+// after the hyphen is loose, as it is in MEDLINE_PMID_RE, which decides that a
+// record starts: a line that starts one has to be read as well.
+const MEDLINE_TAG_RE = /^([A-Z]{2,4})\s*- ?(.*)$/;
 const MEDLINE_PMID_RE = /^PMID- ?\d{1,8}\s*$/;
 
 function medlineRecords(lines: string[]): Fields[] {
@@ -215,7 +238,7 @@ function medlineEntry(fields: Fields): FileEntry {
     title: first(fields, "TI", "BTI"),
     authors: authorLine(all(fields, "AU")),
     journal: first(fields, "JT", "TA"),
-    year: yearOf(first(fields, "DP")),
+    year: yearIn(fields, "DP"),
     doi: doiField ? findDoi(doiField) : null,
     pmid: /^\d{1,8}$/.exec(first(fields, "PMID"))?.[0] ?? null,
     article: true,
