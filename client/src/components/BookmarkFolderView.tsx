@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, FileInput, Link as LinkIcon, Plus } from "lucide-react";
 import { api } from "../api";
@@ -142,9 +142,6 @@ export function BookmarkFolderView({
         setNotice(`Nothing in that file could be imported. ${note}`.trim());
       } else if (note) setNotice(note);
       refreshEntries();
-      // Over before it could be followed — everything it named was already
-      // stored — so App's poll will never see it end and refresh the folder.
-      if (res.status.state !== "running") onPapersAdded();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -158,19 +155,28 @@ export function BookmarkFolderView({
     try {
       const started = await api.startFolderImport(folderId);
       importJobs.follow(folderId, started);
-      if (started.state !== "running") {
-        refreshEntries();
-        onPapersAdded();
-      }
+      // Nothing was left to look up: another tab got there first, so the
+      // entries on screen as not looked up are out of date. A lookup with
+      // anything to do answers "running", and saves nothing before it has.
+      if (started.state !== "running") refreshEntries();
     } catch (e) {
       setEntriesError(errorMessage(e));
     }
   }
 
-  function entriesChanged(saved: boolean) {
-    refreshEntries();
-    if (saved) onPapersAdded();
-  }
+  // Entries the dialog saved or removed, taken off the list here rather than
+  // by asking for it again: it can run to thousands, and each save fetched and
+  // re-rendered all of them. Kept the same across renders, through a ref to
+  // App's callback, so the dialog's other rows skip theirs (see EntryRow).
+  const papersAdded = useRef(onPapersAdded);
+  useEffect(() => {
+    papersAdded.current = onPapersAdded;
+  });
+  const entriesLeft = useCallback((ids: number[], saved: boolean) => {
+    const gone = new Set(ids);
+    setEntries((list) => list.filter((e) => !gone.has(e.id)));
+    if (saved) papersAdded.current();
+  }, []);
 
   async function rename(next: string) {
     setRenaming(false);
@@ -330,7 +336,7 @@ export function BookmarkFolderView({
           error={entriesError}
           onClose={() => setShowingEntries(false)}
           onLookUp={lookUp}
-          onChanged={entriesChanged}
+          onLeft={entriesLeft}
           onError={setEntriesError}
         />
       )}

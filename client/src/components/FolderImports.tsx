@@ -1,6 +1,6 @@
-import { useId, useState } from "react";
+import { memo, useId, useState } from "react";
 import { api } from "../api";
-import { useHeldWhile } from "../lib/hooks";
+import { useHeldWhile, useIncrementalList } from "../lib/hooks";
 import { errorMessage } from "../lib/format";
 import type { BookmarkImport, LinkedPaper } from "../types";
 import { Banner } from "./Banner";
@@ -42,7 +42,7 @@ export function ImportedEntries({
   error,
   onClose,
   onLookUp,
-  onChanged,
+  onLeft,
   onError,
 }: {
   open: boolean;
@@ -53,9 +53,11 @@ export function ImportedEntries({
   onClose: () => void;
   // "Look them up": a lookup over the entries none has reached yet.
   onLookUp: () => Promise<void>;
-  // An entry was saved or removed. `saved` when one became a bookmark, which
-  // changes the folder's papers as well as this list.
-  onChanged: (saved: boolean) => void;
+  // These entries were saved or removed, and leave the list. `saved` when one
+  // became a bookmark, which changes the folder's papers as well. The same
+  // function from one render to the next, so a row the change doesn't touch
+  // doesn't render again (see EntryRow).
+  onLeft: (ids: number[], saved: boolean) => void;
   onError: (msg: string | null) => void;
 }) {
   const [lookingUp, setLookingUp] = useState(false);
@@ -65,6 +67,11 @@ export function ImportedEntries({
   const shown = useHeldWhile(open, entries);
   const pending = shown.filter((e) => e.status === "pending");
   const unmatched = shown.filter((e) => e.status === "unmatched");
+  // A large library leaves thousands, each row a PMID box and its buttons, so
+  // each section is rendered a page at a time as it is scrolled, as the
+  // folder's own table is. Back to the first page whenever it opens.
+  const pendingPage = useIncrementalList(pending, `pending|${open}`);
+  const unmatchedPage = useIncrementalList(unmatched, `unmatched|${open}`);
 
   async function lookUp() {
     setLookingUp(true);
@@ -81,18 +88,21 @@ export function ImportedEntries({
     if (folderId == null) return;
     try {
       await api.removeUnmatchedImports(folderId);
-      onChanged(false);
+      onLeft(unmatched.map((e) => e.id), false);
     } catch (e) {
       onError(errorMessage(e));
     }
   }
 
-  const rows = (list: BookmarkImport[]) => (
-    <ul className="unmatched-list">
-      {list.map((entry) => (
-        <EntryRow key={entry.id} entry={entry} onChanged={onChanged} onError={onError} />
-      ))}
-    </ul>
+  const rows = ({ shown, hasMore, sentinelRef }: ReturnType<typeof useIncrementalList<BookmarkImport>>) => (
+    <>
+      <ul className="unmatched-list">
+        {shown.map((entry) => (
+          <EntryRow key={entry.id} entry={entry} onLeft={onLeft} onError={onError} />
+        ))}
+      </ul>
+      {hasMore && <div ref={sentinelRef} className="scroll-sentinel" aria-hidden="true" />}
+    </>
   );
 
   return (
@@ -110,7 +120,7 @@ export function ImportedEntries({
               </button>
             </div>
             <p className="hint">The import stopped before reaching these.</p>
-            {rows(pending)}
+            {rows(pendingPage)}
           </section>
         )}
         {unmatched.length > 0 && (
@@ -126,7 +136,7 @@ export function ImportedEntries({
             <p className="hint">
               Search PubMed for each one and paste its PMID to save it to this folder, or remove it.
             </p>
-            {rows(unmatched)}
+            {rows(unmatchedPage)}
           </section>
         )}
       </div>
@@ -146,13 +156,16 @@ export function ImportedEntries({
 // up before it is saved, and the paper it names is shown beside the entry for
 // the reader to compare — a digit lost in copying names a different paper that
 // really exists, and the number alone gives no sign of it.
-function EntryRow({
+//
+// Memoised: a save or removal takes one row off a list that can run to
+// thousands, and the rest have nothing new to render.
+const EntryRow = memo(function EntryRow({
   entry,
-  onChanged,
+  onLeft,
   onError,
 }: {
   entry: BookmarkImport;
-  onChanged: (saved: boolean) => void;
+  onLeft: (ids: number[], saved: boolean) => void;
   onError: (msg: string | null) => void;
 }) {
   const [pmid, setPmid] = useState("");
@@ -181,13 +194,13 @@ function EntryRow({
     run(async () => {
       if (!found) return;
       await api.setImportPmid(entry.id, found.pmid);
-      onChanged(true);
+      onLeft([entry.id], true);
     });
 
   const remove = () =>
     run(async () => {
       await api.removeImport(entry.id);
-      onChanged(false);
+      onLeft([entry.id], false);
     });
 
   const meta = [entry.authors, entry.journal, entry.year].filter(Boolean).join(" · ");
@@ -245,4 +258,4 @@ function EntryRow({
       </div>
     </li>
   );
-}
+});

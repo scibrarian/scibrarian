@@ -124,8 +124,9 @@ describe("importing a reference file", () => {
       screen.getByText("Skipped 2 that aren't journal articles. Skipped 1 with no title, DOI or PMID.")
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "1 unmatched" })).toBeTruthy();
-    // A lookup that was over before it could be followed still refreshes the folder.
-    expect(papersAdded).toHaveBeenCalled();
+    // Sending the file saves nothing: the lookup App follows saves the papers,
+    // and refreshes the folder as it does.
+    expect(papersAdded).not.toHaveBeenCalled();
   });
 
   it("says so when nothing in the file could be imported", async () => {
@@ -214,6 +215,55 @@ describe("an unmatched reference", () => {
     expect(within(dialog).queryByText("The paper that PMID names")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Find" })).toBeTruthy();
     expect(api.setImportPmid).not.toHaveBeenCalled();
+  });
+
+  // The list can run to thousands; one removal doesn't fetch it all again.
+  it("takes a removed entry off the list without asking for the list again", async () => {
+    api.getFolderImports.mockResolvedValue([entry({ id: 1 }), entry({ id: 2, title: "Also not indexed" })]);
+    await view();
+    fireEvent.click(screen.getByRole("button", { name: "2 unmatched" }));
+    await settle();
+    const dialog = screen.getByRole("dialog", { name: "Unmatched references" });
+    const asked = api.getFolderImports.mock.calls.length;
+    api.removeImport.mockResolvedValue(undefined);
+
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Remove" })[0]);
+    await settle();
+    expect(api.removeImport).toHaveBeenCalledWith(1);
+    expect(within(dialog).queryByText("Not indexed")).toBeNull();
+    expect(within(dialog).getByText("Also not indexed")).toBeTruthy();
+    // Behind the dialog, so out of the accessibility tree while it is open.
+    expect(screen.getByRole("button", { name: "1 unmatched", hidden: true })).toBeTruthy();
+    expect(api.getFolderImports).toHaveBeenCalledTimes(asked);
+    expect(papersAdded).not.toHaveBeenCalled();
+  });
+
+  it("shows a long list a page at a time, as it is scrolled", async () => {
+    let reveal: (() => void) | null = null;
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+          reveal = () => callback([{ isIntersecting: true }]);
+        }
+        observe() {}
+        disconnect() {}
+      }
+    );
+    try {
+      api.getFolderImports.mockResolvedValue(
+        Array.from({ length: 120 }, (_, i) => entry({ id: i + 1, title: `Entry ${i + 1}` }))
+      );
+      await view();
+      fireEvent.click(screen.getByRole("button", { name: "120 unmatched" }));
+      await settle();
+      const dialog = screen.getByRole("dialog", { name: "Unmatched references" });
+      expect(within(dialog).getAllByRole("listitem")).toHaveLength(50);
+      await act(async () => reveal!());
+      expect(within(dialog).getAllByRole("listitem")).toHaveLength(100);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows a PMID PubMed doesn't know inside the dialog, and keeps the entry", async () => {
