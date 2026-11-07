@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 import { article } from "./unheld-sweep-fixture.js";
 
@@ -103,7 +104,7 @@ async function settled(folderId: number) {
 }
 
 const entries = async (folderId: number) =>
-  (await (await fetch(`${base}/api/bookmark-folders/${folderId}/imports`)).json()) as {
+  (await (await fetch(`${base}/api/bookmark-folders/${folderId}/imports`, { headers: HEADERS })).json()) as {
     id: number;
     title: string;
     status: string;
@@ -266,6 +267,15 @@ describe("an unmatched entry", () => {
       expect(res.status).toBe(422);
     }
     expect((await entries(folderId)).map((e) => e.title)).toContain("Not indexed");
+  });
+
+  // The list is the owner's reference library, and the gate lets every GET
+  // through, so the route has to refuse a viewer itself.
+  it("is listed to the owner only", async () => {
+    const { folderId } = await unmatched("Not indexed");
+    const res = await fetch(`${base}/api/bookmark-folders/${folderId}/imports`);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
   });
 
   it("can be removed, one at a time or all together", async () => {

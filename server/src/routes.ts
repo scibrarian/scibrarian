@@ -1352,7 +1352,14 @@ api.post("/bookmark-folders/:id/imports", uploadReferenceFile, (req, res) => {
 
 // The entries a folder's imports left that are not bookmarks yet: still to be
 // looked up, or looked up and not found.
+//
+// Owner-only although it is a GET: it is the owner's own reference library,
+// titles and identifiers of papers they never bookmarked, and the client shows
+// it to nobody else.
 api.get("/bookmark-folders/:id/imports", (req, res) => {
+  if (!isAdminRequest(req)) {
+    return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
+  }
   res.json(listBookmarkImports(Number(req.params.id)));
 });
 

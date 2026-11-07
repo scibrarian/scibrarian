@@ -74,7 +74,8 @@ export function BookmarkFolderView({
   // The entries imports have left that aren't bookmarks yet, refetched by
   // bumping `entriesToken`. `entriesStale` is set when a lookup ends and
   // cleared when the refetch lands: until then every entry it settled is still
-  // on screen as pending, and would be counted as not looked up.
+  // on screen as pending, and would be counted as not looked up. Owner-only,
+  // as the route is, so a viewer never asks for it.
   const [entries, setEntries] = useState<BookmarkImport[]>([]);
   const [entriesToken, setEntriesToken] = useState(0);
   const [entriesStale, setEntriesStale] = useState(false);
@@ -85,6 +86,7 @@ export function BookmarkFolderView({
   const [entriesError, setEntriesError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isAdmin) return;
     let current = true;
     api
       .getFolderImports(folderId)
@@ -97,7 +99,7 @@ export function BookmarkFolderView({
     return () => {
       current = false;
     };
-  }, [folderId, entriesToken]);
+  }, [folderId, entriesToken, isAdmin]);
 
   const refreshEntries = () => setEntriesToken((t) => t + 1);
 

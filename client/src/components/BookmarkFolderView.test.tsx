@@ -137,10 +137,12 @@ describe("importing a reference file", () => {
   });
 
   it("offers neither the import nor the count to a viewer", async () => {
-    api.getFolderImports.mockResolvedValue([entry({})]);
+    api.getFolderImports.mockClear().mockResolvedValue([entry({})]);
     await view({ isAdmin: false });
     expect(screen.queryByRole("button", { name: /Add papers/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /unmatched/ })).toBeNull();
+    // Nor asks for the list, which the server keeps from a viewer.
+    expect(api.getFolderImports).not.toHaveBeenCalled();
   });
 });
 
