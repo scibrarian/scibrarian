@@ -180,6 +180,27 @@ describe("importing a reference file into a folder", () => {
     expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
   });
 
+  // A PMID that names nothing — mistyped, or withdrawn since — is no reason to
+  // ignore a good DOI beside it. One that names a paper is taken without the
+  // DOI being asked about.
+  it("looks an entry's DOI up when PubMed has no record of its PMID, and only then", async () => {
+    const id = folder("Stale PMID");
+    await importFile(
+      id,
+      [
+        "TY  - JOUR\nTI  - Stale PMID, good DOI\nAN  - 49999999\nDB  - PubMed\nDO  - 10.1000/found\nER  - ",
+        `TY  - JOUR\nTI  - Good PMID\nAN  - ${FOUND_BY_PMID}\nDB  - PubMed\nDO  - 10.1000/never-asked\nER  - `,
+        "TY  - JOUR\nTI  - Neither found\nAN  - 49999998\nDB  - PubMed\nDO  - 10.1000/unknown\nER  - ",
+      ].join("\n")
+    );
+    expect(await settled(id)).toMatchObject({ state: "done", matched: 2, unmatched: 1 });
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
+    expect(pubmed.searched.sort()).toEqual(["10.1000/found", "10.1000/unknown"]);
+    expect((await entries(id)).map(({ title, reason }) => ({ title, reason }))).toEqual([
+      { title: "Neither found", reason: "not-in-pubmed" },
+    ]);
+  });
+
   it("refuses a file that is neither RIS nor PubMed's format", async () => {
     const { status: code, body } = await importFile(folder("BibTeX"), "@article{k, title={T}}");
     expect(code).toBe(400);

@@ -67,7 +67,6 @@ import {
   resetLibrary,
   searchCatalog,
   searchMesh,
-  safeParseAuthors,
   setFileMatched,
   settleBookmarkImports,
   setTopicScope,
@@ -101,7 +100,7 @@ import {
   UPLOAD_TMP_DIR,
 } from "./config.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
-import { addLinksToFolder } from "./bookmark-links.js";
+import { addLinksToFolder, toPaper } from "./bookmark-links.js";
 import {
   anyFolderImportRunning,
   cancelFolderImport,
@@ -111,6 +110,7 @@ import {
   startFolderImport,
 } from "./folder-import.js";
 import { splitRefs } from "./citation-ref.js";
+import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
   anyImportRunning,
@@ -1383,8 +1383,6 @@ api.delete("/bookmark-folders/:id/imports/unmatched", (req, res) => {
   res.json({ removed: deleteUnmatchedBookmarkImports(Number(req.params.id)) });
 });
 
-const PMID_RE = /^\d{1,8}$/;
-
 // The paper a PMID names, for the reader to compare with the entry before it is
 // saved: a digit lost in copying names a different paper that really exists,
 // and nothing about the number says so. Writes nothing. A POST, so it is
@@ -1393,16 +1391,13 @@ const PMID_RE = /^\d{1,8}$/;
 api.post(
   "/bookmark-imports/:entryId/lookup",
   asyncHandler(async (req, res) => {
-    const pmid = String(req.body?.pmid ?? "").trim();
-    if (!PMID_RE.test(pmid)) return res.status(400).json({ error: "A PMID is 1–8 digits." });
+    const pmid = barePmid(String(req.body?.pmid ?? ""));
+    if (!pmid) return res.status(400).json({ error: "A PMID is 1–8 digits." });
     if (!getBookmarkImport(Number(req.params.entryId))) {
       return res.status(404).json({ error: "That entry is no longer listed." });
     }
     const [stored] = linkedPapersByPmids([pmid]);
-    if (stored) {
-      const paper: LinkedPaper = { ...stored, authors: safeParseAuthors(stored.authors) };
-      return res.json(paper);
-    }
+    if (stored) return res.json(toPaper(stored));
     const summary = (await fetchSummaries([pmid])).get(pmid);
     if (!summary) return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
     const paper: LinkedPaper = {
@@ -1424,8 +1419,8 @@ api.post(
   "/bookmark-imports/:entryId/pmid",
   asyncHandler(async (req, res) => {
     const entryId = Number(req.params.entryId);
-    const pmid = String(req.body?.pmid ?? "").trim();
-    if (!PMID_RE.test(pmid)) return res.status(400).json({ error: "A PMID is 1–8 digits." });
+    const pmid = barePmid(String(req.body?.pmid ?? ""));
+    if (!pmid) return res.status(400).json({ error: "A PMID is 1–8 digits." });
     if (!getBookmarkImport(entryId)) {
       return res.status(404).json({ error: "That entry is no longer listed." });
     }
@@ -1444,8 +1439,7 @@ api.post(
     const uncited = missingOrStaleCitations(saved);
     if (uncited.length > 0) void warmCitations(uncited, "manual import match");
     const [row] = linkedPapersByPmids([pmid]);
-    const paper: LinkedPaper = { ...row, authors: safeParseAuthors(row.authors) };
-    res.json(paper);
+    res.json(toPaper(row));
   })
 );
 

@@ -5,15 +5,13 @@ import {
   getBookmarkFolder,
   linkedPapersByPmids,
   missingOrStaleCitations,
-  pmidsByDois,
   safeParseAuthors,
   upsertArticles,
-  type ArticleInsert,
   type LinkedPaperRow,
 } from "./db.js";
+import { lookUpPapers, type RefIds } from "./paper-lookup.js";
 import { warmCitations } from "./poller.js";
-import { EUTILS_BATCH, fetchArticles, pmidsForDoi } from "./pubmed.js";
-import { chunk, errMessage, httpError } from "./util.js";
+import { errMessage, httpError } from "./util.js";
 import type { LinkAnswer, LinkedPaper } from "./types.js";
 
 // "Add links" — saving papers into a bookmark folder from pasted DOIs and
@@ -46,31 +44,9 @@ export async function addLinksToFolder(
   const refs = inputs.map(parseRef);
 
   // --- network: DOIs to PMIDs, then the records the library doesn't hold ---
-  const dois = [...new Set(refs.flatMap((r) => (r.kind === "doi" && r.doi ? [r.doi] : [])))];
-  // Asked locally first: a DOI the library already stores needs no search.
-  const byDoi = pmidsByDois(dois);
-  const pmidOf = (r: ParsedRef): string | null =>
-    r.kind === "pmid" ? (r.pmid ?? null) : r.kind === "doi" && r.doi ? (byDoi.get(r.doi) ?? null) : null;
-  // DOIs PubMed files under more than one record. Unresolved like a DOI it has
-  // never heard of, but told apart from one: the paper is in PubMed, and its
-  // PubMed link would save it.
-  const ambiguous = new Set<string>();
-
-  // One at a time: each is its own esearch, and they share the eutils
-  // throttle whichever order they go in.
-  for (const doi of dois) {
-    if (byDoi.has(doi)) continue;
-    const pmids = await fromPubmed(pmidsForDoi(doi));
-    if (pmids.length === 1) byDoi.set(doi, pmids[0]);
-    else if (pmids.length > 1) ambiguous.add(doi);
-  }
-  // Every PMID a line names, once DOIs have been resolved.
-  const named = [...new Set(refs.flatMap((r) => pmidOf(r) ?? []))];
-  const stored = existingPmids(named);
-  const fetched: ArticleInsert[] = [];
-  for (const batch of chunk(named.filter((p) => !stored.has(p)), EUTILS_BATCH)) {
-    fetched.push(...(await fromPubmed(fetchArticles(batch))));
-  }
+  // A line is a PubMed link or a DOI, never both: parseRef takes the link.
+  const ids = refs.map(idsOf);
+  const { pmidOf, named, fetched, ambiguous } = await lookUpPapers(ids, fromPubmed);
 
   // --- writes: nothing is awaited from here on ---
   if (!getBookmarkFolder(folderId)) return null;
@@ -93,9 +69,9 @@ export async function addLinksToFolder(
   // A paper named twice in one paste is added by its first line; the second
   // finds it already saved, which by then it is.
   const seen = new Set<string>();
-  return refs.map((parsed): LinkAnswer => {
+  return refs.map((parsed, i): LinkAnswer => {
     if (parsed.kind === "unknown") return { parsed, outcome: "unreadable", paper: null };
-    const pmid = pmidOf(parsed);
+    const pmid = pmidOf(ids[i]);
     const paper = pmid ? papers.get(pmid) : undefined;
     if (!pmid || !paper) {
       const several = parsed.kind === "doi" && !!parsed.doi && ambiguous.has(parsed.doi);
@@ -123,7 +99,15 @@ async function fromPubmed<T>(request: Promise<T>): Promise<T> {
   }
 }
 
-function toPaper(row: LinkedPaperRow): LinkedPaper {
+function idsOf(r: ParsedRef): RefIds {
+  return {
+    pmid: r.kind === "pmid" ? (r.pmid ?? null) : null,
+    doi: r.kind === "doi" ? (r.doi ?? null) : null,
+  };
+}
+
+/** A stored paper as a folder's dialogs show it. */
+export function toPaper(row: LinkedPaperRow): LinkedPaper {
   return {
     pmid: row.pmid,
     title: row.title,

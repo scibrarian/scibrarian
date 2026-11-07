@@ -171,6 +171,15 @@ describe("an unmatched reference", () => {
     expect(search.getAttribute("href")).toBe("https://pubmed.ncbi.nlm.nih.gov/?term=Not%20indexed");
   });
 
+  it("names both identifiers when it was looked up by each", async () => {
+    api.getFolderImports.mockResolvedValue([entry({ pmid: "49999999" })]);
+    await view();
+    fireEvent.click(screen.getByRole("button", { name: "1 unmatched" }));
+    await settle();
+    const dialog = screen.getByRole("dialog", { name: "Unmatched references" });
+    expect(within(dialog).getByText("PubMed has no record of PMID 49999999 or DOI 10.1000/unknown.")).toBeTruthy();
+  });
+
   it("shows the paper a PMID names, and saves it only when told to", async () => {
     api.lookUpImportPmid.mockResolvedValue(paper);
     api.setImportPmid.mockResolvedValue(paper);

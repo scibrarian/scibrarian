@@ -20,6 +20,8 @@ function reasonText(entry: BookmarkImport): string {
     case "ambiguous-doi":
       return `PubMed files DOI ${entry.doi} under more than one record.`;
     case "not-in-pubmed":
+      // An entry with both was looked up by each: its DOI when its PMID failed.
+      if (entry.pmid && entry.doi) return `PubMed has no record of PMID ${entry.pmid} or DOI ${entry.doi}.`;
       return entry.pmid
         ? `PubMed has no record of PMID ${entry.pmid}.`
         : `PubMed has no record of DOI ${entry.doi}.`;

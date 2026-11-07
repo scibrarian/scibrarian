@@ -4,13 +4,11 @@ import {
   getBookmarkFolder,
   missingOrStaleCitations,
   pendingBookmarkImports,
-  pmidsByDois,
   settleBookmarkImports,
   upsertArticles,
-  type ArticleInsert,
 } from "./db.js";
+import { lookUpPapers } from "./paper-lookup.js";
 import { warmCitations } from "./poller.js";
-import { EUTILS_BATCH, fetchArticles, pmidsForDoi } from "./pubmed.js";
 import type { BookmarkImport, ImportJob } from "./types.js";
 import { chunk, errMessage, httpError, safeMessage } from "./util.js";
 
@@ -124,29 +122,13 @@ async function runLookup(job: ImportJob, folderId: number, rows: BookmarkImport[
 // holds has no gap to take one in.
 async function lookUp(job: ImportJob, folderId: number, rows: BookmarkImport[]): Promise<void> {
   // --- network: DOIs to PMIDs, then the records the library doesn't hold ---
-  // A PMID from the file is taken as it is; a DOI only when there isn't one.
-  const dois = [...new Set(rows.flatMap((r) => (r.pmid == null && r.doi ? [r.doi] : [])))];
-  // Asked locally first: a DOI the library already stores needs no search.
-  const byDoi = pmidsByDois(dois);
-  // DOIs PubMed files under more than one record, told apart from ones it has
-  // never heard of: the paper is in PubMed, and its PMID would save it.
-  const ambiguous = new Set<string>();
-  for (const doi of dois) {
-    if (byDoi.has(doi)) continue;
-    const pmids = await fromPubmed(pmidsForDoi(doi));
+  // A PMID from the file is taken as it is, and its DOI looked up when there
+  // isn't one or PubMed has no record of it. See lookUpPapers.
+  const { pmidOf, named, fetched, ambiguous } = await lookUpPapers(rows, async (request) => {
+    const answer = await fromPubmed(request);
     stopIfCancelled(job);
-    if (pmids.length === 1) byDoi.set(doi, pmids[0]);
-    else if (pmids.length > 1) ambiguous.add(doi);
-  }
-  const pmidOf = (r: BookmarkImport): string | null =>
-    r.pmid ?? (r.doi ? (byDoi.get(r.doi) ?? null) : null);
-  const named = [...new Set(rows.flatMap((r) => pmidOf(r) ?? []))];
-  const stored = existingPmids(named);
-  const fetched: ArticleInsert[] = [];
-  for (const batch of chunk(named.filter((p) => !stored.has(p)), EUTILS_BATCH)) {
-    fetched.push(...(await fromPubmed(fetchArticles(batch))));
-    stopIfCancelled(job);
-  }
+    return answer;
+  });
 
   // --- writes: nothing is awaited from here on ---
   // Gone without being cancelled — the whole library reset, say, which refuses
@@ -163,7 +145,7 @@ async function lookUp(job: ImportJob, folderId: number, rows: BookmarkImport[]):
     const pmid = pmidOf(r);
     if (pmid && present.has(pmid)) found.push({ id: r.id, pmid });
     else {
-      const several = r.pmid == null && r.doi != null && ambiguous.has(r.doi);
+      const several = r.doi != null && ambiguous.has(r.doi);
       missed.push({ id: r.id, reason: several ? "ambiguous-doi" : "not-in-pubmed" });
     }
   }
