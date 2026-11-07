@@ -64,8 +64,18 @@ export function EmailAlertsDialog({
   }
 
   function withPassword(): MailSettingsDraft {
-    return password.trim() ? { ...draft, smtp_pass: password.trim() } : draft;
+    // Sent as typed: a password can begin or end with a space.
+    return password.trim() ? { ...draft, smtp_pass: password } : draft;
   }
+
+  // The saved password is only sent to the server and username it was saved
+  // with — the server refuses to send it anywhere else — so changing either
+  // means typing the password for the new one.
+  const passwordKept =
+    settings.has_smtp_pass &&
+    draft.smtp_host.trim().toLowerCase() === settings.smtp_host.toLowerCase() &&
+    draft.smtp_user.trim() === settings.smtp_user;
+  const passwordNeeded = settings.has_smtp_pass && !passwordKept && draft.smtp_user.trim() !== "";
 
   async function sendTest() {
     const mine = session.current;
@@ -158,7 +168,7 @@ export function EmailAlertsDialog({
           <div className="field">
             <span className="label-line">
               <label htmlFor="alerts-smtp-pass">Password</label>
-              {settings.has_smtp_pass && (
+              {passwordKept && (
                 <span className="pill">
                   set <Check size={12} className="inline-icon" aria-hidden />
                 </span>
@@ -170,7 +180,13 @@ export function EmailAlertsDialog({
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={settings.has_smtp_pass ? "•••••• (leave blank to keep)" : "optional"}
+              placeholder={
+                passwordKept
+                  ? "•••••• (leave blank to keep)"
+                  : passwordNeeded
+                    ? "required"
+                    : "optional"
+              }
             />
           </div>
           <label>

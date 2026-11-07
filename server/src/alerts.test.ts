@@ -277,6 +277,22 @@ describe("the settings", () => {
     expect(db.getSettings().smtp_pass).toBe("another");
   });
 
+  // With alerts off too: saved, the moved login would keep the old password,
+  // and send it to the new server once alerts went on.
+  it("won't save a new server without its password", async () => {
+    configure({ alert_email_enabled: "0" });
+    const res = await put({ smtp_host: "mail.elsewhere.org" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Enter the password for the new mail server.");
+    expect(db.getSettings().smtp_host).toBe("smtp.example.org");
+  });
+
+  it("keeps a password's leading and trailing spaces", async () => {
+    const res = await put({ smtp_pass: " spaced out " });
+    expect(res.status).toBe(200);
+    expect(db.getSettings().smtp_pass).toBe(" spaced out ");
+  });
+
   it("refuses a port that isn't one", async () => {
     const res = await put({ smtp_port: "smtp" });
     expect(res.status).toBe(400);
@@ -287,7 +303,7 @@ describe("the test email", () => {
   it("sends with the dialog's values and the stored password", async () => {
     const res = await testEmail({
       alert_email_to: "someone@example.org",
-      smtp_host: "mail.example.org",
+      smtp_host: "smtp.example.org",
       smtp_port: "465",
       smtp_user: "sender@example.org",
       smtp_from: "",
@@ -297,11 +313,52 @@ describe("the test email", () => {
     expect(mail.sent[0].to).toBe("someone@example.org");
     expect(mail.sent[0].from).toEqual({ name: "Scibrarian", address: "sender@example.org" });
     expect(mail.options[0]).toMatchObject({
-      host: "mail.example.org",
+      host: "smtp.example.org",
       port: 465,
       secure: true,
       auth: { user: "sender@example.org", pass: "secret" },
     });
+  });
+
+  // Otherwise the stored password goes to whatever server the request names,
+  // which would let an admin read the write-only secret back.
+  it("won't send the stored password to another server", async () => {
+    const res = await testEmail({ smtp_host: "mail.elsewhere.org" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Enter the password for the new mail server.");
+    expect(mail.options).toEqual([]);
+  });
+
+  it("won't send the stored password with another username", async () => {
+    const res = await testEmail({ smtp_user: "someone-else@example.org" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Enter the password for the new username.");
+    expect(mail.options).toEqual([]);
+  });
+
+  it("sends to another server with the password typed for it", async () => {
+    const res = await testEmail({ smtp_host: "mail.elsewhere.org", smtp_pass: "theirs" });
+    expect(res.status).toBe(200);
+    expect(mail.options[0]).toMatchObject({
+      host: "mail.elsewhere.org",
+      auth: { user: "sender@example.org", pass: "theirs" },
+    });
+  });
+
+  it("sends to another server without a password when there's no username", async () => {
+    const res = await testEmail({
+      smtp_host: "relay.elsewhere.org",
+      smtp_user: "",
+      smtp_from: "sender@example.org",
+    });
+    expect(res.status).toBe(200);
+    expect(mail.options[0]).toMatchObject({ host: "relay.elsewhere.org", auth: undefined });
+  });
+
+  it("treats the server's name the same whatever its case", async () => {
+    const res = await testEmail({ smtp_host: "SMTP.Example.org" });
+    expect(res.status).toBe(200);
+    expect(mail.options[0]).toMatchObject({ auth: { pass: "secret" } });
   });
 
   // A password must never go over a connection that was never encrypted.
@@ -324,7 +381,7 @@ describe("the test email", () => {
   });
 
   it("asks for a From address when the username isn't one", async () => {
-    const res = await testEmail({ smtp_user: "apikey" });
+    const res = await testEmail({ smtp_user: "apikey", smtp_pass: "key" });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe(
       "Add a From address — the username isn't an email address."

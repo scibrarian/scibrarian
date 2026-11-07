@@ -170,6 +170,37 @@ describe("the dialog", () => {
     expect(api.updateSettings).not.toHaveBeenCalled();
   });
 
+  // The server only sends the saved password to the server and username it was
+  // saved with, so "leave blank to keep" stops being true once either changes.
+  it("asks for the password again once the server changes", async () => {
+    api.getSettings.mockResolvedValue({
+      ...SAVED,
+      smtp_host: "smtp.example.org",
+      smtp_user: "sender@example.org",
+      has_smtp_pass: true,
+    });
+    renderSettings();
+    const dialog = await openDialog();
+    const password = dialog.getByLabelText("Password") as HTMLInputElement;
+    expect(password.placeholder).toBe("•••••• (leave blank to keep)");
+
+    fireEvent.change(dialog.getByRole("textbox", { name: "Server" }), {
+      target: { value: "mail.elsewhere.org" },
+    });
+    expect(password.placeholder).toBe("required");
+    expect(dialog.queryByText("set")).toBeNull();
+  });
+
+  it("sends the password as typed, spaces and all", async () => {
+    renderSettings();
+    const dialog = await openDialog();
+    fireEvent.change(dialog.getByLabelText("Password"), { target: { value: " spaced out " } });
+    fireEvent.click(dialog.getByRole("button", { name: "Send test email" }));
+
+    await waitFor(() => expect(api.testEmail).toHaveBeenCalledTimes(1));
+    expect(api.testEmail.mock.calls[0][0].smtp_pass).toBe(" spaced out ");
+  });
+
   it("shows what the server refused, and stays open", async () => {
     api.updateSettings.mockRejectedValue(new Error("Add the mail server to send through."));
     renderSettings();

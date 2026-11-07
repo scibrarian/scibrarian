@@ -1694,7 +1694,8 @@ function shareUrls(): string[] {
 type SettingRule =
   | { kind: "string"; validate?: (value: string) => string | null } // returns an error message
   | { kind: "boolean" }
-  | { kind: "secret"; expose: `has_${string}` }; // write-only; response carries presence
+  // write-only; response carries presence. `verbatim` stores it untrimmed.
+  | { kind: "secret"; expose: `has_${string}`; verbatim?: true };
 
 const SETTING_RULES = {
   ncbi_email: { kind: "string" },
@@ -1716,7 +1717,9 @@ const SETTING_RULES = {
     validate: (v) => (smtpPort(v) === null ? "The port must be a number from 1 to 65535." : null),
   },
   smtp_user: { kind: "string" },
-  smtp_pass: { kind: "secret", expose: "has_smtp_pass" },
+  // Stored as typed, where an API key is trimmed: a password can begin or end
+  // with a space.
+  smtp_pass: { kind: "secret", expose: "has_smtp_pass", verbatim: true },
   smtp_from: { kind: "string", validate: validEmailOrBlank("send from") },
 } satisfies Record<keyof Settings, SettingRule>;
 
@@ -1726,21 +1729,35 @@ function validEmailOrBlank(purpose: string) {
 }
 
 // The mail settings a request would leave saved: its own values over the
-// stored ones. A blank password keeps the stored one, as it does on a save.
-function mailSettingsAfter(body: Record<string, unknown>): MailSettings {
+// stored ones. A blank password keeps the stored one, as it does on a save —
+// but only for the server and username it was saved with. Anywhere else it
+// would hand one mail server the password for another, and let an admin read
+// the write-only secret back by pointing the test email at a server of their
+// own. So a request that moves the login has to bring its password with it,
+// and the string is the reason it didn't.
+function mailSettingsAfter(body: Record<string, unknown>): MailSettings | string {
   const s = getSettings();
-  const pick = (key: keyof MailSettings) => {
+  const pick = (key: Exclude<keyof MailSettings, "smtp_pass">) => {
     const v = body[key];
-    return typeof v === "string" && (key !== "smtp_pass" || v.trim()) ? v.trim() : s[key];
+    return typeof v === "string" ? v.trim() : s[key];
   };
-  return {
+  const after = {
     alert_email_to: pick("alert_email_to"),
     smtp_host: pick("smtp_host"),
     smtp_port: pick("smtp_port"),
     smtp_user: pick("smtp_user"),
-    smtp_pass: pick("smtp_pass"),
     smtp_from: pick("smtp_from"),
   };
+  const typed = body.smtp_pass;
+  if (typeof typed === "string" && typed.trim()) return { ...after, smtp_pass: typed };
+  // Without a username no password is sent, so there is nothing to refuse.
+  if (s.smtp_pass && after.smtp_user) {
+    if (after.smtp_host.toLowerCase() !== s.smtp_host.toLowerCase()) {
+      return "Enter the password for the new mail server.";
+    }
+    if (after.smtp_user !== s.smtp_user) return "Enter the password for the new username.";
+  }
+  return { ...after, smtp_pass: s.smtp_pass };
 }
 
 // The viewer cache's 404, the other way round: email alerts are a server
@@ -1792,6 +1809,11 @@ api.put("/settings", (req, res) => {
       if (err) return res.status(400).json({ error: err });
     }
   }
+  // Whether alerts are on or not: a login moved without its password would
+  // otherwise be saved with the old one, which would go to the new server as
+  // soon as alerts were on.
+  const mail = mailSettingsAfter(body);
+  if (typeof mail === "string") return res.status(400).json({ error: mail });
   // Alerts that are on have to be able to send, judged on what the save would
   // leave rather than on the fields it carries. Turned on without a mail server,
   // they would fail in the log after every scheduled check while the switch
@@ -1801,7 +1823,7 @@ api.put("/settings", (req, res) => {
       ? body.alert_email_enabled
       : getSettings().alert_email_enabled === "1";
   if (enabledAfter) {
-    const config = mailConfig(mailSettingsAfter(body));
+    const config = mailConfig(mail);
     if (typeof config === "string") return res.status(400).json({ error: config });
   }
   for (const key of SETTING_KEYS) {
@@ -1813,7 +1835,7 @@ api.put("/settings", (req, res) => {
       setSetting(key, value ? "1" : "0");
     } else if (rule.kind === "secret" && typeof value === "string" && value.trim()) {
       // Secrets are write-only: only overwrite on an explicit non-empty value.
-      setSetting(key, value.trim());
+      setSetting(key, rule.verbatim ? value : value.trim());
     }
   }
   rescheduleFromSettings();
@@ -1827,7 +1849,9 @@ api.post(
   "/settings/test-email",
   asyncHandler(async (req, res) => {
     if (noEmailAlerts(res)) return;
-    await sendTestEmail(mailSettingsAfter((req.body ?? {}) as Record<string, unknown>));
+    const mail = mailSettingsAfter((req.body ?? {}) as Record<string, unknown>);
+    if (typeof mail === "string") return res.status(400).json({ error: mail });
+    await sendTestEmail(mail);
     res.json({ ok: true });
   })
 );
