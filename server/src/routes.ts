@@ -19,10 +19,10 @@ import {
   createTopic,
   countNeverIndexedMatches,
   deleteBookmarkFolder,
-  deleteBookmarkImport,
   deleteCollection,
   deleteCollectionFile,
-  deleteUnmatchedBookmarkImports,
+  dismissBookmarkImport,
+  dismissUnmatchedBookmarkImports,
   dropUnheldArticles,
   removeCollectionPapers,
   removeTopicWithArticles,
@@ -1283,13 +1283,24 @@ function decodeReferenceFile(bytes: Buffer): string {
   }
 }
 
-// An entry's identity in its folder — see bookmark_imports. Its title is folded
-// to letters and digits so a re-export that changed only punctuation or case
-// is still the same entry.
-function importKey(e: FileEntry): string {
-  if (e.pmid) return `pmid:${e.pmid}`;
-  if (e.doi) return `doi:${e.doi}`;
-  return `ref:${e.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()}|${e.year}`;
+// An entry's identity in its folder — see bookmark_imports — and the keys it
+// would have had before its reference manager filled in a DOI or PMID, most
+// specific first.
+//
+// One with neither is known by its title, year, journal and first author's
+// surname: title and year alone made every "Editorial" of a year one entry.
+// Each is folded to letters and digits, so a re-export that changed only
+// punctuation or case is still the same entry.
+function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
+  const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  // "Polack, Fernando P." as RIS writes a name, "Polack FP" as PubMed does.
+  const surname = e.authors.split(";")[0].split(",")[0].trim().split(/\s+/)[0] ?? "";
+  const [key, ...formerKeys] = [
+    e.pmid && `pmid:${e.pmid}`,
+    e.doi && `doi:${e.doi}`,
+    `ref:${[e.title, e.year, e.journal, surname].map(fold).join("|")}`,
+  ].filter((k): k is string => !!k);
+  return { key, formerKeys };
 }
 
 // Bring a reference manager's export into a folder: read it, keep its journal
@@ -1330,7 +1341,7 @@ api.post("/bookmark-folders/:id/imports", uploadReferenceFile, (req, res) => {
   const articles = entries.filter((e) => e.article);
   const kept = articles.filter((e) => e.title || e.doi || e.pmid);
   const rows: BookmarkImportInsert[] = kept.map((e) => ({
-    key: importKey(e),
+    ...importKeys(e),
     title: e.title,
     authors: e.authors,
     journal: e.journal,
@@ -1381,7 +1392,7 @@ api.post("/bookmark-folders/:id/imports/run", (req, res) => {
 
 // The unmatched dialog's "Remove all". `removed` is how many went.
 api.delete("/bookmark-folders/:id/imports/unmatched", (req, res) => {
-  res.json({ removed: deleteUnmatchedBookmarkImports(Number(req.params.id)) });
+  res.json({ removed: dismissUnmatchedBookmarkImports(Number(req.params.id)) });
 });
 
 // The paper a PMID names, for the reader to compare with the entry before it is
@@ -1445,7 +1456,7 @@ api.post(
 );
 
 api.delete("/bookmark-imports/:entryId", (req, res) => {
-  deleteBookmarkImport(Number(req.params.entryId));
+  dismissBookmarkImport(Number(req.params.entryId));
   res.status(204).end();
 });
 

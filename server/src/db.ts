@@ -354,17 +354,21 @@ db.exec(`
   );
 
   -- Entries read from a reference file imported into a folder (see
-  -- reference-file.ts) that are not bookmarks yet. A row exists only while it
-  -- needs something: 'pending' until the import has looked it up on PubMed,
-  -- then deleted the moment it becomes a bookmark, or left 'unmatched' with the
-  -- reason, for the reader to give it a PMID or remove it. title/authors/
-  -- journal/year are only for showing it in that list; the paper's own record
-  -- comes from PubMed.
+  -- reference-file.ts). 'pending' until the import has looked it up on PubMed,
+  -- then 'settled' the moment it becomes a bookmark, or left 'unmatched' with
+  -- the reason, for the reader to give it a PMID or remove it — which settles
+  -- it too. title/authors/journal/year are only for showing it in that list;
+  -- the paper's own record comes from PubMed.
+  --
+  -- A settled row is listed nowhere and looked up never again. It is kept so
+  -- that importing the library again, as a reader does after adding to it,
+  -- leaves alone what they have already dealt with: an entry saved by hand
+  -- would otherwise come back unmatched, and one removed would come back.
   --
   -- key is the entry's identity within its folder — its PMID, else its DOI,
-  -- else its title and year — so importing the same file twice doesn't list an
-  -- unmatched entry twice. A new table, so CREATE ... IF NOT EXISTS is its
-  -- migration: an existing database gains it at the next start.
+  -- else its title, year, journal and first author — so importing the same
+  -- file twice doesn't list an entry twice. A new table, so CREATE ... IF NOT
+  -- EXISTS is its migration: an existing database gains it at the next start.
   CREATE TABLE IF NOT EXISTS bookmark_imports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     folder_id INTEGER NOT NULL,
@@ -375,7 +379,7 @@ db.exec(`
     year TEXT NOT NULL DEFAULT '',
     doi TEXT,                                  -- lowercased
     pmid TEXT,                                 -- as the file gave it; not yet a stored paper
-    status TEXT NOT NULL DEFAULT 'pending',    -- pending|unmatched
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending|unmatched|settled
     reason TEXT NOT NULL DEFAULT '',           -- no-identifier|not-in-pubmed|ambiguous-doi
     added_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (folder_id, key),
@@ -2252,6 +2256,12 @@ export function linkedPapersByPmids(pmids: string[]): LinkedPaperRow[] {
 
 export interface BookmarkImportInsert {
   key: string;
+  /**
+   * Keys the same entry would have had with less to go on, most specific first:
+   * its DOI's beside a PMID, its title's beside either. A reference manager
+   * fills those in over time, and the entry is still the one listed last time.
+   */
+  formerKeys: string[];
   title: string;
   authors: string;
   journal: string;
@@ -2268,17 +2278,29 @@ const IMPORT_SELECT = `SELECT id, folder_id, title, authors, journal, year, doi,
 //
 // Importing a file again meets the entries it listed last time. One still
 // unmatched with a DOI or PMID goes back to pending, because a paper PubMed had
-// no record of then may be indexed now; one with neither stays as it is. Either
-// way it stays one row.
+// no record of then may be indexed now; one with neither stays as it is, and a
+// settled one stays settled. Either way it stays one row.
 const insertImportStmt = db.prepare(`
   INSERT INTO bookmark_imports (folder_id, key, title, authors, journal, year, doi, pmid, status, reason)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT (folder_id, key) DO UPDATE SET status = 'pending', reason = ''
     WHERE status = 'unmatched' AND (pmid IS NOT NULL OR doi IS NOT NULL)
 `);
+const importKeyTakenStmt = db.prepare("SELECT 1 FROM bookmark_imports WHERE folder_id = ? AND key = ?");
+// The row an entry was listed under before it had the identifier it has now:
+// it takes the new key and identifiers, and keeps its status, so the insert
+// that follows meets it as the same entry.
+const rekeyImportStmt = db.prepare(
+  "UPDATE bookmark_imports SET key = ?, doi = ?, pmid = ? WHERE folder_id = ? AND key = ?"
+);
 
 export const addBookmarkImports = transaction((folderId: number, entries: BookmarkImportInsert[]): void => {
   for (const e of entries) {
+    if (!importKeyTakenStmt.get(folderId, e.key)) {
+      for (const former of e.formerKeys) {
+        if (Number(rekeyImportStmt.run(e.key, e.doi, e.pmid, folderId, former).changes) > 0) break;
+      }
+    }
     const lookable = e.pmid != null || e.doi != null;
     insertImportStmt.run(
       folderId,
@@ -2295,9 +2317,11 @@ export const addBookmarkImports = transaction((folderId: number, entries: Bookma
   }
 });
 
+// The entries still listed: pending or unmatched. Settled rows are the import's
+// memory, and nobody's to see.
 export function listBookmarkImports(folderId: number): BookmarkImport[] {
   return db
-    .prepare(`${IMPORT_SELECT} WHERE folder_id = ? ORDER BY id`)
+    .prepare(`${IMPORT_SELECT} WHERE folder_id = ? AND status <> 'settled' ORDER BY id`)
     .all(folderId) as unknown as BookmarkImport[];
 }
 
@@ -2307,32 +2331,45 @@ export function pendingBookmarkImports(folderId: number): BookmarkImport[] {
     .all(folderId) as unknown as BookmarkImport[];
 }
 
+/** A listed entry; undefined for one that is settled, as for one never there. */
 export function getBookmarkImport(id: number): BookmarkImport | undefined {
-  return db.prepare(`${IMPORT_SELECT} WHERE id = ?`).get(id) as BookmarkImport | undefined;
+  return db.prepare(`${IMPORT_SELECT} WHERE id = ? AND status <> 'settled'`).get(id) as
+    | BookmarkImport
+    | undefined;
 }
 
-export function deleteBookmarkImport(id: number): void {
-  db.prepare("DELETE FROM bookmark_imports WHERE id = ?").run(id);
+// Removing an entry from the list settles it, so the next import of the same
+// file leaves it out.
+export function dismissBookmarkImport(id: number): void {
+  db.prepare("UPDATE bookmark_imports SET status = 'settled', reason = '' WHERE id = ?").run(id);
 }
 
 // The unmatched dialog's "Remove all". Pending rows are left: they are still
 // waiting on a lookup, and are listed and removed apart from these.
-export function deleteUnmatchedBookmarkImports(folderId: number): number {
+export function dismissUnmatchedBookmarkImports(folderId: number): number {
   return Number(
-    db.prepare("DELETE FROM bookmark_imports WHERE folder_id = ? AND status = 'unmatched'").run(folderId)
-      .changes
+    db
+      .prepare(
+        "UPDATE bookmark_imports SET status = 'settled', reason = '' WHERE folder_id = ? AND status = 'unmatched'"
+      )
+      .run(folderId).changes
   );
 }
 
-const deleteImportStmt = db.prepare("DELETE FROM bookmark_imports WHERE id = ?");
+const settleImportStmt = db.prepare(
+  "UPDATE bookmark_imports SET status = 'settled', reason = '' WHERE id = ? AND status <> 'settled'"
+);
+// Only a row still pending: one the reader settled while the lookup ran stays
+// settled.
 const missImportStmt = db.prepare(
-  "UPDATE bookmark_imports SET status = 'unmatched', reason = ? WHERE id = ?"
+  "UPDATE bookmark_imports SET status = 'unmatched', reason = ? WHERE id = ? AND status = 'pending'"
 );
 
 /**
  * Settle one round of an import's lookup: the entries PubMed found become
- * bookmarks and their rows go, and the ones it didn't are marked unmatched with
- * the reason. Returns the PMIDs newly bookmarked, for warming their citations.
+ * bookmarks and their rows settled, and the ones it didn't are marked unmatched
+ * with the reason. Returns the PMIDs newly bookmarked, for warming their
+ * citations.
  *
  * The papers found must already be stored — the caller upserts them in the
  * same tick, with nothing awaited in between, so the sweep of papers nothing
@@ -2340,15 +2377,15 @@ const missImportStmt = db.prepare(
  *
  * A lookup works from the rows it read when it started, and a long one runs
  * for minutes, in which the reader may remove an entry or save it as a paper
- * they named. Such a row is gone by the time its round settles, and is left
- * settled: what the lookup found for it is not bookmarked. A paper stored for
+ * they named. Such a row is settled by the time its round does, and is left
+ * as it is: what the lookup found for it is not bookmarked. A paper stored for
  * it alone is then one nothing holds, which the next sweep takes.
  */
 export const settleBookmarkImports = transaction(
   (folderId: number, found: { id: number; pmid: string }[], missed: { id: number; reason: string }[]) => {
     const added: string[] = [];
     for (const f of found) {
-      if (Number(deleteImportStmt.run(f.id).changes) === 0) continue;
+      if (Number(settleImportStmt.run(f.id).changes) === 0) continue;
       if (Number(insertBookmarkStmt.run(folderId, f.pmid).changes) > 0) added.push(f.pmid);
     }
     for (const m of missed) missImportStmt.run(m.reason, m.id);

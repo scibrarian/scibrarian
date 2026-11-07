@@ -166,7 +166,7 @@ describe("importing a reference file into a folder", () => {
   });
 
   // Only the DOIs still unmatched go back to PubMed: the ones already saved are
-  // answered by the papers the library stores.
+  // settled, and left alone.
   it("lists an entry once however often the file is imported, and looks its DOI up again", async () => {
     const id = folder("Twice");
     await importFile(id, LIBRARY);
@@ -178,6 +178,67 @@ describe("importing a reference file into a folder", () => {
     expect(await entries(id)).toHaveLength(3);
     expect(pubmed.searched.sort()).toEqual(["10.1000/twice", "10.1000/unknown"]);
     expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
+  });
+
+  // A reader imports their library again after adding to it. What they dealt
+  // with last time — an entry saved by hand, one removed — stays dealt with.
+  it("leaves out of the next import what the reader saved or removed", async () => {
+    const id = folder("Imported again");
+    await importFile(id, LIBRARY);
+    await settled(id);
+    const byTitle = async (title: string) => (await entries(id)).find((e) => e.title === title)!.id;
+    await send(`/bookmark-imports/${await byTitle("Hand-entered long ago")}/pmid`, "POST", { pmid: GIVEN_BY_HAND });
+    await send(`/bookmark-imports/${await byTitle("Not indexed")}`, "DELETE");
+    pubmed.searched = [];
+
+    await importFile(id, LIBRARY);
+    await settled(id);
+    expect((await entries(id)).map((e) => e.title)).toEqual(["Filed twice"]);
+    expect(pubmed.searched).toEqual(["10.1000/twice"]);
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI, GIVEN_BY_HAND]);
+  });
+
+  // Its reference manager found the DOI since. The entry is the one listed
+  // last time, and is looked up by what it has now.
+  it("takes over an entry's row when it has gained a DOI", async () => {
+    const before = "TY  - JOUR\nTI  - Hand-entered long ago\nAU  - Roe, R\nT2  - Small Journal\nPY  - 1987\n";
+    const id = folder("Gained a DOI");
+    await importFile(id, `${before}ER  - `);
+    await settled(id);
+    expect((await entries(id)).map((e) => e.reason)).toEqual(["no-identifier"]);
+
+    await importFile(id, `${before}DO  - 10.1000/found\nER  - `);
+    await settled(id);
+    expect(await entries(id)).toEqual([]);
+    expect(bookmarked(id)).toEqual([FOUND_BY_DOI]);
+
+    // One the reader removed stays removed, DOI or not.
+    const removed = folder("Removed, then gained a DOI");
+    await importFile(removed, `${before}ER  - `);
+    await settled(removed);
+    await send(`/bookmark-imports/${(await entries(removed))[0].id}`, "DELETE");
+    await importFile(removed, `${before}DO  - 10.1000/found\nER  - `);
+    await settled(removed);
+    expect(await entries(removed)).toEqual([]);
+    expect(bookmarked(removed)).toEqual([]);
+  });
+
+  it("keeps apart entries with no identifier that share a title and year", async () => {
+    const editorial = (journal: string, author: string) =>
+      `TY  - JOUR\nTI  - Editorial\nAU  - ${author}\nT2  - ${journal}\nPY  - 2020\nER  - `;
+    const file = [
+      editorial("The Lancet", "Horton, Richard"),
+      editorial("BMJ", "Godlee, Fiona"),
+      editorial("BMJ", "Abbasi, Kamran"),
+    ].join("\n");
+    const id = folder("Editorials");
+    await importFile(id, file);
+    await settled(id);
+    expect(await entries(id)).toHaveLength(3);
+    // The same three, exported again.
+    await importFile(id, file);
+    await settled(id);
+    expect(await entries(id)).toHaveLength(3);
   });
 
   // A PMID that names nothing — mistyped, or withdrawn since — is no reason to
