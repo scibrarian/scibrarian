@@ -84,9 +84,9 @@ const folder = (name: string) => db.createBookmarkFolder(name).id;
 const bookmarked = (id: number) =>
   db.listBookmarks().filter((b) => b.folder_id === id).map((b) => b.pmid).sort();
 
-async function importFile(folderId: number, text: string) {
+async function importFile(folderId: number, text: string | Buffer) {
   const form = new FormData();
-  form.append("file", new Blob([text]), "library.ris");
+  form.append("file", new Blob([typeof text === "string" ? text : new Uint8Array(text)]), "library.ris");
   const res = await fetch(`${base}/api/bookmark-folders/${folderId}/imports`, {
     method: "POST",
     headers: HEADERS,
@@ -260,6 +260,20 @@ describe("importing a reference file into a folder", () => {
     expect((await entries(id)).map(({ title, reason }) => ({ title, reason }))).toEqual([
       { title: "Neither found", reason: "not-in-pubmed" },
     ]);
+  });
+
+  it("reads a file saved as UTF-16, in either byte order", async () => {
+    const text = "TY  - JOUR\r\nTI  - Hand-entered — long ago\r\nPY  - 1987\r\nER  - \r\n";
+    const le = Buffer.from(text, "utf16le");
+    for (const [name, bytes] of [
+      ["little-endian", Buffer.concat([Buffer.from([0xff, 0xfe]), le])],
+      ["big-endian", Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(le).swap16()])],
+    ] as const) {
+      const id = folder(`UTF-16, ${name}`);
+      expect((await importFile(id, bytes)).status).toBe(201);
+      await settled(id);
+      expect((await entries(id)).map((e) => e.title)).toEqual(["Hand-entered — long ago"]);
+    }
   });
 
   it("refuses a file that is neither RIS nor PubMed's format", async () => {

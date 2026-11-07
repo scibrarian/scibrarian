@@ -1275,7 +1275,14 @@ function uploadReferenceFile(req: Request, res: Response, next: NextFunction): v
 // UTF-8, which every current exporter writes, and Windows-1252 for a file that
 // isn't — EndNote's "ANSI" export, among others. Only titles and names are at
 // stake: the DOIs and PMIDs the lookup reads are ASCII either way.
+//
+// Except in UTF-16, which Windows offers as "Unicode" and EndNote among others
+// can save: every other byte is a NUL, and read as either of the above no line
+// is a tag, so the file was refused as a format this can't read. It is known by
+// its byte-order mark, which the decoder drops.
 function decodeReferenceFile(bytes: Buffer): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
