@@ -236,18 +236,44 @@ describe("importing a reference file into a folder", () => {
     expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
   });
 
-  it("holds off a library reset until it has finished", async () => {
+  // Reset deletes the folder and its entries with everything else, so there is
+  // nothing for the lookup to finish, and a long one held the button off for
+  // as long as it ran.
+  it("is stopped by a library reset, and stores nothing after", async () => {
     const id = folder("Mid-reset");
     let release!: () => void;
     pubmed.hold = new Promise<void>((resolve) => (release = resolve));
     await importFile(id, LIBRARY);
     await vi.waitFor(() => expect(pubmed.searched.length).toBeGreaterThan(0));
 
-    const reset = await send("/data/reset", "POST");
-    expect(reset.status).toBe(409);
-    expect((await reset.json()).error).toMatch(/still importing references/);
+    expect((await send("/data/reset", "POST")).status).toBe(200);
     release();
-    await settled(id);
+    await vi.waitFor(async () => expect((await status(id)).state).toBe("idle"));
+    // Let the stopped run reach the point where it would have written.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
+  });
+
+  // The lookup took its rows when it started; the reader can settle one by
+  // hand while it runs, and that is the entry's last word.
+  it("leaves an entry removed or saved by hand while it ran", async () => {
+    const id = folder("Settled by hand");
+    let release!: () => void;
+    pubmed.hold = new Promise<void>((resolve) => (release = resolve));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(pubmed.searched.length).toBeGreaterThan(0));
+
+    const listed = await entries(id);
+    const byTitle = (title: string) => listed.find((e) => e.title === title)!.id;
+    expect((await send(`/bookmark-imports/${byTitle("Found by its PMID")}`, "DELETE")).status).toBe(204);
+    const saved = await send(`/bookmark-imports/${byTitle("Found by its DOI")}/pmid`, "POST", {
+      pmid: GIVEN_BY_HAND,
+    });
+    expect(saved.status).toBe(200);
+
+    release();
+    expect(await settled(id)).toMatchObject({ state: "done" });
+    expect(bookmarked(id)).toEqual([GIVEN_BY_HAND]);
   });
 });
 

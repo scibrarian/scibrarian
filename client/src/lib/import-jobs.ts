@@ -40,7 +40,11 @@ export type ImportJobs = {
 
 export function createImportJobs(
   getStatus: (collectionId: number) => Promise<ImportStatus>,
-  onSettled: (collectionId: number) => void
+  onSettled: (collectionId: number) => void,
+  // A running job matched more than it had at the last answer. For a folder's
+  // lookup, which saves each round's papers as it goes and can run for most of
+  // an hour; a collection's scan is refreshed when it ends, and passes none.
+  onMatched?: (collectionId: number) => void
 ): ImportJobs {
   const known = new Map<number, ImportWatch>();
   const polls = new Map<number, ReturnType<typeof setInterval>>();
@@ -72,12 +76,15 @@ export function createImportJobs(
       try {
         const s = await getStatus(id);
         failures = 0;
+        const before = known.get(id);
         record(id, s);
         // Idle as well as done or failed: a job the server has dropped — it
         // restarted, or the collection was deleted — is over too.
         if (s.state !== "running") {
           stopPolling(id);
           onSettled(id);
+        } else if (onMatched && before && "matched" in before && s.matched > before.matched) {
+          onMatched(id);
         }
       } catch {
         // A transient failure must not freeze the progress bar: keep polling

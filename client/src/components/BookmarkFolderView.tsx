@@ -109,8 +109,8 @@ export function BookmarkFolderView({
   }, [folderId, importJobs]);
 
   // A lookup this view was watching has ended. App refreshes the folder's
-  // papers when it does (see handleFolderImportSettled); what is left here is
-  // the list of entries it settled, and its failure if it failed.
+  // papers when it does, and after each round (see folderImportJobs); what is
+  // left here is the list of entries it settled, and its failure if it failed.
   //
   // Before paint, for CollectionView's reason: the render that first sees the
   // lookup over still holds its entries as pending, and with nothing running

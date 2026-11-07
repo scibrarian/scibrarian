@@ -104,6 +104,7 @@ import { addLinksToFolder, toPaper } from "./bookmark-links.js";
 import {
   anyFolderImportRunning,
   cancelFolderImport,
+  cancelFolderImports,
   clearFolderImportJobs,
   getFolderImportStatus,
   isFolderImportRunning,
@@ -2217,23 +2218,25 @@ api.post("/workspaces/switch", (req, res) => {
 // honest answer is to refuse and let the owner press the button again once it
 // finishes.
 //
+// Except a folder's reference-file lookup, which is stopped instead. It can run
+// for most of an hour, and the reset is deleting everything it works on — the
+// folder, its entries, their bookmarks — so there is nothing to wait for. It
+// is stopped in the tick the reset runs in, under the lock, so a reset the lock
+// refuses stops nothing; and each round's writes check that its folder still
+// exists, so one between awaits when the reset lands writes nothing after it.
+//
 // Transfers are the third, and the one easiest to forget, because on a Pro
 // instance the writer is not this instance at all. A paired node pushing up and
 // a master being pulled from both land in storePulledFile, which is mounted
 // outside this router, is not a job in `jobs`, and takes no lock — so the poll
 // lock below says nothing about it. The refusals are ordered cheapest first and
-// all three ahead of the lock, so a refused reset never takes one.
+// both ahead of the lock, so a refused reset never takes one.
 api.post(
   "/data/reset",
   asyncHandler(async (req, res) => {
     if (anyImportRunning()) {
       return res.status(409).json({
         error: "A collection is still importing files. Wait for it to finish, then try again.",
-      });
-    }
-    if (anyFolderImportRunning()) {
-      return res.status(409).json({
-        error: "A folder is still importing references. Wait for it to finish, then try again.",
       });
     }
     // The same answer for the same reason, to a writer nobody here can see. A
@@ -2250,7 +2253,10 @@ api.post(
         error: "Files are being copied into this library right now. Wait for it to finish, then try again.",
       });
     }
-    const stats = await withPollLock(async () => resetLibrary());
+    const stats = await withPollLock(async () => {
+      cancelFolderImports();
+      return resetLibrary();
+    });
     if (stats === null) {
       return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
     }

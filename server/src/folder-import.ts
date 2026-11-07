@@ -61,6 +61,14 @@ export function anyFolderImportRunning(): boolean {
   return false;
 }
 
+// Stop every lookup, for a library reset, which calls this in the tick it
+// deletes everything: the folders go with the rest, and a lookup has nothing
+// left to finish. Each stops at the next check it reaches, as one does for a
+// deleted folder, and its folder being gone would stop its writes in any case.
+export function cancelFolderImports(): void {
+  for (const job of jobs.values()) cancelled.add(job);
+}
+
 // Forget every finished job, after a reset. See clearImportJobs.
 export function clearFolderImportJobs(): void {
   jobs.clear();

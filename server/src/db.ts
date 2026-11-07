@@ -2337,13 +2337,19 @@ const missImportStmt = db.prepare(
  * The papers found must already be stored — the caller upserts them in the
  * same tick, with nothing awaited in between, so the sweep of papers nothing
  * holds can't take one before its bookmark exists.
+ *
+ * A lookup works from the rows it read when it started, and a long one runs
+ * for minutes, in which the reader may remove an entry or save it as a paper
+ * they named. Such a row is gone by the time its round settles, and is left
+ * settled: what the lookup found for it is not bookmarked. A paper stored for
+ * it alone is then one nothing holds, which the next sweep takes.
  */
 export const settleBookmarkImports = transaction(
   (folderId: number, found: { id: number; pmid: string }[], missed: { id: number; reason: string }[]) => {
     const added: string[] = [];
     for (const f of found) {
+      if (Number(deleteImportStmt.run(f.id).changes) === 0) continue;
       if (Number(insertBookmarkStmt.run(folderId, f.pmid).changes) > 0) added.push(f.pmid);
-      deleteImportStmt.run(f.id);
     }
     for (const m of missed) missImportStmt.run(m.reason, m.id);
     return added;
