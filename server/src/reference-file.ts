@@ -35,7 +35,14 @@ export interface ReferenceFile {
 
 /** The file read into entries, or null when it is neither RIS nor MEDLINE. */
 export function parseReferenceFile(text: string): ReferenceFile | null {
-  const lines = text.replace(/^﻿/, "").split(/\r\n?|\n/);
+  // U+2028 and U+2029 are line breaks to Unicode but not to these formats, and
+  // they turn up inside titles pasted from a PDF or a web page. A regex's "."
+  // doesn't match them, so a tag line holding one read as no tag line at all:
+  // the title was lost, and run into the field before it — TY, as often as not.
+  const lines = text
+    .replace(/^﻿/, "")
+    .replace(/[\u2028\u2029]/g, " ")
+    .split(/\r\n?|\n/);
   if (lines.some((l) => RIS_TAG_RE.exec(l)?.[1] === "TY")) {
     return { format: "ris", entries: risRecords(lines).map(risEntry) };
   }
@@ -115,11 +122,12 @@ function risRecords(lines: string[]): Fields[] {
 // whose type is missing, generic (GEN, which EndNote writes for anything it
 // wasn't told about) or unfamiliar is still looked up. Conference papers and
 // abstracts stay too: journals publish both, and PubMed indexes plenty of them.
+// SER is RefMan's "Serial (Book, Monograph)": a book in a series, not a journal.
 const NOT_ARTICLES = new Set([
   "ADVS", "AGGR", "ART", "BILL", "BLOG", "BOOK", "CASE", "CHAP", "CHART", "CLSWK", "COMP",
   "CTLG", "DATA", "DBASE", "DICT", "EBOOK", "ECHAP", "EDBOOK", "ELEC", "ENCYC", "EQUA",
   "FIGURE", "GOVDOC", "GRANT", "HEAR", "ICOMM", "LEGAL", "MAP", "MGZN", "MPCT", "MULTI",
-  "MUSIC", "NEWS", "PAMP", "PAT", "PCOMM", "RPRT", "SLIDE", "SOUND", "STAND", "STAT",
+  "MUSIC", "NEWS", "PAMP", "PAT", "PCOMM", "RPRT", "SER", "SLIDE", "SOUND", "STAND", "STAT",
   "THES", "VIDEO", "WEB",
 ]);
 
@@ -139,12 +147,20 @@ const notePmid = (note: string): string | null =>
 // The database an accession number belongs to, when the record says.
 const PUBMED_DB_RE = /pubmed|medline|\bnlm\b/i;
 
+// The inline markup Crossref keeps in a title — "<i>Schistosoma mansoni</i>" —
+// and publishers' own exports often do too. Named tags only, so a title with
+// "p < 0.05" in it keeps its "<".
+const INLINE_MARKUP_RE = /<\/?(?:i|b|em|strong|sub|sup|scp|u|span)(?:\s[^>]*)?>/gi;
+
+// PY is the year, and DA the full date. Y1 is the date tag RIS deprecated in
+// their favour, read last, so a file that still writes it beside DA is dated
+// by DA.
 function risEntry(fields: Fields): FileEntry {
   return {
-    title: first(fields, "TI", "T1", "CT", "BT"),
+    title: first(fields, "TI", "T1", "CT", "BT").replace(INLINE_MARKUP_RE, ""),
     authors: authorLine(all(fields, "AU", "A1")),
     journal: first(fields, "T2", "JO", "JF", "JA", "J2", "J1"),
-    year: yearIn(fields, "PY", "Y1", "DA"),
+    year: yearIn(fields, "PY", "DA", "Y1"),
     doi: risDoi(fields),
     pmid: risPmid(fields),
     article: !NOT_ARTICLES.has(first(fields, "TY").toUpperCase()),

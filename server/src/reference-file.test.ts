@@ -95,6 +95,31 @@ describe("RIS", () => {
     expect(pmid("N1  - <div><p>PMID: 33301246</p></div>\n")).toBe("33301246");
   });
 
+  // From Zotero's RIS test files, which carry the cases its users have hit.
+  it("reads a title with a Unicode line separator in it, and the type before it", () => {
+    const [entry] = parseReferenceFile(
+      "TY  - BOOK\nT1  - From Basic to Applied Research:\u2028Potential Contributions\nPY  - 2014\nER  - "
+    )!.entries;
+    expect(entry).toMatchObject({
+      title: "From Basic to Applied Research: Potential Contributions",
+      year: "2014",
+      article: false,
+    });
+  });
+
+  it("dates a record by DA over the deprecated Y1", () => {
+    const text = "TY  - JOUR\nT1  - Deprecated tag test\nY1  - 1900/01/01\nDA  - 1950/01/01\nER  - ";
+    expect(parseReferenceFile(text)!.entries[0].year).toBe("1950");
+  });
+
+  it("drops the inline markup a title carries, and keeps a bare angle bracket", () => {
+    const title = (ti: string) => parseReferenceFile(`TY  - JOUR\nTI  - ${ti}\nER  - `)!.entries[0].title;
+    expect(title("Maintenance of <i>Schistosoma mansoni</i> in the CO<sub>2</sub> era")).toBe(
+      "Maintenance of Schistosoma mansoni in the CO2 era"
+    );
+    expect(title("Survival when p < 0.05 and n > 10")).toBe("Survival when p < 0.05 and n > 10");
+  });
+
   it("takes the year from the first date that has one", () => {
     const [entry] = parseReferenceFile(`TY  - JOUR\nTI  - Forthcoming\nPY  - In press\nDA  - 2024/02/01\nER  - `)!
       .entries;
@@ -104,7 +129,7 @@ describe("RIS", () => {
   it("marks books, chapters, reports and web pages as not articles, and keeps the rest", () => {
     const typed = (ty: string) => `TY  - ${ty}\nTI  - Something\nER  - `;
     const article = (ty: string) => parseReferenceFile(typed(ty))!.entries[0].article;
-    for (const ty of ["BOOK", "CHAP", "RPRT", "THES", "ELEC", "WEB", "NEWS"]) expect(article(ty)).toBe(false);
+    for (const ty of ["BOOK", "CHAP", "RPRT", "THES", "ELEC", "WEB", "NEWS", "SER"]) expect(article(ty)).toBe(false);
     // Generic and conference records may well be journal literature.
     for (const ty of ["JOUR", "EJOUR", "ABST", "INPR", "GEN", "CONF", "CPAPER", "XYZ"]) {
       expect(article(ty)).toBe(true);
