@@ -175,9 +175,9 @@ export async function sendPollAlert(polls: TopicPoll[]): Promise<void> {
       console.warn(`[alerts] email alerts are on but can't be sent: ${config}`);
       return;
     }
-    // Only the papers a topic will list. A topic that read its history is
+    // Only the papers a topic will list. A full check or a back catalog is
     // summed up instead, and its thousands of rows needn't be read for that.
-    const listable = polls.filter((p) => p.history === null).flatMap((p) => p.addedPmids);
+    const listable = polls.flatMap(newsOf);
     const articles = new Map(alertArticles([...new Set(listable)]).map((a) => [a.pmid, a]));
     const message = composeAlert(polls, articles);
     if (!message) return;
@@ -206,8 +206,11 @@ type Section =
       more: number;
       // Found by this topic, and listed under an earlier one.
       above: number;
+      // Added from the back catalog of journals the topic hadn't searched
+      // before, and counted after the list rather than in it.
+      backCatalog: { added: number; journals: string[] } | null;
     }
-  | { kind: "history"; topicName: string; added: number; history: "full" | "partial" };
+  | { kind: "history"; topicName: string; added: number };
 
 export interface AlertMessage {
   subject: string;
@@ -217,6 +220,14 @@ export interface AlertMessage {
 
 function plural(n: number, noun: string): string {
   return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+// What a poll added that is news: none of a full check of a topic's history,
+// and none of a journal's back catalog.
+function newsOf(p: TopicPoll): string[] {
+  if (p.history) return [];
+  const old = p.backCatalog?.pmids;
+  return old ? p.addedPmids.filter((pmid) => !old.has(pmid)) : p.addedPmids;
 }
 
 // Newest first, the order the feed reads in. pub_date sorts as a string; the
@@ -237,11 +248,34 @@ function paperUrl(a: AlertArticle): string {
 }
 
 function historyLine(s: Extract<Section, { kind: "history" }>): string {
-  return s.history === "full"
-    ? `${plural(s.added, "paper")} from a full check of its history — its first, or the ` +
-        "first since its search changed — so they aren't listed here."
-    : `${plural(s.added, "new paper")}, including the back catalogue of journals it hadn't ` +
-        "searched before, so they aren't listed here.";
+  return (
+    `${plural(s.added, "paper")} from a full check of its history — its first, or the ` +
+    "first since its search changed — so they aren't listed here."
+  );
+}
+
+// A topic whose only additions were a back catalog has no news to count.
+function listedHeading(s: Extract<Section, { kind: "listed" }>): string {
+  return s.added > 0 ? `${s.topicName} — ${plural(s.added, "new paper")}` : s.topicName;
+}
+
+// Up to three journals by name. A topic can be given a dozen in one edit, and
+// a sentence naming all of them is not one anybody reads.
+function journalList(names: string[]): string {
+  const shown = names.length > 3 ? [...names.slice(0, 2), `${names.length - 2} others`] : names;
+  return new Intl.ListFormat("en-US", { type: "conjunction" }).format(shown);
+}
+
+function backCatalogLine(
+  s: Extract<Section, { kind: "listed" }>,
+  b: { added: number; journals: string[] }
+): string {
+  const from =
+    `from the back catalog${b.journals.length === 1 ? "" : "s"} of ` +
+    `${journalList(b.journals)}.`;
+  return s.added > 0
+    ? `Plus ${b.added.toLocaleString("en-US")} ${from}`
+    : `${plural(b.added, "paper")} ${from}`;
 }
 
 function trailingLines(s: Extract<Section, { kind: "listed" }>): string[] {
@@ -254,6 +288,7 @@ function trailingLines(s: Extract<Section, { kind: "listed" }>): string[] {
         : `Plus ${s.above.toLocaleString("en-US")} listed above, under another topic.`
     );
   }
+  if (s.backCatalog) lines.push(backCatalogLine(s, s.backCatalog));
   return lines;
 }
 
@@ -285,13 +320,15 @@ export function composeAlert(
   const sections: Section[] = [];
   for (const p of polls) {
     const topicName = p.result.topicName;
-    const added = p.addedPmids.length;
-    if (added === 0) continue;
+    if (p.addedPmids.length === 0) continue;
     if (p.history) {
-      sections.push({ kind: "history", topicName, added, history: p.history });
+      sections.push({ kind: "history", topicName, added: p.addedPmids.length });
       continue;
     }
-    const unlisted = p.addedPmids.filter((pmid) => !listed.has(pmid));
+    const news = newsOf(p);
+    const added = news.length;
+    const old = p.addedPmids.length - added;
+    const unlisted = news.filter((pmid) => !listed.has(pmid));
     const shown = unlisted
       .map((pmid) => articles.get(pmid))
       .filter((a): a is AlertArticle => a !== undefined)
@@ -308,6 +345,8 @@ export function composeAlert(
       })),
       more: unlisted.length - shown.length,
       above: added - unlisted.length,
+      backCatalog:
+        p.backCatalog && old > 0 ? { added: old, journals: p.backCatalog.journals } : null,
     });
   }
 
@@ -324,12 +363,23 @@ export function composeAlert(
   // The count is of the papers that are news. A topic that read its history
   // is named instead of counted: its first check can add thousands, and a
   // subject reading "4,012 new papers" for four is the one figure in the email
-  // that is wrong.
-  const fresh = new Set(polls.filter((p) => !p.history).flatMap((p) => p.addedPmids));
+  // that is wrong. A back catalog is the same, a journal at a time, and it is
+  // the journals that are counted: their names are too long for a subject.
+  const fresh = new Set(polls.flatMap(newsOf));
   const inFull = sections.filter((s) => s.kind === "history").length;
+  const backCatalogs = new Set(
+    sections.flatMap((s) => (s.kind === "listed" && s.backCatalog ? s.backCatalog.journals : []))
+  );
   const subjectParts: string[] = [];
   if (fresh.size > 0) subjectParts.push(plural(fresh.size, "new paper"));
   if (inFull > 0) subjectParts.push(`${plural(inFull, "topic")} checked in full`);
+  if (backCatalogs.size > 0) {
+    subjectParts.push(
+      backCatalogs.size === 1
+        ? "back catalog of 1 journal"
+        : `back catalogs of ${plural(backCatalogs.size, "journal")}`
+    );
+  }
   if (failed.length > 0) subjectParts.push(`${plural(failed.length, "topic")} couldn't be checked`);
   if (subjectParts.length === 0) {
     subjectParts.push(`${plural(capped.length, "topic")} hit PubMed's limit`);
@@ -349,7 +399,9 @@ function renderText(sections: Section[], problems: string[]): string {
       blocks.push(`${s.topicName}\n${historyLine(s)}`);
       continue;
     }
-    const lines = [`${s.topicName} — ${plural(s.added, "new paper")}`, ""];
+    // A heading with nothing listed under it reads on into its line, as a
+    // full check's does.
+    const lines = s.added > 0 ? [listedHeading(s), ""] : [listedHeading(s)];
     for (const { article, alsoIn } of s.papers) {
       lines.push(`- ${article.title}`);
       const meta = metaLine(article);
@@ -390,7 +442,7 @@ function renderHtml(sections: Section[], problems: string[]): string {
       out.push(`<p ${P_MUTED}>${escapeHtml(historyLine(s))}</p>`);
       continue;
     }
-    out.push(`<h2 ${H2}>${escapeHtml(`${s.topicName} — ${plural(s.added, "new paper")}`)}</h2>`);
+    out.push(`<h2 ${H2}>${escapeHtml(listedHeading(s))}</h2>`);
     if (s.papers.length > 0) {
       out.push('<ul style="padding-left:18px;margin:0 0 8px">');
       for (const { article, alsoIn } of s.papers) {

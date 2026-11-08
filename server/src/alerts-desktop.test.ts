@@ -65,6 +65,7 @@ describe("email alerts in the desktop app", () => {
         result: { topicId: 1, topicName: "Sleep", found: 0, added: 0, error: "NCBI unreachable" },
         addedPmids: [],
         history: null,
+        backCatalog: null,
       },
     ]);
     expect(sent).toEqual([]);

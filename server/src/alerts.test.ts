@@ -87,6 +87,19 @@ async function polledTopic(name: string, heading: string) {
   return t;
 }
 
+const LANCET = { nlmId: "2985213R", name: "The Lancet", medlineIndexed: true };
+const BMJ = { nlmId: "8900488", name: "BMJ", medlineIndexed: true };
+
+// A topic past its first poll of BMJ, just given the Lancet too: its next poll
+// lists the Lancet's whole history and BMJ's news. The stand-in search tells
+// the two apart by the NLM id in the term.
+async function topicGivenTheLancet(name: string, heading: string) {
+  const t = db.createTopic(name, `"${heading}"[MeSH]`, [], { allPubmed: false, journals: [BMJ] });
+  await poller.pollTopic(t.id);
+  db.setTopicScope(t.id, { allPubmed: false, journals: [BMJ, LANCET] });
+  return t;
+}
+
 function configure(overrides: Record<string, string> = {}) {
   const values: Record<string, string> = {
     alert_email_enabled: "1",
@@ -186,6 +199,74 @@ describe("what a scheduled check sends", () => {
     expect(subject).toBe("Scibrarian: 1 topic checked in full");
     expect(text).toContain("2 papers from a full check of its history");
     expect(text).not.toContain("Title 40000001");
+  });
+
+  // The journal's history isn't news, but the rest of the topic's is: a whole
+  // topic summed up for one new journal was a day's papers in no alert at all.
+  it("lists a topic's news and counts what a journal new to it brought", async () => {
+    await topicGivenTheLancet("Sleep", "Sleep");
+    ncbi.answers.set(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
+    ncbi.answers.set(BMJ.nlmId, ["40000001", "40000002"]);
+
+    await poller.runPoll("scheduled");
+
+    const { subject, text, html } = mail.sent[0];
+    expect(subject).toBe("Scibrarian: 2 new papers, back catalog of 1 journal");
+    expect(text).toContain("Sleep — 2 new papers");
+    expect(text).toContain("Title 40000001");
+    expect(text).not.toContain("Title 30000001");
+    expect(text).toContain("Plus 3 from the back catalog of The Lancet.");
+    expect(html).toContain("Plus 3 from the back catalog of The Lancet.");
+  });
+
+  it("mentions only the back catalog when there's no news to go with it", async () => {
+    await topicGivenTheLancet("Sleep", "Sleep");
+    ncbi.answers.set(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
+
+    await poller.runPoll("scheduled");
+
+    const { subject, text } = mail.sent[0];
+    // Not "checked in full": only the one journal was.
+    expect(subject).toBe("Scibrarian: back catalog of 1 journal");
+    expect(text).toContain("Sleep\n3 papers from the back catalog of The Lancet.");
+    expect(text).not.toContain("new paper");
+  });
+
+  // Both searches can find one paper where a journal is searched by name.
+  it("counts a paper the topic's news also found as news", async () => {
+    await topicGivenTheLancet("Sleep", "Sleep");
+    ncbi.answers.set(LANCET.nlmId, ["30000001", "40000001"]);
+    ncbi.answers.set(BMJ.nlmId, ["40000001"]);
+
+    await poller.runPoll("scheduled");
+
+    const { subject, text } = mail.sent[0];
+    expect(subject).toBe("Scibrarian: 1 new paper, back catalog of 1 journal");
+    expect(text).toContain("Title 40000001");
+    expect(text).toContain("Plus 1 from the back catalog of The Lancet.");
+  });
+
+  it("names up to three journals whose back catalogs it counts", async () => {
+    const { composeAlert } = await import("./alerts.js");
+    const poll = (journals: string[]) => ({
+      result: { topicId: 1, topicName: "Sleep", found: 2, added: 2 },
+      addedPmids: ["30000001", "30000002"],
+      history: null,
+      backCatalog: { journals, pmids: new Set(["30000001", "30000002"]) },
+    });
+    const say = (journals: string[]) => composeAlert([poll(journals)], new Map())!.text;
+    expect(say(["BMJ", "The Lancet"])).toContain(
+      "2 papers from the back catalogs of BMJ and The Lancet."
+    );
+    expect(say(["BMJ", "Gut", "The Lancet"])).toContain(
+      "2 papers from the back catalogs of BMJ, Gut, and The Lancet."
+    );
+    expect(say(["BMJ", "Gut", "JAMA", "The Lancet"])).toContain(
+      "2 papers from the back catalogs of BMJ, Gut, and 2 others."
+    );
+    expect(composeAlert([poll(["BMJ", "Gut"])], new Map())!.subject).toBe(
+      "Scibrarian: back catalogs of 2 journals"
+    );
   });
 
   it("reports a topic that couldn't be checked, with nothing new to go with it", async () => {

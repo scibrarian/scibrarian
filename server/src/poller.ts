@@ -78,10 +78,13 @@ export function nothingToPoll(): string | null {
 export interface TopicPoll {
   result: PollResult;
   addedPmids: string[];
-  // "full" is the topic's first poll, or its first since a change of scope;
-  // "partial" is a topic already polled that has journals it never searched.
-  // Either way some of what it added is back catalogue rather than new.
-  history: "full" | "partial" | null;
+  // The topic's first poll, or its first since a change of scope: everything
+  // it added is history rather than news.
+  history: "full" | null;
+  // A topic already polled that has journals it never searched lists their
+  // whole history first: those journals' names, and the papers that search
+  // matched. Whatever else it added is news, as on any incremental poll.
+  backCatalog: { journals: string[]; pmids: Set<string> } | null;
 }
 
 export async function pollTopic(id: number): Promise<PollResult> {
@@ -95,10 +98,11 @@ async function pollTopicTracked(id: number): Promise<TopicPoll> {
       result: { topicId: id, topicName: `#${id}`, found: 0, added: 0, error: "Topic not found" },
       addedPmids: [],
       history: null,
+      backCatalog: null,
     };
   }
   const result: PollResult = { topicId: id, topicName: topic.name, found: 0, added: 0 };
-  const poll: TopicPoll = { result, addedPmids: [], history: null };
+  const poll: TopicPoll = { result, addedPmids: [], history: null, backCatalog: null };
   try {
     if (!canPoll(topic)) {
       result.error = NO_JOURNALS_CHOSEN;
@@ -125,21 +129,22 @@ async function pollTopicTracked(id: number): Promise<TopicPoll> {
     //
     // Searching all of PubMed is one search from the same watermark, which a
     // change of scope clears: a poll vouches only for the scope it ran under.
-    const searches: { journals: typeof journals; mhdaSince?: string }[] = [];
+    const searches: { journals: typeof journals; mhdaSince?: string; backCatalog?: true }[] = [];
     if (allPubmed) {
       searches.push({ journals: [], mhdaSince: since ? mhdaWindowStart(since) : undefined });
     } else {
       const scanned = scannedJournalIds(id);
       const unscanned = since ? journals.filter((j) => !scanned.has(j.id)) : journals;
       const caughtUp = journals.filter((j) => !unscanned.includes(j));
-      if (unscanned.length > 0) searches.push({ journals: unscanned });
+      if (unscanned.length > 0) {
+        searches.push(since ? { journals: unscanned, backCatalog: true } : { journals: unscanned });
+      }
       if (caughtUp.length > 0) {
         searches.push({
           journals: caughtUp,
           mhdaSince: since ? mhdaWindowStart(since) : undefined,
         });
       }
-      if (since && unscanned.length > 0) poll.history = "partial";
     }
     if (!since) poll.history = "full";
 
@@ -153,11 +158,24 @@ async function pollTopicTracked(id: number): Promise<TopicPoll> {
     // searches both return is one paper, not a shortfall.
     let skipped = 0;
     const matched = new Set<string>();
+    // Matched by a search other than the back catalog's. The two cover
+    // different journals, but a journal without an NLM id is searched by name,
+    // and should one paper turn up in both, it is news.
+    const recent = new Set<string>();
     for (const search of searches) {
       const found = await searchWithTotal(buildTerm(topic.term, search.journals), search.mhdaSince);
       skipped += Math.max(0, found.total - found.ids.length);
       for (const pmid of found.ids) matched.add(pmid);
+      // Recorded before anything is fetched, so a poll that fails partway can
+      // still tell what it stored from the back catalog apart from the news.
+      if (search.backCatalog) {
+        const names = search.journals.map((j) => j.name);
+        poll.backCatalog = { journals: names, pmids: new Set(found.ids) };
+      } else {
+        for (const pmid of found.ids) recent.add(pmid);
+      }
     }
+    for (const pmid of recent) poll.backCatalog?.pmids.delete(pmid);
     const pmids = [...matched];
     result.found = pmids.length;
 
