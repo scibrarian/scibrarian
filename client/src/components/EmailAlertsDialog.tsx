@@ -70,12 +70,12 @@ export function EmailAlertsDialog({
 
   // The saved password is only sent to the server and username it was saved
   // with — the server refuses to send it anywhere else — so changing either
-  // means typing the password for the new one.
+  // means typing the password for the new one. A username always needs one.
   const passwordKept =
     settings.has_smtp_pass &&
     draft.smtp_host.trim().toLowerCase() === settings.smtp_host.toLowerCase() &&
     draft.smtp_user.trim() === settings.smtp_user;
-  const passwordNeeded = settings.has_smtp_pass && !passwordKept && draft.smtp_user.trim() !== "";
+  const passwordNeeded = !passwordKept && draft.smtp_user.trim() !== "";
 
   async function sendTest() {
     const mine = session.current;

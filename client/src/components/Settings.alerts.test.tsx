@@ -191,6 +191,17 @@ describe("the dialog", () => {
     expect(dialog.queryByText("set")).toBeNull();
   });
 
+  it("asks for a password once there is a username", async () => {
+    renderSettings();
+    const dialog = await openDialog();
+    const password = dialog.getByLabelText("Password") as HTMLInputElement;
+    expect(password.placeholder).toBe("optional");
+    fireEvent.change(dialog.getByRole("textbox", { name: "Username" }), {
+      target: { value: "sender@example.org" },
+    });
+    expect(password.placeholder).toBe("required");
+  });
+
   it("sends the password as typed, spaces and all", async () => {
     renderSettings();
     const dialog = await openDialog();

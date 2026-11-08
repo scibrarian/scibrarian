@@ -41,8 +41,12 @@ interface MailConfig {
 // Lenient on purpose: the mail server is the judge of an address, and this is
 // only here to catch the wrong thing pasted into the field. No whitespace,
 // which also keeps a line break — a header injection — out of the envelope.
+// Nor any character nodemailer reads as structure in an address list: the
+// comma or semicolon between addresses, quotes, a comment's parentheses, a
+// group's colon, an escaping backslash. Let through, "me@lab.org,boss" was two
+// recipients in a field that takes one, and "me\,x@lab.org" went to x@lab.org.
 export function isEmailAddress(v: string): boolean {
-  return /^[^\s@<>]+@[^\s@<>]+$/.test(v);
+  return /^[^\s@<>,;:"()\\]+@[^\s@<>,;:"()\\]+$/.test(v);
 }
 
 // The port as a number, or null when it isn't one. Blank is the default.
@@ -63,6 +67,12 @@ export function mailConfig(s: MailSettings): MailConfig | string {
   const port = smtpPort(s.smtp_port.trim());
   if (port === null) return "The port must be a number from 1 to 65535.";
   const user = s.smtp_user.trim();
+  // A login takes both halves. nodemailer refuses a username without a
+  // password before it reaches the server, with an error that reads as the
+  // server turning the password down.
+  if (user && !s.smtp_pass.trim()) {
+    return "Add the password, or clear the username if the mail server needs no login.";
+  }
   // The account's own address is the usual sender, and for most providers the
   // only one they will relay for. A username that isn't one — a relay's
   // "apikey" — needs a From of its own.

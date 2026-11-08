@@ -277,6 +277,42 @@ describe("the settings", () => {
     expect(db.getSettings().smtp_pass).toBe("another");
   });
 
+  // nodemailer would refuse every send before reaching the server, while the
+  // switch said On.
+  it("won't turn alerts on with a username but no password", async () => {
+    configure({ alert_email_enabled: "0", smtp_pass: "" });
+    const res = await put({ alert_email_enabled: true });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "Add the password, or clear the username if the mail server needs no login."
+    );
+    expect(db.getSettings().alert_email_enabled).toBe("0");
+  });
+
+  // Each is read by nodemailer as something other than the one address typed.
+  it.each([
+    "me@lab.org,boss",
+    "me@lab.org;boss@x.org",
+    '"boss@x.org"me@lab.org',
+    "me(boss@x.org)@lab.org",
+    "me@lab.org:boss",
+    "me\\,x@lab.org",
+  ])("refuses %s as the address to send to", async (address) => {
+    const res = await put({ alert_email_to: address });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("The address to send alerts to isn't an email address.");
+    expect(db.getSettings().alert_email_to).toBe("reader@example.org");
+  });
+
+  it.each(["first.last+tag@sub.example.co.uk", "o'brien@example.ie", "me@[192.0.2.1]"])(
+    "takes %s as the address to send to",
+    async (address) => {
+      const res = await put({ alert_email_to: address });
+      expect(res.status).toBe(200);
+      expect(db.getSettings().alert_email_to).toBe(address);
+    }
+  );
+
   // With alerts off too: saved, the moved login would keep the old password,
   // and send it to the new server once alerts went on.
   it("won't save a new server without its password", async () => {
@@ -353,6 +389,25 @@ describe("the test email", () => {
     });
     expect(res.status).toBe(200);
     expect(mail.options[0]).toMatchObject({ host: "relay.elsewhere.org", auth: undefined });
+  });
+
+  // Not "the mail server didn't accept that username and password": no
+  // password was ever sent.
+  it("asks for the password a username needs, rather than trying without", async () => {
+    configure({ smtp_pass: "" });
+    const res = await testEmail({});
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "Add the password, or clear the username if the mail server needs no login."
+    );
+    expect(mail.options).toEqual([]);
+  });
+
+  it("sends through a relay with neither username nor password", async () => {
+    configure({ smtp_user: "", smtp_pass: "", smtp_from: "sender@example.org" });
+    const res = await testEmail({});
+    expect(res.status).toBe(200);
+    expect(mail.options[0]).toMatchObject({ auth: undefined, requireTLS: false });
   });
 
   it("treats the server's name the same whatever its case", async () => {
