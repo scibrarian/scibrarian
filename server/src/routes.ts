@@ -92,6 +92,7 @@ import {
   UPLOAD_TMP_DIR,
 } from "./config.js";
 import {
+  BAD_SMTP_PORT,
   isEmailAddress,
   mailConfig,
   sendTestEmail,
@@ -188,6 +189,7 @@ import {
 } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 import { defaultTopicName } from "../../shared/topic.js";
+import { MAIL_FIELDS, mailFieldsOf } from "../../shared/mail.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -1714,7 +1716,7 @@ const SETTING_RULES = {
   smtp_host: { kind: "string" },
   smtp_port: {
     kind: "string",
-    validate: (v) => (smtpPort(v) === null ? "The port must be a number from 1 to 65535." : null),
+    validate: (v) => (smtpPort(v) === null ? BAD_SMTP_PORT : null),
   },
   smtp_user: { kind: "string" },
   // Stored as typed, where an API key is trimmed: a password can begin or end
@@ -1737,17 +1739,11 @@ function validEmailOrBlank(purpose: string) {
 // and the string is the reason it didn't.
 function mailSettingsAfter(body: Record<string, unknown>): MailSettings | string {
   const s = getSettings();
-  const pick = (key: Exclude<keyof MailSettings, "smtp_pass">) => {
+  const after = mailFieldsOf(s);
+  for (const key of MAIL_FIELDS) {
     const v = body[key];
-    return typeof v === "string" ? v.trim() : s[key];
-  };
-  const after = {
-    alert_email_to: pick("alert_email_to"),
-    smtp_host: pick("smtp_host"),
-    smtp_port: pick("smtp_port"),
-    smtp_user: pick("smtp_user"),
-    smtp_from: pick("smtp_from"),
-  };
+    if (typeof v === "string") after[key] = v.trim();
+  }
   const typed = body.smtp_pass;
   if (typeof typed === "string" && typed.trim()) return { ...after, smtp_pass: typed };
   // Without a username no password is sent, so there is nothing to refuse.

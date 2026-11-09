@@ -55,6 +55,7 @@ import type {
 } from "../../shared/types";
 
 import type { ProStatus as ProStatusRow } from "../../shared/pro";
+import type { MailField } from "../../shared/mail";
 
 // The Pro tier's wire shapes. Public like the rest of the client — only the
 // implementations behind /api/pro are closed.
@@ -215,10 +216,7 @@ export interface AppSettings {
 
 // What the email alerts dialog edits, and what a test email is sent with. The
 // password is write-only, like the API key: blank keeps the stored one.
-export type MailSettingsDraft = Pick<
-  AppSettings,
-  "alert_email_to" | "smtp_host" | "smtp_port" | "smtp_user" | "smtp_from"
-> & { smtp_pass?: string };
+export type MailSettingsDraft = Pick<AppSettings, MailField> & { smtp_pass?: string };
 
 // A settings save. Patch semantics: only the keys sent are changed.
 export type SettingsUpdate = Partial<AppSettings> & { ncbi_api_key?: string; smtp_pass?: string };

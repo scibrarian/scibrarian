@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import type { MailField } from "../../shared/mail.js";
 import { IS_DESKTOP } from "./config.js";
 import { alertArticles, getSettings, type AlertArticle } from "./db.js";
 import type { TopicPoll } from "./poller.js";
@@ -24,10 +25,7 @@ const LISTED_PER_TOPIC = 20;
 export const DEFAULT_SMTP_PORT = 587;
 
 // The settings an email is sent with.
-export type MailSettings = Pick<
-  Settings,
-  "alert_email_to" | "smtp_host" | "smtp_port" | "smtp_user" | "smtp_pass" | "smtp_from"
->;
+export type MailSettings = Pick<Settings, MailField | "smtp_pass">;
 
 interface MailConfig {
   to: string;
@@ -49,6 +47,8 @@ export function isEmailAddress(v: string): boolean {
   return /^[^\s@<>,;:"()\\]+@[^\s@<>,;:"()\\]+$/.test(v);
 }
 
+export const BAD_SMTP_PORT = "The port must be a number from 1 to 65535.";
+
 // The port as a number, or null when it isn't one. Blank is the default.
 export function smtpPort(v: string): number | null {
   if (!v) return DEFAULT_SMTP_PORT;
@@ -65,7 +65,7 @@ export function mailConfig(s: MailSettings): MailConfig | string {
   if (!isEmailAddress(to)) return "The address to send alerts to isn't an email address.";
   if (!host) return "Add the mail server to send through.";
   const port = smtpPort(s.smtp_port.trim());
-  if (port === null) return "The port must be a number from 1 to 65535.";
+  if (port === null) return BAD_SMTP_PORT;
   const user = s.smtp_user.trim();
   // A login takes both halves. nodemailer refuses a username without a
   // password before it reaches the server, with an error that reads as the

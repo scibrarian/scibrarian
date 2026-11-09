@@ -2,6 +2,7 @@ import { FormEvent, useLayoutEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
+import { mailFieldsOf } from "../../../shared/mail";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 import type { AppSettings, MailSettingsDraft } from "../types";
@@ -29,7 +30,7 @@ export function EmailAlertsDialog({
   onClose: () => void;
 }) {
   const [enabled, setEnabled] = useState(settings.alert_email_enabled);
-  const [draft, setDraft] = useState<MailSettingsDraft>(() => draftOf(settings));
+  const [draft, setDraft] = useState<MailSettingsDraft>(() => mailFieldsOf(settings));
   // Write-only, like the NCBI key: blank keeps the stored one.
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
@@ -48,7 +49,7 @@ export function EmailAlertsDialog({
 
   function startFrom(s: AppSettings) {
     setEnabled(s.alert_email_enabled);
-    setDraft(draftOf(s));
+    setDraft(mailFieldsOf(s));
     setPassword("");
   }
 
@@ -239,26 +240,12 @@ export function EmailAlertsDialog({
   );
 }
 
-function draftOf(s: AppSettings): MailSettingsDraft {
-  return {
-    alert_email_to: s.alert_email_to,
-    smtp_host: s.smtp_host,
-    smtp_port: s.smtp_port,
-    smtp_user: s.smtp_user,
-    smtp_from: s.smtp_from,
-  };
-}
-
 // The fields this dialog owns, out of a settings response — what the parent
 // patches in after a save, leaving the rest of its form as the reader left it.
 export function alertSettingsOf(s: AppSettings) {
   return {
     alert_email_enabled: s.alert_email_enabled,
-    alert_email_to: s.alert_email_to,
-    smtp_host: s.smtp_host,
-    smtp_port: s.smtp_port,
-    smtp_user: s.smtp_user,
-    smtp_from: s.smtp_from,
+    ...mailFieldsOf(s),
     has_smtp_pass: s.has_smtp_pass,
   };
 }
