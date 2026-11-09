@@ -70,6 +70,28 @@ describe("following a scan", () => {
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 
+  // A folder's lookup saves papers each round; the folder is refreshed as it
+  // fills in, once per round that found something, not once per tick.
+  it("says when a running job has matched more, and only then", async () => {
+    const getStatus = vi.fn().mockResolvedValue(running);
+    const onSettled = vi.fn();
+    const onMatched = vi.fn();
+    const jobs = createImportJobs(getStatus, onSettled, onMatched);
+    jobs.follow(7, running);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onMatched).not.toHaveBeenCalled();
+    getStatus.mockResolvedValue({ ...running, processed: 1, matched: 1 });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(onMatched).toHaveBeenCalledTimes(1);
+    expect(onMatched).toHaveBeenCalledWith(7);
+    // The end is onSettled's, even when it matched more.
+    getStatus.mockResolvedValue(done);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onMatched).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
   it("stops when told to", async () => {
     const getStatus = vi.fn().mockResolvedValue(running);
     const jobs = createImportJobs(getStatus, () => {});

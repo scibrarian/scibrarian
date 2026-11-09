@@ -122,6 +122,23 @@ export default function App() {
     createImportJobs(api.getImportStatus, (id) => importSettled.current(id))
   );
   useEffect(() => importJobs.stop, [importJobs]);
+  // The same for reference files imported into bookmark folders, whose lookups
+  // fill a folder for minutes after the import that started them. A store of
+  // their own, because the two are keyed by ids from different tables. Told
+  // of each round that saves papers as well as of the end, so the folder fills
+  // in while a long lookup runs rather than all at once when it stops.
+  const folderImportSaved = useRef(refreshFolderPapers);
+  useEffect(() => {
+    folderImportSaved.current = refreshFolderPapers;
+  });
+  const [folderImportJobs] = useState(() =>
+    createImportJobs(
+      api.getFolderImportStatus,
+      (id) => void folderImportSaved.current(id),
+      (id) => void folderImportSaved.current(id)
+    )
+  );
+  useEffect(() => folderImportJobs.stop, [folderImportJobs]);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
   // The topic dialog, the only one: closed, creating a topic, or editing this
@@ -628,17 +645,23 @@ export default function App() {
     if (activeFolderId != null) reloadSource({ folder: activeFolderId });
   }
 
-  // The folder on screen gained or lost papers: Add links put some in, or the
-  // table's "Remove selected" took some out. Three things are stale — its list,
-  // its count in the picker, and the map of what is saved where, which fills
-  // the bookmark icon on every paper in Interests.
+  // A folder gained or lost papers. Three things are stale — its list, its
+  // count in the picker, and the map of what is saved where, which fills the
+  // bookmark icon on every paper in Interests.
   //
   // Bumped before the await, for the reason handleCollectionChanged gives just
   // below: the papers fetch reads neither of the other two, and a removal's
   // rows stay on screen, dimmed, until it lands.
-  async function handleFolderPapersChanged() {
-    if (activeFolderId != null) reloadSource({ folder: activeFolderId });
+  async function refreshFolderPapers(folderId: number | null) {
+    if (folderId != null) reloadSource({ folder: folderId });
     await Promise.all([loadBookmarks(), loadFolders()]);
+  }
+
+  // The folder on screen: Add links put papers in, or the table's "Remove
+  // selected" took some out. A folder's import lookup refreshes the folder it
+  // fills, which need not be the one on screen (see folderImportJobs).
+  async function handleFolderPapersChanged() {
+    await refreshFolderPapers(activeFolderId);
   }
 
   async function handleCollectionChanged() {
@@ -1384,6 +1407,7 @@ export default function App() {
             folderId={activeFolderId!}
             isAdmin={isAdmin}
             summary={sourceSummary}
+            importJobs={folderImportJobs}
             onChanged={handleFolderChanged}
             // The saved-papers map as well as the folder's list and count, the
             // same three a bulk save refreshes: a paper added here may be on

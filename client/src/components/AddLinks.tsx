@@ -7,7 +7,7 @@ import type { LinkAnswer, LinkOutcome, LinkedPaper } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
-// The button and the modal's title.
+// The modal's title.
 export const ADD_LINKS_TITLE = "Add links";
 
 // "Add links" — a bookmark folder's way in for a paper found outside Interests.

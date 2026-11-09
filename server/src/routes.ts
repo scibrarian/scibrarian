@@ -5,6 +5,7 @@ import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
 import { paperProvenance, proStatus, resetProContent } from "./pro-hooks.js";
 import {
+  addBookmarkImports,
   addBookmarks,
   addCollectionFiles,
   bookmarkCounts,
@@ -20,6 +21,8 @@ import {
   deleteBookmarkFolder,
   deleteCollection,
   deleteCollectionFile,
+  dismissBookmarkImport,
+  dismissUnmatchedBookmarkImports,
   dropUnheldArticles,
   removeCollectionPapers,
   removeTopicWithArticles,
@@ -34,6 +37,7 @@ import {
   gcBlobsIfOrphaned,
   getArticleAbstracts,
   getBookmarkFolder,
+  getBookmarkImport,
   getCitations,
   getCollection,
   getCollectionFile,
@@ -43,7 +47,9 @@ import {
   findCatalogByNlmId,
   journalByNlmId,
   journalsForSource,
+  linkedPapersByPmids,
   listBookmarkFolders,
+  listBookmarkImports,
   listBookmarks,
   listCollectionFiles,
   listPapers,
@@ -62,11 +68,13 @@ import {
   searchCatalog,
   searchMesh,
   setFileMatched,
+  settleBookmarkImports,
   setTopicScope,
   setSetting,
   sourceHasFiles,
   suggestTopicsFromLibrary,
   upsertArticles,
+  type BookmarkImportInsert,
   type JournalSpec,
   type PaperFilter,
   type PaperSource,
@@ -92,8 +100,18 @@ import {
   UPLOAD_TMP_DIR,
 } from "./config.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
-import { addLinksToFolder } from "./bookmark-links.js";
+import { addLinksToFolder, toPaper } from "./bookmark-links.js";
+import {
+  anyFolderImportRunning,
+  cancelFolderImport,
+  cancelFolderImports,
+  clearFolderImportJobs,
+  getFolderImportStatus,
+  isFolderImportRunning,
+  startFolderImport,
+} from "./folder-import.js";
 import { splitRefs } from "./citation-ref.js";
+import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import {
   anyImportRunning,
@@ -110,6 +128,7 @@ import { anyTransferInFlight } from "./pro-storage.js";
 import {
   countMatches,
   fetchArticles,
+  fetchSummaries,
   isMedlineIndexed,
   topicTerm,
 } from "./pubmed.js";
@@ -136,11 +155,13 @@ import type {
   AbstractsResponse,
   AddLinksResponse,
   CollectionFile,
+  FolderImportResponse,
   GraphEdge,
   GraphNode,
   GraphResponse,
   HaveResponse,
   JournalRemovalResult,
+  LinkedPaper,
   MeshDescriptorRef,
   MeshHeadingsResponse,
   MeshSearchResponse,
@@ -170,8 +191,11 @@ import {
   type WorkspaceRecord,
 } from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
+import { parseReferenceFile, type FileEntry } from "./reference-file.js";
 import {
   MAX_BULK_BOOKMARK_PMIDS,
+  MAX_IMPORT_BYTES,
+  MAX_IMPORT_ENTRIES,
   MAX_LINKS_PER_REQUEST,
   MAX_NAME_CHARS,
   MAX_TOPIC_HEADINGS,
@@ -338,7 +362,8 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
 
 // Requests here that have found a paper stored and have yet to attach what it
 // is stored for: pasted links, which read which of their papers the library
-// has, wait on PubMed for the rest, and bookmark them all after the wait. A
+// has, wait on PubMed for the rest, and bookmark them all after the wait; and a
+// PMID given to an imported entry, which does the same for one paper. A
 // count for the reason transfersInFlight is one (pro-storage.ts): two can be
 // out at once.
 let attaching = 0;
@@ -358,8 +383,8 @@ async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
 // in between leaves a file matched to a paper that isn't there.
 //
 // So it is skipped, not waited for, while anything is part way through that: an
-// import, a copy arriving from another library, a poll, or one of the requests
-// counted above. Nothing is lost by a skip. The sweep is of the whole library,
+// import of PDFs or of a reference file, a copy arriving from another library,
+// a poll, or one of the requests counted above. Nothing is lost by a skip. The sweep is of the whole library,
 // so the next removal to find the server idle takes what this one left, and a
 // start takes the rest.
 //
@@ -369,7 +394,8 @@ async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
 // It can't fail the removal it follows: that has happened, and what a failed
 // sweep leaves behind is rows nobody can see.
 function sweepUnheld(): void {
-  if (attaching > 0 || anyImportRunning() || anyTransferInFlight() || pollRunning()) return;
+  if (attaching > 0 || anyImportRunning() || anyFolderImportRunning()) return;
+  if (anyTransferInFlight() || pollRunning()) return;
   try {
     dropUnheldArticles();
   } catch (err) {
@@ -1127,13 +1153,24 @@ api.put("/bookmark-folders/:id", (req, res) => {
   res.json({ ...getBookmarkFolder(id)!, paperCount: bookmarkCounts()[id] ?? 0 });
 });
 
-api.delete("/bookmark-folders/:id", (req, res) => {
-  // The folder's bookmark rows cascade; the papers they pointed at stay, but
-  // for the ones nothing else holds, which the sweep takes.
-  deleteBookmarkFolder(Number(req.params.id));
-  res.status(204).end();
-  sweepUnheld();
-});
+api.delete(
+  "/bookmark-folders/:id",
+  asyncHandler(async (req, res) => {
+    // The folder's bookmark rows cascade, and so do the entries an import left
+    // unmatched; the papers they pointed at stay, but for the ones nothing else
+    // holds, which the sweep takes.
+    //
+    // An import still looking entries up is told to stop in the same tick, as a
+    // collection's scan is (see the collection delete), and waited for after
+    // the response and before the sweep, which skips its turn while it runs.
+    const id = Number(req.params.id);
+    const lookupStopped = cancelFolderImport(id);
+    deleteBookmarkFolder(id);
+    res.status(204).end();
+    await lookupStopped;
+    sweepUnheld();
+  })
+);
 
 // Every (folder, paper) pair in one payload. Deliberately not folded into
 // /papers or /graph as a per-row flag: the client keeps this whole set in
@@ -1213,6 +1250,222 @@ api.post(
     res.json(body);
   })
 );
+
+// ---------- importing a reference file into a folder ----------
+
+// Read into memory rather than written to the upload temp dir: it is text, it
+// is parsed and dropped in the same request, and nothing of it is kept but the
+// entries read out of it.
+const referenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMPORT_BYTES, files: 1 },
+});
+
+// As uploadFiles, for the one file an import sends.
+function uploadReferenceFile(req: Request, res: Response, next: NextFunction): void {
+  referenceUpload.single("file")(req, res, (err: unknown) => {
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ error: errMessage(err) });
+    }
+    if (err) return next(err);
+    next();
+  });
+}
+
+// UTF-8, which every current exporter writes, and Windows-1252 for a file that
+// isn't — EndNote's "ANSI" export, among others. Only titles and names are at
+// stake: the DOIs and PMIDs the lookup reads are ASCII either way.
+//
+// Except in UTF-16, which Windows offers as "Unicode" and EndNote among others
+// can save: every other byte is a NUL, and read as either of the above no line
+// is a tag, so the file was refused as a format this can't read. It is known by
+// its byte-order mark, which the decoder drops.
+function decodeReferenceFile(bytes: Buffer): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
+// An entry's identity in its folder — see bookmark_imports — and the keys it
+// would have had before its reference manager filled in a DOI or PMID, most
+// specific first.
+//
+// One with neither is known by its title, year, journal and first author's
+// surname: title and year alone made every "Editorial" of a year one entry.
+// Each is folded to letters and digits, so a re-export that changed only
+// punctuation or case is still the same entry.
+function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
+  const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  // "Polack, Fernando P." as RIS writes a name, "Polack FP" as PubMed does.
+  const surname = e.authors.split(";")[0].split(",")[0].trim().split(/\s+/)[0] ?? "";
+  const [key, ...formerKeys] = [
+    e.pmid && `pmid:${e.pmid}`,
+    e.doi && `doi:${e.doi}`,
+    `ref:${[e.title, e.year, e.journal, surname].map(fold).join("|")}`,
+  ].filter((k): k is string => !!k);
+  return { key, formerKeys };
+}
+
+// Bring a reference manager's export into a folder: read it, keep its journal
+// articles as entries, and start looking them up. One request does all three
+// because there is nothing to batch — the file is read whole — and the lookup
+// that follows is the job the client then follows, as it follows a
+// collection's scan.
+//
+// Refused while the folder's last import is still looking up: the running job
+// took its list of entries when it started, and new ones would wait, listed as
+// not looked up, for no reason the reader could see.
+api.post("/bookmark-folders/:id/imports", uploadReferenceFile, (req, res) => {
+  const id = Number(req.params.id);
+  if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+  if (isFolderImportRunning(id)) {
+    return res
+      .status(409)
+      .json({ error: "This folder is still importing. Wait for it to finish, then try again." });
+  }
+  if (!req.file) return res.status(400).json({ error: "Choose a file to import." });
+  const parsed = parseReferenceFile(decodeReferenceFile(req.file.buffer));
+  if (!parsed) {
+    return res.status(400).json({
+      error:
+        "That file isn’t one this can read. Export RIS from your reference manager, or use PubMed’s " +
+        "“Send to → Citation manager”.",
+    });
+  }
+  const { entries } = parsed;
+  if (entries.length === 0) return res.status(400).json({ error: "There are no references in that file." });
+  if (entries.length > MAX_IMPORT_ENTRIES) {
+    return res.status(400).json({
+      error:
+        `That file has ${entries.length.toLocaleString("en-US")} references. Import at most ` +
+        `${MAX_IMPORT_ENTRIES.toLocaleString("en-US")} at a time.`,
+    });
+  }
+  const articles = entries.filter((e) => e.article);
+  const kept = articles.filter((e) => e.title || e.doi || e.pmid);
+  const rows: BookmarkImportInsert[] = kept.map((e) => ({
+    ...importKeys(e),
+    title: e.title,
+    authors: e.authors,
+    journal: e.journal,
+    year: e.year,
+    doi: e.doi,
+    pmid: e.pmid,
+  }));
+  addBookmarkImports(id, rows);
+  const status = startFolderImport(id);
+  const body: FolderImportResponse = {
+    read: entries.length,
+    notArticles: entries.length - articles.length,
+    blank: articles.length - kept.length,
+    queued: status.total,
+    noIdentifier: kept.filter((e) => !e.doi && !e.pmid).length,
+    status,
+  };
+  res.status(201).json(body);
+});
+
+// The entries a folder's imports left that are not bookmarks yet: still to be
+// looked up, or looked up and not found.
+//
+// Owner-only although it is a GET: it is the owner's own reference library,
+// titles and identifiers of papers they never bookmarked, and the client shows
+// it to nobody else.
+api.get("/bookmark-folders/:id/imports", (req, res) => {
+  if (!isAdminRequest(req)) {
+    return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
+  }
+  res.json(listBookmarkImports(Number(req.params.id)));
+});
+
+api.get("/bookmark-folders/:id/imports/status", (req, res) => {
+  res.json(getFolderImportStatus(Number(req.params.id)) ?? { state: "idle" });
+});
+
+// Look up the entries an earlier import stopped before reaching — the
+// unmatched dialog's "Look them up".
+api.post("/bookmark-folders/:id/imports/run", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
+  if (isFolderImportRunning(id)) {
+    return res.status(409).json({ error: "This folder is still importing." });
+  }
+  res.status(202).json(startFolderImport(id));
+});
+
+// The unmatched dialog's "Remove all". `removed` is how many went.
+api.delete("/bookmark-folders/:id/imports/unmatched", (req, res) => {
+  res.json({ removed: dismissUnmatchedBookmarkImports(Number(req.params.id)) });
+});
+
+// The paper a PMID names, for the reader to compare with the entry before it is
+// saved: a digit lost in copying names a different paper that really exists,
+// and nothing about the number says so. Writes nothing. A POST, so it is
+// admin-only like the save it precedes — and so viewers can't spend this
+// instance's PubMed allowance.
+api.post(
+  "/bookmark-imports/:entryId/lookup",
+  asyncHandler(async (req, res) => {
+    const pmid = barePmid(String(req.body?.pmid ?? ""));
+    if (!pmid) return res.status(400).json({ error: "A PMID is 1–8 digits." });
+    if (!getBookmarkImport(Number(req.params.entryId))) {
+      return res.status(404).json({ error: "That entry is no longer listed." });
+    }
+    const [stored] = linkedPapersByPmids([pmid]);
+    if (stored) return res.json(toPaper(stored));
+    const summary = (await fetchSummaries([pmid])).get(pmid);
+    if (!summary) return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
+    const paper: LinkedPaper = {
+      pmid,
+      title: summary.title,
+      authors: summary.authors,
+      journal_name: summary.journal_name,
+      pub_date_display: summary.pub_date_display,
+      url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+    };
+    res.json(paper);
+  })
+);
+
+// Save an unmatched entry as the paper the reader named, and take it off the
+// list. Counted as attaching: it may find the paper stored, wait on PubMed for
+// it otherwise, and bookmark it after the wait.
+api.post(
+  "/bookmark-imports/:entryId/pmid",
+  asyncHandler(async (req, res) => {
+    const entryId = Number(req.params.entryId);
+    const pmid = barePmid(String(req.body?.pmid ?? ""));
+    if (!pmid) return res.status(400).json({ error: "A PMID is 1–8 digits." });
+    if (!getBookmarkImport(entryId)) {
+      return res.status(404).json({ error: "That entry is no longer listed." });
+    }
+    const saved = await whileAttaching(async () => {
+      const fetched = existingPmids([pmid]).has(pmid) ? [] : await fetchArticles([pmid]);
+      // Nothing awaited from here on, so the entry and its folder are read
+      // after the wait and the paper is stored and bookmarked in one tick.
+      const entry = getBookmarkImport(entryId);
+      if (!entry) return "gone" as const;
+      upsertArticles(fetched);
+      if (!existingPmids([pmid]).has(pmid)) return "unknown" as const;
+      return settleBookmarkImports(entry.folder_id, [{ id: entryId, pmid }], []);
+    });
+    if (saved === "gone") return res.status(404).json({ error: "That entry is no longer listed." });
+    if (saved === "unknown") return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
+    const uncited = missingOrStaleCitations(saved);
+    if (uncited.length > 0) void warmCitations(uncited, "manual import match");
+    const [row] = linkedPapersByPmids([pmid]);
+    res.json(toPaper(row));
+  })
+);
+
+api.delete("/bookmark-imports/:entryId", (req, res) => {
+  dismissBookmarkImport(Number(req.params.entryId));
+  res.status(204).end();
+});
 
 // No sweep after this one. It is the toggle in Interests, pressed a paper at a
 // time, and a paper listed there is in a topic's feed: taking it off a folder
@@ -1983,12 +2236,19 @@ api.post("/workspaces/switch", (req, res) => {
 // honest answer is to refuse and let the owner press the button again once it
 // finishes.
 //
+// Except a folder's reference-file lookup, which is stopped instead. It can run
+// for most of an hour, and the reset is deleting everything it works on — the
+// folder, its entries, their bookmarks — so there is nothing to wait for. It
+// is stopped in the tick the reset runs in, under the lock, so a reset the lock
+// refuses stops nothing; and each round's writes check that its folder still
+// exists, so one between awaits when the reset lands writes nothing after it.
+//
 // Transfers are the third, and the one easiest to forget, because on a Pro
 // instance the writer is not this instance at all. A paired node pushing up and
 // a master being pulled from both land in storePulledFile, which is mounted
 // outside this router, is not a job in `jobs`, and takes no lock — so the poll
 // lock below says nothing about it. The refusals are ordered cheapest first and
-// all three ahead of the lock, so a refused reset never takes one.
+// both ahead of the lock, so a refused reset never takes one.
 api.post(
   "/data/reset",
   asyncHandler(async (req, res) => {
@@ -2011,13 +2271,17 @@ api.post(
         error: "Files are being copied into this library right now. Wait for it to finish, then try again.",
       });
     }
-    const stats = await withPollLock(async () => resetLibrary());
+    const stats = await withPollLock(async () => {
+      cancelFolderImports();
+      return resetLibrary();
+    });
     if (stats === null) {
       return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
     }
     // After the deletion, never before it: each of these is tidying up around a
     // wipe that has already happened, and none is allowed to prevent one.
     clearImportJobs();
+    clearFolderImportJobs();
     resetProContent();
     // The checked-out copies, which are the one part of a stored PDF that
     // resetLibrary cannot reach. It deletes the blobs and the rows; a copy is
