@@ -404,6 +404,31 @@ describe("the settings", () => {
     expect(db.getSettings().smtp_host).toBe("smtp.example.org");
   });
 
+  it("replaces the password with one typed over it", async () => {
+    const res = await put({ smtp_user: "sender@example.org", smtp_pass: "changed" });
+    expect(res.status).toBe(200);
+    expect(db.getSettings().smtp_pass).toBe("changed");
+  });
+
+  it("removes the password along with the username", async () => {
+    const res = await put({ smtp_user: "", smtp_from: "alerts@example.org" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).has_smtp_pass).toBe(false);
+    expect(db.getSettings().smtp_pass).toBe("");
+  });
+
+  it("doesn't keep a password typed without a username", async () => {
+    const res = await put({ smtp_user: "", smtp_pass: "typed", smtp_from: "alerts@example.org" });
+    expect(res.status).toBe(200);
+    expect(db.getSettings().smtp_pass).toBe("");
+  });
+
+  it("keeps the password through a save that leaves the login alone", async () => {
+    const res = await put({ poll_cron: "0 7 * * *" });
+    expect(res.status).toBe(200);
+    expect(db.getSettings().smtp_pass).toBe("secret");
+  });
+
   it("keeps a password's leading and trailing spaces", async () => {
     const res = await put({ smtp_pass: " spaced out " });
     expect(res.status).toBe(200);

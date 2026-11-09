@@ -1838,6 +1838,9 @@ api.put("/settings", (req, res) => {
       setSetting(key, rule.verbatim ? value : value.trim());
     }
   }
+  // A password is only ever sent with a username, so one left without could
+  // never be used again. Clearing the username is how a login is taken away.
+  if (!mail.smtp_user) setSetting("smtp_pass", "");
   rescheduleFromSettings();
   res.json(settingsResponse());
 });
