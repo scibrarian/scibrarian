@@ -565,6 +565,7 @@ export function dropUnheldArticles(): number {
 // ---------- settings ----------
 
 const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+const allSettingsStmt = db.prepare("SELECT key, value FROM settings");
 const setSettingStmt = db.prepare(
   "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 );
@@ -579,11 +580,14 @@ export function setSetting(key: keyof Settings, value: string): void {
 }
 
 // Derived from the defaults' key set so a newly added setting can't be
-// persisted but read back as "" because this list wasn't updated.
+// persisted but read back as "" because this list wasn't updated. One query
+// for the lot: PubMed's client reads these before every request it makes.
 export function getSettings(): Settings {
+  const rows = allSettingsStmt.all() as { key: string; value: string }[];
+  const stored = new Map(rows.map((r) => [r.key, r.value]));
   const out = {} as Settings;
   for (const key of Object.keys(SETTING_DEFAULTS) as (keyof Settings)[]) {
-    out[key] = getSetting(key);
+    out[key] = stored.get(key) ?? "";
   }
   return out;
 }

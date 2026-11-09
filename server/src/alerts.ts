@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import { plural as pluralIn } from "../../shared/format.js";
 import type { MailField } from "../../shared/mail.js";
 import { IS_DESKTOP } from "./config.js";
 import { alertArticles, getSettings, type AlertArticle } from "./db.js";
@@ -86,6 +86,9 @@ async function deliver(
   c: MailConfig,
   message: { subject: string; text: string; html?: string }
 ): Promise<void> {
+  // Loaded on the first send rather than at startup. The desktop app, which
+  // never sends, loads this module with the poller.
+  const { default: nodemailer } = await import("nodemailer");
   const transport = nodemailer.createTransport({
     host: c.host,
     port: c.port,
@@ -218,8 +221,9 @@ export interface AlertMessage {
   html: string;
 }
 
+// The client's count (see shared/format.ts) in en-US, like every number here.
 function plural(n: number, noun: string): string {
-  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+  return pluralIn(n, noun, "en-US");
 }
 
 // What a poll added that is news: none of a full check of a topic's history,
