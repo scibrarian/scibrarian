@@ -5,11 +5,13 @@ import type {
   AuthStatus,
   BookmarkEntry,
   BookmarkFolder,
+  BookmarkImport,
   CacheStats,
   ClearedCache,
   Collection,
   CollectionFile,
   CollectionFilesResponse,
+  FolderImportResponse,
   Topic,
   GraphResponse,
   HaveAnswer,
@@ -19,6 +21,7 @@ import type {
   JournalSearchResponse,
   JournalSuggestResponse,
   LibraryStats,
+  LinkedPaper,
   MailSettingsDraft,
   MeshHeadingsResponse,
   MeshSearchResponse,
@@ -292,6 +295,40 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ lines }),
     }),
+  // Import a reference file into a folder. The lookup it starts runs on the
+  // server, and is followed through getFolderImportStatus like a collection's
+  // scan.
+  importToFolder: (folderId: number, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return req<FolderImportResponse>(`/api/bookmark-folders/${folderId}/imports`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  getFolderImportStatus: (folderId: number) =>
+    req<ImportStatus>(`/api/bookmark-folders/${folderId}/imports/status`),
+  getFolderImports: (folderId: number) =>
+    req<BookmarkImport[]>(`/api/bookmark-folders/${folderId}/imports`),
+  startFolderImport: (folderId: number) =>
+    req<ImportStatus>(`/api/bookmark-folders/${folderId}/imports/run`, { method: "POST" }),
+  removeUnmatchedImports: (folderId: number) =>
+    req<{ removed: number }>(`/api/bookmark-folders/${folderId}/imports/unmatched`, {
+      method: "DELETE",
+    }),
+  // The paper a PMID names, to compare with an unmatched entry. Saves nothing.
+  lookUpImportPmid: (entryId: number, pmid: string) =>
+    req<LinkedPaper>(`/api/bookmark-imports/${entryId}/lookup`, {
+      method: "POST",
+      body: JSON.stringify({ pmid }),
+    }),
+  setImportPmid: (entryId: number, pmid: string) =>
+    req<LinkedPaper>(`/api/bookmark-imports/${entryId}/pmid`, {
+      method: "POST",
+      body: JSON.stringify({ pmid }),
+    }),
+  removeImport: (entryId: number) =>
+    req<void>(`/api/bookmark-imports/${entryId}`, { method: "DELETE" }),
 
   getCollections: () => req<Collection[]>("/api/collections"),
   createCollection: (name: string) =>

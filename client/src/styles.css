@@ -3265,6 +3265,19 @@ html {
   background: var(--accent-soft);
 }
 
+/* A folder's "Add papers" menu: two ways in, worded in full, so it is as wide
+   as its longer item rather than held to a folder list's width. The import is
+   off while one is still running. */
+.add-papers-menu {
+  max-width: none;
+}
+
+.bookmark-option[data-disabled] {
+  opacity: 0.5;
+  cursor: default;
+  background: none;
+}
+
 /* Fixed-width gutter so names line up whether or not they're checked. */
 .bookmark-check {
   display: inline-flex;
@@ -3908,7 +3921,8 @@ html {
   font-weight: 700;
 }
 
-/* A group's heading with its one action, "Scan them", at the far end. */
+/* A group's heading with its one action — "Scan them", "Look them up",
+   "Remove all" — at the far end. */
 .unmatched-head {
   display: flex;
   align-items: center;
@@ -3968,8 +3982,55 @@ html {
   width: 110px;
 }
 
+/* An imported reference in the folder's unmatched list: what the file said
+   about it, in place of a collection's file name. Takes the row's slack, so
+   the controls stay together at the end and the citation wraps instead. */
+.import-entry {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.import-title {
+  font-weight: 600;
+}
+
+.import-meta,
+.import-reason {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* The paper a typed PMID names, for comparing with the entry above it before
+   it is saved. */
+.import-found {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 12.5px;
+}
+
+/* A link out to PubMed, drawn as the row's other text actions are (.link-btn)
+   rather than as a browser link. */
+.import-search {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.import-search:hover {
+  text-decoration: underline;
+}
+
 .unmatched-controls > button:not(.link-btn),
-.unmatched-head > button {
+.unmatched-head > button:not(.link-btn) {
   background: var(--accent);
   color: #fff;
   border: none;
@@ -4181,6 +4242,44 @@ html {
   margin-top: 16px;
   max-height: 52vh;
   overflow-y: auto;
+}
+
+/* The paste dialogs hang from a fixed top edge rather than centring like the
+   rest, because their height changes while they are in use: the last paste's
+   answers come down as a new one starts, then arrive a batch at a time.
+   Centred, each change moved the whole dialog, the paste box and the Add
+   button with it. Pinned, only the bottom edge moves.
+
+   Hung this far down, a full list no longer fits a window under about 900px
+   tall, so the dialog is a column in which the list alone gives way: it
+   shrinks to the room left under the paste box and scrolls in that, rather
+   than the dialog scrolling around a list that scrolls too. The dialog still
+   scrolls itself if the box alone doesn't fit. */
+.modal-backdrop:has(> .modal > .have-form) {
+  align-items: flex-start;
+  padding-top: 10vh;
+}
+
+.modal:has(> .have-form) {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(90vh - 20px);
+  overflow-y: auto;
+}
+
+.modal:has(> .have-form) > * {
+  flex-shrink: 0;
+}
+
+.modal:has(> .have-form) > .have-results {
+  flex-shrink: 1;
+  min-height: 0;
+}
+
+/* A column doesn't collapse margins, so the banner's would add to the list's
+   16px rather than merge into it. */
+.modal:has(> .have-form) > .banner:has(+ .have-results) {
+  margin-bottom: 0;
 }
 
 .have-summary {

@@ -139,6 +139,15 @@ describe("addLinksToFolder", () => {
     expect(saved().sort()).toEqual([REMOTE.pmid, OTHER.pmid]);
   });
 
+  // The lookup is shared with the folder import, whose second round re-asks a
+  // DOI when the PMID beside it names nothing. A paste never has both on one
+  // line, so it never needs that round, and its papers come in one request.
+  it("fetches what a paste of links and DOIs names in one request", async () => {
+    await addLinksToFolder(folder, [link(REMOTE.pmid), OTHER.doi]);
+    expect(pubmed.fetched).toEqual([[REMOTE.pmid, OTHER.pmid]]);
+    expect(saved().sort()).toEqual([REMOTE.pmid, OTHER.pmid]);
+  });
+
   it("resolves a DOI the library already stores locally", async () => {
     const [answer] = (await addLinksToFolder(folder, [STORED.doi]))!;
     expect(answer.outcome).toBe("added");

@@ -7,7 +7,7 @@ import type { LinkAnswer, LinkOutcome, LinkedPaper } from "../types";
 import { Banner } from "./Banner";
 import { ModalShell } from "./Dialogs";
 
-// The button and the modal's title.
+// The modal's title.
 export const ADD_LINKS_TITLE = "Add links";
 
 // "Add links" — a bookmark folder's way in for a paper found outside Interests.
@@ -52,6 +52,8 @@ export function AddLinks({
   // Set on mount as well as cleared on unmount, for StrictMode's
   // mount-unmount-mount.
   const mounted = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -69,11 +71,22 @@ export function AddLinks({
   // and the rows arriving are the progress. A batch that fails stops the run
   // but keeps what the earlier ones did — those papers are saved, and their
   // rows are the only record of which lines got in.
+  //
+  // The last paste's rows come down as this one starts. Left up under
+  // "Adding…", they read as this paste's answers — a reader closing the
+  // dialog mid-run took the old "2 of 2 added" for the new list. The dialog
+  // hangs from its top edge (the rule beside .have-results in styles.css), so
+  // taking them down moves only its bottom, not the box and the Add button.
   async function add(e: FormEvent) {
     e.preventDefault();
     if (lines.length === 0 || progress) return;
+    const submitted = text;
     const capped = lines.slice(0, MAX_LINKS);
     const done: LinkAnswer[] = [];
+    // Lines answered without getting into the folder, in paste order.
+    const missed: string[] = [];
+    // The first line of the paste that no batch has answered.
+    let next = 0;
     let over = lines.length - capped.length;
     let added = false;
     setError(null);
@@ -82,11 +95,15 @@ export function AddLinks({
     try {
       for (let i = 0; i < capped.length; i += MAX_LINKS_PER_REQUEST) {
         setProgress({ done: i, total: capped.length });
-        const res = await api.addBookmarkLinks(folderId, capped.slice(i, i + MAX_LINKS_PER_REQUEST));
+        const batch = capped.slice(i, i + MAX_LINKS_PER_REQUEST);
+        const res = await api.addBookmarkLinks(folderId, batch);
         if (res.results.some((a) => a.outcome === "added")) added = true;
         if (!mounted.current) return;
         done.push(...res.results);
         over += res.truncated;
+        // One answer per line, in order; a line past the answers was cut.
+        missed.push(...batch.filter((_, j) => !landed(res.results[j])));
+        next = i + batch.length;
         setAnswers([...done]);
         setSkipped(over);
       }
@@ -104,7 +121,28 @@ export function AddLinks({
       // starts overlapped, and an older one landing last showed papers just
       // saved as unsaved.
       if (added) onAdded();
-      if (mounted.current) setProgress(null);
+      if (mounted.current) {
+        setProgress(null);
+        // The box keeps only what is left to do: the lines that came back
+        // without getting in, to be corrected there, then every line not yet
+        // sent, past the limit or after a batch that failed, which has no row
+        // to be recovered from. Kept whole, the next Add sent the first 300
+        // again, all saved already, and never reached the lines after them.
+        // A paste that got nothing in is left as typed, and so is a box
+        // edited while the batches went.
+        const left = [...missed, ...lines.slice(next)];
+        if (left.length < lines.length) setText((t) => (t === submitted ? left.join("\n") : t));
+        // Back to the box for whatever is typed next, a fresh paste or a
+        // correction, if the run left focus nowhere: Add had it and was
+        // disabled under it, which drops it to the page, or to the dialog
+        // itself once Radix sees a node inside it removed. Where the reader
+        // moved it while the batches went, it stays.
+        const at = document.activeElement;
+        const dialog = inputRef.current?.closest("[role=dialog]");
+        if (!at || at === document.body || at === addRef.current || at === dialog) {
+          inputRef.current?.focus();
+        }
+      }
     }
   }
 
@@ -118,20 +156,20 @@ export function AddLinks({
   }
 
   return (
-    <ModalShell open={open} onClose={onClose} title={ADD_LINKS_TITLE} wide>
+    <ModalShell open={open} onClose={onClose} title={ADD_LINKS_TITLE} wide initialFocus={inputRef}>
       <form className="have-form" onSubmit={add}>
         <label htmlFor="add-links-input" className="hint">
           Paste DOIs or PubMed links — one per line, up to {MAX_LINKS} at a time. Each paper is
           looked up on PubMed and saved into this folder.
         </label>
         <textarea
+          ref={inputRef}
           id="add-links-input"
           className="have-input"
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={PLACEHOLDER}
           rows={5}
-          autoFocus
           spellCheck={false}
         />
         <div className="modal-actions">
@@ -140,7 +178,12 @@ export function AddLinks({
               Clear
             </button>
           )}
-          <button type="submit" className="primary" disabled={lines.length === 0 || progress != null}>
+          <button
+            ref={addRef}
+            type="submit"
+            className="primary"
+            disabled={lines.length === 0 || progress != null}
+          >
             {progress && <span className="btn-spinner" aria-hidden="true" />}
             {progress
               ? progress.total > MAX_LINKS_PER_REQUEST
@@ -173,6 +216,11 @@ export function AddLinks({
       )}
     </ModalShell>
   );
+}
+
+// In the folder now, whether this paste put it there or it already was.
+function landed(answer: LinkAnswer | undefined): boolean {
+  return answer?.outcome === "added" || answer?.outcome === "already-saved";
 }
 
 // "wasn’t" or "weren’t", to follow a count.
