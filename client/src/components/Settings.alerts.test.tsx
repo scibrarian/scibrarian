@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Settings } from "./Settings";
 import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings } from "../types";
@@ -101,6 +101,20 @@ describe("where the row is", () => {
     api.getSettings.mockResolvedValue({ ...SAVED, poll_enabled: false });
     renderSettings();
     expect(((await configure()) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // Turning polling back on to reach the switch would resume the very emails
+  // the reader came to stop.
+  it("still opens while polling is off, if alerts are on", async () => {
+    api.getSettings.mockResolvedValue({
+      ...SAVED,
+      poll_enabled: false,
+      alert_email_enabled: true,
+      alert_email_to: "reader@example.org",
+    });
+    renderSettings();
+    expect(((await configure()) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText("On, but scheduled polling is off, so none are sent")).toBeTruthy();
   });
 });
 
@@ -221,5 +235,52 @@ describe("the dialog", () => {
 
     expect(await dialog.findByText("Add the mail server to send through.")).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "Email alerts" })).toBeTruthy();
+  });
+
+  // Closing the dialog doesn't take back a save already sent.
+  describe("a save still on its way when the dialog is closed and opened again", () => {
+    async function saveThenReopen() {
+      let answer!: { resolve: (s: AppSettings) => void; reject: (e: Error) => void };
+      api.updateSettings.mockReturnValue(
+        new Promise<AppSettings>((resolve, reject) => (answer = { resolve, reject }))
+      );
+      renderSettings();
+      const first = await openDialog();
+      fireEvent.click(first.getByRole("switch", { name: "Send email alerts" }));
+      fireEvent.change(first.getByRole("textbox", { name: "Send to" }), {
+        target: { value: "reader@example.org" },
+      });
+      fireEvent.click(first.getByRole("button", { name: "Save" }));
+      fireEvent.click(first.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      return { dialog: await openDialog(), answer };
+    }
+
+    it("is waited for, and then the dialog starts from what it saved", async () => {
+      const { dialog, answer } = await saveThenReopen();
+      // Nothing to save over it with yet.
+      const saving = dialog.getByRole("button", { name: "Saving…" }) as HTMLButtonElement;
+      expect(saving.disabled).toBe(true);
+
+      await act(async () =>
+        answer.resolve({ ...SAVED, alert_email_enabled: true, alert_email_to: "reader@example.org" })
+      );
+      expect(screen.getByText("On · sent to reader@example.org")).toBeTruthy();
+      // Still open, since it is a later opening's, and showing the save.
+      const sendTo = dialog.getByRole("textbox", { name: "Send to" }) as HTMLInputElement;
+      expect(sendTo.value).toBe("reader@example.org");
+      const enabled = dialog.getByRole("switch", { name: "Send email alerts" });
+      expect((enabled as HTMLInputElement).checked).toBe(true);
+      expect((dialog.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(
+        false
+      );
+    });
+
+    it("says so if it failed", async () => {
+      const { dialog, answer } = await saveThenReopen();
+      await act(async () => answer.reject(new Error("Add the mail server to send through.")));
+      expect(dialog.getByText("Add the mail server to send through.")).toBeTruthy();
+      expect(screen.getByText("Off")).toBeTruthy();
+    });
   });
 });

@@ -334,7 +334,6 @@ export function Settings({
     const alerts = alertSettingsOf(updated);
     setSettings((s) => (s ? { ...s, ...alerts } : updated));
     setBaseline((b) => (b ? { ...b, ...alerts } : updated));
-    setEditingAlerts(false);
     setSavedMsg("Email alerts saved.");
   }
 
@@ -519,7 +518,8 @@ export function Settings({
                     className="secondary-btn"
                     aria-describedby="settings-alerts-state settings-alerts-help"
                     onClick={() => setEditingAlerts(true)}
-                    disabled={!settings.poll_enabled}
+                    // Alerts left on can always be turned off.
+                    disabled={!settings.poll_enabled && !settings.alert_email_enabled}
                   >
                     Configure email alerts…
                   </button>

@@ -23,6 +23,8 @@ export function EmailAlertsDialog({
   open: boolean;
   // As last saved. The dialog starts from these each time it opens.
   settings: AppSettings;
+  // Every save's reply, even one that lands after the dialog was closed: the
+  // save was sent either way. The dialog closes itself.
   onSaved: (updated: AppSettings) => void;
   onClose: () => void;
 }) {
@@ -39,16 +41,24 @@ export function EmailAlertsDialog({
   // out, and one that lands after the dialog was closed and opened again would
   // report on settings that are no longer the ones in front of the reader.
   const session = useRef(0);
+  // A save still waiting for its reply. Closing the dialog doesn't take back a
+  // save already sent, so one opened again waits for it, and then starts from
+  // what it saved rather than offering the old values to save back over it.
+  const saveInFlight = useRef(false);
+
+  function startFrom(s: AppSettings) {
+    setEnabled(s.alert_email_enabled);
+    setDraft(draftOf(s));
+    setPassword("");
+  }
 
   // Each opening starts from what is saved, for PromptDialog's reason, and
   // before paint so the last session's draft can't flash.
   useLayoutEffect(() => {
     if (!open) return;
     session.current += 1;
-    setEnabled(settings.alert_email_enabled);
-    setDraft(draftOf(settings));
-    setPassword("");
-    setSaving(false);
+    startFrom(settings);
+    setSaving(saveInFlight.current);
     setTesting(false);
     setResult(null);
     // Only on opening: `settings` changing underneath an open dialog is the
@@ -104,16 +114,24 @@ export function EmailAlertsDialog({
     // exit, and a second click on Save would send it again.
     if (!open) return;
     const mine = session.current;
+    saveInFlight.current = true;
     setResult(null);
     setSaving(true);
     try {
       const updated = await api.updateSettings({ ...withPassword(), alert_email_enabled: enabled });
-      if (session.current !== mine) return;
       onSaved(updated);
+      if (session.current === mine) {
+        onClose();
+      } else {
+        startFrom(updated);
+        setSaving(false);
+      }
     } catch (err) {
-      if (session.current !== mine) return;
+      // Whichever opening is up, it was this save that failed.
       setResult({ kind: "error", message: errorMessage(err) });
       setSaving(false);
+    } finally {
+      saveInFlight.current = false;
     }
   }
 
