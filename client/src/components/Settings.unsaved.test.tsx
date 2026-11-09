@@ -38,6 +38,13 @@ const SAVED: AppSettings = {
   poll_enabled: false,
   library_open: false,
   has_api_key: false,
+  alert_email_enabled: false,
+  alert_email_to: "",
+  smtp_host: "",
+  smtp_port: "",
+  smtp_user: "",
+  smtp_from: "",
+  has_smtp_pass: false,
   share_urls: [],
   desktop: false,
 };

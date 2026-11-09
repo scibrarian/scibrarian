@@ -99,6 +99,14 @@ import {
   IS_DESKTOP,
   UPLOAD_TMP_DIR,
 } from "./config.js";
+import {
+  BAD_SMTP_PORT,
+  isEmailAddress,
+  mailConfig,
+  sendTestEmail,
+  smtpPort,
+  type MailSettings,
+} from "./alerts.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
 import { addLinksToFolder, toPaper } from "./bookmark-links.js";
 import {
@@ -205,6 +213,7 @@ import {
 } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 import { defaultTopicName } from "../../shared/topic.js";
+import { MAIL_FIELDS, mailFieldsOf } from "../../shared/mail.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -1940,7 +1949,8 @@ function shareUrls(): string[] {
 type SettingRule =
   | { kind: "string"; validate?: (value: string) => string | null } // returns an error message
   | { kind: "boolean" }
-  | { kind: "secret"; expose: `has_${string}` }; // write-only; response carries presence
+  // write-only; response carries presence. `verbatim` stores it untrimmed.
+  | { kind: "secret"; expose: `has_${string}`; verbatim?: true };
 
 const SETTING_RULES = {
   ncbi_email: { kind: "string" },
@@ -1954,7 +1964,58 @@ const SETTING_RULES = {
   poll_enabled: { kind: "boolean" },
   library_open: { kind: "boolean" },
   ncbi_api_key: { kind: "secret", expose: "has_api_key" },
+  alert_email_enabled: { kind: "boolean" },
+  alert_email_to: { kind: "string", validate: validEmailOrBlank("send alerts to") },
+  smtp_host: { kind: "string" },
+  smtp_port: {
+    kind: "string",
+    validate: (v) => (smtpPort(v) === null ? BAD_SMTP_PORT : null),
+  },
+  smtp_user: { kind: "string" },
+  // Stored as typed, where an API key is trimmed: a password can begin or end
+  // with a space.
+  smtp_pass: { kind: "secret", expose: "has_smtp_pass", verbatim: true },
+  smtp_from: { kind: "string", validate: validEmailOrBlank("send from") },
 } satisfies Record<keyof Settings, SettingRule>;
+
+function validEmailOrBlank(purpose: string) {
+  return (v: string) =>
+    v && !isEmailAddress(v) ? `The address to ${purpose} isn't an email address.` : null;
+}
+
+// The mail settings a request would leave saved: its own values over the
+// stored ones. A blank password keeps the stored one, as it does on a save —
+// but only for the server and username it was saved with. Anywhere else it
+// would hand one mail server the password for another, and let an admin read
+// the write-only secret back by pointing the test email at a server of their
+// own. So a request that moves the login has to bring its password with it,
+// and the string is the reason it didn't.
+function mailSettingsAfter(body: Record<string, unknown>): MailSettings | string {
+  const s = getSettings();
+  const after = mailFieldsOf(s);
+  for (const key of MAIL_FIELDS) {
+    const v = body[key];
+    if (typeof v === "string") after[key] = v.trim();
+  }
+  const typed = body.smtp_pass;
+  if (typeof typed === "string" && typed.trim()) return { ...after, smtp_pass: typed };
+  // Without a username no password is sent, so there is nothing to refuse.
+  if (s.smtp_pass && after.smtp_user) {
+    if (after.smtp_host.toLowerCase() !== s.smtp_host.toLowerCase()) {
+      return "Enter the password for the new mail server.";
+    }
+    if (after.smtp_user !== s.smtp_user) return "Enter the password for the new username.";
+  }
+  return { ...after, smtp_pass: s.smtp_pass };
+}
+
+// The viewer cache's 404, the other way round: email alerts are a server
+// build's, since the desktop app only polls while someone is looking at it.
+function noEmailAlerts(res: Response): boolean {
+  if (!IS_DESKTOP) return false;
+  res.status(404).json({ error: "Email alerts are only available on a server." });
+  return true;
+}
 
 const SETTING_KEYS = Object.keys(SETTING_RULES) as (keyof Settings)[];
 
@@ -1997,6 +2058,23 @@ api.put("/settings", (req, res) => {
       if (err) return res.status(400).json({ error: err });
     }
   }
+  // Whether alerts are on or not: a login moved without its password would
+  // otherwise be saved with the old one, which would go to the new server as
+  // soon as alerts were on.
+  const mail = mailSettingsAfter(body);
+  if (typeof mail === "string") return res.status(400).json({ error: mail });
+  // Alerts that are on have to be able to send, judged on what the save would
+  // leave rather than on the fields it carries. Turned on without a mail server,
+  // they would fail in the log after every scheduled check while the switch
+  // said all was well.
+  const enabledAfter =
+    typeof body.alert_email_enabled === "boolean"
+      ? body.alert_email_enabled
+      : getSettings().alert_email_enabled === "1";
+  if (enabledAfter) {
+    const config = mailConfig(mail);
+    if (typeof config === "string") return res.status(400).json({ error: config });
+  }
   for (const key of SETTING_KEYS) {
     const rule: SettingRule = SETTING_RULES[key];
     const value = body[key];
@@ -2006,12 +2084,29 @@ api.put("/settings", (req, res) => {
       setSetting(key, value ? "1" : "0");
     } else if (rule.kind === "secret" && typeof value === "string" && value.trim()) {
       // Secrets are write-only: only overwrite on an explicit non-empty value.
-      setSetting(key, value.trim());
+      setSetting(key, rule.verbatim ? value : value.trim());
     }
   }
+  // A password is only ever sent with a username, so one left without could
+  // never be used again. Clearing the username is how a login is taken away.
+  if (!mail.smtp_user) setSetting("smtp_pass", "");
   rescheduleFromSettings();
   res.json(settingsResponse());
 });
+
+// Send a test email with the mail settings in the body, which are the dialog's
+// and may not have been saved. Admin-only by the gate above, being a POST: it
+// sends with the stored password.
+api.post(
+  "/settings/test-email",
+  asyncHandler(async (req, res) => {
+    if (noEmailAlerts(res)) return;
+    const mail = mailSettingsAfter((req.body ?? {}) as Record<string, unknown>);
+    if (typeof mail === "string") return res.status(400).json({ error: mail });
+    await sendTestEmail(mail);
+    res.json({ ok: true });
+  })
+);
 
 // ---------- workspaces (desktop only) ----------
 

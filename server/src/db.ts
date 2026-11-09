@@ -599,6 +599,7 @@ export function dropUnheldArticles(): number {
 // ---------- settings ----------
 
 const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+const allSettingsStmt = db.prepare("SELECT key, value FROM settings");
 const setSettingStmt = db.prepare(
   "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 );
@@ -613,11 +614,14 @@ export function setSetting(key: keyof Settings, value: string): void {
 }
 
 // Derived from the defaults' key set so a newly added setting can't be
-// persisted but read back as "" because this list wasn't updated.
+// persisted but read back as "" because this list wasn't updated. One query
+// for the lot: PubMed's client reads these before every request it makes.
 export function getSettings(): Settings {
+  const rows = allSettingsStmt.all() as { key: string; value: string }[];
+  const stored = new Map(rows.map((r) => [r.key, r.value]));
   const out = {} as Settings;
   for (const key of Object.keys(SETTING_DEFAULTS) as (keyof Settings)[]) {
-    out[key] = getSetting(key);
+    out[key] = stored.get(key) ?? "";
   }
   return out;
 }
@@ -1157,6 +1161,28 @@ export function getArticleAbstracts(pmids: string[]): { pmid: string; abstract: 
     pmids,
     (ph) => `SELECT pmid, abstract FROM articles WHERE pmid IN (${ph})`
   );
+}
+
+// What the scheduled-poll email prints of each paper it lists (see alerts.ts).
+// Unknown pmids are simply absent, as above.
+export interface AlertArticle {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  pub_date: string;
+  pub_date_display: string;
+  authors: string[];
+  url: string;
+}
+
+export function alertArticles(pmids: string[]): AlertArticle[] {
+  const rows = queryByIds<Omit<AlertArticle, "authors"> & { authors: string }>(
+    pmids,
+    (ph) =>
+      `SELECT pmid, title, journal_name, pub_date, pub_date_display, authors, url
+       FROM articles WHERE pmid IN (${ph})`
+  );
+  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
 }
 
 const upsertArticleStmt = db.prepare(`

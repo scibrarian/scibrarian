@@ -22,6 +22,7 @@ import type {
   JournalSuggestResponse,
   LibraryStats,
   LinkedPaper,
+  MailSettingsDraft,
   MeshHeadingsResponse,
   MeshSearchResponse,
   PaperQuery,
@@ -35,6 +36,7 @@ import type {
   ProPushResult,
   ProSyncStatus,
   RefreshResponse,
+  SettingsUpdate,
   ShareLinkResponse,
   TopicDetail,
   TopicPreviewResponse,
@@ -382,8 +384,12 @@ export const api = {
   },
 
   getSettings: () => req<AppSettings>("/api/settings"),
-  updateSettings: (s: Partial<AppSettings> & { ncbi_api_key?: string }) =>
+  updateSettings: (s: SettingsUpdate) =>
     req<AppSettings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+  // Sends with the mail settings given, saved or not; a blank password means
+  // the stored one. Rejects with what the mail server objected to.
+  testEmail: (s: MailSettingsDraft) =>
+    req<{ ok: true }>("/api/settings/test-email", { method: "POST", body: JSON.stringify(s) }),
 
   // Irreversible. Answers with what it deleted.
   resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),

@@ -94,6 +94,16 @@ export const SETTING_DEFAULTS = {
   // Deliberately a UI setting (not env): the instance owner, not whoever
   // deploys the server, must be the one making that call.
   library_open: "0",
+  // One email after each unattended poll that found something; see alerts.ts.
+  // Server builds only — the desktop app never sends one.
+  alert_email_enabled: "0",
+  alert_email_to: "",
+  // The mail server the alerts go out through. A blank port means 587.
+  smtp_host: "",
+  smtp_port: "",
+  smtp_user: "",
+  smtp_pass: "",
+  smtp_from: "",
 };
 
 // Path to the built client (used in production / `npm start`). Overridable

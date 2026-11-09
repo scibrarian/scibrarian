@@ -2837,6 +2837,50 @@ button.info-tip:focus-visible {
   overflow-y: auto;
 }
 
+/* ---------- email alerts ---------- */
+
+/* Seven fields and a paragraph, which a laptop held sideways already runs out
+   of room for — scrolled inside itself for the topic dialog's reason. */
+.modal:has(> .alerts-form) {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+/* A heading partway down a dialog's form, over the fields it groups. */
+.modal-subheading {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Its explanation is a caption, not a field: the form's gap would otherwise
+   leave it as far from its heading as from the field under it. */
+.modal-subheading + .hint {
+  margin: -8px 0 0;
+}
+
+/* The one action in a dialog's row that isn't an answer to the dialog — Send
+   test email — set apart at the left. */
+.modal-actions .modal-actions-aside {
+  margin-right: auto;
+}
+
+/* The button in the Polling form that opens the dialog. Outlined rather than
+   filled, so Save settings stays the one accent button in that form. */
+.stacked-form button.secondary-btn {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+/* What the alerts are set to, beside that button. In a .field, which is bold
+   for its label's sake, and this is a sentence. */
+.alerts-row .hint {
+  font-weight: 400;
+  margin: 0;
+}
+
 /* ---------- section nav (Interests / Library) ---------- */
 
 .gear-btn {
