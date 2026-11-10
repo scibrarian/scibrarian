@@ -3520,7 +3520,7 @@ html {
   pointer-events: none;
   border: 2px dashed var(--accent);
   border-radius: var(--radius);
-  background: rgba(234, 241, 255, 0.85);
+  background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
 }
 
 /* Sticky inside the overlay, so a drop on a collection scrolled far down its
@@ -3542,12 +3542,6 @@ html {
   font-weight: 600;
   text-align: center;
   box-shadow: var(--shadow);
-}
-
-@media (prefers-color-scheme: dark) {
-  .drop-overlay {
-    background: rgba(30, 41, 64, 0.85);
-  }
 }
 
 /* import progress */

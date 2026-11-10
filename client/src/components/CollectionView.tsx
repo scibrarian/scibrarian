@@ -50,11 +50,6 @@ function fileCount(n: number): string {
   return `${n} file${n === 1 ? "" : "s"}`;
 }
 
-// "1,240 PDFs" / "1 PDF".
-function pdfCount(n: number): string {
-  return `${n.toLocaleString()} PDF${n === 1 ? "" : "s"}`;
-}
-
 // What a selection is filtered to before anything is sent. Told by name, so a
 // dropped folder's files are sorted before any of them is opened.
 function isPdf(f: { name: string }): boolean {
@@ -91,8 +86,8 @@ function dropQuestion(asked: DroppedFolders, into: string | null): { title: stri
   const to = into ? `“${into}”` : "this collection";
   const it = folders.length === 1 ? "it" : "them";
   return {
-    title: `Add ${pdfCount(asked.fromFolders)} from ${from} to ${to}?`,
-    message: asked.beside ? `The ${pdfCount(asked.beside)} dropped with ${it} will be added too.` : undefined,
+    title: `Add ${plural(asked.fromFolders, "PDF")} from ${from} to ${to}?`,
+    message: asked.beside ? `The ${plural(asked.beside, "PDF")} dropped with ${it} will be added too.` : undefined,
   };
 }
 
@@ -316,7 +311,7 @@ export function CollectionView({
     const ignoredNote =
       (ignored ? ` Ignored ${fileCount(ignored)} that aren't PDFs.` : "") +
       (unreadable
-        ? ` Couldn't read ${unreadable} ${unreadable === 1 ? "item" : "items"} in the dropped folders.`
+        ? ` Couldn't read ${plural(unreadable, "item")} in the dropped folders.`
         : "");
     selectionNotesRef.current = ignoredNote; // + skipNote once the sizes are known
     if (pdfs.length === 0) {
