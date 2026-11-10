@@ -19,7 +19,7 @@ import {
   type WalkProgress,
 } from "../lib/dropped-files";
 import { errorMessage, plural } from "../lib/format";
-import { useCachedFetch, useHeldWhile, type FetchCache } from "../lib/hooks";
+import { useCachedFetch, useDebounced, useHeldWhile, type FetchCache } from "../lib/hooks";
 import { useImportJob, type ImportJobs } from "../lib/import-jobs";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
@@ -37,6 +37,12 @@ import { MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../sha
 const UPLOAD_BATCH = Math.min(20, MAX_UPLOAD_FILES);
 
 const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+
+// How long a dropped folder's walk runs before it is shown. Most folders are
+// read in less, and their row came and went in the moment before the question
+// opened, pushing everything under it down and back up again. A walk long
+// enough to need its count and its Cancel gets them after this.
+const WALK_SHOWN_AFTER_MS = 400;
 
 // "a.pdf, b.pdf, c.pdf and 4 more" — enough to act on without a wall of names.
 function nameList(files: File[], max = 3): string {
@@ -171,6 +177,7 @@ export function CollectionView({
   // is. The walk's own controller stops it, from its Cancel or when the view
   // goes, which leaves a walk of a whole disk nothing to report to.
   const [reading, setReading] = useState<WalkProgress | null>(null);
+  const readingShown = useDebounced(reading != null, WALK_SHOWN_AFTER_MS);
   const walking = useRef<AbortController | null>(null);
   useEffect(() => () => walking.current?.abort(), []);
   const [droppedFolders, setDroppedFolders] = useState<DroppedFolders | null>(null);
@@ -752,7 +759,7 @@ export function CollectionView({
             Uploading {uploading.done} / {uploading.total}…
           </div>
         </div>
-      ) : reading ? (
+      ) : reading && readingShown ? (
         <div className="import-progress">
           <div className="progress-label">
             Looking for PDFs in the dropped folders…

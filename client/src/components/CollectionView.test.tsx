@@ -342,6 +342,16 @@ describe("files dropped onto a collection", () => {
     expect(api.startImport).toHaveBeenCalledTimes(1);
   });
 
+  it("doesn't show a quick walk, whose row would push the view down and back as the question opens", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Downloads", [fileEntry("a.pdf")])]) });
+    // The walk is under way, waiting on the folder's first batch.
+    await settle();
+    expect(screen.queryByText(/Looking for PDFs/)).toBeNull();
+    await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    expect(screen.queryByText(/Looking for PDFs/)).toBeNull();
+  });
+
   it("counts what a folder's walk has got through, and stops it on Cancel", async () => {
     const target = await view();
     const tree = folderEntry("Home", [fileEntry("a.pdf"), folderEntry("mounted", [], { stuck: true })]);
