@@ -426,15 +426,20 @@ export function CollectionView({
     return carriesFiles(e.dataTransfer) && e.currentTarget.contains(e.target as Node);
   }
 
+  // A drag over the view is counted in and out whether or not the view can take
+  // it, so that one already over it when the view can (an upload ended under
+  // it) starts from the right depth. Counted from zero instead, its first move
+  // from one child to the next came out at zero and hid the overlay. Only what
+  // takes the drop waits on canDrop.
   function dragEnter(e: DragEvent) {
     if (!filesOverView(e)) return;
-    e.preventDefault();
+    if (canDrop) e.preventDefault();
     dragDepth.current++;
     setDragging(true);
   }
 
   function dragOver(e: DragEvent) {
-    if (!filesOverView(e)) return;
+    if (!canDrop || !filesOverView(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   }
@@ -452,7 +457,7 @@ export function CollectionView({
   function drop(e: DragEvent) {
     dragDepth.current = 0;
     setDragging(false);
-    if (!filesOverView(e)) return;
+    if (!canDrop || !filesOverView(e)) return;
     e.preventDefault();
     const dropped = takeDrop(e.dataTransfer);
     if (dropped.folders.length === 0) void handleImport(dropped.files);
@@ -621,10 +626,10 @@ export function CollectionView({
   return (
     <div
       className="source-view"
-      onDragEnter={canDrop ? dragEnter : undefined}
-      onDragOver={canDrop ? dragOver : undefined}
-      onDragLeave={canDrop ? dragLeave : undefined}
-      onDrop={canDrop ? drop : undefined}
+      onDragEnter={dragEnter}
+      onDragOver={dragOver}
+      onDragLeave={dragLeave}
+      onDrop={drop}
     >
       {/* The row is always here, because the papers below it start at one
           height in every section; the management chrome inside it is

@@ -397,6 +397,29 @@ describe("files dropped onto a collection", () => {
     expect(overlay()).toBeNull();
   });
 
+  it("goes on showing where a drop goes for a drag already over the view when it can take one", async () => {
+    const target = await view();
+    const inside = target.querySelector(".source-head")!;
+    let finish = () => {};
+    api.uploadFiles.mockImplementationOnce(
+      (_id: number, files: File[]) =>
+        new Promise((resolve) => (finish = () => resolve({ added: files.length, skipped: 0 })))
+    );
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf")]) });
+    await screen.findByText(/^Uploading 0 \/ 1/);
+    // More files dragged in while that one goes up: nothing to take them yet.
+    const dt = dataTransfer([fileEntry("b.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    finish();
+    await waitFor(() => expect(overlay()).not.toBeNull());
+    fireEvent.dragEnter(inside, { dataTransfer: dt });
+    fireEvent.dragLeave(target, { dataTransfer: dt });
+    expect(overlay()).not.toBeNull();
+    fireEvent.dragLeave(inside, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+  });
+
   it("takes nothing from a viewer, and leaves the drop to be turned away", async () => {
     const target = await view({ isAdmin: false });
     const dt = dataTransfer([fileEntry("a.pdf")]);
