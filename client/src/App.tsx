@@ -959,9 +959,11 @@ export default function App() {
     <>
       No papers yet. Click{" "}
       <strong><FilePlus size={14} className="inline-icon" aria-hidden /> Add files</strong> to upload
-      PDFs — select as many as you like, a whole folder's worth at a time — or drag PDFs and folders
-      here. The app scans each PDF for its PubMed ID and pulls in the title, authors, journal, year,
-      and citation count.
+      PDFs — select as many as you like, a whole folder's worth at a time
+      {/* Only where a drop is taken. Every collection at once is no one
+          collection to put it in, and there it is turned away. */}
+      {typeof activeCollectionId === "number" && " — or drag PDFs and folders here"}. The app scans
+      each PDF for its PubMed ID and pulls in the title, authors, journal, year, and citation count.
     </>
   ) : (
     <>No papers in this folder yet.</>
