@@ -2,10 +2,42 @@
 // in it walked into one flat list of the files they hold, and the guard that
 // stops a drop anywhere else from opening the file in place of the app.
 
-// Whether a drag is carrying files from outside, rather than text or a link
-// dragged within the page, which are left to do what they always do.
+// Whether a drag is carrying files from outside, rather than text, a link or
+// an image dragged within the page, which are left to do what they always do.
+//
+// The types alone can't say so: Chromium lists "Files" among them for an image
+// dragged within the page as well. Where the drag began can (see
+// watchPageDrags).
 export function carriesFiles(dt: DataTransfer | null): boolean {
-  return dt != null && Array.from(dt.types).includes("Files");
+  return dt != null && !dragFromPage && Array.from(dt.types).includes("Files");
+}
+
+// A drag that began inside the page, from its dragstart until it is over. Files
+// dragged in from the desktop never fire dragstart here.
+let dragFromPage = false;
+
+// Keep dragFromPage. Cleared at the drop as well as at the dragend, because the
+// dragend goes to the element the drag began on, and one taken out of the page
+// mid-drag never passes it on to the window: missed, every file dragged in
+// after it would be turned away. After the drop rather than during it, so that
+// everything handling that drop still sees where it came from.
+export function watchPageDrags(target: Window): () => void {
+  const start = (e: Event) => {
+    if (!e.defaultPrevented) dragFromPage = true;
+  };
+  const end = () => {
+    dragFromPage = false;
+  };
+  const dropped = () => setTimeout(end);
+  target.addEventListener("dragstart", start);
+  target.addEventListener("dragend", end);
+  target.addEventListener("drop", dropped);
+  return () => {
+    target.removeEventListener("dragstart", start);
+    target.removeEventListener("dragend", end);
+    target.removeEventListener("drop", dropped);
+    end();
+  };
 }
 
 // A drop, taken apart while it can still be read: the files dropped as
@@ -32,8 +64,17 @@ export function takeDrop(dt: DataTransfer): Drop {
   return { files, folders };
 }
 
-// The files in these folders and in every folder below them, as one list. A
-// collection has no folders of its own, so the nesting has nowhere to go.
+// What a walk left out of its list, to be owned up to: files it didn't want,
+// and files and folders it couldn't read.
+export type PassedOver = { ignored: number; unreadable: number };
+
+// How far a walk has got: the folders it has read, and the wanted files it has
+// found in them.
+export type WalkProgress = { folders: number; found: number };
+
+// The files wanted from these folders and from every folder below them, as one
+// list. A collection has no folders of its own, so the nesting has nowhere to
+// go.
 //
 // Leaves out what the reader's file manager would have hidden: anything whose
 // name starts with a dot, and the __MACOSX folder a zip made on a Mac unpacks
@@ -42,34 +83,68 @@ export function takeDrop(dt: DataTransfer): Drop {
 // the PDF filter, be sent, and be turned away by the server one for one. Files
 // dropped as themselves are never filtered like this: those were picked.
 //
-// Never rejects. A file or folder that can't be read is counted in
-// `unreadable` and the walk goes on, so one locked folder doesn't cost the
-// reader the papers around it.
+// What is wanted is told by name, before anything is opened, and the rest are
+// only counted, in `ignored`. A Downloads folder of 8,000 images and 40 papers
+// is read as 40 files, and a locked one among the images is a file that wasn't
+// wanted, not one that couldn't be read.
+//
+// Never rejects, but for being stopped. A file or folder that can't be read is
+// counted in `unreadable` and the walk goes on, so one locked folder doesn't
+// cost the reader the papers around it.
+//
+// A folder dropped by mistake can be a whole disk, and nothing says how big a
+// folder is until all of it has been read, so the walk can be watched and
+// stopped. `onProgress` is told how far it has got after every folder read.
+// Stopped by `signal`, it rejects with the signal's reason at once, even while
+// it waits on a folder the browser never answers for.
 export async function walkFolders(
-  folders: FileSystemDirectoryEntry[]
-): Promise<{ files: File[]; unreadable: number }> {
+  folders: FileSystemDirectoryEntry[],
+  wanted: (file: { name: string }) => boolean,
+  { signal, onProgress }: { signal?: AbortSignal; onProgress?: (progress: WalkProgress) => void } = {}
+): Promise<{ files: File[] } & PassedOver> {
   const files: File[] = [];
+  let ignored = 0;
   let unreadable = 0;
+  let read = 0;
   const queue = [...folders];
   for (let folder = queue.shift(); folder; folder = queue.shift()) {
     let entries: FileSystemEntry[];
     try {
-      entries = await readFolder(folder);
-    } catch {
+      entries = await unlessStopped(readFolder(folder), signal);
+    } catch (e) {
+      if (signal?.aborted) throw e;
       unreadable++;
       continue;
     }
     const shown = entries.filter((e) => !hidden(e.name));
     for (const e of shown) if (e.isDirectory) queue.push(e as FileSystemDirectoryEntry);
-    const read = await Promise.allSettled(
-      shown.filter((e) => e.isFile).map((e) => fileOf(e as FileSystemFileEntry))
+    const inFolder = shown.filter((e) => e.isFile);
+    const kept = inFolder.filter(wanted);
+    ignored += inFolder.length - kept.length;
+    const opened = await unlessStopped(
+      Promise.allSettled(kept.map((e) => fileOf(e as FileSystemFileEntry))),
+      signal
     );
-    for (const r of read) {
+    for (const r of opened) {
       if (r.status === "fulfilled") files.push(r.value);
       else unreadable++;
     }
+    onProgress?.({ folders: ++read, found: files.length });
   }
-  return { files, unreadable };
+  return { files, ignored, unreadable };
+}
+
+// `work`, unless `signal` stops it first, and then the signal's reason at once.
+// The work itself goes on, since nothing takes back a readEntries already asked
+// for, but nothing waits on it any more.
+function unlessStopped<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
 }
 
 function hidden(name: string): boolean {
@@ -87,7 +162,12 @@ function readFolder(folder: FileSystemDirectoryEntry): Promise<FileSystemEntry[]
     const next = () =>
       reader.readEntries((batch) => {
         if (batch.length === 0) return resolve(all);
-        all.push(...batch);
+        // An entry at a time, not push(...batch). Spread, a batch becomes that
+        // many arguments, and an engine that hands a whole folder over in one
+        // batch overflows the call on a big enough one. Thrown in here, it
+        // would reach neither resolve nor reject, and the walk would wait on
+        // this folder for ever.
+        for (const entry of batch) all.push(entry);
         next();
       }, reject);
     next();

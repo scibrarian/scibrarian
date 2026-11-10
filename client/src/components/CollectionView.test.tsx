@@ -307,6 +307,81 @@ describe("files dropped onto a collection", () => {
     expect(await screen.findByText("Couldn't read 1 item in the dropped folders.")).toBeTruthy();
   });
 
+  it("counts apart the PDFs dropped beside a folder, and leaves out those too big to send", async () => {
+    const target = await view();
+    const tree = folderEntry("Downloads", [fileEntry("b.pdf"), fileEntry("huge.pdf", { size: 200 * 1024 * 1024 })]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf"), tree]) });
+    const dialog = await screen.findByRole("dialog", { name: "Add 1 PDF from “Downloads” to “Cardiology”?" });
+    expect(within(dialog).getByText("The 1 PDF dropped with it will be added too.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf", "b.pdf"]);
+  });
+
+  it("doesn't ask about a folder with nothing in it to add, and adds what was dropped beside it", async () => {
+    const target = await view();
+    const tree = folderEntry("Notes", [fileEntry("notes.txt")]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf"), tree]) });
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf"]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("takes nothing more while it asks about a folder, so a yes sends that folder alone", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Downloads", [fileEntry("a.pdf")])]) });
+    const dialog = await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    // The question's backdrop covers the screen, so a second drop lands on it,
+    // and React carries it up to the view the question belongs to.
+    expect(fireEvent.drop(dialog, { dataTransfer: dataTransfer([fileEntry("b.pdf")]) })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf"]);
+    expect(api.startImport).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts what a folder's walk has got through, and stops it on Cancel", async () => {
+    const target = await view();
+    const tree = folderEntry("Home", [fileEntry("a.pdf"), folderEntry("mounted", [], { stuck: true })]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([tree]) });
+    expect(await screen.findByText(/Looking for PDFs in the dropped folders… 1 found in 1 folder/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Add files/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText(/Looking for PDFs/)).toBeNull());
+    expect((screen.getByRole("button", { name: /Add files/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("takes nothing dropped on a dialog the view has open", async () => {
+    await view();
+    fireEvent.click(screen.getByRole("button", { name: "Delete collection" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete collection?" });
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(dialog, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    expect(fireEvent.drop(dialog, { dataTransfer: dt })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("takes nothing while a scan is running, whose scan would turn the new files away", async () => {
+    fakePoll();
+    api.getImportStatus.mockResolvedValue(job({ state: "running", processed: 1, matched: 1 }));
+    const { container } = render(<View id={nextId++} />);
+    await settle();
+    const target = container.firstElementChild as HTMLElement;
+    expect((screen.getByRole("button", { name: /Add files/ }) as HTMLButtonElement).disabled).toBe(true);
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    expect(fireEvent.drop(target, { dataTransfer: dt })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
   it("shows where the drop goes for as long as files are over the view", async () => {
     const target = await view();
     const inside = target.querySelector(".source-head")!;

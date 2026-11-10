@@ -4,22 +4,33 @@
 
 export const pdf = (name: string) => new File(["%PDF-1.4"], name, { type: "application/pdf" });
 
-export function fileEntry(name: string, { unreadable = false } = {}): FileSystemFileEntry {
+// `size` is what the file says it holds, without its holding it: enough to put
+// it over the upload cap.
+export function fileEntry(
+  name: string,
+  { unreadable = false, size }: { unreadable?: boolean; size?: number } = {}
+): FileSystemFileEntry {
+  const file = () => {
+    const f = pdf(name);
+    if (size != null) Object.defineProperty(f, "size", { value: size });
+    return f;
+  };
   return {
     name,
     isFile: true,
     isDirectory: false,
     file: (ok: (f: File) => void, fail?: (e: DOMException) => void) =>
-      unreadable ? fail?.(new DOMException("Can't read it", "NotReadableError")) : ok(pdf(name)),
+      unreadable ? fail?.(new DOMException("Can't read it", "NotReadableError")) : ok(file()),
   } as unknown as FileSystemFileEntry;
 }
 
 // A folder that hands its entries over `batch` at a time, a tick apart, the
-// way Chromium's does (100 a call), and ends with an empty batch.
+// way Chromium's does (100 a call), and ends with an empty batch. A `stuck` one
+// is asked and never answers.
 export function folderEntry(
   name: string,
   children: FileSystemEntry[],
-  { batch = 100, unreadable = false } = {}
+  { batch = 100, unreadable = false, stuck = false } = {}
 ): FileSystemDirectoryEntry {
   return {
     name,
@@ -30,6 +41,7 @@ export function folderEntry(
       return {
         readEntries: (ok: (b: FileSystemEntry[]) => void, fail?: (e: DOMException) => void) =>
           setTimeout(() => {
+            if (stuck) return;
             if (unreadable) return fail?.(new DOMException("Can't read it", "NotReadableError"));
             const next = children.slice(at, at + batch);
             at += next.length;

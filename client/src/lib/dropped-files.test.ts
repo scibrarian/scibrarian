@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { refuseStrayDrops, takeDrop, walkFolders } from "./dropped-files";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { carriesFiles, refuseStrayDrops, takeDrop, walkFolders, watchPageDrags } from "./dropped-files";
 import { dataTransfer, fileEntry, folderEntry } from "./test-drops";
 
 const names = (files: File[]) => files.map((f) => f.name).sort();
+const isPdf = (f: { name: string }) => /\.pdf$/i.test(f.name);
 
 describe("taking a drop apart", () => {
   it("separates the files dropped as themselves from the folders to walk", () => {
@@ -26,14 +27,14 @@ describe("walking dropped folders", () => {
       folderEntry("2024", [fileEntry("b.pdf"), folderEntry("trials", [fileEntry("c.pdf")])]),
       folderEntry("empty", []),
     ]);
-    const found = await walkFolders([tree, folderEntry("Other", [fileEntry("d.pdf")])]);
+    const found = await walkFolders([tree, folderEntry("Other", [fileEntry("d.pdf")])], isPdf);
     expect(names(found.files)).toEqual(["a.pdf", "b.pdf", "c.pdf", "d.pdf"]);
     expect(found.unreadable).toBe(0);
   });
 
   it("reads a folder past the first batch of entries it hands over", async () => {
     const many = Array.from({ length: 250 }, (_, i) => fileEntry(`paper-${i}.pdf`));
-    const found = await walkFolders([folderEntry("Big", many, { batch: 100 })]);
+    const found = await walkFolders([folderEntry("Big", many, { batch: 100 })], isPdf);
     expect(found.files).toHaveLength(250);
   });
 
@@ -45,7 +46,7 @@ describe("walking dropped folders", () => {
       folderEntry(".git", [fileEntry("tracked.pdf")]),
       folderEntry("__MACOSX", [fileEntry("._paper.pdf"), fileEntry("paper.pdf")]),
     ]);
-    const found = await walkFolders([tree]);
+    const found = await walkFolders([tree], isPdf);
     expect(names(found.files)).toEqual(["paper.pdf"]);
   });
 
@@ -56,9 +57,80 @@ describe("walking dropped folders", () => {
       folderEntry("private", [fileEntry("b.pdf")], { unreadable: true }),
       folderEntry("open", [fileEntry("c.pdf")]),
     ]);
-    const found = await walkFolders([tree]);
+    const found = await walkFolders([tree], isPdf);
     expect(names(found.files)).toEqual(["a.pdf", "c.pdf"]);
     expect(found.unreadable).toBe(2);
+  });
+
+  it("counts the files it doesn't want by name, without opening them", async () => {
+    const tree = folderEntry("Downloads", [
+      fileEntry("a.pdf"),
+      fileEntry("photo.jpg"),
+      fileEntry("locked.docx", { unreadable: true }),
+    ]);
+    const found = await walkFolders([tree], isPdf);
+    expect(names(found.files)).toEqual(["a.pdf"]);
+    expect(found.ignored).toBe(2);
+    expect(found.unreadable).toBe(0);
+  });
+
+  it("says how far it has got after every folder it reads", async () => {
+    const tree = folderEntry("Downloads", [
+      fileEntry("a.pdf"),
+      fileEntry("notes.txt"),
+      folderEntry("2024", [fileEntry("b.pdf"), fileEntry("c.pdf")]),
+    ]);
+    const progress = vi.fn();
+    await walkFolders([tree], isPdf, { onProgress: progress });
+    expect(progress.mock.calls.map(([p]) => p)).toEqual([
+      { folders: 1, found: 1 },
+      { folders: 2, found: 3 },
+    ]);
+  });
+
+  it("stops when told to, though the folder it waits on never answers", async () => {
+    const walk = new AbortController();
+    const tree = folderEntry("Home", [fileEntry("a.pdf"), folderEntry("mounted", [], { stuck: true })]);
+    const progress = vi.fn(() => setTimeout(() => walk.abort()));
+    const ended = walkFolders([tree], isPdf, { signal: walk.signal, onProgress: progress }).then(
+      () => "finished",
+      () => "stopped"
+    );
+    expect(await ended).toBe("stopped");
+    expect(progress).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a drag that began inside the page", () => {
+  let stop = () => {};
+  afterEach(() => stop());
+
+  // What Chromium says an image dragged within the page carries.
+  const image = { types: ["Files", "text/uri-list", "text/html"] } as unknown as DataTransfer;
+  const fire = (target: EventTarget, type: string) => target.dispatchEvent(new Event(type, { bubbles: true }));
+
+  it("isn't taken for files from outside, from its dragstart to its dragend", () => {
+    stop = watchPageDrags(window);
+    const img = document.body.appendChild(document.createElement("img"));
+    expect(carriesFiles(image)).toBe(true);
+    fire(img, "dragstart");
+    expect(carriesFiles(image)).toBe(false);
+    fire(img, "dragend");
+    expect(carriesFiles(image)).toBe(true);
+    img.remove();
+  });
+
+  it("is over once dropped, though its dragend never reaches the window", async () => {
+    stop = watchPageDrags(window);
+    const img = document.body.appendChild(document.createElement("img"));
+    fire(img, "dragstart");
+    // Taken out of the page mid-drag: its dragend has nowhere to go.
+    img.remove();
+    fire(document.body, "drop");
+    // Still known for what it is to whatever else handles the same drop.
+    expect(carriesFiles(image)).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(carriesFiles(image)).toBe(true);
   });
 });
 

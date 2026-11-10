@@ -10,8 +10,15 @@ import {
 } from "react";
 import { FilePlus } from "lucide-react";
 import { api } from "../api";
-import { carriesFiles, takeDrop, walkFolders, type Drop } from "../lib/dropped-files";
-import { errorMessage } from "../lib/format";
+import {
+  carriesFiles,
+  takeDrop,
+  walkFolders,
+  type Drop,
+  type PassedOver,
+  type WalkProgress,
+} from "../lib/dropped-files";
+import { errorMessage, plural } from "../lib/format";
 import { useCachedFetch, useHeldWhile, type FetchCache } from "../lib/hooks";
 import { useImportJob, type ImportJobs } from "../lib/import-jobs";
 import { Banner } from "./Banner";
@@ -48,18 +55,45 @@ function pdfCount(n: number): string {
   return `${n.toLocaleString()} PDF${n === 1 ? "" : "s"}`;
 }
 
-// What a selection is filtered to before anything is sent.
-function isPdf(f: File): boolean {
+// What a selection is filtered to before anything is sent. Told by name, so a
+// dropped folder's files are sorted before any of them is opened.
+function isPdf(f: { name: string }): boolean {
   return /\.pdf$/i.test(f.name);
 }
 
+// What a selection's upload will send: its PDFs, less those over the size cap.
+function sendable(f: File): boolean {
+  return isPdf(f) && f.size <= MAX_UPLOAD_BYTES;
+}
+
+// A drop with folders in it, walked and waiting on the reader's answer. The
+// files themselves, not a count of them, so a yes sends exactly what it was
+// asked about; the counts are taken once, when the walk is done.
+type DroppedFolders = {
+  files: File[];
+  passedOver: PassedOver;
+  folders: string[];
+  // The PDFs a yes would send from the folders, and from the files dropped
+  // beside them.
+  fromFolders: number;
+  beside: number;
+};
+
 // "Add 312 PDFs from “Downloads” to “Cardiology”?" The folder is named so that
 // dropping the wrong one is caught by its name, and the PDFs are counted so
-// that dropping one far bigger than meant is caught by its size.
-function dropQuestion(files: File[], folders: string[], into: string | null): string {
+// that dropping one far bigger than meant is caught by its size. What the
+// question counts is what a yes sends, so a PDF over the size cap isn't in it,
+// and the PDFs dropped beside the folder, which the title would otherwise
+// credit to it, are counted apart underneath.
+function dropQuestion(asked: DroppedFolders, into: string | null): { title: string; message?: string } {
+  const { folders } = asked;
   const from = folders.length === 1 ? `“${folders[0]}”` : `${folders.length} folders`;
   const to = into ? `“${into}”` : "this collection";
-  return `Add ${pdfCount(files.filter(isPdf).length)} from ${from} to ${to}?`;
+  const it = folders.length === 1 ? "it" : "them";
+  return {
+    title: `Add ${pdfCount(asked.fromFolders)} from ${from} to ${to}?`,
+    message: asked.beside ? `The ${pdfCount(asked.beside)} dropped with ${it} will be added too.` : undefined,
+  };
 }
 
 // A file with no paper behind it: the scan found none, couldn't read it, or
@@ -137,16 +171,14 @@ export function CollectionView({
   // scanned, and the rows the server already has say nothing yet about whether
   // they matched.
   const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
-  // While the folders a drop carried are being walked, before anything is sent.
-  const [reading, setReading] = useState(false);
-  // A drop with folders in it, walked and waiting on the reader's answer. The
-  // files themselves, not a count of them, so a yes sends exactly what it was
-  // asked about.
-  const [droppedFolders, setDroppedFolders] = useState<{
-    files: File[];
-    unreadable: number;
-    folders: string[];
-  } | null>(null);
+  // How far the walk of a drop's folders has got, while they are walked and
+  // before anything is sent. Non-null is the "reading" flag, as `uploading`'s
+  // is. The walk's own controller stops it, from its Cancel or when the view
+  // goes, which leaves a walk of a whole disk nothing to report to.
+  const [reading, setReading] = useState<WalkProgress | null>(null);
+  const walking = useRef<AbortController | null>(null);
+  useEffect(() => () => walking.current?.abort(), []);
+  const [droppedFolders, setDroppedFolders] = useState<DroppedFolders | null>(null);
   // Files being dragged over the view. dragenter and dragleave fire for every
   // element the pointer crosses inside it, the leave after the enter, so the
   // depth counts them out and the view is left only once it is back to zero.
@@ -243,15 +275,34 @@ export function CollectionView({
     void importJobs.check(collectionId).then(() => setScanChecked(true));
   }, [collectionId, importJobs]);
 
+  // Set from the start of handleImport to the scan it starts. `busy` keeps
+  // every way in shut while a selection is being added, and this is what still
+  // holds if one is missed: a second selection run alongside the first shares
+  // its progress bar and its notes, and the scan it asks for is turned away as
+  // already running, leaving its files unscanned. A ref, set before anything is
+  // awaited, so that two calls in the same tick can't both get past it.
+  const importing = useRef(false);
+
+  async function handleImport(picked: File[], passedOver?: PassedOver) {
+    if (importing.current) return;
+    importing.current = true;
+    try {
+      await importFiles(picked, passedOver);
+    } finally {
+      importing.current = false;
+    }
+  }
+
   // Upload the picked or dropped PDFs in batches, then kick off the scan/match
-  // job. `unreadable` is what a dropped folder held that couldn't be read,
-  // counted by the walk and reported with the files left out here.
+  // job. `passedOver` is what a dropped folder held that the walk left out —
+  // files that aren't PDFs, and anything it couldn't read — reported with the
+  // files left out here.
   //
   // The three mutating handlers below all take a collection. None is reachable
   // without one — their buttons are part of the chrome that a null id removes —
   // so these guards exist to make that unreachability a fact the compiler
   // checks, rather than a claim about the markup that a later edit could break.
-  async function handleImport(picked: File[], unreadable = 0) {
+  async function importFiles(picked: File[], passedOver: PassedOver = { ignored: 0, unreadable: 0 }) {
     if (collectionId == null) return;
     const pdfs = picked.filter(isPdf);
     setError(null);
@@ -260,7 +311,8 @@ export function CollectionView({
     // uploads its PDFs and says what it left behind. Counted rather than
     // silently filtered: dropping files without a word is how "it didn't
     // upload everything" becomes a mystery.
-    const ignored = picked.length - pdfs.length;
+    const ignored = picked.length - pdfs.length + passedOver.ignored;
+    const { unreadable } = passedOver;
     const ignoredNote =
       (ignored ? ` Ignored ${fileCount(ignored)} that aren't PDFs.` : "") +
       (unreadable
@@ -365,27 +417,30 @@ export function CollectionView({
     if (started && started.state !== "running") reportSettled(started);
   }
 
-  // Files dragged onto the view go where picked ones do, and only where Add
-  // files is: an admin's view of one collection, with nothing already being
-  // read or sent. Anywhere else the drag finds nothing to take it, and
-  // refuseStrayDrops turns it away.
-  const canDrop = isAdmin && collectionId != null && uploading == null && !reading;
+  // Files dragged over the view itself. Not over a dialog it has open: those
+  // are portaled to the body, outside the view on screen, but React still
+  // carries their events up through it, since in its tree they are the view's
+  // children. Left alone, a PDF dropped on "Delete collection?" went into the
+  // collection being deleted.
+  function filesOverView(e: DragEvent): boolean {
+    return carriesFiles(e.dataTransfer) && e.currentTarget.contains(e.target as Node);
+  }
 
   function dragEnter(e: DragEvent) {
-    if (!carriesFiles(e.dataTransfer)) return;
+    if (!filesOverView(e)) return;
     e.preventDefault();
     dragDepth.current++;
     setDragging(true);
   }
 
   function dragOver(e: DragEvent) {
-    if (!carriesFiles(e.dataTransfer)) return;
+    if (!filesOverView(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   }
 
   function dragLeave(e: DragEvent) {
-    if (!carriesFiles(e.dataTransfer)) return;
+    if (!filesOverView(e)) return;
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setDragging(false);
   }
@@ -397,7 +452,7 @@ export function CollectionView({
   function drop(e: DragEvent) {
     dragDepth.current = 0;
     setDragging(false);
-    if (!carriesFiles(e.dataTransfer)) return;
+    if (!filesOverView(e)) return;
     e.preventDefault();
     const dropped = takeDrop(e.dataTransfer);
     if (dropped.folders.length === 0) void handleImport(dropped.files);
@@ -405,22 +460,43 @@ export function CollectionView({
   }
 
   async function readFolders(dropped: Drop) {
-    setReading(true);
-    const found = await walkFolders(dropped.folders);
-    setReading(false);
+    const walk = new AbortController();
+    walking.current = walk;
+    setReading({ folders: 0, found: 0 });
+    const found = await walkFolders(dropped.folders, isPdf, { signal: walk.signal, onProgress: setReading })
+      // Cancelled. Nothing was sent, so there is nothing to say.
+      .catch((e) => {
+        if (walk.signal.aborted) return null;
+        throw e;
+      })
+      // Reset however the walk ends. Left set, `reading` shuts the view to every
+      // way of adding files until the reader leaves it.
+      .finally(() => {
+        if (walking.current === walk) walking.current = null;
+        setReading(null);
+      });
+    if (!found) return;
     const files = [...dropped.files, ...found.files];
-    // Nothing to ask about. handleImport says there was nothing to add.
-    if (!files.some(isPdf)) {
-      void handleImport(files, found.unreadable);
+    const fromFolders = found.files.filter(sendable).length;
+    // Nothing in the folders to ask about. What was dropped beside them goes in
+    // as any dropped file does, or handleImport says why nothing could.
+    if (fromFolders === 0) {
+      void handleImport(files, found);
       return;
     }
-    setDroppedFolders({ files, unreadable: found.unreadable, folders: dropped.folders.map((f) => f.name) });
+    setDroppedFolders({
+      files,
+      passedOver: { ignored: found.ignored, unreadable: found.unreadable },
+      folders: dropped.folders.map((f) => f.name),
+      fromFolders,
+      beside: dropped.files.filter(sendable).length,
+    });
   }
 
   function addDroppedFolders() {
     const asked = droppedFolders;
     setDroppedFolders(null);
-    if (asked) void handleImport(asked.files, asked.unreadable);
+    if (asked) void handleImport(asked.files, asked.passedOver);
   }
 
   async function rename(next: string) {
@@ -477,6 +553,19 @@ export function CollectionView({
   const job = watched && watched.state !== "idle" && watched.state !== "lost" ? watched : null;
   const running = job?.state === "running";
   const progressPct = job && job.total ? Math.round((job.processed / job.total) * 100) : 0;
+
+  // Files are being added: a dropped folder read or asked about, files going
+  // up, or the scan over them. Until it is over Add files is off and nothing
+  // dropped is taken, since a second selection would be uploaded only to have
+  // its scan turned away as already running (see `importing`).
+  const busy = reading != null || droppedFolders != null || uploading != null || running;
+
+  // Files dragged onto the view go where picked ones do, and only where Add
+  // files is: an admin's view of one collection, with nothing already being
+  // added. Anywhere else the drag finds nothing to take it, and
+  // refuseStrayDrops turns it away.
+  const canDrop = isAdmin && collectionId != null && !busy;
+  const dropAsked = droppedFolders && dropQuestion(droppedFolders, name);
 
   // Rows nothing has decided about yet.
   const anyPending = files.some((f) => f.match_status === "pending");
@@ -613,7 +702,7 @@ export function CollectionView({
                 accept list below doesn't apply to a directory pick. Folders
                 with folders inside them, which no picker selects in one
                 gesture, come in by being dragged onto the view (see drop). */}
-            <button onClick={() => filesInputRef.current?.click()} disabled={uploading != null || reading}>
+            <button onClick={() => filesInputRef.current?.click()} disabled={busy}>
               <FilePlus size={14} className="inline-icon" aria-hidden /> Add files
             </button>
             <button className="link-btn" onClick={() => setRenaming(true)}>
@@ -648,7 +737,9 @@ export function CollectionView({
 
           A dropped folder adds a wait before both, while it is walked, with no
           total to fill a bar against: nothing says how much a folder holds
-          until all of it has been read. */}
+          until all of it has been read. It counts what it has got through
+          instead, so a walk that has run into far more than was meant shows it,
+          and can be stopped. */}
       {uploading ? (
         <div className="import-progress">
           <div className="progress">
@@ -663,7 +754,15 @@ export function CollectionView({
         </div>
       ) : reading ? (
         <div className="import-progress">
-          <div className="progress-label">Looking for PDFs in the dropped folders…</div>
+          <div className="progress-label">
+            Looking for PDFs in the dropped folders…
+            {reading.folders > 0 &&
+              ` ${reading.found.toLocaleString()} found in ${plural(reading.folders, "folder")}`}
+            {" · "}
+            <button type="button" className="link-btn" onClick={() => walking.current?.abort()}>
+              Cancel
+            </button>
+          </div>
         </div>
       ) : (
         running && (
@@ -726,7 +825,8 @@ export function CollectionView({
       />
       <ConfirmDialog
         open={droppedFolders != null}
-        title={droppedFolders ? dropQuestion(droppedFolders.files, droppedFolders.folders, name) : ""}
+        title={dropAsked?.title ?? ""}
+        message={dropAsked?.message}
         confirmLabel="Add"
         onConfirm={addDroppedFolders}
         onCancel={() => setDroppedFolders(null)}
