@@ -3,6 +3,7 @@ import {
   deleteCollection,
   deleteCollectionFile,
   dropUnheldArticles,
+  getCollectionFile,
   removeBookmark,
   removeBookmarks,
   removeCollectionPapers,
@@ -209,18 +210,26 @@ export async function letGoOfCollectionPapers(
 }
 
 // A file matched by hand to the paper the reader named, whose record the caller
-// has just fetched. Stored and matched with nothing awaited in between, so
-// there is no instant at which the paper is stored and the file doesn't hold it
-// yet, for the sweep to take it in. The sweep then has a turn for the paper the
-// file was matched to before, if this was a second match.
+// has just fetched. Answers with the file as matched, or null when it went
+// while PubMed was asked — deleted, or its collection with it — in which case
+// nothing is stored for it.
+//
+// The file is read here, after the caller's wait, and the paper stored and
+// matched in the same tick, so there is no instant at which the paper is
+// stored and the file doesn't hold it yet, for the sweep to take it in. The
+// sweep then has a turn for the paper the file was matched to before, if this
+// was a second match.
 export function rematchFile(
-  file: CollectionFile,
+  fileId: number,
   pmid: string,
   articles: ArticleInsert[]
-): Released {
+): Released<CollectionFile | null> {
+  const before = getCollectionFile(fileId);
+  if (!before) return { result: null, swept: Promise.resolve() };
   upsertArticles(articles);
-  setFileMatched(file.id, pmid, "manual");
-  return { result: undefined, swept: behindReply(null, !!file.pmid && file.pmid !== pmid) };
+  setFileMatched(fileId, pmid, "manual");
+  const letGo = !!before.pmid && before.pmid !== pmid;
+  return { result: getCollectionFile(fileId)!, swept: behindReply(null, letGo) };
 }
 
 // A topic. The papers only it held are left for the sweep rather than deleted

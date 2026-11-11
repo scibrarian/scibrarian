@@ -1749,13 +1749,15 @@ api.post(
       return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
     }
     // Stored and matched in one tick (see rematchFile), and its citation counts
-    // follow.
-    rematchFile(file, pmid, articles);
+    // follow. The file is read again there, after the wait: one deleted while
+    // PubMed was asked is gone, not a row to answer with.
+    const { result: matched } = rematchFile(fileId, pmid, articles);
+    if (!matched) return res.status(404).json({ error: "File not found." });
     await warmCitations([pmid], "manual match");
     // Return the same shape as the files list (content_hash stripped, exists
-    // added), not the raw row. getCollectionFile can't be missing here — the
-    // row was verified above and setFileMatched only updates it.
-    res.json(apiFile(getCollectionFile(fileId)!));
+    // added), not the raw row: the row as it was matched, which a delete during
+    // the citation fetch doesn't make any less the answer.
+    res.json(apiFile(matched));
   })
 );
 

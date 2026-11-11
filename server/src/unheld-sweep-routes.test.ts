@@ -197,6 +197,28 @@ describe("a manual match", () => {
     expect(res.status).toBe(200);
     await swept([FED, SAVED, LOOSE]);
   });
+
+  it("answers 404 for a file deleted while PubMed was asked, and stores nothing for it", async () => {
+    db.addCollectionFiles(shelf, [{ hash: "c".repeat(64), name: "unmatched.pdf" }]);
+    const file = db.listCollectionFiles(shelf).find((f) => f.file_name === "unmatched.pdf")!;
+    busy.fetched = [article(MATCHED)];
+    let answer!: () => void;
+    busy.fetch = new Promise<void>((r) => (answer = r));
+    const matching = request("POST", `/collections/files/${file.id}/pmid`, { pmid: MATCHED });
+    try {
+      await vi.waitFor(() => expect(busy.fetchOut).toBe(true));
+      expect((await request("DELETE", `/collections/files/${file.id}`)).status).toBe(204);
+    } finally {
+      // Whatever happened, or the request outlives this test and the server's
+      // close waits on it.
+      answer();
+    }
+    const res = await matching;
+    // Not the 500 it was, from answering with a row that had gone.
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "File not found." });
+    expect(db.existingPmids([MATCHED]).size).toBe(0);
+  });
 });
 
 // The two requests that store a paper and attach it outside a job, each of

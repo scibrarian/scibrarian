@@ -245,22 +245,34 @@ describe("a manual match", () => {
     db.addCollectionFiles(shelf, [{ hash: "c".repeat(64), name: "unmatched.pdf" }]);
     const file = db.listCollectionFiles(shelf).find((f) => f.file_name === "unmatched.pdf")!;
 
-    await holding.rematchFile(file, MATCHED, [article(MATCHED)]).swept;
+    await holding.rematchFile(file.id, MATCHED, [article(MATCHED)]).swept;
     await anotherRemoval();
     expect(db.existingPmids([MATCHED]).size).toBe(1);
   });
 
   it("gives the sweep a turn for the paper its file was matched to before", async () => {
     const file = db.listCollectionFiles(shelf)[0];
-    await holding.rematchFile(file, LOOSE, [article(LOOSE)]).swept;
+    const released = holding.rematchFile(file.id, LOOSE, [article(LOOSE)]);
+    expect(released.result).toMatchObject({ id: file.id, pmid: LOOSE, match_method: "manual" });
+    await released.swept;
     expect(stored()).toEqual([FED, SAVED, LOOSE]);
   });
 
   it("gives it none when the file had no paper to let go of", async () => {
     db.addCollectionFiles(shelf, [{ hash: "c".repeat(64), name: "unmatched.pdf" }]);
     const file = db.listCollectionFiles(shelf).find((f) => f.file_name === "unmatched.pdf")!;
-    await holding.rematchFile(file, MATCHED, [article(MATCHED)]).swept;
+    await holding.rematchFile(file.id, MATCHED, [article(MATCHED)]).swept;
     expect(stored()).toEqual(ALL);
+  });
+
+  it("stores nothing for a file that went while PubMed was asked, and says so", async () => {
+    const file = db.listCollectionFiles(shelf)[0];
+    await (await holding.letGoOfFile(file.id)).swept;
+
+    const released = holding.rematchFile(file.id, MATCHED, [article(MATCHED)]);
+    expect(released.result).toBeNull();
+    await released.swept;
+    expect(db.existingPmids([MATCHED]).size).toBe(0);
   });
 });
 
