@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTerm } from "./pubmed-parse.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 
 // Which history a poll asks PubMed for.
 //
@@ -25,25 +26,7 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // bound (a date is incremental, undefined is the whole history). The search is
 // mocked to record that and return nothing, so no poll here touches the network.
 
-const ncbi = vi.hoisted(() => ({
-  calls: [] as { term: string; since: string | undefined }[],
-  park: null as Promise<unknown> | null,
-  fail: false,
-  // What a search answers, by its term, where a test needs more than nothing.
-  answers: new Map<string, { ids: string[]; total: number }>(),
-}));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    searchWithTotal: async (term: string, mhdaSince?: string) => {
-      ncbi.calls.push({ term, since: mhdaSince });
-      if (ncbi.fail) throw new Error("NCBI unreachable");
-      if (ncbi.park) await ncbi.park;
-      return ncbi.answers.get(term) ?? { ids: [], total: 0 };
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 
 let db: Db;
 let pollTopic: typeof import("./poller.js").pollTopic;
@@ -72,6 +55,8 @@ const search = (journals: string[], since?: string, term = TERM) => ({
   ),
   since,
 });
+// Each search the polls so far have made, as search() names one.
+const searched = () => pubmed.calls("searchWithTotal").map(([term, since]) => ({ term, since }));
 
 // A topic that has had its first poll under the scope given, with its
 // watermark pinned so the incremental bound is a known date.
@@ -79,7 +64,7 @@ async function seededTopic(scope: ReturnType<typeof list> | typeof ALL_PUBMED) {
   const t = db.createTopic("Adipose Tissue", TERM, [], scope);
   await pollTopic(t.id);
   db.setTopicLastPolled(t.id, WATERMARK);
-  ncbi.calls = [];
+  pubmed.forgetCalls();
   return t;
 }
 
@@ -93,36 +78,32 @@ afterAll(closeTempDb);
 // Deleting the topics and journals takes their topic_journals rows too.
 beforeEach(() => {
   db.db.exec("DELETE FROM topics; DELETE FROM journals; DELETE FROM articles;");
-  ncbi.calls = [];
-  ncbi.park = null;
-  ncbi.fail = false;
-  ncbi.answers.clear();
 });
 
 describe("which history a topic with a list of journals asks for", () => {
   it("lists every journal's history on its first poll", async () => {
     const t = db.createTopic("Adipose Tissue", TERM, [], list(LANCET, BMJ));
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ", "Lancet"])]);
+    expect(searched()).toEqual([search(["BMJ", "Lancet"])]);
   });
 
   it("stays incremental once every journal has been scanned", async () => {
     const t = await seededTopic(list(LANCET));
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["Lancet"], SINCE)]);
+    expect(searched()).toEqual([search(["Lancet"], SINCE)]);
   });
 
   it("lists only an added journal's history, beside the incremental poll of the rest", async () => {
     const t = await seededTopic(list(LANCET));
     db.setTopicScope(t.id, list(LANCET, BMJ));
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
+    expect(searched()).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
 
     // And only once: the next poll has both journals caught up.
     db.setTopicLastPolled(t.id, WATERMARK);
-    ncbi.calls = [];
+    pubmed.forgetCalls();
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ", "Lancet"], SINCE)]);
+    expect(searched()).toEqual([search(["BMJ", "Lancet"], SINCE)]);
   });
 
   it("lists a journal's history again after it is dropped and added back", async () => {
@@ -130,21 +111,21 @@ describe("which history a topic with a list of journals asks for", () => {
     db.setTopicScope(t.id, list(BMJ));
     db.setTopicScope(t.id, list(LANCET, BMJ));
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["Lancet"]), search(["BMJ"], SINCE)]);
+    expect(searched()).toEqual([search(["Lancet"]), search(["BMJ"], SINCE)]);
   });
 
   it("stays incremental after dropping a journal that isn't the last", async () => {
     const t = await seededTopic(list(LANCET, BMJ));
     db.setTopicScope(t.id, list(BMJ));
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ"], SINCE)]);
+    expect(searched()).toEqual([search(["BMJ"], SINCE)]);
   });
 
   it("searches nothing once the last journal is dropped", async () => {
     const t = await seededTopic(list(LANCET));
     db.setTopicScope(t.id, list());
     expect((await pollTopic(t.id)).error).toMatch(/no journals are chosen/i);
-    expect(ncbi.calls).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 
   it("searches its own list, not another topic's", async () => {
@@ -152,7 +133,7 @@ describe("which history a topic with a list of journals asks for", () => {
     const b = db.createTopic("Obesity", OTHER_TERM, [], list(BMJ));
     await pollTopic(a.id);
     await pollTopic(b.id);
-    expect(ncbi.calls).toEqual([search(["Lancet"]), search(["BMJ"], undefined, OTHER_TERM)]);
+    expect(searched()).toEqual([search(["Lancet"]), search(["BMJ"], undefined, OTHER_TERM)]);
   });
 
   it("scans a journal for each topic that lists it", async () => {
@@ -161,7 +142,7 @@ describe("which history a topic with a list of journals asks for", () => {
     const b = db.createTopic("Obesity", OTHER_TERM, [], list(LANCET));
     await pollTopic(b.id);
     await pollTopic(a.id);
-    expect(ncbi.calls).toEqual([
+    expect(searched()).toEqual([
       search(["Lancet"], undefined, OTHER_TERM),
       search(["Lancet"], SINCE),
     ]);
@@ -171,31 +152,30 @@ describe("which history a topic with a list of journals asks for", () => {
     const t = await seededTopic(list(LANCET));
 
     let release!: () => void;
-    ncbi.park = new Promise<void>((r) => (release = r));
+    pubmed.hold("searchWithTotal", new Promise<void>((r) => (release = r)));
     const inFlight = pollTopic(t.id);
     // The routes take the poll lock for this, so it can't happen through them;
     // the poll itself must still not vouch for a journal it never searched.
     db.setTopicScope(t.id, list(LANCET, BMJ));
     release();
     await inFlight;
-    ncbi.park = null;
 
     db.setTopicLastPolled(t.id, WATERMARK);
-    ncbi.calls = [];
+    pubmed.forgetCalls();
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
+    expect(searched()).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
   });
 
   it("lists the history again when the poll that tried it failed", async () => {
     const t = await seededTopic(list(LANCET));
     db.setTopicScope(t.id, list(LANCET, BMJ));
-    ncbi.fail = true;
+    pubmed.fail = true;
     expect((await pollTopic(t.id)).error).toBeTruthy();
 
-    ncbi.fail = false;
-    ncbi.calls = [];
+    pubmed.fail = false;
+    pubmed.forgetCalls();
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
+    expect(searched()).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
   });
 });
 
@@ -203,13 +183,13 @@ describe("which history a topic searching all of PubMed asks for", () => {
   it("lists its history across all of PubMed on its first poll", async () => {
     const t = db.createTopic("Adipose Tissue", TERM, [], ALL_PUBMED);
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search([])]);
+    expect(searched()).toEqual([search([])]);
   });
 
   it("continues from its watermark after that", async () => {
     const t = await seededTopic(ALL_PUBMED);
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search([], SINCE)]);
+    expect(searched()).toEqual([search([], SINCE)]);
   });
 });
 
@@ -224,7 +204,7 @@ describe("a change between a list and all of PubMed", () => {
     });
     await pollTopic(t.id);
     // The whole history: the list's polls never looked outside the list.
-    expect(ncbi.calls).toEqual([search([])]);
+    expect(searched()).toEqual([search([])]);
   });
 
   it("starts a topic over on its list", async () => {
@@ -234,7 +214,7 @@ describe("a change between a list and all of PubMed", () => {
     await pollTopic(t.id);
     // The whole history: a search of all PubMed is capped, and may never have
     // reached this journal's back catalogue.
-    expect(ncbi.calls).toEqual([search(["Lancet"])]);
+    expect(searched()).toEqual([search(["Lancet"])]);
   });
 
   it("scans every listed journal again after a trip through all of PubMed", async () => {
@@ -242,7 +222,7 @@ describe("a change between a list and all of PubMed", () => {
     db.setTopicScope(t.id, ALL_PUBMED);
     db.setTopicScope(t.id, list(LANCET));
     await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["Lancet"])]);
+    expect(searched()).toEqual([search(["Lancet"])]);
   });
 
   it("keeps the watermark when the list changes and the kind of scope doesn't", async () => {
@@ -276,11 +256,11 @@ describe("what a poll reports PubMed left out", () => {
     db.setTopicScope(t.id, list(LANCET, BMJ));
     stored("1", "2", "3");
     // BMJ's history is capped; the incremental Lancet search isn't.
-    ncbi.answers.set(search(["BMJ"]).term, { ids: ["1", "2"], total: 5 });
-    ncbi.answers.set(search(["Lancet"]).term, { ids: ["3"], total: 1 });
+    pubmed.answer(search(["BMJ"]).term, ["1", "2"], 5);
+    pubmed.answer(search(["Lancet"]).term, ["3"], 1);
 
     const result = await pollTopic(t.id);
-    expect(ncbi.calls).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
+    expect(searched()).toEqual([search(["BMJ"]), search(["Lancet"], SINCE)]);
     expect({ found: result.found, truncated: result.truncated }).toEqual({ found: 3, truncated: 3 });
   });
 
@@ -289,8 +269,8 @@ describe("what a poll reports PubMed left out", () => {
     const t = await seededTopic(list(LANCET));
     db.setTopicScope(t.id, list(LANCET, BMJ));
     stored("1");
-    ncbi.answers.set(search(["BMJ"]).term, { ids: ["1"], total: 1 });
-    ncbi.answers.set(search(["Lancet"]).term, { ids: ["1"], total: 1 });
+    pubmed.answer(search(["BMJ"]).term, ["1"], 1);
+    pubmed.answer(search(["Lancet"]).term, ["1"], 1);
 
     const result = await pollTopic(t.id);
     expect({ found: result.found, truncated: result.truncated }).toEqual({
@@ -304,25 +284,25 @@ describe("scheduled polls", () => {
   it("skip while no topic has anywhere to search", async () => {
     db.createTopic("Adipose Tissue", TERM, [], list());
     await runPoll("scheduled");
-    expect(ncbi.calls).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 
   it("run for a topic with a journal on its list", async () => {
     db.createTopic("Adipose Tissue", TERM, [], list(LANCET));
     await runPoll("scheduled");
-    expect(ncbi.calls).toEqual([search(["Lancet"])]);
+    expect(searched()).toEqual([search(["Lancet"])]);
   });
 
   it("run for a topic that searches all of PubMed, with no journals anywhere", async () => {
     db.createTopic("Adipose Tissue", TERM, [], ALL_PUBMED);
     await runPoll("scheduled");
-    expect(ncbi.calls).toEqual([search([])]);
+    expect(searched()).toEqual([search([])]);
   });
 
   it("leave out a topic with no journals chosen, and check the rest", async () => {
     db.createTopic("Adipose Tissue", TERM, [], list());
     db.createTopic("Obesity", OTHER_TERM, [], ALL_PUBMED);
     await runPoll("scheduled");
-    expect(ncbi.calls).toEqual([search([], undefined, OTHER_TERM)]);
+    expect(searched()).toEqual([search([], undefined, OTHER_TERM)]);
   });
 });

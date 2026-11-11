@@ -1,22 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 
 // "Add links" — saving papers into a bookmark folder from pasted DOIs and
-// PubMed links. PubMed is mocked: a DOI's PMIDs are in `pubmed.dois`, and a
-// PMID's record exists only if it is in `pubmed.records`. Citation warm-ups are
+// PubMed links. PubMed is test-pubmed.ts: a PMID's record exists only if it
+// was added, and a DOI finds the records that carry it. Citation warm-ups are
 // recorded in `local.warmed` rather than sent to iCite. Nothing here touches
 // the network.
-
-const pubmed = vi.hoisted(() => ({
-  dois: new Map<string, string[]>(),
-  records: new Map<string, unknown>(),
-  searched: [] as string[],
-  fetched: [] as string[][],
-  fail: false,
-  // Runs inside a DOI lookup, for the tests that need something to happen
-  // while one is in flight.
-  during: null as (() => void) | null,
-}));
 
 const local = vi.hoisted(() => ({
   // The PMIDs each citation warm-up was started for.
@@ -43,23 +33,10 @@ vi.mock("./db.js", async (importOriginal) => {
   };
 });
 
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    pmidsForDoi: async (doi: string) => {
-      pubmed.searched.push(doi);
-      pubmed.during?.();
-      if (pubmed.fail) throw new Error("NCBI unreachable");
-      return pubmed.dois.get(doi) ?? [];
-    },
-    fetchArticles: async (pmids: string[]) => {
-      pubmed.fetched.push(pmids);
-      if (pubmed.fail) throw new Error("NCBI unreachable");
-      return pmids.flatMap((p) => (pubmed.records.has(p) ? [pubmed.records.get(p)] : []));
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+// The DOIs PubMed was asked about, and the PMIDs each fetch asked for.
+const searched = () => pubmed.calls("pmidsForDoi").map(([doi]) => doi);
+const fetched = () => pubmed.calls("fetchArticles").map(([pmids]) => pmids);
 
 let db: Db;
 let addLinksToFolder: typeof import("./bookmark-links.js").addLinksToFolder;
@@ -101,12 +78,7 @@ beforeEach(() => {
   db.db.exec("DELETE FROM bookmark_folders; DELETE FROM articles;");
   db.upsertArticles([article(STORED)]);
   folder = db.createBookmarkFolder("Reading").id;
-  pubmed.dois = new Map([REMOTE, OTHER].map((p) => [p.doi, [p.pmid]]));
-  pubmed.records = new Map([REMOTE, OTHER].map((p) => [p.pmid, article(p)]));
-  pubmed.searched = [];
-  pubmed.fetched = [];
-  pubmed.fail = false;
-  pubmed.during = null;
+  pubmed.add(article(REMOTE), article(OTHER));
   local.warmed = [];
   local.dbFault = false;
 });
@@ -119,7 +91,7 @@ describe("addLinksToFolder", () => {
     expect(answer.outcome).toBe("added");
     expect(answer.paper).toMatchObject({ pmid: STORED.pmid, title: `Paper ${STORED.pmid}` });
     expect(saved()).toEqual([STORED.pmid]);
-    expect(pubmed.fetched).toEqual([]);
+    expect(fetched()).toEqual([]);
   });
 
   it("fetches and stores a paper the library has never seen", async () => {
@@ -144,14 +116,14 @@ describe("addLinksToFolder", () => {
   // line, so it never needs that round, and its papers come in one request.
   it("fetches what a paste of links and DOIs names in one request", async () => {
     await addLinksToFolder(folder, [link(REMOTE.pmid), OTHER.doi]);
-    expect(pubmed.fetched).toEqual([[REMOTE.pmid, OTHER.pmid]]);
+    expect(fetched()).toEqual([[REMOTE.pmid, OTHER.pmid]]);
     expect(saved().sort()).toEqual([REMOTE.pmid, OTHER.pmid]);
   });
 
   it("resolves a DOI the library already stores locally", async () => {
     const [answer] = (await addLinksToFolder(folder, [STORED.doi]))!;
     expect(answer.outcome).toBe("added");
-    expect(pubmed.searched).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 
   it("reports a paper the folder already holds as already saved", async () => {
@@ -170,24 +142,24 @@ describe("addLinksToFolder", () => {
   });
 
   it("tells a DOI PubMed files twice apart from one it has no record of", async () => {
-    pubmed.dois.set("10.1000/shared", [REMOTE.pmid, OTHER.pmid]);
+    pubmed.add(...[REMOTE, OTHER].map((p) => article({ ...p, doi: "10.1000/shared" })));
     const answers = (await addLinksToFolder(folder, ["10.1000/shared", "10.1000/nowhere"]))!;
     expect(answers.map((a) => a.outcome)).toEqual(["ambiguous-doi", "not-in-pubmed"]);
     expect(answers.every((a) => a.paper === null)).toBe(true);
     // Neither record is picked, so neither is stored or saved.
-    expect(pubmed.fetched).toEqual([]);
+    expect(fetched()).toEqual([]);
     expect(saved()).toEqual([]);
   });
 
   it("saves from the PubMed link on a line that also has a DOI, without looking the DOI up", async () => {
     // Even a DOI PubMed couldn't resolve: the link already named the record.
-    pubmed.dois.set("10.1000/shared", [REMOTE.pmid, OTHER.pmid]);
+    pubmed.add(...[REMOTE, OTHER].map((p) => article({ ...p, doi: "10.1000/shared" })));
     const [answer] = (await addLinksToFolder(folder, [
       `Smith J. Foo. J Test Med. 2024. doi:10.1000/shared ${link(REMOTE.pmid)}`,
     ]))!;
     expect(answer.outcome).toBe("added");
     expect(answer.paper?.pmid).toBe(REMOTE.pmid);
-    expect(pubmed.searched).toEqual([]);
+    expect(searched()).toEqual([]);
     expect(saved()).toEqual([REMOTE.pmid]);
   });
 
@@ -198,7 +170,7 @@ describe("addLinksToFolder", () => {
       expect(a.parsed.reason).toMatch(/PubMed link/);
     }
     expect(saved()).toEqual([]);
-    expect(pubmed.fetched).toEqual([]);
+    expect(fetched()).toEqual([]);
   });
 
   it("answers every line, in the order pasted", async () => {
@@ -249,8 +221,13 @@ describe("addLinksToFolder", () => {
   });
 
   it("writes nothing into a folder deleted while PubMed was being asked", async () => {
-    pubmed.during = () => db.deleteBookmarkFolder(folder);
-    expect(await addLinksToFolder(folder, [REMOTE.doi])).toBeNull();
+    let answer!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((r) => (answer = r)));
+    const adding = addLinksToFolder(folder, [REMOTE.doi]);
+    await vi.waitFor(() => expect(searched()).toEqual([REMOTE.doi]));
+    db.deleteBookmarkFolder(folder);
+    answer();
+    expect(await adding).toBeNull();
     expect(db.existingPmids([REMOTE.pmid]).size).toBe(0);
   });
 });

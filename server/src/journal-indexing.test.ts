@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogSeed } from "./db.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 
 // What MEDLINE has to do with each journal in the catalog, and what the picker
 // does about it.
@@ -21,22 +22,7 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // empty the picker. And a list read in part would mark every journal missing
 // from it as never indexed, so a failed read has to mark nothing at all.
 
-const nlm = vi.hoisted(() => ({
-  // What NLM's list answers with; null for a read that fails.
-  list: null as Map<string, boolean> | null,
-  reads: 0,
-}));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    fetchMedlineIndexing: async () => {
-      nlm.reads++;
-      if (!nlm.list) throw new Error("NLM unreachable");
-      return nlm.list;
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 
 // No ISSNs, so the search has no metric to ask OpenAlex for.
 const seed = (nlm_id: string, title: string, med_abbr: string): CatalogSeed => ({
@@ -87,8 +73,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  nlm.list = INDEXED;
-  nlm.reads = 0;
+  pubmed.medline = new Map(INDEXED);
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
   db.db.exec("DELETE FROM journal_catalog");
@@ -180,34 +165,34 @@ describe("the catalog search", () => {
 describe("reading NLM's list", () => {
   it("follows a catalog that is fresh and has no indexing yet", async () => {
     await refreshCatalogIfStale();
-    expect(nlm.reads).toBe(1);
+    expect(pubmed.calls("fetchMedlineIndexing")).toHaveLength(1);
     expect([LANCET, ARCHIVES, BIORXIV].map(status)).toEqual(["current", "former", "never"]);
   });
 
   it("isn't done again while what it read is fresh", async () => {
     await refreshCatalogIfStale();
     await refreshCatalogIfStale();
-    expect(nlm.reads).toBe(1);
+    expect(pubmed.calls("fetchMedlineIndexing")).toHaveLength(1);
   });
 
   it("marks nothing when the list can't be read, and is tried again the next time", async () => {
-    nlm.list = null;
+    pubmed.fail = true;
     await refreshCatalogIfStale();
     expect([LANCET, ARCHIVES, BIORXIV].map(status)).toEqual([null, null, null]);
     expect(db.getIndexingLoadedAt()).toBe("");
     // Still offered: not known is not never.
     expect(found("biorxiv")).toEqual(["bioRxiv"]);
 
-    nlm.list = INDEXED;
+    pubmed.fail = false;
     await refreshCatalogIfStale();
-    expect(nlm.reads).toBe(2);
+    expect(pubmed.calls("fetchMedlineIndexing")).toHaveLength(2);
     expect(status(BIORXIV)).toBe("never");
   });
 
   it("leaves the marks a failed re-read found there", async () => {
     await refreshCatalogIfStale();
     db.db.exec("DELETE FROM settings WHERE key = 'journal_indexing_loaded_at'");
-    nlm.list = null;
+    pubmed.fail = true;
     await refreshCatalogIfStale();
     expect([LANCET, ARCHIVES, BIORXIV].map(status)).toEqual(["current", "former", "never"]);
   });

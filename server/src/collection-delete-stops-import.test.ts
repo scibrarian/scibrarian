@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import { article } from "./unheld-sweep-fixture.js";
 
 // Deleting a collection while its PDFs are being scanned.
@@ -22,11 +23,10 @@ const HEADERS = { "x-admin-token": "collection-delete-import-token" };
 
 // Each PDF read is held until the test lets it finish, so the delete can land
 // part way through one: the window the text used to come back in. PubMed and
-// iCite answer from here, so nothing touches the network.
+// iCite are faked, so nothing touches the network.
 const scan = vi.hoisted(() => ({
   finishRead: null as (() => void) | null,
   reads: 0,
-  fetched: [] as string[][],
 }));
 vi.mock("./pdf-text.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pdf-text.js")>();
@@ -40,17 +40,7 @@ vi.mock("./pdf-text.js", async (importOriginal) => {
     },
   };
 });
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    fetchArticles: async (pmids: string[]) => {
-      scan.fetched.push(pmids);
-      return pmids.map(article);
-    },
-    resolveDoiToPmid: async () => null,
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 vi.mock("./icite.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./icite.js")>();
   return { ...actual, ensureCitations: async () => {} };
@@ -112,8 +102,8 @@ afterAll(async () => {
 beforeEach(() => {
   scan.finishRead = null;
   scan.reads = 0;
-  scan.fetched = [];
   db.db.exec("DELETE FROM articles");
+  pubmed.add(article(READ_PMID));
 });
 
 describe("deleting a collection part way through its scan", () => {
@@ -130,7 +120,7 @@ describe("deleting a collection part way through its scan", () => {
     expect(textStored(shelf.hashes[0])).toBe(false);
     // Nor did it go on: not to the second PDF, and not to PubMed with the first.
     expect(scan.reads).toBe(1);
-    expect(scan.fetched).toEqual([]);
+    expect(pubmed.calls("fetchArticles")).toEqual([]);
     expect(db.existingPmids([READ_PMID]).size).toBe(0);
     expect(jobs.anyJobRunning("scan")).toBe(false);
   });

@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTerm } from "./pubmed-parse.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 
 // Where a topic searches, and what changing that takes out.
 //
@@ -24,36 +25,13 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 process.env.ADMIN_TOKEN = "topic-scope-token";
 const HEADERS = { "x-admin-token": "topic-scope-token", "content-type": "application/json" };
 
-const ncbi = vi.hoisted(() => ({
-  calls: [] as { term: string; since: string | undefined }[],
-  // The MEDLINE checks asked for, and what each answers.
-  indexingAsked: [] as string[],
-  indexed: true as boolean | null,
-  // The recent-paper samples journal suggestions asked for.
-  sampled: [] as string[],
-  // What a MEDLINE check waits on before it answers, when a test has to act
-  // while one is out.
-  held: null as Promise<void> | null,
-}));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    searchWithTotal: async (term: string, mhdaSince?: string) => {
-      ncbi.calls.push({ term, since: mhdaSince });
-      return { ids: [], total: 0 };
-    },
-    isMedlineIndexed: async (nlmId: string) => {
-      ncbi.indexingAsked.push(nlmId);
-      await ncbi.held;
-      return ncbi.indexed;
-    },
-    searchRecent: async (term: string) => {
-      ncbi.sampled.push(term);
-      return [];
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+// The searches made, each with its MeSH-date bound.
+const searched = () => pubmed.calls("searchWithTotal").map(([term, since]) => ({ term, since }));
+// The MEDLINE checks asked for.
+const indexingAsked = () => pubmed.calls("isMedlineIndexed").map(([nlmId]) => nlmId);
+// The recent-paper samples journal suggestions asked for.
+const sampled = () => pubmed.calls("searchRecent").map(([term]) => term);
 
 // The vocabulary is seeded below (seedMesh), and that is all of it there is to
 // load. Left alone, the first route to read a heading asks NLM which MeSH year
@@ -160,11 +138,8 @@ beforeEach(() => {
   for (const table of ["topics", "journals", "articles", "bookmark_folders", "collections"]) {
     db.db.exec(`DELETE FROM ${table}`);
   }
-  ncbi.calls = [];
-  ncbi.indexingAsked = [];
-  ncbi.indexed = true;
-  ncbi.sampled = [];
-  ncbi.held = null;
+  // NLM indexes both journals the routes here ask about.
+  for (const j of [LANCET, BMJ]) pubmed.medline.set(j.nlmId, true);
 });
 
 // The count ahead of a change and the change itself, which must agree on what
@@ -339,7 +314,7 @@ describe("two journals that go by one name", () => {
     const b = db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(NAMESAKE)).id;
     await pollTopic(a);
     await pollTopic(b);
-    expect(ncbi.calls.map((c) => c.term)).toEqual([
+    expect(searched().map((c) => c.term)).toEqual([
       `(${TERM}) AND ("${NURSING.nlmId}"[jid])`,
       `("Obesity"[MeSH]) AND ("${NAMESAKE.nlmId}"[jid])`,
     ]);
@@ -359,7 +334,7 @@ describe("the routes", () => {
   });
 
   it("create a topic with a list, resolved against the catalog", async () => {
-    ncbi.indexed = false;
+    for (const j of [LANCET, BMJ]) pubmed.medline.set(j.nlmId, false);
     const res = await create({ allPubmed: false, journals: [LANCET.nlmId, BMJ.nlmId] });
     expect(res.status).toBe(201);
     const topic = await res.json();
@@ -370,14 +345,14 @@ describe("the routes", () => {
       ["BMJ", false],
       ["Lancet", false],
     ]);
-    expect(ncbi.indexingAsked.sort()).toEqual([LANCET.nlmId, BMJ.nlmId].sort());
+    expect(indexingAsked().sort()).toEqual([LANCET.nlmId, BMJ.nlmId].sort());
   });
 
   it("don't ask NLM again about a journal another topic already lists", async () => {
     db.createTopic("Obesity", '"Obesity"[MeSH]', [OBESITY], list(LANCET));
     const res = await create({ allPubmed: false, journals: [LANCET.nlmId] });
     expect(res.status).toBe(201);
-    expect(ncbi.indexingAsked).toEqual([]);
+    expect(indexingAsked()).toEqual([]);
     expect(journalRows()).toEqual(["Lancet"]);
   });
 
@@ -489,13 +464,13 @@ describe("the routes", () => {
     // of one name, which the picker can't tell apart.
     const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED).id;
     let answer!: () => void;
-    ncbi.held = new Promise<void>((r) => (answer = r));
+    pubmed.hold("isMedlineIndexed", new Promise<void>((r) => (answer = r)));
     const changing = request("PATCH", `/topics/${t}`, {
       name: "Fat",
       allPubmed: false,
       journals: [LANCET.nlmId],
     });
-    await vi.waitFor(() => expect(ncbi.indexingAsked).toEqual([LANCET.nlmId]));
+    await vi.waitFor(() => expect(indexingAsked()).toEqual([LANCET.nlmId]));
     db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED);
     answer();
 
@@ -509,13 +484,13 @@ describe("the routes", () => {
   it("suggest journals for the headings asked about, to the owner alone", async () => {
     const path = `/journals/suggest?ui=${ADIPOSE.ui}&ui=${OBESITY.ui}`;
     expect((await request("GET", path, undefined, {})).status).toBe(401);
-    expect(ncbi.sampled).toEqual([]);
+    expect(sampled()).toEqual([]);
 
     const res = await request("GET", path);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ results: [] });
     // Mainly about both first; then, with nothing recent that is, about both.
-    expect(ncbi.sampled).toEqual([
+    expect(sampled()).toEqual([
       '"Adipose Tissue"[majr] AND "Obesity"[majr]',
       '"Adipose Tissue"[MeSH] AND "Obesity"[MeSH]',
     ]);
@@ -533,7 +508,7 @@ describe("the routes", () => {
       const res = await request("GET", `/journals/suggest?ui=${ADIPOSE.ui}`);
       expect(res.status).toBe(200);
       // Under the name the topic recorded, which is what it polls.
-      expect(ncbi.sampled[0]).toBe('"Adipose Tissue"[majr]');
+      expect(sampled()[0]).toBe('"Adipose Tissue"[majr]');
       // An id no topic carries is still refused, and a retired heading is not
       // one a new topic can be made from.
       expect((await request("GET", "/journals/suggest?ui=D000000")).status).toBe(422);
@@ -548,14 +523,14 @@ describe("the routes", () => {
     const res = await request("POST", "/refresh");
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/no journals are chosen/i);
-    expect(ncbi.calls).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 
   it("check a topic across all of PubMed with no journals anywhere", async () => {
     db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED);
     const res = await request("POST", "/refresh");
     expect(res.status).toBe(200);
-    expect(ncbi.calls).toEqual([{ term: buildTerm(TERM, []), since: undefined }]);
+    expect(searched()).toEqual([{ term: buildTerm(TERM, []), since: undefined }]);
   });
 
   it("say why a topic asked for by name can't be checked", async () => {
@@ -564,6 +539,6 @@ describe("the routes", () => {
     const res = await request("POST", `/refresh?topic=${unset}`);
     expect(res.status).toBe(200);
     expect((await res.json()).results[0].error).toMatch(/no journals are chosen/i);
-    expect(ncbi.calls).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 });

@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import { ALL, FED, FILED, LOOSE, SAVED, article, seedHoldings } from "./unheld-sweep-fixture.js";
 
 // The routes that let go of papers, one case each, and the requests that hold
@@ -21,14 +22,9 @@ const busy = vi.hoisted(() => ({
   // What a links request waits on, and whether one has got as far as waiting.
   links: null as Promise<void> | null,
   linksOut: false,
-  // The same pair for a request for citation counts, and what PubMed answers a
-  // manual match with.
+  // The same pair for a request for citation counts.
   cites: null as Promise<void> | null,
   citesOut: false,
-  // The same pair for PubMed's answer to a fetch, and the answer itself.
-  fetch: null as Promise<void> | null,
-  fetchOut: false,
-  fetched: [] as import("./db.js").ArticleInsert[],
 }));
 vi.mock("./bookmark-links.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./bookmark-links.js")>();
@@ -41,17 +37,7 @@ vi.mock("./bookmark-links.js", async (importOriginal) => {
     },
   };
 });
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    fetchArticles: async () => {
-      busy.fetchOut = true;
-      await busy.fetch;
-      return busy.fetched;
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 vi.mock("./icite.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./icite.js")>();
   return {
@@ -112,9 +98,6 @@ beforeEach(() => {
   busy.linksOut = false;
   busy.cites = null;
   busy.citesOut = false;
-  busy.fetch = null;
-  busy.fetchOut = false;
-  busy.fetched = [];
   ({ topic, shelf, folder } = seedHoldings(db));
 });
 
@@ -172,7 +155,7 @@ describe("a manual match", () => {
   it("holds its paper from the moment it is stored, whatever is swept while its counts are fetched", async () => {
     db.addCollectionFiles(shelf, [{ hash: "c".repeat(64), name: "unmatched.pdf" }]);
     const file = db.listCollectionFiles(shelf).find((f) => f.file_name === "unmatched.pdf")!;
-    busy.fetched = [article(MATCHED)];
+    pubmed.add(article(MATCHED));
     let answer!: () => void;
     busy.cites = new Promise<void>((r) => (answer = r));
     const matching = request("POST", `/collections/files/${file.id}/pmid`, { pmid: MATCHED });
@@ -191,7 +174,7 @@ describe("a manual match", () => {
   });
 
   it("gives the sweep a turn for the paper its file was matched to before", async () => {
-    busy.fetched = [article(LOOSE)];
+    pubmed.add(article(LOOSE));
     const file = db.listCollectionFiles(shelf)[0];
     const res = await request("POST", `/collections/files/${file.id}/pmid`, { pmid: LOOSE });
     expect(res.status).toBe(200);
@@ -201,12 +184,12 @@ describe("a manual match", () => {
   it("answers 404 for a file deleted while PubMed was asked, and stores nothing for it", async () => {
     db.addCollectionFiles(shelf, [{ hash: "c".repeat(64), name: "unmatched.pdf" }]);
     const file = db.listCollectionFiles(shelf).find((f) => f.file_name === "unmatched.pdf")!;
-    busy.fetched = [article(MATCHED)];
+    pubmed.add(article(MATCHED));
     let answer!: () => void;
-    busy.fetch = new Promise<void>((r) => (answer = r));
+    pubmed.hold("fetchArticles", new Promise<void>((r) => (answer = r)));
     const matching = request("POST", `/collections/files/${file.id}/pmid`, { pmid: MATCHED });
     try {
-      await vi.waitFor(() => expect(busy.fetchOut).toBe(true));
+      await vi.waitFor(() => expect(pubmed.calls("fetchArticles").length).toBeGreaterThan(0));
       expect((await request("DELETE", `/collections/files/${file.id}`)).status).toBe(204);
     } finally {
       // Whatever happened, or the request outlives this test and the server's
@@ -266,12 +249,12 @@ describe("a removal while a request is attaching", () => {
       },
     ]);
     const entry = db.listBookmarkImports(folder)[0];
-    busy.fetched = [article(NAMED)];
+    pubmed.add(article(NAMED));
     let answer!: () => void;
-    busy.fetch = new Promise<void>((r) => (answer = r));
+    pubmed.hold("fetchArticles", new Promise<void>((r) => (answer = r)));
     const naming = request("POST", `/bookmark-imports/${entry.id}/pmid`, { pmid: NAMED });
     try {
-      await vi.waitFor(() => expect(busy.fetchOut).toBe(true));
+      await vi.waitFor(() => expect(pubmed.calls("fetchArticles").length).toBeGreaterThan(0));
       await removeSaved();
       await afterItsTurn();
       expect(stored()).toEqual(ALL);

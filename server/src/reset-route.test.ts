@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import type { LibraryStats } from "../../shared/types.js";
 
 // POST /api/data/reset — the route around the deletion, rather than the
@@ -31,21 +32,7 @@ process.env.ADMIN_TOKEN = "reset-route-token";
 // and where it spends that time is ensureArticle's PubMed lookup. Parking that
 // one call holds a real storePulledFile open at a real await, without a network
 // round trip and without touching global fetch — which the requests below need.
-const ncbi = vi.hoisted(() => ({ park: null as Promise<unknown> | null }));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    fetchArticles: async (pmids: string[]) => {
-      if (ncbi.park) await ncbi.park;
-      return actual.fetchArticles(pmids);
-    },
-    fetchArticleXml: async (pmids: string[]) => {
-      if (ncbi.park) await ncbi.park;
-      return actual.fetchArticleXml(pmids);
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 const HEADERS = { "x-admin-token": "reset-route-token" };
 
 let db: Db;
@@ -146,7 +133,7 @@ describe("what it refuses to run alongside", () => {
     // Held inside ensureArticle's lookup — the network round trip that makes
     // this window wide enough to lose a race in.
     let failLookup!: (err: Error) => void;
-    ncbi.park = new Promise((_resolve, reject) => (failLookup = reject));
+    pubmed.hold("fetchArticles", new Promise((_resolve, reject) => (failLookup = reject)));
 
     // Deliberately a PMID no test seeded, so ensureArticle has to go and ask.
     const transfer = storage.storePulledFile({
@@ -163,11 +150,10 @@ describe("what it refuses to run alongside", () => {
     expect((await res.json()).error).toMatch(/being copied into this library/i);
     expect(count("articles")).toBe(1);
 
-    // Rejected rather than released, so the lookup never reaches the real
-    // PubMed: these tests don't touch the network. storePulledFile's finally
-    // still runs, which is the half being pinned by the test after this one.
+    // Rejected, so the transfer ends as a lookup that failed and stores
+    // nothing. storePulledFile's finally still runs, which is the half being
+    // pinned by the test after this one.
     failLookup(new Error("test stopped the lookup"));
-    ncbi.park = null;
     await transfer.catch(() => {});
   });
 
@@ -188,7 +174,7 @@ describe("what it refuses to run alongside", () => {
     // could land inside that window and leave the insert violating the key.
     seed();
     let failLookup!: (err: Error) => void;
-    ncbi.park = new Promise((_resolve, reject) => (failLookup = reject));
+    pubmed.hold("fetchArticleXml", new Promise((_resolve, reject) => (failLookup = reject)));
 
     // Called exactly as its schedulers call it — bare. The lock is taken inside,
     // which is the whole of what this test is for: wrapping it here instead would
@@ -204,7 +190,6 @@ describe("what it refuses to run alongside", () => {
     expect(count("articles")).toBe(1);
 
     failLookup(new Error("test stopped the lookup"));
-    ncbi.park = null;
     await backfill;
   });
 });

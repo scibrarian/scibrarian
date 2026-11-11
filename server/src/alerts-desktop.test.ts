@@ -24,10 +24,7 @@ vi.mock("nodemailer", () => ({
     }),
   },
 }));
-vi.mock("./pubmed.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./pubmed.js")>()),
-  searchWithTotal: async () => ({ ids: [], total: 0 }),
-}));
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 
 let db: Db;
 let server: Server;

@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_TOPIC_HEADINGS, MAX_TOPIC_NAME_CHARS } from "../../shared/limits.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 
 // A topic is a set of MeSH headings a paper must carry all of.
 //
@@ -17,17 +18,7 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 process.env.ADMIN_TOKEN = "topic-headings-token";
 const HEADERS = { "x-admin-token": "topic-headings-token", "content-type": "application/json" };
 
-const ncbi = vi.hoisted(() => ({ counted: [] as string[], count: 119 }));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    countMatches: async (term: string) => {
-      ncbi.counted.push(term);
-      return ncbi.count;
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 // The vocabulary is seeded below (seedMesh), and that is all of it there is to
 // load. Left alone, the first route to read a heading asks NLM which MeSH year
 // is current before it answers, from inside a test — see topic-scope.test.ts,
@@ -88,8 +79,6 @@ afterAll(async () => {
 
 beforeEach(() => {
   db.db.exec("DELETE FROM topics");
-  ncbi.counted = [];
-  ncbi.count = 119;
 });
 
 describe("creating a topic from headings", () => {
@@ -186,10 +175,11 @@ describe("creating a topic from headings", () => {
 
 describe("previewing a set of headings", () => {
   it("counts the term the create would store", async () => {
+    pubmed.answer(BOTH, [], 119);
     const res = await request("GET", `/topics/preview?ui=${ATHERO.ui}&ui=${SLEEP.ui}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ term: BOTH, count: 119 });
-    expect(ncbi.counted).toEqual([BOTH]);
+    expect(pubmed.calls("countMatches")).toEqual([[BOTH]]);
   });
 
   it("takes a single heading, which arrives as a string rather than a list", async () => {
@@ -200,13 +190,13 @@ describe("previewing a set of headings", () => {
   it("asks PubMed nothing about a set it would refuse", async () => {
     expect((await request("GET", "/topics/preview")).status).toBe(400);
     expect((await request("GET", "/topics/preview?ui=D000000")).status).toBe(422);
-    expect(ncbi.counted).toEqual([]);
+    expect(pubmed.calls("countMatches")).toEqual([]);
   });
 
   it("is the owner's alone, though it is a GET", async () => {
     const res = await request("GET", `/topics/preview?ui=${ATHERO.ui}`, undefined, {});
     expect(res.status).toBe(401);
-    expect(ncbi.counted).toEqual([]);
+    expect(pubmed.calls("countMatches")).toEqual([]);
   });
 });
 

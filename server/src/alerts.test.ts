@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import { article } from "./unheld-sweep-fixture.js";
 
 // Email alerts after an unattended poll — see alerts.ts.
@@ -23,25 +24,7 @@ delete process.env.SCIBRARIAN_DESKTOP;
 process.env.ADMIN_TOKEN = "alerts-token";
 const HEADERS = { "x-admin-token": "alerts-token", "content-type": "application/json" };
 
-const ncbi = vi.hoisted(() => ({
-  fail: false,
-  // What a search answers, by whether its term names the topic's heading.
-  answers: new Map<string, string[]>(),
-}));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    searchWithTotal: async (term: string) => {
-      if (ncbi.fail) throw new Error("NCBI unreachable");
-      for (const [heading, ids] of ncbi.answers) {
-        if (term.includes(heading)) return { ids, total: ids.length };
-      }
-      return { ids: [], total: 0 };
-    },
-    fetchArticles: async (pmids: string[]) => pmids.map(paper),
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 vi.mock("./icite.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./icite.js")>()),
   ensureCitations: async () => {},
@@ -72,6 +55,12 @@ vi.mock("nodemailer", () => ({
 // A paper with a title worth finding in the email, and a date to sort it by.
 function paper(pmid: string) {
   return { ...article(pmid), title: `Title ${pmid}`, pub_date: `2026-10-${pmid.slice(-2)}` };
+}
+
+// What a search whose term names `key` finds, each a paper PubMed has.
+function finds(key: string, pmids: string[]) {
+  pubmed.answer(key, pmids);
+  pubmed.add(...pmids.map(paper));
 }
 
 let db: Db;
@@ -144,8 +133,6 @@ afterAll(async () => {
 
 beforeEach(() => {
   db.db.exec("DELETE FROM topics; DELETE FROM articles;");
-  ncbi.fail = false;
-  ncbi.answers.clear();
   mail.sent = [];
   mail.options = [];
   mail.error = null;
@@ -156,8 +143,8 @@ describe("what a scheduled check sends", () => {
   it("sends one email for the run, listing a paper two topics found once", async () => {
     await polledTopic("Sleep", "Sleep");
     await polledTopic("Obesity", "Obesity");
-    ncbi.answers.set("Sleep", ["40000001", "40000002"]);
-    ncbi.answers.set("Obesity", ["40000002", "40000003"]);
+    finds("Sleep", ["40000001", "40000002"]);
+    finds("Obesity", ["40000002", "40000003"]);
 
     await poller.runPoll("scheduled");
 
@@ -177,7 +164,7 @@ describe("what a scheduled check sends", () => {
   it("lists a topic's papers newest first, up to its cap, and counts the rest", async () => {
     await polledTopic("Sleep", "Sleep");
     const ids = Array.from({ length: 25 }, (_, i) => String(40000001 + i));
-    ncbi.answers.set("Sleep", ids);
+    finds("Sleep", ids);
 
     await poller.runPoll("scheduled");
 
@@ -189,7 +176,7 @@ describe("what a scheduled check sends", () => {
   });
 
   it("sums up a topic's first check rather than listing its whole history", async () => {
-    ncbi.answers.set("Sleep", ["40000001", "40000002"]);
+    finds("Sleep", ["40000001", "40000002"]);
     db.createTopic("Sleep", '"Sleep"[MeSH]', [], { allPubmed: true });
 
     await poller.runPoll("scheduled");
@@ -205,8 +192,8 @@ describe("what a scheduled check sends", () => {
   // topic summed up for one new journal was a day's papers in no alert at all.
   it("lists a topic's news and counts what a journal new to it brought", async () => {
     await topicGivenTheLancet("Sleep", "Sleep");
-    ncbi.answers.set(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
-    ncbi.answers.set(BMJ.nlmId, ["40000001", "40000002"]);
+    finds(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
+    finds(BMJ.nlmId, ["40000001", "40000002"]);
 
     await poller.runPoll("scheduled");
 
@@ -221,7 +208,7 @@ describe("what a scheduled check sends", () => {
 
   it("mentions only the back catalog when there's no news to go with it", async () => {
     await topicGivenTheLancet("Sleep", "Sleep");
-    ncbi.answers.set(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
+    finds(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
 
     await poller.runPoll("scheduled");
 
@@ -235,8 +222,8 @@ describe("what a scheduled check sends", () => {
   // Both searches can find one paper where a journal is searched by name.
   it("counts a paper the topic's news also found as news", async () => {
     await topicGivenTheLancet("Sleep", "Sleep");
-    ncbi.answers.set(LANCET.nlmId, ["30000001", "40000001"]);
-    ncbi.answers.set(BMJ.nlmId, ["40000001"]);
+    finds(LANCET.nlmId, ["30000001", "40000001"]);
+    finds(BMJ.nlmId, ["40000001"]);
 
     await poller.runPoll("scheduled");
 
@@ -271,7 +258,7 @@ describe("what a scheduled check sends", () => {
 
   it("reports a topic that couldn't be checked, with nothing new to go with it", async () => {
     await polledTopic("Sleep", "Sleep");
-    ncbi.fail = true;
+    pubmed.fail = true;
 
     await poller.runPoll("scheduled");
 
@@ -282,7 +269,7 @@ describe("what a scheduled check sends", () => {
 
   it("escapes what it puts in the HTML", async () => {
     await polledTopic("Sleep <b>", "Sleep");
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
 
     await poller.runPoll("scheduled");
 
@@ -301,7 +288,7 @@ describe("when nothing is sent", () => {
   it("sends nothing with alerts off", async () => {
     await polledTopic("Sleep", "Sleep");
     configure({ alert_email_enabled: "0" });
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
     await poller.runPoll("scheduled");
     expect(mail.sent).toEqual([]);
   });
@@ -309,7 +296,7 @@ describe("when nothing is sent", () => {
   // The reader asked for that check and is watching the page it answers.
   it("sends nothing for a manual check", async () => {
     const t = await polledTopic("Sleep", "Sleep");
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
     const res = await fetch(`${base}/api/refresh?topic=${t.id}`, {
       method: "POST",
       headers: HEADERS,
@@ -322,7 +309,7 @@ describe("when nothing is sent", () => {
   // the log calls it: a mail server being down is not the poll failing.
   it("logs a refused email as the email's failure, not the poll's", async () => {
     await polledTopic("Sleep", "Sleep");
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
     mail.error = Object.assign(new Error("Connection refused"), { code: "ECONNECTION" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
