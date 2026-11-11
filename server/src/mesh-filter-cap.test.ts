@@ -27,10 +27,7 @@ const HEADERS = { "x-admin-token": "mesh-filter-cap-token" };
 // iCite for them before it answers: a request to icite.od.nih.gov from inside
 // a test, which a slow answer would time out. The counts are no part of what
 // is asked here.
-vi.mock("./icite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./icite.js")>();
-  return { ...actual, ensureCitations: async () => {} };
-});
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 let db: Db;
 let server: Server;

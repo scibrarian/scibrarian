@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
-import { pubmed } from "./test-pubmed.js";
+import { icite, pubmed } from "./test-pubmed.js";
 import { ALL, FED, FILED, LOOSE, SAVED, article, seedHoldings } from "./unheld-sweep-fixture.js";
 
 // The routes that let go of papers, one case each, and the requests that hold
@@ -22,9 +22,6 @@ const busy = vi.hoisted(() => ({
   // What a links request waits on, and whether one has got as far as waiting.
   links: null as Promise<void> | null,
   linksOut: false,
-  // The same pair for a request for citation counts.
-  cites: null as Promise<void> | null,
-  citesOut: false,
 }));
 vi.mock("./bookmark-links.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./bookmark-links.js")>();
@@ -38,16 +35,7 @@ vi.mock("./bookmark-links.js", async (importOriginal) => {
   };
 });
 vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
-vi.mock("./icite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./icite.js")>();
-  return {
-    ...actual,
-    ensureCitations: async () => {
-      busy.citesOut = true;
-      await busy.cites;
-    },
-  };
-});
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 let db: Db;
 let server: Server;
@@ -96,8 +84,6 @@ afterAll(async () => {
 beforeEach(() => {
   busy.links = null;
   busy.linksOut = false;
-  busy.cites = null;
-  busy.citesOut = false;
   ({ topic, shelf, folder } = seedHoldings(db));
 });
 
@@ -157,10 +143,10 @@ describe("a manual match", () => {
     const file = db.listCollectionFiles(shelf).find((f) => f.file_name === "unmatched.pdf")!;
     pubmed.add(article(MATCHED));
     let answer!: () => void;
-    busy.cites = new Promise<void>((r) => (answer = r));
+    icite.hold(new Promise<void>((r) => (answer = r)));
     const matching = request("POST", `/collections/files/${file.id}/pmid`, { pmid: MATCHED });
     try {
-      await vi.waitFor(() => expect(busy.citesOut).toBe(true));
+      await vi.waitFor(() => expect(icite.calls().length).toBeGreaterThan(0));
       // A removal with its sweep, which the match doesn't hold off.
       await request("POST", `/bookmark-folders/${folder}/papers/remove`, { pmids: [SAVED] });
       await swept([FED, FILED]);

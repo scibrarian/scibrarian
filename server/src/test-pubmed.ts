@@ -1,5 +1,6 @@
 import { beforeEach } from "vitest";
-import type { ArticleInsert } from "./db.js";
+import type { ArticleInsert, CitationInfo } from "./db.js";
+import type * as RealIcite from "./icite.js";
 import type * as Real from "./pubmed.js";
 import type * as Self from "./test-pubmed.js";
 import type { ArticleMeta, ArticleXml } from "./pubmed-parse.js";
@@ -24,6 +25,12 @@ import { safeError } from "./util.js";
 // What it doesn't do is search. A search answers whatever the test said a term
 // containing some key answers (answer()), because building the term is the
 // code under test's business, and pubmed.test pins the requests themselves.
+//
+// iCite is here too, the same way, for the citation counts a stored paper is
+// warmed with:
+//
+//   vi.mock("./icite.js", () => import("./test-pubmed.js"));
+//   import { icite } from "./test-pubmed.js";
 
 type Calls = {
   [K in keyof typeof Real]: (typeof Real)[K] extends (...args: never[]) => Promise<unknown> ? K : never;
@@ -70,6 +77,9 @@ beforeEach(() => {
   log = [];
   pubmed.medline = new Map();
   pubmed.fail = false;
+  citations.clear();
+  citeHold = undefined;
+  citeLog = [];
 });
 
 // The endpoint each call asks first, for the outage message pubmed.ts writes.
@@ -204,7 +214,55 @@ export const fetchMedlineIndexing: typeof Real.fetchMedlineIndexing = async (...
   return new Map(pubmed.medline);
 };
 
-// Every export pubmed.ts has, typed as it types them: one added there and not
-// here fails to compile, rather than leaving a test to find NCBI.
-type Covers<Fake extends typeof Real> = Fake;
-export type PubmedFake = Covers<typeof Self>;
+// ---------- iCite ----------
+
+const citations = new Map<string, CitationInfo>();
+let citeHold: Promise<unknown> | undefined;
+let citeLog: string[][] = [];
+
+export const icite = {
+  /** What iCite knows of a paper. One it doesn't know, it has nothing for. */
+  set(pmid: string, citation_count: number, references: string[] = []): void {
+    citations.set(pmid, { citation_count, references });
+  },
+  /** Every request from now on waits on `until` after it is recorded, and throws if it rejects. */
+  hold(until: Promise<unknown>): void {
+    until.catch(() => {}); // as pubmed.hold
+    citeHold = until;
+  },
+  /** The PMIDs of each request so far, in order. */
+  calls(): string[][] {
+    return [...citeLog];
+  },
+};
+
+export const fetchCitations: typeof RealIcite.fetchCitations = async (pmids) => {
+  citeLog.push(pmids);
+  await citeHold;
+  return new Map(
+    pmids.flatMap((p) => {
+      const known = citations.get(p);
+      return known ? [[p, known] as const] : [];
+    })
+  );
+};
+
+// What icite.ts does with the answer: a row for every PMID asked about, zeroed
+// for one iCite has nothing for, so it isn't asked about again. db.js is loaded
+// here rather than imported, because importing it opens the database, and at
+// import that is the developer's own rather than the test's.
+export const ensureCitations: typeof RealIcite.ensureCitations = async (pmids) => {
+  if (pmids.length === 0) return;
+  const fetched = await fetchCitations(pmids);
+  const rows = [...fetched].map(([pmid, info]) => ({ pmid, info }));
+  for (const pmid of pmids) {
+    if (!fetched.has(pmid)) rows.push({ pmid, info: { citation_count: 0, references: [] } });
+  }
+  (await import("./db.js")).upsertCitations(rows);
+};
+
+// Every export pubmed.ts and icite.ts have, typed as they type them: one added
+// there and not here fails to compile, rather than leaving a test to find the
+// real service.
+type Covers<Module, Fake extends Module> = Fake;
+export type Fakes = [Covers<typeof Real, typeof Self>, Covers<typeof RealIcite, typeof Self>];

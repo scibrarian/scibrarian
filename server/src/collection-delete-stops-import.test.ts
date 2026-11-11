@@ -41,10 +41,7 @@ vi.mock("./pdf-text.js", async (importOriginal) => {
   };
 });
 vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
-vi.mock("./icite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./icite.js")>();
-  return { ...actual, ensureCitations: async () => {} };
-});
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 // What every PDF in this file says it is.
 const READ_PMID = "40000001";

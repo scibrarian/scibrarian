@@ -25,10 +25,7 @@ process.env.ADMIN_TOKEN = "alerts-token";
 const HEADERS = { "x-admin-token": "alerts-token", "content-type": "application/json" };
 
 vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
-vi.mock("./icite.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./icite.js")>()),
-  ensureCitations: async () => {},
-}));
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 const mail = vi.hoisted(() => ({
   sent: [] as { from: unknown; to: string; subject: string; text: string; html?: string }[],

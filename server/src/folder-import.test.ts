@@ -18,10 +18,7 @@ const HEADERS = { "x-admin-token": "folder-import-token" };
 vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 // The DOIs PubMed was asked about.
 const searched = () => pubmed.calls("pmidsForDoi").map(([doi]) => doi);
-vi.mock("./icite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./icite.js")>();
-  return { ...actual, ensureCitations: async () => {} };
-});
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 let db: Db;
 let server: Server;

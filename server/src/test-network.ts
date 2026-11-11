@@ -40,7 +40,7 @@ function noneTried(): void {
   if (urls.length > 0) {
     throw new Error(
       `This test tried to reach the network: ${[...new Set(urls)].join(", ")}. ` +
-        "Mock the module that asked, as the tests mocking ./pubmed.js do."
+        "Fake the module that asked: PubMed and iCite with test-pubmed.ts, anything else with vi.mock."
     );
   }
 }
