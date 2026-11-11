@@ -80,19 +80,21 @@ describe("the sweep of papers nothing holds", () => {
 
   it("keeps a paper a topic's removal spared because a folder has it", () => {
     db.addBookmarks(folder, [FED]);
-    db.removeTopicWithArticles(topic);
+    db.removeTopic(topic);
     db.dropUnheldArticles();
     expect(stored()).toEqual([FED, FILED, SAVED]);
   });
 });
 
 describe("the citation counts of a paper", () => {
-  it("go with it when a topic's removal deletes it", () => {
-    // Removing a topic deletes the papers only it had, and always did. What
-    // was counted about them has no foreign key, and used to stay.
-    db.removeTopicWithArticles(topic);
+  it("go with it when a topic's removal lets go of it", () => {
+    // Removing a topic lets go of the papers only it had, and the sweep after
+    // it deletes them. What was counted about them has no foreign key, and used
+    // to stay.
+    db.removeTopic(topic);
+    db.dropUnheldArticles();
     expect(db.existingPmids([FED]).size).toBe(0);
-    expect(counted()).toEqual([FILED, SAVED, LOOSE]);
+    expect(counted()).toEqual([FILED, SAVED]);
   });
 
   it("aren't written once it is gone", () => {

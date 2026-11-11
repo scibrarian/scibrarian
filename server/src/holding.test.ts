@@ -32,6 +32,7 @@ let blobPath: (hash: string) => string;
 let checkOutForExternalOpen: (fileId: number) => Promise<string>;
 let config: typeof import("./config.js");
 
+let topic: number;
 let shelf: number;
 let folder: number;
 
@@ -94,7 +95,7 @@ beforeAll(async () => {
 afterAll(closeTempDb);
 
 beforeEach(() => {
-  ({ shelf, folder } = seedHoldings(db));
+  ({ topic, shelf, folder } = seedHoldings(db));
 });
 
 afterEach(() => {
@@ -136,6 +137,34 @@ describe("letting go, with nothing attaching", () => {
     const file = db.listCollectionFiles(shelf)[0];
     await (await holding.letGoOfFile(file.id)).swept;
     expect(stored()).toEqual([FED, SAVED]);
+  });
+
+  it("takes the papers only a deleted topic held, and answers with how many", async () => {
+    const released = holding.letGoOfTopic(topic);
+    expect(released.result).toEqual({ deletedArticles: 1 });
+    await released.swept;
+    expect(db.getTopic(topic)).toBeUndefined();
+    expect(stored()).toEqual([FILED, SAVED]);
+  });
+
+  it("takes the papers a topic's narrowed scope no longer covers", async () => {
+    const released = await holding.changeTopicScope(topic, { allPubmed: false, journals: [] });
+    expect(released!.result).toEqual({ deletedArticles: 1, removedFromInterests: 1 });
+    await released!.swept;
+    expect(stored()).toEqual([FILED, SAVED]);
+  });
+
+  it("refuses a change of scope while a poll holds the lock, and changes nothing", async () => {
+    const { shut, open } = gate();
+    const poll = withPollLock(() => shut);
+    try {
+      expect(await holding.changeTopicScope(topic, { allPubmed: false, journals: [] })).toBeNull();
+      expect(db.getTopic(topic)).toMatchObject({ all_pubmed: true });
+      expect(stored()).toEqual(ALL);
+    } finally {
+      open();
+      await poll;
+    }
   });
 
   it("gives the sweep no turn for the one-paper toggle", async () => {
@@ -328,6 +357,38 @@ describe("a removal while something is attaching", () => {
 
     await anotherRemoval();
     expect(stored()).toEqual([FED, FILED]);
+  });
+
+  // What a topic's removal used to get wrong, by deleting its papers itself: a
+  // scan that had read one as stored, and was waiting on PubMed for the rest,
+  // went on to match a file to a paper that was gone. collection_files.pmid is
+  // a soft reference, so nothing refused the match.
+  it("leaves a deleted topic's papers while a collection is being scanned", async () => {
+    const scan = runningJob("scan", db.createCollection("Scanning").id);
+    try {
+      await holding.letGoOfTopic(topic).swept;
+      expect(stored()).toEqual(ALL);
+    } finally {
+      scan.open();
+      await scan.stopped();
+    }
+
+    await anotherRemoval();
+    expect(stored()).toEqual([FILED, SAVED]);
+  });
+
+  it("leaves the papers a narrowed scope let go of while a collection is being scanned", async () => {
+    const scan = runningJob("scan", db.createCollection("Scanning").id);
+    try {
+      await (await holding.changeTopicScope(topic, { allPubmed: false, journals: [] }))!.swept;
+      expect(stored()).toEqual(ALL);
+    } finally {
+      scan.open();
+      await scan.stopped();
+    }
+
+    await anotherRemoval();
+    expect(stored()).toEqual([FILED, SAVED]);
   });
 
   it("gives the sweep back its turn when an attach fails", async () => {

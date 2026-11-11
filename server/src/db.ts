@@ -810,8 +810,8 @@ export function renameTopic(id: number, name: string): void {
 // copies) or a bookmark. Saving a paper is what makes it the user's, so it
 // outlives the feed it was found in; a bookmark whose paper vanished would be
 // a silently empty row (the FK would cascade it away). The confirm-dialog
-// count and the destructive DELETE share this fragment so they can't disagree.
-// Binds the topic id twice.
+// count and the count a removal answers with share this fragment so they can't
+// disagree. Binds the topic id twice.
 //
 // CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
 // topic's *current* match criteria — every stored paper that matches a topic
@@ -838,16 +838,18 @@ export function countTopicArticles(id: number): number {
   ).c;
 }
 
-// Remove a topic: papers exclusive to it (and neither bookmarked nor saved in
-// the library) are permanently deleted; papers that also appear under other
-// topics survive with those links intact. Deleting a topic's articles is
-// recoverable in principle — re-adding the topic re-seeds from an all-time
-// PubMed scan. article_topics rows cascade via both foreign keys, and the
-// topic's list goes with it, taking any journal only it listed.
-export const removeTopicWithArticles = transaction((id: number): TopicRemovalResult => {
-  const deletedArticles = Number(
-    db.prepare(`DELETE FROM articles WHERE ${DELETABLE_TOPIC_ARTICLES}`).run(id, id).changes
-  );
+// Remove a topic. Papers exclusive to it (and neither bookmarked nor saved in
+// the library) are left holding nothing, and the sweep that follows the
+// removal deletes them (letGoOfTopic in holding.ts) — not this, for the reason
+// dropUnheldArticles gives: a scan can have read one as stored and be about to
+// match a file to it. They are counted here, while the links that mark them
+// are still there, and the count is the removal's answer. Papers that also
+// appear under other topics survive with those links intact. Deleting a
+// topic's articles is recoverable in principle — re-adding the topic re-seeds
+// from an all-time PubMed scan. article_topics rows cascade via both foreign
+// keys, and the topic's list goes with it, taking any journal only it listed.
+export const removeTopic = transaction((id: number): TopicRemovalResult => {
+  const deletedArticles = countTopicArticles(id);
   db.prepare("DELETE FROM topics WHERE id = ?").run(id);
   db.exec(DROP_UNLISTED_JOURNALS);
   return { deletedArticles };
@@ -1020,8 +1022,9 @@ export function countScopeLeaving(topicId: number, next: ScopeIds): number {
 // Change what a topic searches.
 //
 // What the new scope no longer covers leaves the feed (leavingLinks), and of
-// those papers the ones in no other feed that nothing saved points at are
-// deleted — the rule a topic's own removal applies.
+// those papers the ones in no other feed that nothing saved points at are left
+// for the sweep that follows to delete — the rule a topic's own removal
+// applies.
 //
 // What the new scope adds is listed on the next poll, which is the other half
 // of DELETABLE_TOPIC_ARTICLES' assumption. A journal new to the list starts
@@ -1051,18 +1054,19 @@ export const setTopicScope = transaction(
           c: number;
         }
       ).c;
-      // Deleted first, while the links that mark them are still there (theirs
-      // cascade); then the links left over are removed — to saved papers, and
-      // to papers another topic keeps.
-      deletedArticles = Number(
+      // The papers this leaves holding nothing, counted first, while the links
+      // that mark them are still there; then the links are removed. The sweep
+      // that follows the change deletes those papers, as it does a removed
+      // topic's (see removeTopic).
+      deletedArticles = (
         db
           .prepare(
-            `DELETE FROM articles WHERE pmid IN (${leaving.sql})
+            `SELECT COUNT(*) AS c FROM articles WHERE pmid IN (${leaving.sql})
                AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
                AND ${UNSAVED_ARTICLES}`
           )
-          .run(...leaving.params, topicId).changes
-      );
+          .get(...leaving.params, topicId) as { c: number }
+      ).c;
       db.prepare(`DELETE FROM article_topics WHERE topic_id = ? AND pmid IN (${leaving.sql})`).run(
         topicId,
         ...leaving.params

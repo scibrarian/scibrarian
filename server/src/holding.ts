@@ -6,16 +6,24 @@ import {
   removeBookmark,
   removeBookmarks,
   removeCollectionPapers,
+  removeTopic,
   resetLibrary,
   setFileMatched,
+  setTopicScope,
   upsertArticles,
   type ArticleInsert,
+  type TopicScope,
 } from "./db.js";
 import { clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
 import { anyJobRunning, cancelJob, cancelJobs, clearJobs } from "./jobs.js";
 import { pollRunning, withPollLock } from "./poller.js";
 import { resetProContent } from "./pro-hooks.js";
-import type { CollectionFile, LibraryStats } from "./types.js";
+import type {
+  CollectionFile,
+  JournalRemovalResult,
+  LibraryStats,
+  TopicRemovalResult,
+} from "./types.js";
 import { errMessage } from "./util.js";
 
 // Letting go of papers: every way a holder lets go of what it holds, and the
@@ -213,6 +221,34 @@ export function rematchFile(
   upsertArticles(articles);
   setFileMatched(file.id, pmid, "manual");
   return { result: undefined, swept: behindReply(null, !!file.pmid && file.pmid !== pmid) };
+}
+
+// A topic. The papers only it held are left for the sweep rather than deleted
+// with it, which is what used to happen, and a scan that had read one as stored
+// went on to match a file to a paper that was gone: a topic's removal is a
+// removal like any other. Answers with how many papers it was the last holder
+// of, the count its confirmation asked about; they go as soon as the sweep has
+// its turn, and until then nothing lists them.
+export function letGoOfTopic(topicId: number): Released<TopicRemovalResult> {
+  const removal = removeTopic(topicId);
+  return { result: removal, swept: behindReply(null, removal.deletedArticles > 0) };
+}
+
+// A change to where a topic searches, which lets go of the papers its new scope
+// no longer covers (see setTopicScope). Under the poll lock, like a reset: a
+// poll of this topic still running would finish against the scope it started
+// with, and then stamp the watermark the change had just cleared. Null when a
+// poll holds the lock.
+//
+// The sweep comes after the lock is let go, because it skips its turn while a
+// poll holds it, and this one would be holding it itself.
+export async function changeTopicScope(
+  topicId: number,
+  scope: TopicScope
+): Promise<Released<JournalRemovalResult> | null> {
+  const removal = await withPollLock(async () => setTopicScope(topicId, scope));
+  if (removal === null) return null;
+  return { result: removal, swept: behindReply(null, removal.deletedArticles > 0) };
 }
 
 // ---------- letting go of everything ----------

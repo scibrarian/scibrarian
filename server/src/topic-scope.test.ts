@@ -178,7 +178,7 @@ function change(topicId: number, next: ReturnType<typeof list> | typeof ALL_PUBM
 }
 
 describe("dropping a journal from a topic's list", () => {
-  it("deletes its unsaved papers, and takes saved ones out of the feed", () => {
+  it("lets go of its unsaved papers, and takes saved ones out of the feed", () => {
     const t = db.createTopic("Adipose Tissue", TERM, [], list(LANCET, BMJ)).id;
     db.saveArticles(
       [
@@ -194,8 +194,10 @@ describe("dropping a journal from a topic's list", () => {
     db.setFileMatched(db.listCollectionFiles(shelf)[0].id, "3", "pmid");
     db.addBookmarks(db.createBookmarkFolder("Later").id, ["4"]);
 
-    // Three leave the feed, saved ones included; one of them is deleted.
+    // Three leave the feed, saved ones included; one of them is left holding
+    // nothing, and the sweep that follows the change (holding.ts) deletes it.
     expect(change(t, list(BMJ))).toEqual({ deletedArticles: 1, removedFromInterests: 3 });
+    db.dropUnheldArticles();
 
     expect(["1", "2", "3", "4"].map((p) => [p, exists(p)])).toEqual([
       ["1", true],
@@ -273,14 +275,10 @@ describe("changing a topic from all of PubMed to a list", () => {
     // In no feed at all, so nothing this topic's polls brought in.
     db.upsertArticles([article("5", ELSEWHERE)]);
 
+    // Counted as the two it let go of, not three: the one in no feed was never
+    // the topic's to count.
     expect(change(t, list(LANCET))).toEqual({ deletedArticles: 2, removedFromInterests: 2 });
-    expect(["1", "2", "3", "5"].map((p) => [p, exists(p)])).toEqual([
-      ["1", true],
-      ["2", false],
-      ["3", false],
-      ["5", true],
-    ]);
-    expect(topicsOf("1")).toEqual([t]);
+    expect([topicsOf("1"), topicsOf("2"), topicsOf("3")]).toEqual([[t], [], []]);
     expect(db.getTopic(t)).toMatchObject({ all_pubmed: false, journalCount: 1 });
   });
 
@@ -307,7 +305,7 @@ describe("removing a topic", () => {
   it("forgets the journals only it listed", () => {
     const a = db.createTopic("Adipose Tissue", TERM, [], list(LANCET, BMJ)).id;
     db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(BMJ));
-    db.removeTopicWithArticles(a);
+    db.removeTopic(a);
     expect(journalRows()).toEqual(["BMJ"]);
   });
 });
@@ -422,7 +420,8 @@ describe("the routes", () => {
     expect(body.removed).toEqual({ deletedArticles: 1, removedFromInterests: 1 });
     expect(body.topic).toMatchObject({ all_pubmed: false, journalCount: 1 });
     expect(body.topic.journals.map((j: { name: string }) => j.name)).toEqual(["BMJ"]);
-    expect(exists("2")).toBe(false);
+    // Taken by the sweep, behind the reply.
+    await vi.waitFor(() => expect(exists("2")).toBe(false));
   });
 
   it("change a name and a scope together", async () => {

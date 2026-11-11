@@ -151,12 +151,11 @@ describe("a removal, with the server idle", () => {
     await swept([FED, SAVED]);
   });
 
-  it("is not given a turn by a removed topic, which leaves nothing for it", async () => {
-    // The topic's own papers go with it, and what was counted about them. The
-    // paper nothing holds is the sweep's, and stays.
-    expect((await request("DELETE", `/topics/${topic}`)).status).toBe(200);
-    expect(stored()).toEqual([FILED, SAVED, LOOSE]);
-    expect(counted()).toEqual([FILED, SAVED, LOOSE]);
+  it("takes the papers only a removed topic held, and answers with how many", async () => {
+    const res = await request("DELETE", `/topics/${topic}`);
+    expect(await res.json()).toEqual({ deletedArticles: 1 });
+    await swept([FILED, SAVED]);
+    expect(counted()).toEqual([FILED, SAVED]);
   });
 
   it("is not given a turn by the one-paper toggle", async () => {

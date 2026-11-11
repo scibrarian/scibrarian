@@ -20,7 +20,6 @@ import {
   countNeverIndexedMatches,
   dismissBookmarkImport,
   dismissUnmatchedBookmarkImports,
-  removeTopicWithArticles,
   renameTopic,
   storedHeading,
   topicByHeadings,
@@ -60,7 +59,6 @@ import {
   searchCatalog,
   searchMesh,
   settleBookmarkImports,
-  setTopicScope,
   setSetting,
   sourceHasFiles,
   suggestTopicsFromLibrary,
@@ -106,6 +104,7 @@ import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import { startImport } from "./importer.js";
 import {
+  changeTopicScope,
   deleteAllData,
   letGoOfCollection,
   letGoOfCollectionPapers,
@@ -113,6 +112,7 @@ import {
   letGoOfFolder,
   letGoOfFolderPaper,
   letGoOfFolderPapers,
+  letGoOfTopic,
   rematchFile,
   whileAttaching,
 } from "./holding.js";
@@ -592,9 +592,8 @@ api.post("/topics/:id/scope/preview", (req, res) => {
 // Change a topic's name, where it searches, or both. Its headings are not here
 // to change: they are fixed when it is created (see Topic.headings).
 //
-// A change of scope runs under the poll lock, like a reset: a poll of this
-// topic still running would finish against the scope it started with, and then
-// stamp the watermark the change had just cleared (see setTopicScope).
+// A change of scope runs under the poll lock, like a reset (see
+// changeTopicScope).
 api.patch(
   "/topics/:id",
   asyncHandler(async (req, res) => {
@@ -632,13 +631,13 @@ api.patch(
       // leaves the scope unchanged too; nothing from here to the rename waits
       // on anything outside this process.
       if (renaming && nameTaken(res, "topic", topicByName(name), id)) return;
-      const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
-      if (result === null) {
+      const changed = await changeTopicScope(id, scoped.scope);
+      if (changed === null) {
         return res
           .status(409)
           .json({ error: "A check for new papers is running. Try again in a moment." });
       }
-      removed = result;
+      removed = changed.result;
     }
     // Last, so a scope that was refused doesn't leave the topic renamed.
     if (renaming) renameTopic(id, name);
@@ -654,8 +653,9 @@ api.get("/topics/:id/article-count", (req, res) => {
   res.json({ count: countTopicArticles(Number(req.params.id)) });
 });
 
+// The papers only this topic held go behind the reply: see letGoOfTopic.
 api.delete("/topics/:id", (req, res) => {
-  res.json(removeTopicWithArticles(Number(req.params.id)));
+  res.json(letGoOfTopic(Number(req.params.id)).result);
 });
 
 // Autocomplete against the local MeSH descriptor list (headings + synonyms).
