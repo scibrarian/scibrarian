@@ -590,7 +590,7 @@ export async function collectPendingCheckins(): Promise<void> {
  * to the collections that kept the paper. The delete unlinks the blob and
  * cannot reach this: the store and the cache are different directories, and
  * db.ts sits underneath this module rather than above it, so the sweep is
- * called from the routes.
+ * called from holding.ts, which sits above both.
  *
  * By orphanhood rather than by a list of ids the caller captured before its
  * delete. Nothing has to be remembered at the call site — which is what the

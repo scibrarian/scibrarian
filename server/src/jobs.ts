@@ -114,7 +114,7 @@ export function isJobRunning(kind: JobKind, id: number): boolean {
 
 // The same question asked of every collection or folder at once, for the
 // callers that can't name one: a whole-library reset, and the sweep of papers
-// nothing holds (sweepUnheld in routes.ts), which a run's stored and not yet
+// nothing holds (sweepUnheld in holding.ts), which a run's stored and not yet
 // matched or bookmarked papers would otherwise be among. Of one kind, or of
 // both when none is named.
 //

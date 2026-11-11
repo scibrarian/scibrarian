@@ -588,10 +588,9 @@ const UNHELD_ARTICLES = `pmid NOT IN (SELECT pmid FROM article_topics)
 // matched to a PMID with no row, which hides it from every holdings query (see
 // ensureArticle in pro-storage.ts).
 //
-// So it runs only when nothing is in that gap, which is its callers' to know:
-// at startup (index.ts), where nothing can be and an import cut short asks
-// PubMed again, and after a removal that finds the server idle (sweepUnheld in
-// routes.ts).
+// So it runs only when nothing is in that gap, which is its caller's to know:
+// holding.ts, at startup, where nothing can be and an import cut short asks
+// PubMed again, and after a removal that finds the server idle.
 export function dropUnheldArticles(): number {
   return Number(db.prepare(`DELETE FROM articles WHERE ${UNHELD_ARTICLES}`).run().changes);
 }

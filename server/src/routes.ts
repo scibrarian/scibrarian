@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
-import { paperProvenance, proStatus, resetProContent } from "./pro-hooks.js";
+import { paperProvenance, proStatus } from "./pro-hooks.js";
 import {
   addBookmarkImports,
   addBookmarks,
@@ -18,13 +18,8 @@ import {
   countTopicArticles,
   createTopic,
   countNeverIndexedMatches,
-  deleteBookmarkFolder,
-  deleteCollection,
-  deleteCollectionFile,
   dismissBookmarkImport,
   dismissUnmatchedBookmarkImports,
-  dropUnheldArticles,
-  removeCollectionPapers,
   removeTopicWithArticles,
   renameTopic,
   storedHeading,
@@ -60,14 +55,10 @@ import {
   meshFacetsForSource,
   meshFilingForSource,
   missingOrStaleCitations,
-  removeBookmark,
-  removeBookmarks,
   renameBookmarkFolder,
   renameCollection,
-  resetLibrary,
   searchCatalog,
   searchMesh,
-  setFileMatched,
   settleBookmarkImports,
   setTopicScope,
   setSetting,
@@ -107,18 +98,28 @@ import {
   smtpPort,
   type MailSettings,
 } from "./alerts.js";
-import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
+import { checkoutCacheStats, clearCheckouts } from "./external-open.js";
 import { addLinksToFolder, toPaper } from "./bookmark-links.js";
 import { startFolderImport } from "./folder-import.js";
 import { splitRefs } from "./citation-ref.js";
 import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import { startImport } from "./importer.js";
-import { anyJobRunning, cancelJob, cancelJobs, clearJobs, isJobRunning, jobStatus } from "./jobs.js";
+import {
+  deleteAllData,
+  letGoOfCollection,
+  letGoOfCollectionPapers,
+  letGoOfFile,
+  letGoOfFolder,
+  letGoOfFolderPaper,
+  letGoOfFolderPapers,
+  rematchFile,
+  whileAttaching,
+} from "./holding.js";
+import { isJobRunning, jobStatus } from "./jobs.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
-import { anyTransferInFlight } from "./pro-storage.js";
 import {
   countMatches,
   fetchArticles,
@@ -130,7 +131,6 @@ import {
   isValidCron,
   nothingToPoll,
   pollAll,
-  pollRunning,
   pollTopic,
   rescheduleFromSettings,
   warmCitations,
@@ -351,51 +351,6 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
     return false;
   }
   return true;
-}
-
-// ---------- papers nothing holds ----------
-
-// Requests here that have found a paper stored and have yet to attach what it
-// is stored for: pasted links, which read which of their papers the library
-// has, wait on PubMed for the rest, and bookmark them all after the wait; and a
-// PMID given to an imported entry, which does the same for one paper. A
-// count for the reason transfersInFlight is one (pro-storage.ts): two can be
-// out at once.
-let attaching = 0;
-
-async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
-  attaching++;
-  try {
-    return await work();
-  } finally {
-    attaching--;
-  }
-}
-
-// Delete the papers nothing holds any longer, after a removal that may have let
-// go of some. dropUnheldArticles says why this is not part of the removal: a
-// paper is stored before what it is stored for is attached to it, and one swept
-// in between leaves a file matched to a paper that isn't there.
-//
-// So it is skipped, not waited for, while anything is part way through that: an
-// import of PDFs or of a reference file, a copy arriving from another library,
-// a poll, or one of the requests counted above. Nothing is lost by a skip. The sweep is of the whole library,
-// so the next removal to find the server idle takes what this one left, and a
-// start takes the rest.
-//
-// A removal that says how much it took doesn't call this when it took nothing:
-// the sweep reads every stored paper, and there is nothing new for it to find.
-//
-// It can't fail the removal it follows: that has happened, and what a failed
-// sweep leaves behind is rows nobody can see.
-function sweepUnheld(): void {
-  if (attaching > 0 || anyJobRunning()) return;
-  if (anyTransferInFlight() || pollRunning()) return;
-  try {
-    dropUnheldArticles();
-  } catch (err) {
-    console.warn(`[routes] sweeping papers nothing holds failed: ${errMessage(err)}`);
-  }
 }
 
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
@@ -1148,24 +1103,12 @@ api.put("/bookmark-folders/:id", (req, res) => {
   res.json({ ...getBookmarkFolder(id)!, paperCount: bookmarkCounts()[id] ?? 0 });
 });
 
-api.delete(
-  "/bookmark-folders/:id",
-  asyncHandler(async (req, res) => {
-    // The folder's bookmark rows cascade, and so do the entries an import left
-    // unmatched; the papers they pointed at stay, but for the ones nothing else
-    // holds, which the sweep takes.
-    //
-    // An import still looking entries up is told to stop in the same tick, as a
-    // collection's scan is (see the collection delete), and waited for after
-    // the response and before the sweep, which skips its turn while it runs.
-    const id = Number(req.params.id);
-    const lookupStopped = cancelJob("lookup", id);
-    deleteBookmarkFolder(id);
-    res.status(204).end();
-    await lookupStopped;
-    sweepUnheld();
-  })
-);
+// See letGoOfFolder: a lookup running over it stops, and the papers only it
+// held go behind the reply.
+api.delete("/bookmark-folders/:id", (req, res) => {
+  letGoOfFolder(Number(req.params.id));
+  res.status(204).end();
+});
 
 // Every (folder, paper) pair in one payload. Deliberately not folded into
 // /papers or /graph as a per-row flag: the client keeps this whole set in
@@ -1237,7 +1180,7 @@ api.post(
     const batch = lines.slice(0, MAX_LINKS_PER_REQUEST);
     // Counted as attaching: it reads which of the papers are stored, waits on
     // PubMed for the rest, and bookmarks the stored ones after the wait.
-    const results = await whileAttaching(() => addLinksToFolder(id, batch));
+    const results = await whileAttaching("attach", () => addLinksToFolder(id, batch));
     if (!results) {
       return res.status(404).json({ error: "This folder was deleted while the links were being looked up." });
     }
@@ -1438,7 +1381,7 @@ api.post(
     if (!getBookmarkImport(entryId)) {
       return res.status(404).json({ error: "That entry is no longer listed." });
     }
-    const saved = await whileAttaching(async () => {
+    const saved = await whileAttaching("attach", async () => {
       const fetched = existingPmids([pmid]).has(pmid) ? [] : await fetchArticles([pmid]);
       // Nothing awaited from here on, so the entry and its folder are read
       // after the wait and the paper is stored and bookmarked in one tick.
@@ -1462,11 +1405,9 @@ api.delete("/bookmark-imports/:entryId", (req, res) => {
   res.status(204).end();
 });
 
-// No sweep after this one. It is the toggle in Interests, pressed a paper at a
-// time, and a paper listed there is in a topic's feed: taking it off a folder
-// leaves it held.
+// The toggle in Interests, which gives the sweep no turn: see letGoOfFolderPaper.
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
-  removeBookmark(Number(req.params.id), String(req.params.pmid));
+  letGoOfFolderPaper(Number(req.params.id), String(req.params.pmid));
   res.status(204).end();
 });
 
@@ -1487,9 +1428,8 @@ api.post("/bookmark-folders/:id/papers/remove", (req, res) => {
     return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
   }
   const pmids = raw.map((p) => String(p).trim()).filter(Boolean);
-  const removed = removeBookmarks(id, pmids);
+  const { result: removed } = letGoOfFolderPapers(id, pmids);
   res.json({ removed });
-  if (removed > 0) sweepUnheld();
 });
 
 // ---------- collections (uploaded PDF libraries) ----------
@@ -1563,23 +1503,10 @@ api.put("/collections/:id", (req, res) => {
 api.delete(
   "/collections/:id",
   asyncHandler(async (req, res) => {
-    // Rows cascade and orphaned blobs are GC'd inside deleteCollection. The
-    // checked-out copies of those rows are the half it cannot reach — see
-    // discardOrphanedCheckouts, and the note on the dialog that promises "any
-    // stored PDF copies are deleted".
-    //
-    // A scan over the collection is told to stop in the same tick as the
-    // delete, which is what keeps it from writing after it (see cancelJob).
-    // Its stopping is waited for after the response, so a PubMed request it is
-    // part way through doesn't hold the delete up, and before the sweep, which
-    // skips its turn while any scan is running.
-    const id = Number(req.params.id);
-    const scanStopped = cancelJob("scan", id);
-    deleteCollection(id);
-    await discardOrphanedCheckouts();
+    // See letGoOfCollection: its scan stops, its checked-out copies go before
+    // the reply, and the papers only it held behind it.
+    await letGoOfCollection(Number(req.params.id));
     res.status(204).end();
-    await scanStopped;
-    sweepUnheld();
   })
 );
 
@@ -1821,30 +1748,23 @@ api.post(
     if (articles.length === 0) {
       return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
     }
-    // Stored and matched with nothing awaited in between, so there is no instant
-    // at which the paper is stored and the file doesn't hold it yet, for the
-    // sweep of papers nothing holds to take it in. Its citation counts follow.
-    upsertArticles(articles);
-    setFileMatched(fileId, pmid, "manual");
+    // Stored and matched in one tick (see rematchFile), and its citation counts
+    // follow.
+    rematchFile(file, pmid, articles);
     await warmCitations([pmid], "manual match");
     // Return the same shape as the files list (content_hash stripped, exists
     // added), not the raw row. getCollectionFile can't be missing here — the
     // row was verified above and setFileMatched only updates it.
     res.json(apiFile(getCollectionFile(fileId)!));
-    // For the paper the file was matched to before, if this was a second match.
-    if (file.pmid && file.pmid !== pmid) sweepUnheld();
   })
 );
 
 api.delete(
   "/collections/files/:fileId",
   asyncHandler(async (req, res) => {
-    // The row's blob is GC'd inside deleteCollectionFile if this was the last
-    // reference; its checked-out copy is swept here, for the same reason.
-    deleteCollectionFile(Number(req.params.fileId));
-    await discardOrphanedCheckouts();
+    // See letGoOfFile: its checked-out copy goes before the reply.
+    await letGoOfFile(Number(req.params.fileId));
     res.status(204).end();
-    sweepUnheld();
   })
 );
 
@@ -1877,10 +1797,8 @@ api.post(
     // removes more files than papers, and a paper something else already took
     // removes fewer papers than were asked for. The notice reports what happened,
     // which needs the pair; see removeCollectionPapers.
-    const removal = removeCollectionPapers(id, pmids);
-    await discardOrphanedCheckouts();
+    const { result: removal } = await letGoOfCollectionPapers(id, pmids);
     res.json(removal);
-    if (removal.removed > 0) sweepUnheld();
   })
 );
 
@@ -2305,92 +2223,19 @@ api.post("/workspaces/switch", (req, res) => {
 
 // Delete the whole library. Irreversible, and the only route here that is.
 //
-// Held against the same lock a manual refresh takes, rather than merely
-// checking a flag: a poll that overlapped this would be inserting papers into
-// topics as they are deleted — articles saved against a topic_id the
-// transaction is removing, which the foreign key refuses, and a poller that
-// then reports a failure for a topic the user meant to be gone.
-//
-// Imports are a separate question and answered separately, because they are not
-// what the poll lock covers. They also cannot be waited for: an import is a
-// background job with no lock to take and no bound on how long it runs, so the
-// honest answer is to refuse and let the owner press the button again once it
-// finishes.
-//
-// Except a folder's reference-file lookup, which is stopped instead. It can run
-// for most of an hour, and the reset is deleting everything it works on — the
-// folder, its entries, their bookmarks — so there is nothing to wait for. It
-// is stopped in the tick the reset runs in, under the lock, so a reset the lock
-// refuses stops nothing; and each round's writes check that its folder still
-// exists, so one between awaits when the reset lands writes nothing after it.
-//
-// Transfers are the third, and the one easiest to forget, because on a Pro
-// instance the writer is not this instance at all. A paired node pushing up and
-// a master being pulled from both land in storePulledFile, which is mounted
-// outside this router, is not a job in jobs.ts, and takes no lock — so the poll
-// lock below says nothing about it. The refusals are ordered cheapest first and
-// both ahead of the lock, so a refused reset never takes one.
+// What it refuses to run alongside, and the order it tidies up in, are
+// deleteAllData's (holding.ts).
 api.post(
   "/data/reset",
   asyncHandler(async (req, res) => {
-    if (anyJobRunning("scan")) {
-      return res.status(409).json({
-        error: "A collection is still importing files. Wait for it to finish, then try again.",
-      });
-    }
-    // The same answer for the same reason, to a writer nobody here can see. A
-    // push arriving from a paired node and a pull coming down from a master both
-    // write article rows and blobs across awaits, and neither is a job in `jobs`
-    // or a holder of the poll lock — so without this the wipe lands between a
-    // transfer's checks and its writes, leaving a blob nothing references or an
-    // articles row that outlived "delete everything".
-    //
-    // Refused rather than waited for, like the import above: the transfer is not
-    // this instance's to hurry, and the window is a network round trip wide.
-    if (anyTransferInFlight()) {
-      return res.status(409).json({
-        error: "Files are being copied into this library right now. Wait for it to finish, then try again.",
-      });
-    }
-    const stats = await withPollLock(async () => {
-      cancelJobs("lookup");
-      return resetLibrary();
-    });
-    if (stats === null) {
-      return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
-    }
-    // After the deletion, never before it: each of these is tidying up around a
-    // wipe that has already happened, and none is allowed to prevent one.
-    clearJobs();
-    resetProContent();
-    // The checked-out copies, which are the one part of a stored PDF that
-    // resetLibrary cannot reach. It deletes the blobs and the rows; a copy is
-    // neither, and it is a plaintext PDF under the paper's own name sitting in
-    // a directory the reader can open. Leaving those behind would make "and
-    // every stored PDF" false in the sentence the button is asking about, for
-    // every paper opened in a viewer — which is exactly the set someone
-    // resetting a library to get rid of sensitive papers has been reading.
-    //
-    // Here rather than in resetLibrary, for the reason resetProContent is here:
-    // external-open.ts is built on db.ts, so db.ts cannot call into it, and the
-    // route is where the halves of a reset are already put together.
-    //
-    // Every row is gone by now, so each copy is an orphan and clearCheckouts
-    // takes it — its one refusal, a save that was never finished, cannot arise
-    // when there is no row left to hold the changes for.
-    //
-    // Allowed to fail, like the blob sweep inside resetLibrary and for the same
-    // reason: the wipe has committed, nothing rolls it back, and a directory
-    // that could not be removed must not be reported as a reset that did not
-    // happen.
-    try {
-      await clearCheckouts();
-    } catch (err) {
-      console.warn(`[routes] clearing checked-out copies after reset failed: ${errMessage(err)}`);
-    }
-    // The schedule survives (poll_cron and poll_enabled are settings, not
-    // contents), and with no topics left there is nothing for it to poll — but
-    // it is still armed, so nothing needs rescheduling here.
-    res.json(stats);
+    const outcome = await deleteAllData();
+    if ("stats" in outcome) return res.json(outcome.stats);
+    const error = {
+      scan: "A collection is still importing files. Wait for it to finish, then try again.",
+      transfer:
+        "Files are being copied into this library right now. Wait for it to finish, then try again.",
+      refresh: "A refresh is running. Try again in a moment.",
+    }[outcome.refused];
+    res.status(409).json({ error });
   })
 );

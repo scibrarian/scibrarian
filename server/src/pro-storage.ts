@@ -16,6 +16,7 @@ import {
   setFileMatched,
   upsertArticles,
 } from "./db.js";
+import { whileAttaching } from "./holding.js";
 import { fetchArticles } from "./pubmed.js";
 import { errMessage } from "./util.js";
 
@@ -200,28 +201,6 @@ export interface PulledFile {
   failed: { collectionId: number; error: string }[];
 }
 
-// In-flight transfers into this library — pushes arriving from paired nodes
-// and pulls coming down from a master, which are the same write here.
-//
-// A count rather than a flag: two nodes can be pushing at once, and a flag
-// cleared by whichever finished first would report the library as idle while
-// the other was still mid-write.
-let transfersInFlight = 0;
-
-/**
- * Whether a copy into this library is part-written right now.
- *
- * Read by the reset route, which refuses rather than deleting underneath one,
- * and by the sweep of papers nothing holds, which skips its turn (sweepUnheld
- * in routes.ts).
- * Nothing else should branch on this: it answers "is this a safe instant to
- * destroy everything", not "is the library busy" — it is false again the moment
- * the last transfer settles, which is far too sharp an edge to drive a UI from.
- */
-export function anyTransferInFlight(): boolean {
-  return transfersInFlight > 0;
-}
-
 /**
  * File bytes pulled from a master as a genuinely held paper, onto one or more
  * shelves.
@@ -268,14 +247,14 @@ export async function storePulledFile(o: {
   // whole-library reset landing in either one leaves a blob with no row
   // referencing it or an articles row surviving a wipe that reported deleting
   // everything. The reset route refuses while this is non-zero rather than
-  // racing it — see anyTransferInFlight, and the refusal in routes.ts.
+  // racing it, and the sweep of papers nothing holds skips its turn — see the
+  // "transfer" writes in holding.ts.
   //
   // Here rather than at the two call sites over in pro/, because this is the
   // one function both of them go through: a push arriving from a paired node
   // and a pull coming down from the master are the same write from the free
   // tier's side, and counting them apart would be two ways to get it wrong.
-  transfersInFlight++;
-  try {
+  return whileAttaching("transfer", async () => {
     if (!(await ensureArticle(o.pmid))) return null;
 
     const hash = await storePulledBlob(o.bytes);
@@ -303,9 +282,7 @@ export async function storePulledFile(o: {
       }
     }
     return { hash, filed, failed };
-  } finally {
-    transfersInFlight--;
-  }
+  });
 }
 
 /**
