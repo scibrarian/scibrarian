@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, FileInput, Link as LinkIcon, Plus } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
-import { useImportJob, type ImportJobs } from "../lib/import-jobs";
+import { useFollowedJob, type ImportJobs } from "../lib/import-jobs";
 import type { BookmarkImport, FolderImportResponse } from "../types";
 import { AddLinks } from "./AddLinks";
 import { Banner } from "./Banner";
@@ -67,7 +67,6 @@ export function BookmarkFolderView({
   const [addingLinks, setAddingLinks] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const watched = useImportJob(importJobs, folderId);
   // While a file is being sent and read, before any lookup has started.
   const [sending, setSending] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -79,9 +78,6 @@ export function BookmarkFolderView({
   const [entries, setEntries] = useState<BookmarkImport[]>([]);
   const [entriesToken, setEntriesToken] = useState(0);
   const [entriesStale, setEntriesStale] = useState(false);
-  // Whether the resume probe below has answered: until it has, a pending entry
-  // may be one a lookup is working on right now.
-  const [lookupChecked, setLookupChecked] = useState(false);
   const [showingEntries, setShowingEntries] = useState(false);
   const [entriesError, setEntriesError] = useState<string | null>(null);
 
@@ -103,28 +99,17 @@ export function BookmarkFolderView({
 
   const refreshEntries = () => setEntriesToken((t) => t + 1);
 
-  // Resume the progress bar if a lookup is already running over this folder.
-  useEffect(() => {
-    void importJobs.check(folderId).then(() => setLookupChecked(true));
-  }, [folderId, importJobs]);
-
-  // A lookup this view was watching has ended. App refreshes the folder's
-  // papers when it does, and after each round (see folderImportJobs); what is
-  // left here is the list of entries it settled, and its failure if it failed.
-  //
-  // Before paint, for CollectionView's reason: the render that first sees the
-  // lookup over still holds its entries as pending, and with nothing running
-  // any more a passive effect would paint them for a frame as not looked up.
-  const lastWatched = useRef(watched);
-  useLayoutEffect(() => {
-    const was = lastWatched.current;
-    lastWatched.current = watched;
-    if (was?.state !== "running" || !watched || watched.state === "running") return;
-    if (watched.state === "lost") setError("Lost contact with the import. Reload to check its status.");
-    else if (watched.state === "error") setError(watched.error ?? "The import failed.");
+  // The lookup over this folder, resumed on entry if one is running; until the
+  // probe has answered (lookupChecked), a pending entry may be one a lookup is
+  // working on right now. When one ends, App refreshes the folder's papers, as
+  // it does after each round (see folderImportJobs); what is left here is the
+  // list of entries it settled, and its failure if it failed.
+  const { watched, checked: lookupChecked } = useFollowedJob(importJobs, folderId, (ended) => {
+    if (ended.state === "lost") setError("Lost contact with the import. Reload to check its status.");
+    else if (ended.state === "error") setError(ended.error ?? "The import failed.");
     setEntriesStale(true);
     refreshEntries();
-  }, [watched]);
+  });
 
   async function importFile(file: File) {
     setError(null);
@@ -136,7 +121,7 @@ export function BookmarkFolderView({
     setSending(true);
     try {
       const res = await api.importToFolder(folderId, file);
-      importJobs.follow(folderId, res.status);
+      importJobs.start(folderId, res.status);
       const note = leftOutNote(res);
       if (res.queued + res.noIdentifier === 0) {
         setNotice(`Nothing in that file could be imported. ${note}`.trim());
@@ -153,12 +138,10 @@ export function BookmarkFolderView({
   async function lookUp() {
     setEntriesError(null);
     try {
-      const started = await api.startFolderImport(folderId);
-      importJobs.follow(folderId, started);
-      // Nothing was left to look up: another tab got there first, so the
-      // entries on screen as not looked up are out of date. A lookup with
-      // anything to do answers "running", and saves nothing before it has.
-      if (started.state !== "running") refreshEntries();
+      // One with nothing left to look up — another tab got there first —
+      // answers over already, and the entries on screen as not looked up are
+      // refreshed as they are for any lookup that ends.
+      importJobs.start(folderId, await api.startFolderImport(folderId));
     } catch (e) {
       setEntriesError(errorMessage(e));
     }

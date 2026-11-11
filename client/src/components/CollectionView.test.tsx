@@ -198,29 +198,35 @@ describe("a scan that ends while the view is open", () => {
 describe("what a finished scan says", () => {
   const pdf = (name: string) => new File(["%PDF-1.4"], name, { type: "application/pdf" });
 
-  // Pick files and let a scan that is over before the first poll settle.
+  // Pick files and let a scan that is over before the first poll settle: its
+  // start answers with it finished.
   async function scan(files: File[], finished: ImportJob) {
     const id = nextId++;
     const added = files.filter((f) => f.name.endsWith(".pdf")).length;
-    api.getImportStatus.mockResolvedValueOnce({ state: "idle" }).mockResolvedValueOnce(finished);
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
     api.uploadFiles.mockResolvedValue({ added, skipped: 0 });
-    api.startImport.mockResolvedValue({ jobId: "job", total: added });
+    api.startImport.mockResolvedValue(finished);
     const { container } = render(<View id={id} />);
     await settle();
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files } });
-    await waitFor(() => expect(api.getImportStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
     await settle();
-    return container;
+    return { container, id };
   }
 
-  it("says nothing when everything matched", async () => {
-    const container = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
+  it("says nothing when everything matched, and has App refresh what it changed", async () => {
+    const { container, id } = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
     expect(container.querySelector(".banner")).toBeNull();
+    // Over before anything could poll it, so its start is where it ends.
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith(id);
+    // Followed from the start's answer, with nothing asked after it.
+    expect(api.getImportStatus).toHaveBeenCalledTimes(1);
   });
 
   it("says nothing about files it couldn't match or read, which the summary line counts", async () => {
     const files = [pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")];
-    const container = await scan(files, job({ matched: 1, unmatched: 1, errors: 1 }));
+    const { container } = await scan(files, job({ matched: 1, unmatched: 1, errors: 1 }));
     expect(container.querySelector(".banner")).toBeNull();
   });
 
@@ -242,12 +248,12 @@ describe("files dropped onto a collection", () => {
   // The view, with uploads that take whatever is sent and a scan that is over
   // before the first poll. Returns the element drops land on.
   async function view({ isAdmin = true } = {}): Promise<HTMLElement> {
-    api.getImportStatus.mockResolvedValueOnce({ state: "idle" }).mockResolvedValue(job({}));
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
     api.uploadFiles.mockImplementation(async (_id: number, files: File[]) => ({
       added: files.length,
       skipped: 0,
     }));
-    api.startImport.mockResolvedValue({ jobId: "job", total: 1 });
+    api.startImport.mockResolvedValue(job({}));
     const { container } = render(<View id={nextId++} isAdmin={isAdmin} />);
     await settle();
     return container.firstElementChild as HTMLElement;
@@ -555,15 +561,26 @@ describe("the unmatched files dialog", () => {
     fakePoll();
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending"), row(2, id, "pending")] });
-    api.startImport.mockResolvedValue({ jobId: "job", total: 2 });
+    api.startImport.mockResolvedValue(job({ state: "running", total: 2, processed: 0, matched: 0 }));
     render(<View id={id} />);
     const dialog = await openFiles("2 not scanned");
 
-    api.getImportStatus.mockResolvedValue(job({ state: "running", total: 2, processed: 0, matched: 0 }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Scan them" }));
     await waitFor(() => expect(unmatchedDialog()).toBeNull());
     expect(api.startImport).toHaveBeenCalledWith(id);
     expect(screen.getByText(/Scanning 0 \/ 2/)).toBeTruthy();
+  });
+
+  it("has App refresh a scan that was over by the time it started", async () => {
+    const id = nextId++;
+    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending")] });
+    api.startImport.mockResolvedValue(job({ total: 1, processed: 1, matched: 1 }));
+    render(<View id={id} />);
+    const dialog = await openFiles("1 not scanned");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Scan them" }));
+    await waitFor(() => expect(settled).toHaveBeenCalledWith(id));
+    expect(settled).toHaveBeenCalledTimes(1);
   });
 
   it("says so inside itself when the scan won't start", async () => {

@@ -1586,8 +1586,9 @@ api.post("/collections/:id/import", (req, res) => {
   if (isJobRunning("scan", id)) {
     return res.status(409).json({ error: "An import is already running for this collection." });
   }
-  const status = startImport(id, collection.name);
-  res.status(202).json({ jobId: status.jobId, total: status.total });
+  // The job itself, as a folder's lookup answers with, so the client follows it
+  // from this answer rather than asking again.
+  res.status(202).json(startImport(id, collection.name));
 });
 
 // Stream a stored PDF for viewing in a browser tab. Unlike the rest of the

@@ -251,11 +251,6 @@ export interface UploadResponse {
   skipped: number; // already in the collection (or not a PDF)
 }
 
-export interface ImportStartResponse {
-  jobId: string;
-  total: number; // pending files the job will scan
-}
-
 // Which paper set a view reads from: an Interests topic, a Bookmarks folder, a
 // Library collection, or every collection at once. Every analysis module
 // (table, timeline, graph) takes one. Defined in shared/source.ts alongside its

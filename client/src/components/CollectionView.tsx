@@ -2,7 +2,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
   type DragEvent,
@@ -20,7 +19,7 @@ import {
 } from "../lib/dropped-files";
 import { errorMessage, plural } from "../lib/format";
 import { useCachedFetch, useDebounced, useHeldWhile, type FetchCache } from "../lib/hooks";
-import { useImportJob, type ImportJobs } from "../lib/import-jobs";
+import { useFollowedJob, type ImportJobs } from "../lib/import-jobs";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import type {
@@ -166,7 +165,6 @@ export function CollectionView({
   const [notice, setNotice] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const watched = useImportJob(importJobs, collectionId);
   // Files sent so far, while a selection is being uploaded. Non-null *is* the
   // "upload in progress" flag: the bytes are still going up, nothing has been
   // scanned, and the rows the server already has say nothing yet about whether
@@ -189,9 +187,6 @@ export function CollectionView({
   // Set when a scan settles: the refreshed file list has been asked for but has
   // not arrived, and until it does every row on screen still reads 'pending'.
   const [filesStale, setFilesStale] = useState(false);
-  // Whether the resume probe below has answered for this collection yet — that
-  // is, whether we know if a scan is working on the rows we're looking at.
-  const [scanChecked, setScanChecked] = useState(false);
   const filesInputRef = useRef<HTMLInputElement | null>(null);
   // The unmatched-files dialog, opened from the count in the summary line, and
   // what its rows last failed with, shown inside it where the page's own
@@ -225,10 +220,9 @@ export function CollectionView({
   const selectionNotesRef = useRef("");
 
   // The one place a settled job becomes a message. Two things can be the first
-  // to see a job finish — App's poll, seen below as the status leaving
-  // 'running', and the status read right after starting one that was over
-  // before the first tick — and both have to come here, or a failed scan goes
-  // unreported and its pre-scan rows are shown as its answer.
+  // to see a job finish — App's poll, and the start of one that was over
+  // already — and both come here, through useFollowedJob below, or a failed
+  // scan goes unreported and its pre-scan rows are shown as its answer.
   const reportSettled = useCallback((s: ImportStatus) => {
     // The caller refreshes the file list next, and until that lands the rows on
     // screen are the pre-scan ones — all 'pending', none of them yet an answer.
@@ -246,36 +240,20 @@ export function CollectionView({
     } else if (s.state === "error") setError((s.error ?? "The scan failed.") + notes);
   }, []);
 
-  // A scan this view was watching has ended. App polls it and refreshes the
-  // collection when it does (see lib/import-jobs), so what is left here is
-  // reportSettled's part: the selection's notes or the scan's error, and
-  // holding the pre-scan rows back until the fresh list lands.
+  // The scan over this collection, resumed on entry if one is running. When
+  // one ends, App refreshes the collection (see lib/import-jobs), so what is
+  // left here is reportSettled's part: the selection's notes or the scan's
+  // error, and holding the pre-scan rows back until the fresh list lands.
   //
-  // Before paint, not after: the render that first sees the scan over still
-  // has those rows, every one 'pending', and with nothing running any more a
-  // passive effect would paint them for a frame as files never scanned.
-  const lastWatched = useRef(watched);
-  useLayoutEffect(() => {
-    const was = lastWatched.current;
-    lastWatched.current = watched;
-    if (was?.state !== "running" || !watched || watched.state === "running") return;
-    if (watched.state === "lost") {
+  // scanChecked answers "is anything scanning these rows?". Entering a
+  // collection mid-scan paints the cached file list — every row 'pending' —
+  // before the probe comes back, and a pending row means nothing until it is
+  // known whether something is working on it.
+  const { watched, checked: scanChecked } = useFollowedJob(importJobs, collectionId, (ended) => {
+    if (ended.state === "lost") {
       setError("Lost contact with the import job. Reload to check its status.");
-    } else reportSettled(watched);
-  }, [watched, reportSettled]);
-
-  // Resume the progress UI if an import is already running for this collection.
-  //
-  // Also the answer to "is anything scanning these rows?", which is why
-  // scanChecked is set either way. Entering a collection mid-scan paints the
-  // cached file list — every row 'pending' — before this comes back, and a
-  // pending row means nothing until it is known whether something is working
-  // on it. Asked on every entry rather than taken from what App last heard,
-  // which may predate a scan started since.
-  useEffect(() => {
-    if (collectionId == null) return;
-    void importJobs.check(collectionId).then(() => setScanChecked(true));
-  }, [collectionId, importJobs]);
+    } else reportSettled(ended);
+  });
 
   // Set from the start of handleImport to the scan it starts. `busy` keeps
   // every way in shut while a selection is being added, and this is what still
@@ -372,11 +350,13 @@ export function CollectionView({
     // bar with nothing to draw for the two round trips that queue the job, so
     // it vanished and came back as "Scanning" a moment later. Clearing it in
     // the same tick that sets the job status makes the handover one render.
-    let started: ImportStatus | null = null;
+    //
+    // When the upload has news of its own to give — nothing added, or a batch
+    // that failed — the selection's notes go with that, below, and the scan
+    // has none left to report when it settles.
+    if (failure || added === 0) selectionNotesRef.current = "";
     try {
-      await api.startImport(collectionId);
-      started = await api.getImportStatus(collectionId);
-      importJobs.follow(collectionId, started);
+      importJobs.start(collectionId, await api.startImport(collectionId));
     } catch (e) {
       failure ??= e; // the upload error, if there was one, is the more useful
     } finally {
@@ -410,13 +390,10 @@ export function CollectionView({
     if (added === 0) {
       setNotice(
         (skipped > 0 ? "Those files are already in this collection." : "No PDFs found in the selection.") +
-          selectionNotesRef.current
+          skipNote +
+          ignoredNote
       );
-      return;
     }
-    // A short scan can be over before the poll's first tick — or before it even
-    // starts — and then nothing else would ever report it.
-    if (started && started.state !== "running") reportSettled(started);
   }
 
   // Files dragged over the view itself. Not over a dialog it has open: those
@@ -538,15 +515,7 @@ export function CollectionView({
     // An earlier upload's notes belong to that upload, not to this scan.
     selectionNotesRef.current = "";
     try {
-      await api.startImport(collectionId);
-      const started = await api.getImportStatus(collectionId);
-      importJobs.follow(collectionId, started);
-      // Over before it could be followed, so nothing else will report it or
-      // refresh what it changed.
-      if (started.state !== "running") {
-        reportSettled(started);
-        onChanged();
-      }
+      importJobs.start(collectionId, await api.startImport(collectionId));
     } catch (e) {
       setUnmatchedError(errorMessage(e));
     }

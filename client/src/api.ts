@@ -16,7 +16,6 @@ import type {
   GraphResponse,
   HaveAnswer,
   HaveResponse,
-  ImportStartResponse,
   ImportStatus,
   JournalSearchResponse,
   JournalSuggestResponse,
@@ -344,7 +343,7 @@ export const api = {
     return req<UploadResponse>(`/api/collections/${id}/files`, { method: "POST", body: form });
   },
   startImport: (id: number) =>
-    req<ImportStartResponse>(`/api/collections/${id}/import`, { method: "POST" }),
+    req<ImportStatus>(`/api/collections/${id}/import`, { method: "POST" }),
   getImportStatus: (id: number) => req<ImportStatus>(`/api/collections/${id}/import/status`),
   fileContentUrl: (fileId: number) => `/api/collections/files/${fileId}/content`,
   // Admin-only: mint an expiring signed URL for a stored PDF. Omitting
