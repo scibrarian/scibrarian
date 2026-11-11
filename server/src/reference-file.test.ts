@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseReferenceFile } from "./reference-file.js";
+import { parseReferenceFile, readReferenceFile } from "./reference-file.js";
+import { MAX_IMPORT_ENTRIES } from "../../shared/limits.js";
 
-// Reading reference-manager exports into the entries a folder import looks up.
-// The records below are shaped after what EndNote, Zotero and PubMed write.
+// Reading reference-manager exports into the entries a folder import looks up,
+// and then into the rows it lists. The records below are shaped after what
+// EndNote, Zotero and PubMed write.
 
 const ris = (...records: string[]) => records.join("\n");
 
@@ -205,5 +207,114 @@ describe("a file that is neither", () => {
     expect(parseReferenceFile("@article{key, title={BibTeX, for later}}")).toBeNull();
     expect(parseReferenceFile("Smith J. A paper. Lancet. 2020;1:2.")).toBeNull();
     expect(parseReferenceFile("")).toBeNull();
+  });
+});
+
+// What an import into a folder takes from a file's bytes: the rows it lists,
+// keyed for the folder, the counts its reply gives, or why it can't take it.
+describe("a file as an import takes it", () => {
+  const bytes = (text: string) => new TextEncoder().encode(text);
+  const read = (file: string | Uint8Array) => {
+    const imported = readReferenceFile(typeof file === "string" ? bytes(file) : file);
+    if ("refused" in imported) throw new Error(imported.refused);
+    return imported;
+  };
+  const record = (...fields: string[]) => ["TY  - JOUR", ...fields, "ER  - "].join("\n");
+
+  it("lists the journal articles there is something to go on for, and counts the rest", () => {
+    const imported = read(
+      ris(
+        record("TI  - Found by PMID", "AN  - 33301246", "DB  - PubMed"),
+        record("TI  - Found by DOI", "DO  - 10.1000/found"),
+        record("TI  - Hand-entered long ago", "PY  - 1987"),
+        "TY  - BOOK\nTI  - A textbook\nDO  - 10.1000/book\nER  - ",
+        record("PY  - 2020")
+      )
+    );
+    expect(imported).toMatchObject({ read: 5, notArticles: 1, blank: 1, noIdentifier: 1 });
+    expect(imported.rows.map((r) => r.title)).toEqual([
+      "Found by PMID",
+      "Found by DOI",
+      "Hand-entered long ago",
+    ]);
+  });
+
+  it("keys an entry by its PMID, else its DOI, else what it says of itself, with the keys it had before", () => {
+    const [both, doiOnly, neither] = read(
+      ris(
+        record(
+          "TI  - Both",
+          "AU  - Polack, Fernando P.",
+          "T2  - NEJM",
+          "PY  - 2020",
+          "DO  - 10.1056/NEJMoa1",
+          "AN  - 33301246",
+          "DB  - PubMed"
+        ),
+        record("TI  - DOI only", "DO  - 10.1000/found"),
+        record("TI  - Neither", "AU  - Roe, R", "T2  - Small Journal", "PY  - 1987")
+      )
+    ).rows;
+    // What a reference manager that later found the DOI or PMID would have
+    // listed it as, so the next import takes over that row.
+    expect(both).toMatchObject({
+      key: "pmid:33301246",
+      formerKeys: ["doi:10.1056/nejmoa1", "ref:both|2020|nejm|polack"],
+    });
+    expect(doiOnly).toMatchObject({ key: "doi:10.1000/found", formerKeys: ["ref:doi only|||"] });
+    expect(neither).toMatchObject({ key: "ref:neither|1987|small journal|roe", formerKeys: [] });
+  });
+
+  it("knows an entry again when a re-export changed only its punctuation, case or name style", () => {
+    const [before] = read(
+      record("TI  - Effects of Foo: a Trial.", "AU  - Polack, Fernando P.", "T2  - The Lancet", "PY  - 2020")
+    ).rows;
+    const [after] = read(
+      record("TI  - effects of foo — a trial", "AU  - Polack FP", "T2  - The Lancet", "PY  - 2020")
+    ).rows;
+    expect(after.key).toBe(before.key);
+  });
+
+  it("keeps apart entries with no identifier that share a title and year", () => {
+    const editorial = (journal: string, author: string) =>
+      record("TI  - Editorial", `AU  - ${author}`, `T2  - ${journal}`, "PY  - 2020");
+    const file = ris(
+      editorial("The Lancet", "Horton, Richard"),
+      editorial("BMJ", "Godlee, Fiona"),
+      editorial("BMJ", "Abbasi, Kamran")
+    );
+    expect(new Set(read(file).rows.map((r) => r.key)).size).toBe(3);
+  });
+
+  it("reads a file saved as UTF-16, in either byte order", () => {
+    const text = "TY  - JOUR\r\nTI  - Hand-entered — long ago\r\nPY  - 1987\r\nER  - \r\n";
+    const le = Buffer.from(text, "utf16le");
+    for (const file of [
+      Buffer.concat([Buffer.from([0xff, 0xfe]), le]),
+      Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(le).swap16()]),
+    ]) {
+      expect(read(file).rows.map((r) => r.title)).toEqual(["Hand-entered — long ago"]);
+    }
+  });
+
+  it("reads a file that isn't UTF-8 as Windows-1252", () => {
+    // EndNote's "ANSI" export, where é is the one byte UTF-8 would refuse.
+    const file = Buffer.from("TY  - JOUR\nTI  - Caf\xe9 society\nER  - \n", "latin1");
+    expect(read(file).rows.map((r) => r.title)).toEqual(["Café society"]);
+  });
+
+  it("refuses a file it can't read, and one with more references than an import takes, saying why", () => {
+    expect(readReferenceFile(bytes("@article{k, title={T}}"))).toEqual({
+      refused:
+        "That file isn’t one this can read. Export RIS from your reference manager, or use PubMed’s " +
+        "“Send to → Citation manager”.",
+    });
+    const many = ris(...Array.from({ length: MAX_IMPORT_ENTRIES + 1 }, (_, i) => record(`TI  - Paper ${i}`)));
+    const count = (n: number) => n.toLocaleString("en-US");
+    expect(readReferenceFile(bytes(many))).toEqual({
+      refused:
+        `That file has ${count(MAX_IMPORT_ENTRIES + 1)} references. ` +
+        `Import at most ${count(MAX_IMPORT_ENTRIES)} at a time.`,
+    });
   });
 });

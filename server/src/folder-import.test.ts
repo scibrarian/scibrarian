@@ -223,24 +223,6 @@ describe("importing a reference file into a folder", () => {
     expect(bookmarked(removed)).toEqual([]);
   });
 
-  it("keeps apart entries with no identifier that share a title and year", async () => {
-    const editorial = (journal: string, author: string) =>
-      `TY  - JOUR\nTI  - Editorial\nAU  - ${author}\nT2  - ${journal}\nPY  - 2020\nER  - `;
-    const file = [
-      editorial("The Lancet", "Horton, Richard"),
-      editorial("BMJ", "Godlee, Fiona"),
-      editorial("BMJ", "Abbasi, Kamran"),
-    ].join("\n");
-    const id = folder("Editorials");
-    await importFile(id, file);
-    await settled(id);
-    expect(await entries(id)).toHaveLength(3);
-    // The same three, exported again.
-    await importFile(id, file);
-    await settled(id);
-    expect(await entries(id)).toHaveLength(3);
-  });
-
   // A PMID that names nothing — mistyped, or withdrawn since — is no reason to
   // ignore a good DOI beside it. One that names a paper is taken without the
   // DOI being asked about.
@@ -260,20 +242,6 @@ describe("importing a reference file into a folder", () => {
     expect((await entries(id)).map(({ title, reason }) => ({ title, reason }))).toEqual([
       { title: "Neither found", reason: "not-in-pubmed" },
     ]);
-  });
-
-  it("reads a file saved as UTF-16, in either byte order", async () => {
-    const text = "TY  - JOUR\r\nTI  - Hand-entered — long ago\r\nPY  - 1987\r\nER  - \r\n";
-    const le = Buffer.from(text, "utf16le");
-    for (const [name, bytes] of [
-      ["little-endian", Buffer.concat([Buffer.from([0xff, 0xfe]), le])],
-      ["big-endian", Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(le).swap16()])],
-    ] as const) {
-      const id = folder(`UTF-16, ${name}`);
-      expect((await importFile(id, bytes)).status).toBe(201);
-      await settled(id);
-      expect((await entries(id)).map((e) => e.title)).toEqual(["Hand-entered — long ago"]);
-    }
   });
 
   it("refuses a file that is neither RIS nor PubMed's format", async () => {

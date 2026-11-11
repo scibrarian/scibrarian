@@ -23,6 +23,18 @@ each one to a paper.
 **Lookup**: the background job that looks up a bookmark folder's pending
 imported entries in PubMed and bookmarks the ones it finds.
 
+**Reference file**: a reference manager's export, imported into a bookmark
+folder: RIS, which EndNote, Zotero and Mendeley write, or PubMed's MEDLINE
+format (.nbib). Read by `readReferenceFile` in `server/src/reference-file.ts`.
+
+**Imported entry**: one journal article a reference file listed, a row in its
+folder's `bookmark_imports`. It is listed as not yet a bookmark until the lookup
+bookmarks it as the paper PubMed has for it, or the reader gives it a PMID or
+removes it, and kept after that as settled. Known in its folder by a key: its
+PMID, else its DOI, else its title, year, journal and first author. So an entry
+imported again is the same entry, and one the reader dealt with stays dealt
+with.
+
 **Transfer** (Pro): a stored PDF arriving from another library, either pushed
 up by a paired node or pulled down from a master. Both land in
 `storePulledFile`.

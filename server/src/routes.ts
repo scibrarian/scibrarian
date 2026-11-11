@@ -63,7 +63,6 @@ import {
   sourceHasFiles,
   suggestTopicsFromLibrary,
   upsertArticles,
-  type BookmarkImportInsert,
   type JournalSpec,
   type PaperFilter,
   type PaperSource,
@@ -185,11 +184,10 @@ import {
   type WorkspaceRecord,
 } from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
-import { parseReferenceFile, type FileEntry } from "./reference-file.js";
+import { readReferenceFile } from "./reference-file.js";
 import {
   MAX_BULK_BOOKMARK_PMIDS,
   MAX_IMPORT_BYTES,
-  MAX_IMPORT_ENTRIES,
   MAX_LINKS_PER_REQUEST,
   MAX_NAME_CHARS,
   MAX_TOPIC_HEADINGS,
@@ -1210,44 +1208,6 @@ function uploadReferenceFile(req: Request, res: Response, next: NextFunction): v
   });
 }
 
-// UTF-8, which every current exporter writes, and Windows-1252 for a file that
-// isn't — EndNote's "ANSI" export, among others. Only titles and names are at
-// stake: the DOIs and PMIDs the lookup reads are ASCII either way.
-//
-// Except in UTF-16, which Windows offers as "Unicode" and EndNote among others
-// can save: every other byte is a NUL, and read as either of the above no line
-// is a tag, so the file was refused as a format this can't read. It is known by
-// its byte-order mark, which the decoder drops.
-function decodeReferenceFile(bytes: Buffer): string {
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return new TextDecoder("windows-1252").decode(bytes);
-  }
-}
-
-// An entry's identity in its folder — see bookmark_imports — and the keys it
-// would have had before its reference manager filled in a DOI or PMID, most
-// specific first.
-//
-// One with neither is known by its title, year, journal and first author's
-// surname: title and year alone made every "Editorial" of a year one entry.
-// Each is folded to letters and digits, so a re-export that changed only
-// punctuation or case is still the same entry.
-function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
-  const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  // "Polack, Fernando P." as RIS writes a name, "Polack FP" as PubMed does.
-  const surname = e.authors.split(";")[0].split(",")[0].trim().split(/\s+/)[0] ?? "";
-  const [key, ...formerKeys] = [
-    e.pmid && `pmid:${e.pmid}`,
-    e.doi && `doi:${e.doi}`,
-    `ref:${[e.title, e.year, e.journal, surname].map(fold).join("|")}`,
-  ].filter((k): k is string => !!k);
-  return { key, formerKeys };
-}
-
 // Bring a reference manager's export into a folder: read it, keep its journal
 // articles as entries, and start looking them up. One request does all three
 // because there is nothing to batch — the file is read whole — and the lookup
@@ -1266,42 +1226,17 @@ api.post("/bookmark-folders/:id/imports", uploadReferenceFile, (req, res) => {
       .json({ error: "This folder is still importing. Wait for it to finish, then try again." });
   }
   if (!req.file) return res.status(400).json({ error: "Choose a file to import." });
-  const parsed = parseReferenceFile(decodeReferenceFile(req.file.buffer));
-  if (!parsed) {
-    return res.status(400).json({
-      error:
-        "That file isn’t one this can read. Export RIS from your reference manager, or use PubMed’s " +
-        "“Send to → Citation manager”.",
-    });
-  }
-  const { entries } = parsed;
-  if (entries.length === 0) return res.status(400).json({ error: "There are no references in that file." });
-  if (entries.length > MAX_IMPORT_ENTRIES) {
-    return res.status(400).json({
-      error:
-        `That file has ${entries.length.toLocaleString("en-US")} references. Import at most ` +
-        `${MAX_IMPORT_ENTRIES.toLocaleString("en-US")} at a time.`,
-    });
-  }
-  const articles = entries.filter((e) => e.article);
-  const kept = articles.filter((e) => e.title || e.doi || e.pmid);
-  const rows: BookmarkImportInsert[] = kept.map((e) => ({
-    ...importKeys(e),
-    title: e.title,
-    authors: e.authors,
-    journal: e.journal,
-    year: e.year,
-    doi: e.doi,
-    pmid: e.pmid,
-  }));
-  addBookmarkImports(id, rows);
+  // Read, kept and keyed in reference-file.ts, or refused there in so many words.
+  const imported = readReferenceFile(req.file.buffer);
+  if ("refused" in imported) return res.status(400).json({ error: imported.refused });
+  addBookmarkImports(id, imported.rows);
   const status = startFolderImport(id);
   const body: FolderImportResponse = {
-    read: entries.length,
-    notArticles: entries.length - articles.length,
-    blank: articles.length - kept.length,
+    read: imported.read,
+    notArticles: imported.notArticles,
+    blank: imported.blank,
     queued: status.total,
-    noIdentifier: kept.filter((e) => !e.doi && !e.pmid).length,
+    noIdentifier: imported.noIdentifier,
     status,
   };
   res.status(201).json(body);
