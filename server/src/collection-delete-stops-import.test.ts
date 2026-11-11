@@ -64,6 +64,7 @@ let server: Server;
 let base: string;
 let blobPath: (hash: string) => string;
 let importer: typeof import("./importer.js");
+let jobs: typeof import("./jobs.js");
 
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
@@ -91,6 +92,7 @@ beforeAll(async () => {
   db = await openTempDb("collection-delete-stops-import");
   ({ blobPath } = await import("./blobstore.js"));
   importer = await import("./importer.js");
+  jobs = await import("./jobs.js");
   // index.ts builds the app at module scope and only listens inside start(),
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
@@ -123,14 +125,14 @@ describe("deleting a collection part way through its scan", () => {
     expect((await deleteCollection(shelf.id)).status).toBe(204);
     // The read the delete landed in the middle of now finishes.
     scan.finishRead!();
-    await vi.waitFor(() => expect(importer.getImportStatus(shelf.id)).toBeNull());
+    await vi.waitFor(() => expect(jobs.jobStatus("scan", shelf.id)).toBeNull());
 
     expect(textStored(shelf.hashes[0])).toBe(false);
     // Nor did it go on: not to the second PDF, and not to PubMed with the first.
     expect(scan.reads).toBe(1);
     expect(scan.fetched).toEqual([]);
     expect(db.existingPmids([READ_PMID]).size).toBe(0);
-    expect(importer.anyImportRunning()).toBe(false);
+    expect(jobs.anyJobRunning("scan")).toBe(false);
   });
 
   it("sweeps the papers the collection held once the scan has stopped", async () => {
@@ -162,7 +164,7 @@ describe("deleting a file while the scan is reading it", () => {
     const shelf = pendingShelf("File deleted mid-read", 2);
     importer.startImport(shelf.id, "File deleted mid-read");
     await vi.waitFor(() => expect(scan.finishRead).not.toBeNull());
-    const reading = importer.getImportStatus(shelf.id)!.currentFile;
+    const reading = jobs.jobStatus("scan", shelf.id)!.currentFile;
     const file = db.listCollectionFiles(shelf.id).find((f) => f.file_name === reading)!;
 
     const res = await fetch(`${base}/api/collections/files/${file.id}`, {
@@ -173,7 +175,7 @@ describe("deleting a file while the scan is reading it", () => {
     scan.finishRead!();
     await vi.waitFor(() => expect(scan.reads).toBe(2));
     scan.finishRead!();
-    await vi.waitFor(() => expect(importer.isImportRunning(shelf.id)).toBe(false));
+    await vi.waitFor(() => expect(jobs.isJobRunning("scan", shelf.id)).toBe(false));
 
     expect(textStored(file.content_hash)).toBe(false);
     const rest = shelf.hashes.find((h) => h !== file.content_hash)!;

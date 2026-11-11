@@ -109,26 +109,12 @@ import {
 } from "./alerts.js";
 import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
 import { addLinksToFolder, toPaper } from "./bookmark-links.js";
-import {
-  anyFolderImportRunning,
-  cancelFolderImport,
-  cancelFolderImports,
-  clearFolderImportJobs,
-  getFolderImportStatus,
-  isFolderImportRunning,
-  startFolderImport,
-} from "./folder-import.js";
+import { startFolderImport } from "./folder-import.js";
 import { splitRefs } from "./citation-ref.js";
 import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
-import {
-  anyImportRunning,
-  cancelImport,
-  clearImportJobs,
-  getImportStatus,
-  isImportRunning,
-  startImport,
-} from "./importer.js";
+import { startImport } from "./importer.js";
+import { anyJobRunning, cancelJob, cancelJobs, clearJobs, isJobRunning, jobStatus } from "./jobs.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
@@ -403,7 +389,7 @@ async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
 // It can't fail the removal it follows: that has happened, and what a failed
 // sweep leaves behind is rows nobody can see.
 function sweepUnheld(): void {
-  if (attaching > 0 || anyImportRunning() || anyFolderImportRunning()) return;
+  if (attaching > 0 || anyJobRunning()) return;
   if (anyTransferInFlight() || pollRunning()) return;
   try {
     dropUnheldArticles();
@@ -1173,7 +1159,7 @@ api.delete(
     // collection's scan is (see the collection delete), and waited for after
     // the response and before the sweep, which skips its turn while it runs.
     const id = Number(req.params.id);
-    const lookupStopped = cancelFolderImport(id);
+    const lookupStopped = cancelJob("lookup", id);
     deleteBookmarkFolder(id);
     res.status(204).end();
     await lookupStopped;
@@ -1331,7 +1317,7 @@ function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
 api.post("/bookmark-folders/:id/imports", uploadReferenceFile, (req, res) => {
   const id = Number(req.params.id);
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
-  if (isFolderImportRunning(id)) {
+  if (isJobRunning("lookup", id)) {
     return res
       .status(409)
       .json({ error: "This folder is still importing. Wait for it to finish, then try again." });
@@ -1392,7 +1378,7 @@ api.get("/bookmark-folders/:id/imports", (req, res) => {
 });
 
 api.get("/bookmark-folders/:id/imports/status", (req, res) => {
-  res.json(getFolderImportStatus(Number(req.params.id)) ?? { state: "idle" });
+  res.json(jobStatus("lookup", Number(req.params.id)) ?? { state: "idle" });
 });
 
 // Look up the entries an earlier import stopped before reaching — the
@@ -1400,7 +1386,7 @@ api.get("/bookmark-folders/:id/imports/status", (req, res) => {
 api.post("/bookmark-folders/:id/imports/run", (req, res) => {
   const id = Number(req.params.id);
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
-  if (isFolderImportRunning(id)) {
+  if (isJobRunning("lookup", id)) {
     return res.status(409).json({ error: "This folder is still importing." });
   }
   res.status(202).json(startFolderImport(id));
@@ -1583,12 +1569,12 @@ api.delete(
     // stored PDF copies are deleted".
     //
     // A scan over the collection is told to stop in the same tick as the
-    // delete, which is what keeps it from writing after it (see cancelImport).
+    // delete, which is what keeps it from writing after it (see cancelJob).
     // Its stopping is waited for after the response, so a PubMed request it is
     // part way through doesn't hold the delete up, and before the sweep, which
     // skips its turn while any scan is running.
     const id = Number(req.params.id);
-    const scanStopped = cancelImport(id);
+    const scanStopped = cancelJob("scan", id);
     deleteCollection(id);
     await discardOrphanedCheckouts();
     res.status(204).end();
@@ -1670,7 +1656,7 @@ api.post("/collections/:id/import", (req, res) => {
   const id = Number(req.params.id);
   const collection = getCollection(id);
   if (!collection) return res.status(404).json({ error: "Collection not found." });
-  if (isImportRunning(id)) {
+  if (isJobRunning("scan", id)) {
     return res.status(409).json({ error: "An import is already running for this collection." });
   }
   const status = startImport(id, collection.name);
@@ -1816,7 +1802,7 @@ api.get("/collections/:id/archive", (req, res) => {
 });
 
 api.get("/collections/:id/import/status", (req, res) => {
-  res.json(getImportStatus(Number(req.params.id)) ?? { state: "idle" });
+  res.json(jobStatus("scan", Number(req.params.id)) ?? { state: "idle" });
 });
 
 // Manually assign a PMID to a file the scanner couldn't match. The PMID is
@@ -2341,13 +2327,13 @@ api.post("/workspaces/switch", (req, res) => {
 // Transfers are the third, and the one easiest to forget, because on a Pro
 // instance the writer is not this instance at all. A paired node pushing up and
 // a master being pulled from both land in storePulledFile, which is mounted
-// outside this router, is not a job in `jobs`, and takes no lock — so the poll
+// outside this router, is not a job in jobs.ts, and takes no lock — so the poll
 // lock below says nothing about it. The refusals are ordered cheapest first and
 // both ahead of the lock, so a refused reset never takes one.
 api.post(
   "/data/reset",
   asyncHandler(async (req, res) => {
-    if (anyImportRunning()) {
+    if (anyJobRunning("scan")) {
       return res.status(409).json({
         error: "A collection is still importing files. Wait for it to finish, then try again.",
       });
@@ -2367,7 +2353,7 @@ api.post(
       });
     }
     const stats = await withPollLock(async () => {
-      cancelFolderImports();
+      cancelJobs("lookup");
       return resetLibrary();
     });
     if (stats === null) {
@@ -2375,8 +2361,7 @@ api.post(
     }
     // After the deletion, never before it: each of these is tidying up around a
     // wipe that has already happened, and none is allowed to prevent one.
-    clearImportJobs();
-    clearFolderImportJobs();
+    clearJobs();
     resetProContent();
     // The checked-out copies, which are the one part of a stored PDF that
     // resetLibrary cannot reach. It deletes the blobs and the rows; a copy is

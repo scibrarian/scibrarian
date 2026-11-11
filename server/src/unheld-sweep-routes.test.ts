@@ -32,9 +32,13 @@ const busy = vi.hoisted(() => ({
   citesOut: false,
   fetched: [] as import("./db.js").ArticleInsert[],
 }));
-vi.mock("./importer.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./importer.js")>();
-  return { ...actual, anyImportRunning: () => busy.importing };
+vi.mock("./jobs.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./jobs.js")>();
+  return {
+    ...actual,
+    anyJobRunning: (kind?: import("./jobs.js").JobKind) =>
+      busy.importing || actual.anyJobRunning(kind),
+  };
 });
 vi.mock("./pro-storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pro-storage.js")>();

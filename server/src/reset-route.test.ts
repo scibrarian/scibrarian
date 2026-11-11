@@ -14,7 +14,7 @@ import type { LibraryStats } from "../../shared/types.js";
 // that stops happening reads exactly like one that was never reached, and a
 // tail that runs early reports numbers nobody can tell are wrong.
 //
-// The ordering case is the one worth the HTTP round trip. clearImportJobs and
+// The ordering case is the one worth the HTTP round trip. clearJobs and
 // resetProContent run *after* the response value has been computed, because
 // they are tidying up around a deletion that already happened and neither is
 // allowed to change what it reported. Moving either above the resetLibrary call
@@ -52,7 +52,7 @@ let server: Server;
 let base: string;
 let withPollLock: typeof import("./poller.js").withPollLock;
 let startImport: typeof import("./importer.js").startImport;
-let clearImportJobs: typeof import("./importer.js").clearImportJobs;
+let clearJobs: typeof import("./jobs.js").clearJobs;
 let registerPro: typeof import("./pro-hooks.js").registerPro;
 let storage: typeof import("./pro-storage.js");
 let backfillArticleMesh: typeof import("./mesh-index.js").backfillArticleMesh;
@@ -90,7 +90,8 @@ beforeAll(async () => {
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
   ({ withPollLock } = await import("./poller.js"));
-  ({ startImport, clearImportJobs } = await import("./importer.js"));
+  ({ startImport } = await import("./importer.js"));
+  ({ clearJobs } = await import("./jobs.js"));
   ({ registerPro } = await import("./pro-hooks.js"));
   storage = await import("./pro-storage.js");
   ({ backfillArticleMesh } = await import("./mesh-index.js"));
@@ -125,7 +126,7 @@ beforeEach(() => {
 
 afterEach(() => {
   registerPro(null);
-  clearImportJobs();
+  clearJobs();
 });
 
 describe("who may press it", () => {
@@ -144,13 +145,12 @@ describe("who may press it", () => {
 describe("what it refuses to run alongside", () => {
   it("refuses while an import is running, and deletes nothing", async () => {
     seed();
-    // A real job in the real map, which is what anyImportRunning reads. The
-    // collection has no pending files, so runImport settles immediately and
-    // cannot race the flag back to "done" underneath the request; the state is
-    // then set deliberately, since what is being pinned is the route's reading
-    // of it rather than the importer's own bookkeeping.
+    // A real job in the real map, which is what anyJobRunning reads. The
+    // collection has no pending files, so the job is over before startImport
+    // returns and nothing can race the flag back to "done" underneath the
+    // request; the state is then set deliberately, since what is being pinned is
+    // the route's reading of it rather than the job's own bookkeeping.
     const job = startImport(db.createCollection("Importing").id, "Importing");
-    await Promise.resolve();
     job.state = "running";
 
     const res = await reset();
