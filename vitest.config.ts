@@ -23,5 +23,8 @@ export default defineConfig({
       "server/src/**/*.test.ts",
       "pro/src/**/*.test.ts",
     ],
+    // "No network" is enforced for the server suite rather than assumed; see
+    // the file.
+    setupFiles: ["server/src/test-network.ts"],
   },
 });
