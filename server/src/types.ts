@@ -57,7 +57,7 @@ import { SETTING_DEFAULTS } from "./config.js";
 
 // Server-only: the client is served the settings response, which never carries
 // the API key. The key set derives from SETTING_DEFAULTS (config.ts), so adding
-// a setting there forces the PUT/response rules (SETTING_RULES in routes.ts) to
+// a setting there forces the save's rules (SETTING_RULES in settings.ts) to
 // cover it — the compiler catches a forgotten branch instead of the toggle
 // silently round-tripping 200 without persisting. The settings table stores
 // strings, so the booleans are "1"/"0".

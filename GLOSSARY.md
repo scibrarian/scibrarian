@@ -52,3 +52,8 @@ up by a paired node or pulled down from a master. Both land in
 machine's own viewer can open it, with any saves taken back into the library.
 It is keyed by its blob, and it goes when no collection file names that blob any
 longer.
+
+**Mail login**: the mail server and username a stored SMTP password was saved
+with. The password is sent only to its own login: a save or a test email that
+changes either has to bring its own password, and clearing the username clears
+the password. Kept by `server/src/settings.ts`.
