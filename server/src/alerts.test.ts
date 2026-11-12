@@ -1,6 +1,8 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mailFieldsOf } from "../../shared/mail.js";
+import type { MailSettings } from "./alerts.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 import { pubmed } from "./test-pubmed.js";
 import { article } from "./unheld-sweep-fixture.js";
@@ -64,6 +66,7 @@ let db: Db;
 let server: Server;
 let base: string;
 let poller: typeof import("./poller.js");
+let sendTestEmail: typeof import("./alerts.js").sendTestEmail;
 
 // A topic past its first poll, so the next one is incremental and lists what
 // it finds. `heading` is what the stand-in search keys its answer on.
@@ -102,6 +105,13 @@ function configure(overrides: Record<string, string> = {}) {
   }
 }
 
+// What configure() saved, with these changed: the settings a test email is
+// sent with.
+function mailWith(overrides: Partial<MailSettings> = {}): MailSettings {
+  const s = db.getSettings();
+  return { ...mailFieldsOf(s), smtp_pass: s.smtp_pass, ...overrides };
+}
+
 const put = (body: unknown) =>
   fetch(`${base}/api/settings`, { method: "PUT", headers: HEADERS, body: JSON.stringify(body) });
 const testEmail = (body: unknown) =>
@@ -114,6 +124,7 @@ const testEmail = (body: unknown) =>
 beforeAll(async () => {
   db = await openTempDb("alerts");
   poller = await import("./poller.js");
+  ({ sendTestEmail } = await import("./alerts.js"));
   const { app } = await import("./index.js");
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
@@ -323,15 +334,8 @@ describe("when nothing is sent", () => {
   });
 });
 
+// What PUT /settings sends. The rules of a save are settings.test.ts's.
 describe("the settings", () => {
-  it("won't turn alerts on without somewhere to send them", async () => {
-    configure({ alert_email_enabled: "0", smtp_host: "" });
-    const res = await put({ alert_email_enabled: true });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Add the mail server to send through.");
-    expect(db.getSettings().alert_email_enabled).toBe("0");
-  });
-
   it("keeps the password write-only", async () => {
     const res = await put({ smtp_host: "mail.example.org", smtp_pass: "another" });
     const body = await res.json();
@@ -341,90 +345,11 @@ describe("the settings", () => {
     expect(JSON.stringify(body)).not.toContain("another");
     expect(db.getSettings().smtp_pass).toBe("another");
   });
-
-  // nodemailer would refuse every send before reaching the server, while the
-  // switch said On.
-  it("won't turn alerts on with a username but no password", async () => {
-    configure({ alert_email_enabled: "0", smtp_pass: "" });
-    const res = await put({ alert_email_enabled: true });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
-      "Add the password, or clear the username if the mail server needs no login."
-    );
-    expect(db.getSettings().alert_email_enabled).toBe("0");
-  });
-
-  // Each is read by nodemailer as something other than the one address typed.
-  it.each([
-    "me@lab.org,boss",
-    "me@lab.org;boss@x.org",
-    '"boss@x.org"me@lab.org',
-    "me(boss@x.org)@lab.org",
-    "me@lab.org:boss",
-    "me\\,x@lab.org",
-  ])("refuses %s as the address to send to", async (address) => {
-    const res = await put({ alert_email_to: address });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("The address to send alerts to isn't an email address.");
-    expect(db.getSettings().alert_email_to).toBe("reader@example.org");
-  });
-
-  it.each(["first.last+tag@sub.example.co.uk", "o'brien@example.ie", "me@[192.0.2.1]"])(
-    "takes %s as the address to send to",
-    async (address) => {
-      const res = await put({ alert_email_to: address });
-      expect(res.status).toBe(200);
-      expect(db.getSettings().alert_email_to).toBe(address);
-    }
-  );
-
-  // With alerts off too: saved, the moved login would keep the old password,
-  // and send it to the new server once alerts went on.
-  it("won't save a new server without its password", async () => {
-    configure({ alert_email_enabled: "0" });
-    const res = await put({ smtp_host: "mail.elsewhere.org" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Enter the password for the new mail server.");
-    expect(db.getSettings().smtp_host).toBe("smtp.example.org");
-  });
-
-  it("replaces the password with one typed over it", async () => {
-    const res = await put({ smtp_user: "sender@example.org", smtp_pass: "changed" });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe("changed");
-  });
-
-  it("removes the password along with the username", async () => {
-    const res = await put({ smtp_user: "", smtp_from: "alerts@example.org" });
-    expect(res.status).toBe(200);
-    expect((await res.json()).has_smtp_pass).toBe(false);
-    expect(db.getSettings().smtp_pass).toBe("");
-  });
-
-  it("doesn't keep a password typed without a username", async () => {
-    const res = await put({ smtp_user: "", smtp_pass: "typed", smtp_from: "alerts@example.org" });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe("");
-  });
-
-  it("keeps the password through a save that leaves the login alone", async () => {
-    const res = await put({ poll_cron: "0 7 * * *" });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe("secret");
-  });
-
-  it("keeps a password's leading and trailing spaces", async () => {
-    const res = await put({ smtp_pass: " spaced out " });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe(" spaced out ");
-  });
-
-  it("refuses a port that isn't one", async () => {
-    const res = await put({ smtp_port: "smtp" });
-    expect(res.status).toBe(400);
-  });
 });
 
+// The route once, over HTTP. The rest asks sendTestEmail itself, with the
+// settings a test email is sent with; which login those may carry is
+// settings.test.ts's.
 describe("the test email", () => {
   it("sends with the dialog's values and the stored password", async () => {
     const res = await testEmail({
@@ -446,69 +371,32 @@ describe("the test email", () => {
     });
   });
 
-  // Otherwise the stored password goes to whatever server the request names,
-  // which would let an admin read the write-only secret back.
-  it("won't send the stored password to another server", async () => {
-    const res = await testEmail({ smtp_host: "mail.elsewhere.org" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Enter the password for the new mail server.");
-    expect(mail.options).toEqual([]);
-  });
-
-  it("won't send the stored password with another username", async () => {
-    const res = await testEmail({ smtp_user: "someone-else@example.org" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Enter the password for the new username.");
-    expect(mail.options).toEqual([]);
-  });
-
-  it("sends to another server with the password typed for it", async () => {
-    const res = await testEmail({ smtp_host: "mail.elsewhere.org", smtp_pass: "theirs" });
-    expect(res.status).toBe(200);
-    expect(mail.options[0]).toMatchObject({
-      host: "mail.elsewhere.org",
-      auth: { user: "sender@example.org", pass: "theirs" },
-    });
-  });
-
-  it("sends to another server without a password when there's no username", async () => {
-    const res = await testEmail({
-      smtp_host: "relay.elsewhere.org",
-      smtp_user: "",
-      smtp_from: "sender@example.org",
-    });
-    expect(res.status).toBe(200);
-    expect(mail.options[0]).toMatchObject({ host: "relay.elsewhere.org", auth: undefined });
-  });
-
   // Not "the mail server didn't accept that username and password": no
   // password was ever sent.
   it("asks for the password a username needs, rather than trying without", async () => {
-    configure({ smtp_pass: "" });
-    const res = await testEmail({});
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
-      "Add the password, or clear the username if the mail server needs no login."
-    );
+    await expect(sendTestEmail(mailWith({ smtp_pass: "" }))).rejects.toMatchObject({
+      status: 400,
+      message: "Add the password, or clear the username if the mail server needs no login.",
+    });
     expect(mail.options).toEqual([]);
   });
 
   it("sends through a relay with neither username nor password", async () => {
-    configure({ smtp_user: "", smtp_pass: "", smtp_from: "sender@example.org" });
-    const res = await testEmail({});
-    expect(res.status).toBe(200);
+    await sendTestEmail(mailWith({ smtp_user: "", smtp_pass: "", smtp_from: "sender@example.org" }));
     expect(mail.options[0]).toMatchObject({ auth: undefined, requireTLS: false });
   });
 
-  it("treats the server's name the same whatever its case", async () => {
-    const res = await testEmail({ smtp_host: "SMTP.Example.org" });
-    expect(res.status).toBe(200);
-    expect(mail.options[0]).toMatchObject({ auth: { pass: "secret" } });
+  // The stored password comes along, and stays behind: a login takes a username.
+  it("sends to another server without a password when there's no username", async () => {
+    await sendTestEmail(
+      mailWith({ smtp_host: "relay.elsewhere.org", smtp_user: "", smtp_from: "sender@example.org" })
+    );
+    expect(mail.options[0]).toMatchObject({ host: "relay.elsewhere.org", auth: undefined });
   });
 
   // A password must never go over a connection that was never encrypted.
   it("requires STARTTLS on any other port once there is a password", async () => {
-    await testEmail({ smtp_port: "587" });
+    await sendTestEmail(mailWith({ smtp_port: "587" }));
     expect(mail.options[0]).toMatchObject({ port: 587, secure: false, requireTLS: true });
   });
 
@@ -517,20 +405,19 @@ describe("the test email", () => {
       code: "EAUTH",
       response: "535 5.7.8 Username and Password not accepted",
     });
-    const res = await testEmail({});
-    expect(res.status).toBe(502);
-    expect((await res.json()).error).toBe(
-      "The mail server didn't accept that username and password. " +
-        "The server said: 535 5.7.8 Username and Password not accepted"
-    );
+    await expect(sendTestEmail(mailWith())).rejects.toMatchObject({
+      status: 502,
+      message:
+        "The mail server didn't accept that username and password. " +
+        "The server said: 535 5.7.8 Username and Password not accepted",
+    });
   });
 
   it("asks for a From address when the username isn't one", async () => {
-    const res = await testEmail({ smtp_user: "apikey", smtp_pass: "key" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
-      "Add a From address — the username isn't an email address."
-    );
+    await expect(sendTestEmail(mailWith({ smtp_user: "apikey", smtp_pass: "key" }))).rejects.toMatchObject({
+      status: 400,
+      message: "Add a From address — the username isn't an email address.",
+    });
     expect(mail.sent).toEqual([]);
   });
 });
