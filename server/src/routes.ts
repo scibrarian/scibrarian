@@ -16,17 +16,10 @@ import {
   createBookmarkFolder,
   createCollection,
   countTopicArticles,
-  createTopic,
   countNeverIndexedMatches,
   dismissBookmarkImport,
   dismissUnmatchedBookmarkImports,
-  renameTopic,
-  storedHeading,
-  topicByHeadings,
-  topicByName,
-  topicByTerm,
   topicArticleCounts,
-  topicJournals,
   existingPmids,
   gcBlobsIfOrphaned,
   getArticleAbstracts,
@@ -38,8 +31,6 @@ import {
   getSettings,
   getTopic,
   graphPapersForSource,
-  findCatalogByNlmId,
-  journalByNlmId,
   journalsForSource,
   linkedPapersByPmids,
   listBookmarkFolders,
@@ -49,7 +40,6 @@ import {
   listPapers,
   listCollections,
   listTopics,
-  findMeshByUi,
   libraryFilingCounts,
   meshFacetsForSource,
   meshFilingForSource,
@@ -63,11 +53,8 @@ import {
   sourceHasFiles,
   suggestTopicsFromLibrary,
   upsertArticles,
-  type JournalSpec,
   type PaperFilter,
   type PaperSource,
-  type ScopeIds,
-  type TopicScope,
 } from "./db.js";
 import { decodeSource } from "../../shared/source.js";
 import {
@@ -103,7 +90,6 @@ import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
 import { startImport } from "./importer.js";
 import {
-  changeTopicScope,
   deleteAllData,
   letGoOfCollection,
   letGoOfCollectionPapers,
@@ -123,7 +109,6 @@ import {
   countMatches,
   fetchArticles,
   fetchSummaries,
-  isMedlineIndexed,
   topicTerm,
 } from "./pubmed.js";
 import {
@@ -153,15 +138,12 @@ import type {
   GraphNode,
   GraphResponse,
   HaveResponse,
-  JournalRemovalResult,
   LinkedPaper,
-  MeshDescriptorRef,
   MeshHeadingsResponse,
   MeshSearchResponse,
   PaperProvenance,
   PapersResponse,
   Settings,
-  TopicDetail,
   TopicPreviewResponse,
   TopicSuggestResponse,
   TopicUpdateResponse,
@@ -186,17 +168,15 @@ import {
 import { errMessage, round1 } from "./util.js";
 import { nameProblem, nameTakenBy } from "./names.js";
 import { readReferenceFile } from "./reference-file.js";
+import { addTopic, changeTopic, readHeadings, readScope, topicDetail } from "./topic-definition.js";
 import {
   MAX_BULK_BOOKMARK_PMIDS,
   MAX_IMPORT_BYTES,
   MAX_LINKS_PER_REQUEST,
-  MAX_TOPIC_HEADINGS,
-  MAX_TOPIC_NAME_CHARS,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_FILES,
 } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
-import { defaultTopicName } from "../../shared/topic.js";
 import { MAIL_FIELDS, mailFieldsOf } from "../../shared/mail.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
@@ -403,133 +383,11 @@ api.get("/topics", (_req, res) => {
   res.json(topics);
 });
 
-// What a request for headings or a scope comes back as when it can't be used:
-// the response to send, in place of the thing asked for.
-type Refusal = { status: number; error: string };
-
-// The headings a request names, as descriptors — or the refusal to send. One
-// reading for POST /topics, its preview and the journal suggestions, so the
-// count the dialog shows is for exactly the set the create would accept.
-//
-// `raw` is descriptor ids, the way the picker holds them. Repeats collapse
-// rather than fail: the same heading twice is the same requirement once.
-//
-// `orStored` also takes a heading the vocabulary has dropped, as a topic
-// recorded it. For the journal suggestions alone, which an existing topic asks
-// for by headings it cannot change; a new topic is still made only of headings
-// NLM has now.
-async function resolveHeadings(
-  raw: unknown,
-  orStored = false
-): Promise<{ headings: MeshDescriptorRef[] } | Refusal> {
-  const uis = distinctStrings(raw);
-  if (uis.length === 0) return { status: 400, error: "Pick at least one MeSH heading." };
-  if (uis.length > MAX_TOPIC_HEADINGS) {
-    return { status: 400, error: `A topic can have at most ${MAX_TOPIC_HEADINGS} headings.` };
-  }
-  await ensureMeshLoaded();
-  const headings: MeshDescriptorRef[] = [];
-  for (const ui of uis) {
-    const descriptor = findMeshByUi(ui) ?? (orStored ? storedHeading(ui) : undefined);
-    if (!descriptor) {
-      return {
-        status: 422,
-        error: `"${ui}" isn't a MeSH heading. Pick headings from the suggestions.`,
-      };
-    }
-    headings.push({ ui: descriptor.ui, name: descriptor.name });
-  }
-  return { headings };
-}
-
-// A list of ids as a request carries it — an array in a body, and in a query
-// either a repeated parameter or, for one value, a bare string.
-function distinctStrings(raw: unknown): string[] {
-  const given = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
-  return [...new Set(given.map((v) => String(v).trim()).filter(Boolean))];
-}
-
-// The scope a request names, as the journals' ids and nothing else: all the
-// count ahead of a change needs (see ScopeIds).
-function scopeIdsOf(body: unknown): ScopeIds {
-  const b = (body ?? {}) as { allPubmed?: unknown; journals?: unknown };
-  const allPubmed = b.allPubmed === true;
-  return { allPubmed, nlmIds: allPubmed ? [] : distinctStrings(b.journals) };
-}
-
-// The same scope, with each journal resolved: against the journals some topic
-// already lists, and otherwise against the NLM catalog.
-//
-// A journal new to the library gets its MEDLINE check here. Advisory, not a
-// gate: the journal is real and the user asked for it, so it is listed either
-// way — but if NLM doesn't index it for MEDLINE its papers carry no MeSH
-// headings, and topics are MeSH terms. Left unsaid, that journal just quietly
-// never yields a paper. An NCBI hiccup answers null, which stores as "not
-// established yet". One already listed keeps the answer it was given then.
-async function resolveScope(body: unknown): Promise<{ scope: TopicScope } | Refusal> {
-  const ids = scopeIdsOf(body);
-  if (ids.allPubmed) return { scope: { allPubmed: true } };
-  const journals: JournalSpec[] = [];
-  for (const nlmId of ids.nlmIds) {
-    const listed = journalByNlmId(nlmId);
-    if (listed) {
-      journals.push({ nlmId, name: listed.name, medlineIndexed: listed.medline_indexed });
-      continue;
-    }
-    await ensureCatalogLoaded();
-    // By catalog id rather than by name: catalog names aren't unique, so a name
-    // round-trip could land on a different journal than the one picked.
-    const cat = findCatalogByNlmId(nlmId);
-    if (!cat) return { status: 422, error: `"${nlmId}" isn't a journal in the NLM catalog.` };
-    journals.push({
-      nlmId: cat.nlm_id,
-      name: cat.med_abbr || cat.title,
-      medlineIndexed: await isMedlineIndexed(cat.nlm_id),
-    });
-  }
-  return { scope: { allPubmed: false, journals } };
-}
-
-const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, journals: topicJournals(id) });
-
-// badName for a topic, with the longer cap a topic's name gets (see
-// MAX_TOPIC_NAME_CHARS).
-function badTopicName(res: Response, name: string): boolean {
-  return badName(res, name, MAX_TOPIC_NAME_CHARS, "topic name");
-}
-
-// Topics are strictly MeSH headings, one or several that a paper must carry all
-// of: the client sends headings picked from the autocomplete, we validate each
-// against the indexed descriptor list, and build the PubMed term ourselves so a
-// topic can never carry an invalid MeSH term. With them comes where the topic
-// searches — all of PubMed, or journals of its own.
+// What a topic may be is topic-definition.ts; this sends it.
 api.post(
   "/topics",
   asyncHandler(async (req, res) => {
-    const resolved = await resolveHeadings(req.body?.headings);
-    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
-    const { headings } = resolved;
-    const name = String(req.body?.name ?? "").trim() || defaultTopicName(headings);
-    if (badTopicName(res, name)) return;
-    const term = topicTerm(headings);
-    // Asked before the journals are resolved, which can take a request to NCBI
-    // each, and again after: nothing awaits between the second and the insert.
-    const taken = () => {
-      const existing = topicByHeadings(headings.map((h) => h.ui)) ?? topicByTerm(term);
-      if (existing) {
-        res
-          .status(409)
-          .json({ error: `These headings are already a topic (“${existing.name}”).` });
-        return true;
-      }
-      return nameTaken(res, "topic", topicByName(name), null);
-    };
-    if (taken()) return;
-    const scoped = await resolveScope(req.body);
-    if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
-    if (taken()) return;
-    const topic = createTopic(name, term, headings, scoped.scope);
-    res.status(201).json(topicDetail(topic.id));
+    res.status(201).json(await addTopic(req.body));
   })
 );
 
@@ -547,9 +405,7 @@ api.get(
     if (!isAdminRequest(req)) {
       return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
     }
-    const resolved = await resolveHeadings(req.query.ui);
-    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
-    const term = topicTerm(resolved.headings);
+    const term = topicTerm(await readHeadings(req.query.ui));
     const body: TopicPreviewResponse = { term, count: await countMatches(term) };
     res.json(body);
   })
@@ -584,63 +440,14 @@ api.get("/topics/:id", (req, res) => {
 api.post("/topics/:id/scope/preview", (req, res) => {
   const id = Number(req.params.id);
   if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
-  res.json({ count: countScopeLeaving(id, scopeIdsOf(req.body)) });
+  res.json({ count: countScopeLeaving(id, readScope(req.body)) });
 });
 
-// Change a topic's name, where it searches, or both. Its headings are not here
-// to change: they are fixed when it is created (see Topic.headings).
-//
-// A change of scope runs under the poll lock, like a reset (see
-// changeTopicScope).
+// Change a topic's name, where it searches, or both: see changeTopic.
 api.patch(
   "/topics/:id",
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
-    const topic = getTopic(id);
-    if (!topic) return res.status(404).json({ error: "Topic not found." });
-
-    const renaming = req.body?.name !== undefined;
-    const name = renaming ? String(req.body.name ?? "").trim() : topic.name;
-    if (renaming) {
-      if (badTopicName(res, name)) return;
-      if (nameTaken(res, "topic", topicByName(name), id)) return;
-    }
-
-    let removed: JournalRemovalResult = { deletedArticles: 0, removedFromInterests: 0 };
-    if (req.body?.allPubmed !== undefined || req.body?.journals !== undefined) {
-      // A scope is replaced whole, so half of one is refused rather than
-      // completed: a list with no `journals` would resolve to an empty one and
-      // take every paper out of the topic, with no count shown ahead of it. An
-      // empty list is still there to be asked for, by name.
-      //
-      // A list, and nothing that could pass for one left out: a client that
-      // writes a list it doesn't have as null, or as "", was completed the same
-      // way, which a test for `undefined` let through.
-      if (req.body.allPubmed !== true && !Array.isArray(req.body.journals)) {
-        return res
-          .status(400)
-          .json({ error: "'journals' must be an array unless 'allPubmed' is true." });
-      }
-      const scoped = await resolveScope(req.body);
-      if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
-      // Asked again, as POST /topics asks twice: resolving the journals can
-      // take a request to NCBI each, and another topic could have taken the
-      // name meanwhile. Here rather than at the rename, so a name refused now
-      // leaves the scope unchanged too; nothing from here to the rename waits
-      // on anything outside this process.
-      if (renaming && nameTaken(res, "topic", topicByName(name), id)) return;
-      const changed = await changeTopicScope(id, scoped.scope);
-      if (changed === null) {
-        return res
-          .status(409)
-          .json({ error: "A check for new papers is running. Try again in a moment." });
-      }
-      removed = changed.result;
-    }
-    // Last, so a scope that was refused doesn't leave the topic renamed.
-    if (renaming) renameTopic(id, name);
-    if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
-    const body: TopicUpdateResponse = { topic: topicDetail(id), removed };
+    const body: TopicUpdateResponse = await changeTopic(Number(req.params.id), req.body);
     res.json(body);
   })
 );
@@ -752,11 +559,10 @@ api.get(
     if (!isAdminRequest(req)) {
       return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
     }
-    const resolved = await resolveHeadings(req.query.ui, true);
-    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+    const headings = await readHeadings(req.query.ui, true);
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
-    const results = await suggestJournals(resolved.headings, limit);
+    const results = await suggestJournals(headings, limit);
     res.json({ results: results.map((r) => ({ ...r, metric: round1(r.metric) })) });
   })
 );

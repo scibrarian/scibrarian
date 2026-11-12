@@ -4,6 +4,15 @@ The domain's words as the code and the UI use them, for naming modules and
 reading the code. Architecture words (module, interface, seam, adapter) are not
 defined here.
 
+**Topic**: a set of MeSH headings a paper must carry all of, searched for in a
+scope. Its name is unique, its headings are fixed when it is added, and no two
+topics require the same headings. What a topic may be is
+`server/src/topic-definition.ts`.
+
+**Scope**: where a topic searches: all of PubMed, or a list of journals of its
+own. Changing it takes out of the topic the papers the new scope doesn't cover;
+a paper that then has no holder goes to the sweep.
+
 **Holder**: what keeps a stored paper in the library. There are three: a topic
 the paper is linked to (`article_topics`), a collection one of whose files is
 matched to it (`collection_files.pmid`), and a bookmark folder that has it
