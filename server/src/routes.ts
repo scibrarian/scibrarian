@@ -184,12 +184,12 @@ import {
   type WorkspaceRecord,
 } from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
+import { nameProblem, nameTakenBy } from "./names.js";
 import { readReferenceFile } from "./reference-file.js";
 import {
   MAX_BULK_BOOKMARK_PMIDS,
   MAX_IMPORT_BYTES,
   MAX_LINKS_PER_REQUEST,
-  MAX_NAME_CHARS,
   MAX_TOPIC_HEADINGS,
   MAX_TOPIC_NAME_CHARS,
   MAX_UPLOAD_BYTES,
@@ -1020,41 +1020,25 @@ api.get(
 
 // ---------- section entry names (collections + bookmark folders) ----------
 
-// A name a person typed, checked at both ends before anything looks it up:
-// non-empty once trimmed, and no longer than the picker has room to draw. Sends
-// its own 400 and returns true when the name is unusable, so each route below
-// reads as one line rather than repeating both branches four times.
-//
-// The cap is shared with the client, which sets it as the input's maxLength —
-// this is the backstop for a request that didn't come from that box. `max` and
-// `what` are a section entry's unless a caller has a cap of its own, as a topic
-// does (badTopicName).
-function badName(res: Response, name: string, max = MAX_NAME_CHARS, what = "name"): boolean {
-  if (!name) {
-    res.status(400).json({ error: "'name' is required." });
-    return true;
-  }
-  if (name.length > max) {
-    res.status(400).json({ error: `A ${what} can be at most ${max} characters.` });
-    return true;
-  }
-  return false;
+// The name rules (names.ts), sent. A name a person typed is checked at both
+// ends before anything looks it up; each of these sends its own 400 or 409 and
+// returns true when the name can't be used, so each route below reads as one
+// line rather than repeating both branches four times.
+function badName(res: Response, name: string, max?: number, what?: string): boolean {
+  const problem = nameProblem(name, max, what);
+  if (problem) res.status(400).json({ error: problem });
+  return problem !== null;
 }
 
-// Names within a section are unique case-insensitively (see the unique index
-// in db.ts) — two entries with the same name are indistinguishable in the
-// picker. Sends the 409 and returns true when the requested name belongs to a
-// different row; `selfId` is the row being renamed, so re-saving an entry's own
-// name (or just changing its case) isn't a conflict.
 function nameTaken(
   res: Response,
   label: string,
   existing: { id: number; name: string } | undefined,
   selfId: number | null
 ): boolean {
-  if (!existing || existing.id === selfId) return false;
-  res.status(409).json({ error: `A ${label} named “${existing.name}” already exists.` });
-  return true;
+  const taken = nameTakenBy(label, existing, selfId);
+  if (taken) res.status(409).json({ error: taken });
+  return taken !== null;
 }
 
 // The lookup above and the write below aren't atomic, so two same-name requests
