@@ -132,6 +132,7 @@ import {
 import type {
   AbstractsResponse,
   AddLinksResponse,
+  AppSettings,
   CollectionFile,
   FolderImportResponse,
   GraphEdge,
@@ -1573,16 +1574,16 @@ function shareUrls(): string[] {
   return urls;
 }
 
-// Never echo the raw API key back; just whether one is set.
-// How the API treats each setting: how PUT persists it and how the response
-// echoes it. `satisfies Record<keyof Settings, …>` makes the table exhaustive —
-// adding a setting to SETTING_DEFAULTS without deciding its rule is a compile
-// error, so a new toggle can never round-trip 200 without persisting.
+// How PUT persists each setting. `satisfies Record<keyof Settings, …>` makes
+// the table exhaustive — adding a setting to SETTING_DEFAULTS without deciding
+// its rule is a compile error, so a new toggle can never round-trip 200 without
+// persisting.
 type SettingRule =
   | { kind: "string"; validate?: (value: string) => string | null } // returns an error message
   | { kind: "boolean" }
-  // write-only; response carries presence. `verbatim` stores it untrimmed.
-  | { kind: "secret"; expose: `has_${string}`; verbatim?: true };
+  // write-only: the response says only whether one is set (settingsResponse).
+  // `verbatim` stores it untrimmed.
+  | { kind: "secret"; verbatim?: true };
 
 const SETTING_RULES = {
   ncbi_email: { kind: "string" },
@@ -1595,7 +1596,7 @@ const SETTING_RULES = {
   },
   poll_enabled: { kind: "boolean" },
   library_open: { kind: "boolean" },
-  ncbi_api_key: { kind: "secret", expose: "has_api_key" },
+  ncbi_api_key: { kind: "secret" },
   alert_email_enabled: { kind: "boolean" },
   alert_email_to: { kind: "string", validate: validEmailOrBlank("send alerts to") },
   smtp_host: { kind: "string" },
@@ -1606,7 +1607,7 @@ const SETTING_RULES = {
   smtp_user: { kind: "string" },
   // Stored as typed, where an API key is trimmed: a password can begin or end
   // with a space.
-  smtp_pass: { kind: "secret", expose: "has_smtp_pass", verbatim: true },
+  smtp_pass: { kind: "secret", verbatim: true },
   smtp_from: { kind: "string", validate: validEmailOrBlank("send from") },
 } satisfies Record<keyof Settings, SettingRule>;
 
@@ -1651,22 +1652,31 @@ function noEmailAlerts(res: Response): boolean {
 
 const SETTING_KEYS = Object.keys(SETTING_RULES) as (keyof Settings)[];
 
-function settingsResponse() {
+// What the client is shown: every setting but the secrets, of which it is told
+// only whether one is set, and two facts that aren't settings. Written out
+// rather than derived from the table, so the compiler holds it to AppSettings.
+function settingsResponse(): AppSettings {
   const s = getSettings();
-  const out: Record<string, unknown> = {};
-  for (const key of SETTING_KEYS) {
-    const rule: SettingRule = SETTING_RULES[key];
-    if (rule.kind === "string") out[key] = s[key];
-    else if (rule.kind === "boolean") out[key] = s[key] === "1";
-    else out[rule.expose] = Boolean(s[key]); // never echo the secret itself
-  }
-  out.share_urls = shareUrls(); // derived from the bind address, not a setting
-  // Also not a setting: how the server was launched. share_urls is empty for
-  // both a loopback server and a desktop app, but the fix differs — one can be
-  // rebound via server/.env, the other has no .env to edit — so the UI needs to
-  // tell the two apart.
-  out.desktop = IS_DESKTOP;
-  return out;
+  return {
+    ncbi_email: s.ncbi_email,
+    poll_cron: s.poll_cron,
+    poll_enabled: s.poll_enabled === "1",
+    library_open: s.library_open === "1",
+    has_api_key: Boolean(s.ncbi_api_key),
+    alert_email_enabled: s.alert_email_enabled === "1",
+    alert_email_to: s.alert_email_to,
+    smtp_host: s.smtp_host,
+    smtp_port: s.smtp_port,
+    smtp_user: s.smtp_user,
+    smtp_from: s.smtp_from,
+    has_smtp_pass: Boolean(s.smtp_pass),
+    share_urls: shareUrls(), // derived from the bind address, not a setting
+    // Also not a setting: how the server was launched. share_urls is empty for
+    // both a loopback server and a desktop app, but the fix differs — one can be
+    // rebound via server/.env, the other has no .env to edit — so the UI needs
+    // to tell the two apart.
+    desktop: IS_DESKTOP,
+  };
 }
 
 // Unlike other reads, this one is admin-only: it exposes the owner's NCBI email

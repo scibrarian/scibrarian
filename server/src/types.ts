@@ -3,6 +3,7 @@
 export type {
   AbstractsResponse,
   AddLinksResponse,
+  AppSettings,
   Article,
   BookmarkEntry,
   BookmarkFolder,

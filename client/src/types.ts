@@ -4,6 +4,7 @@
 import type {
   AbstractsResponse,
   AddLinksResponse,
+  AppSettings,
   BookmarkEntry,
   BookmarkFolder as BookmarkFolderRow,
   BookmarkImport,
@@ -79,6 +80,7 @@ export type {
 export type {
   AbstractsResponse,
   AddLinksResponse,
+  AppSettings,
   BookmarkEntry,
   BookmarkImport,
   CacheStats,
@@ -195,29 +197,6 @@ export interface AuthStatus {
   // as well because the shell needs it and only the owner's Settings panel
   // loads that one. Optional for the reason `pro` is.
   desktop?: boolean;
-}
-
-// What /api/settings exposes: never the API key itself, just whether one is set.
-export interface AppSettings {
-  ncbi_email: string;
-  poll_cron: string;
-  poll_enabled: boolean;
-  library_open: boolean;
-  has_api_key: boolean;
-  // Email alerts after scheduled checks, and the mail server they go out
-  // through. Server builds only; see EmailAlertsDialog.
-  alert_email_enabled: boolean;
-  alert_email_to: string;
-  smtp_host: string;
-  smtp_port: string;
-  smtp_user: string;
-  smtp_from: string;
-  has_smtp_pass: boolean;
-  // URLs where other machines can reach this server; empty when bound to loopback.
-  share_urls: string[];
-  // True in the desktop build, which is loopback-only by construction — so
-  // share_urls is always empty there and can never be filled in.
-  desktop: boolean;
 }
 
 // What the email alerts dialog edits, and what a test email is sent with. The
