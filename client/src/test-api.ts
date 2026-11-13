@@ -1,16 +1,21 @@
+import type { api as realApi } from "./api";
 import type { SourcesApi } from "./lib/sources";
-import type { BookmarkEntry, BookmarkFolder, Collection, Topic } from "./types";
+import type { BookmarkEntry, BookmarkFolder, Collection, ImportStatus, Topic } from "./types";
 
 // An in-memory server for the client's tests: a library of topics, bookmark
 // folders, bookmarks and collections, answering as api.ts's methods do. The
 // store (lib/sources) is built on it in place of api.ts, so a test sets up a
 // library, does what the reader would, and asks what the store holds after —
-// rather than which requests went out.
+// rather than which requests went out. App's tests render the whole shell on
+// it, which is what the reads below the store's own are for: what the views
+// ask for as they mount, answered as an empty source would be.
 //
-// `satisfies SourcesApi` below is what keeps it honest: the store asking the
-// server for something new is a compile error here until the fake answers it.
+// `satisfies` below is what keeps it honest: the store asking the server for
+// something new is a compile error here until the fake answers it, and every
+// other method has to answer in api.ts's own shape.
 
-type Method = keyof SourcesApi;
+type Api = typeof realApi;
+type Method = keyof Api;
 
 export function createTestApi() {
   const library = {
@@ -38,23 +43,67 @@ export function createTestApi() {
     });
   }
 
+  const created = new Date(0).toISOString();
+  const idle: ImportStatus = { state: "idle" };
+
+  function folderRow(f: (typeof library.folders)[number]): BookmarkFolder {
+    return { ...f, paperCount: library.bookmarks.filter((b) => b.folder_id === f.id).length };
+  }
+
+  function collectionRow(c: (typeof library.collections)[number]): Collection {
+    return { ...c, fileCount: 0, matchedCount: 0, heldCount: 0 };
+  }
+
+  function addFolder(name: string): number {
+    const id = nextId++;
+    library.folders.push({ id, name, created_at: created });
+    return id;
+  }
+
+  function addCollection(name: string): number {
+    const id = nextId++;
+    library.collections.push({ id, name, created_at: created });
+    return id;
+  }
+
   const api = {
     getTopics: () => answer("getTopics", () => library.topics.map((t) => ({ ...t }))),
-    getBookmarkFolders: () =>
-      answer("getBookmarkFolders", () =>
-        library.folders.map((f) => ({
-          ...f,
-          paperCount: library.bookmarks.filter((b) => b.folder_id === f.id).length,
-        }))
-      ),
+    getBookmarkFolders: () => answer("getBookmarkFolders", () => library.folders.map(folderRow)),
     getBookmarks: () => answer("getBookmarks", () => library.bookmarks.map((b) => ({ ...b }))),
-    getCollections: () =>
-      answer("getCollections", () =>
-        library.collections.map((c) => ({ ...c, fileCount: 0, matchedCount: 0, heldCount: 0 }))
-      ),
-  } satisfies SourcesApi;
+    getCollections: () => answer("getCollections", () => library.collections.map(collectionRow)),
 
-  const created = new Date(0).toISOString();
+    createBookmarkFolder: (name: string) =>
+      answer("createBookmarkFolder", () => folderRow(library.folders.find((f) => f.id === addFolder(name))!)),
+    // Its bookmarks go with it, as the rows cascade on the server.
+    deleteBookmarkFolder: (id: number) =>
+      answer("deleteBookmarkFolder", () => {
+        library.folders = library.folders.filter((f) => f.id !== id);
+        library.bookmarks = library.bookmarks.filter((b) => b.folder_id !== id);
+      }),
+    createCollection: (name: string) =>
+      answer("createCollection", () =>
+        collectionRow(library.collections.find((c) => c.id === addCollection(name))!)
+      ),
+    deleteCollection: (id: number) =>
+      answer("deleteCollection", () => {
+        library.collections = library.collections.filter((c) => c.id !== id);
+      }),
+
+    // The owner of a free, tokenless install.
+    getAuth: () => answer("getAuth", () => ({ admin: true, token_required: false, library_open: false })),
+    getWorkspaces: () => answer("getWorkspaces", () => ({ workspaces: [] })),
+    getPapers: () => answer("getPapers", () => ({ papers: [], journals: [] })),
+    getMeshHeadings: () =>
+      answer("getMeshHeadings", () => ({
+        headings: [],
+        filing: { filed: 0, indexed: 0, none: 0, pending: 0, unchecked: 0 },
+        truncated: false,
+      })),
+    getCollectionFiles: () => answer("getCollectionFiles", () => ({ files: [] })),
+    getImportStatus: () => answer("getImportStatus", () => idle),
+    getFolderImports: () => answer("getFolderImports", () => []),
+    getFolderImportStatus: () => answer("getFolderImportStatus", () => idle),
+  } satisfies SourcesApi & Partial<Api>;
 
   return {
     api,
@@ -74,19 +123,11 @@ export function createTestApi() {
       library.topics.push(topic);
       return topic;
     },
-    addFolder(name: string): number {
-      const id = nextId++;
-      library.folders.push({ id, name, created_at: created });
-      return id;
-    },
+    addFolder,
     bookmark(folderId: number, ...pmids: string[]) {
       for (const pmid of pmids) library.bookmarks.push({ folder_id: folderId, pmid });
     },
-    addCollection(name: string): number {
-      const id = nextId++;
-      library.collections.push({ id, name, created_at: created });
-      return id;
-    },
+    addCollection,
     // Every call to this method fails, saying so, until it recovers.
     fail(method: Method, message = "The server couldn't be reached.") {
       failing.set(method, message);

@@ -84,6 +84,12 @@ function sameStamps(a: ProCollectionStamp[], b: ProCollectionStamp[]): boolean {
   return a.length === b.length && JSON.stringify(a) === JSON.stringify(b);
 }
 
+// A section's selection: the reader's choice while its list still has it,
+// else the list's first entry, and none only for an empty list.
+function keptOrFirst(chosen: number | null, list: { id: number }[]): number | null {
+  return chosen != null && list.some((x) => x.id === chosen) ? chosen : (list[0]?.id ?? null);
+}
+
 export default function App() {
   const sources = useSources();
   const topics = useTopics();
@@ -213,18 +219,27 @@ export default function App() {
     reloadEverything,
   } = sources;
 
-  // Keep the selection valid against each fresh reading of the topics: creating
-  // the first topic selects it, deleting the active one falls back to the first
-  // remaining (instead of a dangling id that renders as no selection). Adjusted
-  // while rendering, so the list and the selection that fits it commit
-  // together.
-  const [topicsSeen, setTopicsSeen] = useState(topics);
-  if (topicsSeen !== topics) {
-    setTopicsSeen(topics);
-    setActiveTopicId((cur) =>
-      cur != null && topics.some((d) => d.id === cur) ? cur : topics[0]?.id ?? null
-    );
-  }
+  // Each section's selection is kept to an entry of its list. A choice the list
+  // no longer has — deleted here, in another tab, or by a reset — and no
+  // choice at all both fall to the list's first entry, so every section opens
+  // on something rather than on a dangling id that renders as no selection:
+  // the first load, a switch of section, creating the first topic, deleting
+  // the one on screen. None only for an empty list, and "All collections"
+  // stands while there is any collection for it to span.
+  //
+  // Worked out while rendering, so a list and the selection that fits it
+  // commit together. Written back rather than derived afresh each time: a dead
+  // id left in state would come back to life when SQLite hands it to the next
+  // source created.
+  const topicId = keptOrFirst(activeTopicId, topics);
+  if (topicId !== activeTopicId) setActiveTopicId(topicId);
+  const folderId = keptOrFirst(activeFolderId, folders);
+  if (folderId !== activeFolderId) setActiveFolderId(folderId);
+  const collectionId =
+    activeCollectionId === "all" && collections.length > 0
+      ? "all"
+      : keptOrFirst(typeof activeCollectionId === "number" ? activeCollectionId : null, collections);
+  if (collectionId !== activeCollectionId) setActiveCollectionId(collectionId);
 
   /**
    * Take a reading of the stamps as the current one, and make any request still
@@ -352,8 +367,8 @@ export default function App() {
       const token = tokenFor(NO_RELOADS, sourceKey(landing));
       return Promise.all([warmPapers(landing, token), warmFacets(landing, token)]);
     });
-    Promise.all([loadTopics(), loadFolders(), collectionsLoad, auth, loadBookmarks()]).then(
-      async ([ds, fs, cs, status]) => {
+    Promise.all([auth, loadTopics(), loadFolders(), collectionsLoad, loadBookmarks()]).then(
+      async ([status]) => {
         // Whatever of the warm-up is still out, waited for — usually nothing,
         // since it has been running beside the requests above. Bounded: past
         // REVEAL_CAP_MS the shell goes up as it always has and the view draws
@@ -383,14 +398,6 @@ export default function App() {
         setLibraryOpen(library_open);
         setPro(status?.pro ?? null);
         setDesktop(status?.desktop === true);
-        // Preselect each section's first entry so switching modes never opens
-        // on an empty picker. The load itself always lands in the Library,
-        // where `mode` starts, even when it is empty. It used to fall through
-        // to the first section with anything in it, which made where the app
-        // opened depend on what you happened to have filed.
-        if (fs.length > 0) setActiveFolderId(fs[0].id);
-        if (ds && ds.length > 0) setActiveTopicId(ds[0].id);
-        if (cs.length > 0) setActiveCollectionId(cs[0].id);
         // In the batch with everything above, and with whatever a loader set
         // on its way here. `loaded` follows once that has committed.
         setBooted(true);
@@ -432,17 +439,6 @@ export default function App() {
   function changeMode(m: Mode) {
     setShowSettings(false);
     setMode(m);
-    // Entering a section with nothing selected falls back to its first entry,
-    // so a mode switch always lands on something.
-    if (m === "interests" && activeTopicId == null && topics.length > 0) {
-      setActiveTopicId(topics[0].id);
-    }
-    if (m === "bookmarks" && activeFolderId == null && folders.length > 0) {
-      setActiveFolderId(folders[0].id);
-    }
-    if (m === "papers" && activeCollectionId == null && collections.length > 0) {
-      setActiveCollectionId(collections[0].id);
-    }
   }
 
   // Open the topic dialog, from the section bar or from the list in Settings.
@@ -766,26 +762,14 @@ export default function App() {
     }
   }
 
-  // The active paper source, if this mode has something selected.
-  //
-  // "All collections" is guarded on the list the same way the branches either
-  // side of it are guarded on their entity: it is a scope *over* the
-  // collections, so with none there is nothing for it to select. Unguarded it
-  // was the one selection that could survive its subject disappearing —
-  // loadCollections deliberately doesn't re-validate the way loadTopics does,
-  // since deletion is handled where it happens, so a collection removed in
-  // another tab or by another user on a shared instance left `source` non-null
-  // with an empty library. That skips the no-source screen entirely and renders
-  // a collection view with no collection: an empty state telling you to click
-  // Add files, beneath a picker that has already withheld the entry you would
-  // have had to click to get there.
+  // The active paper source, if this mode has something selected. "All
+  // collections" is selected only while there are collections to span (see
+  // keptOrFirst's caller above).
   const source: PaperSource | null = inInterests
     ? activeTopic && { topic: activeTopic.id }
     : inLibrary
       ? activeCollectionId === "all"
-        ? collections.length > 0
-          ? { allCollections: true }
-          : null
+        ? { allCollections: true }
         : activeCollection && { collection: activeCollection.id }
       : activeFolder && { folder: activeFolder.id };
 
@@ -845,9 +829,7 @@ export default function App() {
       : null
     : inLibrary
       ? activeCollectionId === "all"
-        ? collections.length > 0
-          ? plural(collections.length, "collection")
-          : null
+        ? plural(collections.length, "collection")
         : activeCollection && plural(activeCollection.heldCount, "paper")
       : activeFolder && plural(activeFolder.paperCount, "paper");
   const showViewControls = !showSettings && source != null;
@@ -1258,16 +1240,6 @@ export default function App() {
               // foot of Settings, and a banner above the section bar is the
               // one place they are certainly not looking.
               //
-              // Every selection at once, and before the reloads rather than
-              // after: two of the three loaders below deliberately don't
-              // re-validate what is selected (see loadCollections), so an id
-              // left pointing at a deleted folder or collection would survive
-              // the wipe and render its view over an empty library. loadTopics
-              // does re-validate and would land on null anyway; clearing it
-              // here costs nothing and keeps the three reading alike.
-              setActiveTopicId(null);
-              setActiveFolderId(null);
-              setActiveCollectionId(null);
               // Bookmarks with the folders: the map of what is saved drives the
               // filled icon on every paper, and left standing it would claim
               // papers are in folders that no longer exist.
@@ -1331,8 +1303,7 @@ export default function App() {
             importJobs={importJobs}
             onChanged={handleCollectionChanged}
             onDeleted={async () => {
-              const cs = await loadCollections();
-              setActiveCollectionId(cs.length > 0 ? cs[0].id : null);
+              await loadCollections();
               reloadEverything();
             }}
           >
@@ -1356,8 +1327,7 @@ export default function App() {
               // too. Reloading only the folder list leaves every paper it held
               // showing a filled icon and "Saved in 1 folder" for a folder that
               // no longer exists — a claim nothing in the UI can then undo.
-              const [, fs] = await Promise.all([loadBookmarks(), loadFolders()]);
-              setActiveFolderId(fs.length > 0 ? fs[0].id : null);
+              await Promise.all([loadBookmarks(), loadFolders()]);
               reloadEverything();
             }}
           >
