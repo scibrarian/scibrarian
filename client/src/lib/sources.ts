@@ -36,6 +36,9 @@ export type SourcesApi = Pick<
   | "getBookmarkFolders"
   | "getBookmarks"
   | "getCollections"
+  | "createCollection"
+  | "proShareCollection"
+  | "getImportStatus"
   | "createBookmarkFolder"
   | "renameBookmarkFolder"
   | "deleteBookmarkFolder"
@@ -84,6 +87,12 @@ export type Sources = {
   loadBookmarks: () => Promise<void>;
   loadCollections: () => Promise<Collection[]>;
 
+  // The scans running over collections, followed for as long as the app is
+  // open rather than for as long as a collection is on screen (see
+  // lib/import-jobs). One that ends after its collection has been left still
+  // refreshes what it changed; otherwise the collection came back painting its
+  // pre-scan file list from cache, every row still waiting on a scan.
+  scans: ImportJobs;
   // The lookups running over bookmark folders' imported entries, followed for
   // as long as the app is open rather than for as long as a folder is on
   // screen (see lib/import-jobs). A lookup fills its folder for minutes after
@@ -92,6 +101,25 @@ export type Sources = {
   lookups: ImportJobs;
   // Stop following every job.
   stop: () => void;
+
+  // Make a collection, and share it with the organization when asked — which
+  // App does only while paired. Shared at once, from the pairing live when it
+  // was made: a boundary set later is one the writer forgets, and one derived
+  // from the *current* pairing would hand an old client's collections to a new
+  // one the moment they re-pair. A failure to share must not lose the
+  // collection, which exists, so it is answered for the caller to report
+  // rather than unwound. Seeded empty, as a new folder is.
+  createCollection: (
+    name: string,
+    options: { share: boolean }
+  ) => Promise<{ collection: Collection; shareError: string | null }>;
+  // These collections' papers or files changed. Their caches go, and every
+  // collection's at once, which aggregates them all; and the list is read
+  // again for its counts.
+  collectionsChanged: (collectionIds: number[]) => Promise<void>;
+  // A collection was deleted. Taken off the list at once, so App's selection
+  // moves off it without waiting for the read.
+  collectionDeleted: (collectionId: number) => Promise<void>;
 
   // Make a bookmark folder. Its empty list is known without asking, and is
   // filed under its token, so a view opening on it paints the empty state at
@@ -272,6 +300,43 @@ export function createSources(port: SourcesApi): Sources {
     if (bookmarksOut > 0) void loadBookmarks();
   }
 
+  async function createCollection(name: string, { share }: { share: boolean }) {
+    const collection = await port.createCollection(name);
+    let shareError: string | null = null;
+    if (share) {
+      try {
+        await port.proShareCollection(collection.id);
+      } catch (e) {
+        shareError = errorMessage(e);
+      }
+    }
+    const source = { collection: collection.id };
+    seedEmptySource(source, tokenIn(reloads, sourceKey(source)));
+    await loadCollections();
+    return { collection, shareError };
+  }
+
+  // Bumped before the read, not after it. The two are independent — the
+  // papers fetch doesn't read the collection list — and sequencing them cost
+  // a whole round trip of staleness: the papers on screen were the ones just
+  // removed, and they stayed that way until the list had been and come back.
+  // Measured on a local server, that alone was ~260ms of the delay between a
+  // removal being reported and the rows leaving.
+  async function collectionsChanged(collectionIds: number[]) {
+    reloads = bumpSource(reloads, sourceKey({ allCollections: true }));
+    for (const id of collectionIds) reloads = bumpSource(reloads, sourceKey({ collection: id }));
+    changed();
+    await loadCollections();
+  }
+
+  // Every source's caches, for the reason a deleted folder gives below.
+  async function collectionDeleted(collectionId: number) {
+    collections = collections.filter((c) => c.id !== collectionId);
+    reloads = bumpAll(reloads);
+    changed();
+    await loadCollections();
+  }
+
   async function createFolder(name: string): Promise<BookmarkFolder> {
     const created = await port.createBookmarkFolder(name);
     const source = { folder: created.id };
@@ -379,6 +444,7 @@ export function createSources(port: SourcesApi): Sources {
     return paper;
   }
 
+  const scans = createImportJobs(port.getImportStatus, (id) => void collectionsChanged([id]));
   const lookups = createImportJobs(
     port.getFolderImportStatus,
     (id) => void folderPapersChanged(id),
@@ -400,8 +466,15 @@ export function createSources(port: SourcesApi): Sources {
     loadFolders,
     loadBookmarks,
     loadCollections,
+    scans,
     lookups,
-    stop: lookups.stop,
+    stop() {
+      scans.stop();
+      lookups.stop();
+    },
+    createCollection,
+    collectionsChanged,
+    collectionDeleted,
     createFolder,
     addBookmark,
     removeBookmark,

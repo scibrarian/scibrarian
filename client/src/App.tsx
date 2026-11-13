@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, getAdminToken, setAdminToken, setAuthRejectedHandler } from "./api";
 import { errorMessage, plural } from "./lib/format";
 import { useReveal } from "./lib/hooks";
-import { createImportJobs } from "./lib/import-jobs";
 import { showToast } from "./lib/toast";
 import { useViewerCache } from "./lib/viewerCache";
 import type {
@@ -14,7 +13,7 @@ import type {
   ProCollectionStamp,
   ProStatus,
 } from "./types";
-import { seedEmptySource, sourceKey, warmPapers } from "./lib/papers";
+import { sourceKey, warmPapers } from "./lib/papers";
 import { NO_RELOADS, tokenFor } from "./lib/reload";
 import {
   useCollections,
@@ -111,19 +110,8 @@ export default function App() {
     bookmarks: "table",
     papers: "table",
   });
-  // Scans over collections, followed here so that one which ends after its
-  // collection has been left still refreshes what it changed (see
-  // lib/import-jobs). Made once, so it reaches handleImportSettled through a
-  // ref rather than holding the first render's.
-  const importSettled = useRef(handleImportSettled);
-  useEffect(() => {
-    importSettled.current = handleImportSettled;
-  });
-  const [importJobs] = useState(() =>
-    createImportJobs(api.getImportStatus, (id) => importSettled.current(id))
-  );
-  useEffect(() => importJobs.stop, [importJobs]);
-  // The lookups over bookmark folders are the store's (see lib/sources).
+  // The scans over collections and the lookups over bookmark folders are the
+  // store's (see lib/sources), followed for as long as the app is open.
   useEffect(() => sources.stop, [sources]);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
@@ -458,16 +446,6 @@ export default function App() {
     setActiveCollectionId(id);
   }
 
-  // Creating a source and opening it are one gesture, so the view it lands on
-  // would fetch a paper list the app already knows the answer to — and that
-  // request is slow enough to paint a skeleton on the way to an empty state
-  // that was never in doubt. Answering it from here makes the first paint the
-  // real one. Only ever called for a source created a moment ago; see
-  // seedEmptySource for why that restriction matters.
-  function seedNewSource(source: PaperSource) {
-    seedEmptySource(source, sources.tokenFor(source));
-  }
-
   // The picker's "New folder" opens the folder it just made, where the bookmark
   // menu's stays put: the point there is to save the paper you're looking at.
   async function createFolder(name: string) {
@@ -486,26 +464,14 @@ export default function App() {
   async function createCollection(name: string, shareWithOrg: boolean) {
     setNamingCollection(false);
     try {
-      const created = await api.createCollection(name);
-      // Stamped immediately, from the pairing that was live when it was made.
-      // That ordering is the point: a boundary set later is one the writer
-      // forgets, and one derived from the *current* pairing would hand an old
-      // client's collections to a new one the moment they re-pair.
-      //
-      // A failure here must not lose the collection — it exists and the writer
-      // is about to be dropped into it, so the stamp is reported and skipped
-      // rather than unwound.
-      if (shareWithOrg && pro?.is_paired) {
-        try {
-          await api.proShareCollection(created.id);
-        } catch (e) {
-          setStatus(`Collection created, but sharing couldn't be set up: ${errorMessage(e)}`);
-        }
-      }
-      await loadCollections();
+      // The writer is about to be dropped into it, so a failure to share it is
+      // reported here rather than lost.
+      const { collection: created, shareError } = await sources.createCollection(name, {
+        share: shareWithOrg && pro?.is_paired === true,
+      });
+      if (shareError) setStatus(`Collection created, but sharing couldn't be set up: ${shareError}`);
       setShowSettings(false);
       setMode("papers");
-      seedNewSource({ collection: created.id });
       setActiveCollectionId(created.id);
       setViewByMode((prev) => ({ ...prev, papers: "table" }));
     } catch (e) {
@@ -513,29 +479,12 @@ export default function App() {
     }
   }
 
+  // The collection on screen changed, as its view or the table reports. Every
+  // collection at once goes stale with it, which the store sees to.
   async function handleCollectionChanged() {
-    // Bumped before the await, not after it. These two are independent — the
-    // papers fetch doesn't read the collection list — and sequencing them cost
-    // a whole round trip of staleness: the papers on screen were the ones just
-    // removed, and they stayed that way until loadCollections had been and
-    // come back. Measured on a local server, that alone was ~260ms of the
-    // delay between a removal being reported and the rows leaving.
-    //
-    // Both sources, not just whichever is on screen: the all-collections view
-    // aggregates every collection, so a change to any one of them makes it
-    // stale too, and bumping only the active source would leave a switch to
-    // All Collections painting from a cache that predates the change.
-    reloadSource({ allCollections: true });
-    if (typeof activeCollectionId === "number") reloadSource({ collection: activeCollectionId });
-    await loadCollections();
-  }
-
-  // A scan ended, over a collection that need not be the one on screen any
-  // more. The refresh handleCollectionChanged makes, for that collection.
-  function handleImportSettled(collectionId: number) {
-    reloadSource({ allCollections: true });
-    reloadSource({ collection: collectionId });
-    void loadCollections();
+    await sources.collectionsChanged(
+      typeof activeCollectionId === "number" ? [activeCollectionId] : []
+    );
   }
 
   // Try a pasted admin token: store it, then let the server judge it.
@@ -1202,12 +1151,9 @@ export default function App() {
                 : null
             }
             reloadToken={reloadToken}
-            importJobs={importJobs}
+            importJobs={sources.scans}
             onChanged={handleCollectionChanged}
-            onDeleted={async () => {
-              await loadCollections();
-              reloadEverything();
-            }}
+            onDeleted={() => void sources.collectionDeleted(activeCollectionId as number)}
           >
             {module}
           </CollectionView>

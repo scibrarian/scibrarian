@@ -33,8 +33,12 @@ export function createTestApi() {
     folders: [] as Omit<BookmarkFolder, "paperCount">[],
     bookmarks: [] as BookmarkEntry[],
     collections: [] as Omit<Collection, "fileCount" | "matchedCount" | "heldCount">[],
+    // The collections shared with the organization.
+    shared: new Set<number>(),
     // Entries imported into folders and not yet bookmarks.
     imports: [] as BookmarkImport[],
+    // Each collection's scan, as its status route reports it; idle when absent.
+    scans: new Map<number, ImportStatus>(),
     // Each folder's lookup, as its status route reports it; idle when absent.
     lookups: new Map<number, ImportStatus>(),
   };
@@ -171,6 +175,11 @@ export function createTestApi() {
         const id = addCollection(name);
         return collectionRow(library.collections.find((c) => c.id === id)!);
       }),
+    proShareCollection: (id: number) =>
+      answer("proShareCollection", () => {
+        library.shared.add(id);
+        return { shared_with: "The organization" };
+      }),
     deleteCollection: (id: number) =>
       answer("deleteCollection", () => {
         library.collections = library.collections.filter((c) => c.id !== id);
@@ -187,7 +196,8 @@ export function createTestApi() {
         truncated: false,
       })),
     getCollectionFiles: () => answer("getCollectionFiles", () => ({ files: [] })),
-    getImportStatus: () => answer("getImportStatus", () => idle),
+    getImportStatus: (collectionId: number) =>
+      answer("getImportStatus", () => library.scans.get(collectionId) ?? idle),
     getFolderImports: (folderId: number) =>
       answer("getFolderImports", () => library.imports.filter((e) => e.folder_id === folderId)),
     getFolderImportStatus: (folderId: number) =>

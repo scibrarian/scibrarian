@@ -242,6 +242,95 @@ describe("bookmark folders", () => {
   });
 });
 
+describe("collections", () => {
+  it("makes a collection, listing it, and shares it only when asked", async () => {
+    const { server, sources } = setUp();
+    const { collection: thesis, shareError } = await sources.createCollection("Thesis", { share: true });
+    const { collection: notes } = await sources.createCollection("Notes", { share: false });
+    expect(shareError).toBeNull();
+    expect(sources.collections().map((c) => c.name)).toEqual(["Thesis", "Notes"]);
+    expect([...server.library.shared]).toEqual([thesis.id]);
+    expect(server.library.shared.has(notes.id)).toBe(false);
+  });
+
+  // It exists, and the writer is about to be dropped into it.
+  it("keeps a collection it couldn't share, saying why", async () => {
+    const { server, sources } = setUp();
+    server.fail("proShareCollection", "Not paired.");
+    const { collection, shareError } = await sources.createCollection("Thesis", { share: true });
+    expect(shareError).toBe("Not paired.");
+    expect(sources.collections()).toEqual([expect.objectContaining({ id: collection.id })]);
+  });
+
+  // Every collection at once aggregates them all, so a change to any one of
+  // them makes it stale too. Bumped before the list is read again, which the
+  // papers fetch doesn't wait on.
+  it("makes a changed collection stale, and every collection at once, before reading the list", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    const notes = server.addCollection("Notes");
+    const release = server.hold("getCollections");
+    const reading = sources.collectionsChanged([thesis]);
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
+    expect(sources.tokenFor({ allCollections: true })).toBe(1);
+    expect(sources.tokenFor({ collection: notes })).toBe(0);
+    release();
+    await reading;
+    expect(sources.collections()).toHaveLength(2);
+  });
+
+  it("takes a deleted collection off the list at once, and makes every source stale", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    const notes = server.addCollection("Notes");
+    await sources.loadCollections();
+    const release = server.hold("getCollections");
+    const reading = sources.collectionDeleted(thesis);
+    expect(sources.collections().map((c) => c.id)).toEqual([notes]);
+    expect(sources.tokenFor({ folder: 9 })).toBe(1);
+    release();
+    await reading;
+  });
+});
+
+describe("a collection's scan", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Whether or not the collection is on screen: one left before its scan
+  // ended came back painting its pre-scan file list from cache.
+  it("refreshes its collection when it ends", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    const scan = {
+      jobId: "job",
+      state: "running" as const,
+      total: 2,
+      processed: 0,
+      matched: 0,
+      unmatched: 0,
+      errors: 0,
+      currentFile: null,
+      startedAt: "2026-11-04T00:00:00Z",
+      finishedAt: null,
+    };
+    sources.scans.start(thesis, scan);
+    server.library.scans.set(thesis, scan);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sources.tokenFor({ collection: thesis })).toBe(0);
+    server.library.scans.set(thesis, { ...scan, state: "done", processed: 2, matched: 2 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
+    expect(sources.tokenFor({ allCollections: true })).toBe(1);
+    sources.stop();
+  });
+});
+
 describe("Add links", () => {
   const links = (n: number, from = 0) =>
     Array.from({ length: n }, (_, i) => `https://pubmed.ncbi.nlm.nih.gov/${from + i}/`);
