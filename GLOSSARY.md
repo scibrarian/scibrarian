@@ -13,6 +13,11 @@ topics require the same headings. What a topic may be is
 own. Changing it takes out of the topic the papers the new scope doesn't cover;
 a paper that then has no holder goes to the sweep.
 
+**Source**: what a papers view lists: a topic, a bookmark folder, a collection,
+or every collection at once (`PaperSource`). The client caches what it fetched
+for a source until that source's reload token moves; `client/src/lib/sources.ts`
+moves them.
+
 **Holder**: what keeps a stored paper in the library. There are three: a topic
 the paper is linked to (`article_topics`), a collection one of whose files is
 matched to it (`collection_files.pmid`), and a bookmark folder that has it

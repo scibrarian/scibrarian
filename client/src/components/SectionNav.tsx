@@ -11,7 +11,8 @@ import {
   FolderSync,
 } from "lucide-react";
 import { api } from "../api";
-import type { BookmarkFolder, Collection, CollectionSelection, Topic } from "../types";
+import { useCollections, useFolders, useTopics } from "../lib/sources";
+import type { CollectionSelection } from "../types";
 import { ShareLinkButton } from "./ShareLinkButton";
 import { SkeletonBar } from "./Skeleton";
 
@@ -103,9 +104,6 @@ export function SectionNav({
   mode,
   isAdmin,
   onModeChange,
-  topics,
-  folders,
-  collections,
   activeTopicId,
   activeFolderId,
   activeCollectionId,
@@ -125,9 +123,6 @@ export function SectionNav({
   mode: Mode;
   isAdmin: boolean;
   onModeChange: (m: Mode) => void;
-  topics: Topic[];
-  folders: BookmarkFolder[];
-  collections: Collection[];
   activeTopicId: number | null;
   activeFolderId: number | null;
   activeCollectionId: CollectionSelection | null;
@@ -147,6 +142,9 @@ export function SectionNav({
   onEditTopic: () => void;
   onShareError: (message: string) => void;
 }) {
+  const topics = useTopics();
+  const folders = useFolders();
+  const collections = useCollections();
   const activeCollection = collections.find((c) => c.id === activeCollectionId);
   const activeTopic = topics.find((t) => t.id === activeTopicId);
 

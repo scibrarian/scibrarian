@@ -2,6 +2,7 @@ import { lazy, Suspense, type ReactNode } from "react";
 import type { Bookmarking } from "../lib/bookmarking";
 import type { PaperAccess } from "../lib/openPaper";
 import { usePaperFilters } from "../lib/papers";
+import { useReloadToken } from "../lib/sources";
 import type { PaperSource } from "../types";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PapersTable } from "./PapersTable";
@@ -29,7 +30,6 @@ const CitationGraph = lazy(() =>
 export function PaperViews({
   source,
   viewMode,
-  reloadToken,
   emptyState,
   knownEmpty,
   access,
@@ -39,7 +39,6 @@ export function PaperViews({
 }: {
   source: PaperSource;
   viewMode: ViewMode;
-  reloadToken: number;
   emptyState?: ReactNode;
   /**
    * This source was counted at zero before its papers were asked for, so the
@@ -64,6 +63,7 @@ export function PaperViews({
   onFolderChanged?: () => void;
 }) {
   const filters = usePaperFilters(source);
+  const reloadToken = useReloadToken(source);
   const common = { source, reloadToken, filters, bookmarking, ...access };
 
   if (viewMode === "graph") {

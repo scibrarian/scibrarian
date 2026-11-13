@@ -8,7 +8,6 @@ import { useViewerCache } from "./lib/viewerCache";
 import type {
   AuthStatus,
   BookmarkFolder,
-  Collection,
   CollectionSelection,
   Topic,
   TopicDetail,
@@ -18,7 +17,16 @@ import type {
 } from "./types";
 import type { Bookmarking } from "./lib/bookmarking";
 import { seedEmptySource, sourceKey, warmPapers } from "./lib/papers";
-import { NO_RELOADS, bumpAll, bumpSource, tokenFor, type ReloadTokens } from "./lib/reload";
+import { NO_RELOADS, tokenFor } from "./lib/reload";
+import {
+  useCollections,
+  useFolders,
+  useReloadToken,
+  useSaved,
+  useSources,
+  useTopics,
+  useTopicsError,
+} from "./lib/sources";
 import { SectionNav, MODES, type Mode } from "./components/SectionNav";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { PaperViews } from "./components/PaperViews";
@@ -77,14 +85,11 @@ function sameStamps(a: ProCollectionStamp[], b: ProCollectionStamp[]): boolean {
 }
 
 export default function App() {
-  const [topics, setTopics] = useState<Topic[]>([]);
-  // Why the last reading of the topics failed, or null when it didn't. A read
-  // that fails leaves `topics` as it was — empty at first, or with a topic
-  // just removed still on it — and Settings, which lists them, has to be able
-  // to say that its list is not the truth.
-  const [topicsError, setTopicsError] = useState<string | null>(null);
-  const [folders, setFolders] = useState<BookmarkFolder[]>([]);
-  const [collections, setCollections] = useState<Collection[]>([]);
+  const sources = useSources();
+  const topics = useTopics();
+  const topicsError = useTopicsError();
+  const folders = useFolders();
+  const collections = useCollections();
   const [mode, setMode] = useState<Mode>("papers");
   const [showSettings, setShowSettings] = useState(false);
   const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
@@ -103,13 +108,7 @@ export default function App() {
     bookmarks: "table",
     papers: "table",
   });
-  // Which folders each paper is saved in, keyed by pmid — the whole bookmarks
-  // table, held here so every view's icons agree and a toggle repaints without
-  // refetching a source's papers (see BookmarkEntry in shared/types).
-  const [savedByPmid, setSavedByPmid] = useState<Map<string, Set<number>>>(new Map());
-  // Cache invalidation for the paper views, held per source rather than as one
-  // global counter (see lib/reload).
-  const [reloads, setReloads] = useState<ReloadTokens>(NO_RELOADS);
+  const savedByPmid = useSaved();
   // Scans over collections, followed here so that one which ends after its
   // collection has been left still refreshes what it changed (see
   // lib/import-jobs). Made once, so it reaches handleImportSettled through a
@@ -204,62 +203,27 @@ export default function App() {
   const stampsRead = useRef(0);
   const [unlocking, setUnlocking] = useState(false);
 
-  // The topics, read again. Answers with them, or with null when they couldn't
-  // be read: the list is then left as it was, and a caller that goes on to
-  // count what it got back has nothing to count.
-  function loadTopics(): Promise<Topic[] | null> {
-    return api
-      .getTopics()
-      .then((ds) => {
-        setTopicsError(null);
-        setTopics(ds);
-        // Keep the selection valid against the fresh list: creating the first
-        // topic selects it, deleting the active one falls back to the first
-        // remaining (instead of a dangling id that renders as no selection).
-        setActiveTopicId((cur) =>
-          cur != null && ds.some((d) => d.id === cur) ? cur : ds[0]?.id ?? null
-        );
-        return ds;
-      })
-      .catch((e) => {
-        setTopicsError(errorMessage(e));
-        return null;
-      });
-  }
+  const {
+    loadTopics,
+    loadFolders,
+    loadBookmarks,
+    loadCollections,
+    applySaved,
+    reloadSource,
+    reloadEverything,
+  } = sources;
 
-  function loadFolders(): Promise<BookmarkFolder[]> {
-    return api
-      .getBookmarkFolders()
-      .then((fs) => {
-        setFolders(fs);
-        return fs;
-      })
-      .catch(() => []);
-  }
-
-  function loadBookmarks(): Promise<void> {
-    return api
-      .getBookmarks()
-      .then((rows) => {
-        const map = new Map<string, Set<number>>();
-        for (const r of rows) {
-          const folders = map.get(r.pmid);
-          if (folders) folders.add(r.folder_id);
-          else map.set(r.pmid, new Set([r.folder_id]));
-        }
-        setSavedByPmid(map);
-      })
-      .catch(() => {});
-  }
-
-  function loadCollections(): Promise<Collection[]> {
-    return api
-      .getCollections()
-      .then((cs) => {
-        setCollections(cs);
-        return cs;
-      })
-      .catch(() => []);
+  // Keep the selection valid against each fresh reading of the topics: creating
+  // the first topic selects it, deleting the active one falls back to the first
+  // remaining (instead of a dangling id that renders as no selection). Adjusted
+  // while rendering, so the list and the selection that fits it commit
+  // together.
+  const [topicsSeen, setTopicsSeen] = useState(topics);
+  if (topicsSeen !== topics) {
+    setTopicsSeen(topics);
+    setActiveTopicId((cur) =>
+      cur != null && topics.some((d) => d.id === cur) ? cur : topics[0]?.id ?? null
+    );
   }
 
   /**
@@ -518,22 +482,6 @@ export default function App() {
     setActiveCollectionId(id);
   }
 
-  // Data under a papers view changed (poll, import, match, file delete, a paper
-  // saved): invalidate that source's caches so the next look at it refetches.
-  // What moved isn't always what's on screen — saving from Interests has to
-  // leave the folder's list stale while the topic being read stays cached.
-  function reloadSource(source: PaperSource) {
-    setReloads((t) => bumpSource(t, sourceKey(source)));
-  }
-
-  // The changes no single source owns: a poll across every topic, papers
-  // removed from Interests wholesale, or a deleted source — that last one
-  // because SQLite may hand the dead id to the next source created, which would
-  // then inherit its cache entries.
-  function reloadEverything() {
-    setReloads((t) => bumpAll(t));
-  }
-
   // Create a folder and stay put — what the bookmark menu needs, since the
   // point there is to save the paper you're looking at, not to navigate away.
   async function createFolderNamed(name: string): Promise<BookmarkFolder> {
@@ -549,7 +497,7 @@ export default function App() {
   // real one. Only ever called for a source created a moment ago; see
   // seedEmptySource for why that restriction matters.
   function seedNewSource(source: PaperSource) {
-    seedEmptySource(source, tokenFor(reloads, sourceKey(source)));
+    seedEmptySource(source, sources.tokenFor(source));
   }
 
   // The picker's "New folder" instead opens the folder it just made.
@@ -572,17 +520,6 @@ export default function App() {
   // and refetching a few thousand papers per click would be absurd. The folder
   // is the exception — its membership *is* its paper list — so each toggle
   // invalidates that one folder, on screen or not.
-  function applySaved(pmid: string, update: (folders: Set<number>) => void) {
-    setSavedByPmid((prev) => {
-      const next = new Map(prev);
-      const folders = new Set(next.get(pmid) ?? []);
-      update(folders);
-      if (folders.size > 0) next.set(pmid, folders);
-      else next.delete(pmid);
-      return next;
-    });
-  }
-
   async function addBookmark(folderId: number, pmid: string) {
     await api.addBookmarks(folderId, [pmid]);
     applySaved(pmid, (folders) => folders.add(folderId));
@@ -917,7 +854,7 @@ export default function App() {
   const sourceId = source ? sourceKey(source) : null;
   // The token every cached fetch under this source is stamped with; a bump to
   // any other source leaves it alone, so the views keep painting from cache.
-  const reloadToken = sourceId ? tokenFor(reloads, sourceId) : 0;
+  const reloadToken = useReloadToken(source);
 
   // A new source starts at the top, the same rule its filters follow (see
   // usePaperFilters). Nothing carries the offset over deliberately — scroll
@@ -1060,7 +997,6 @@ export default function App() {
     <PaperViews
       source={source}
       viewMode={viewMode}
-      reloadToken={reloadToken}
       emptyState={emptyState}
       knownEmpty={knownEmpty}
       access={access}
@@ -1240,9 +1176,6 @@ export default function App() {
           mode={mode}
           isAdmin={isAdmin}
           onModeChange={changeMode}
-          topics={topics}
-          folders={folders}
-          collections={collections}
           activeTopicId={activeTopicId}
           activeFolderId={activeFolderId}
           activeCollectionId={activeCollectionId}
