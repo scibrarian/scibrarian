@@ -23,6 +23,8 @@ export function createTestApi() {
     folders: [] as Omit<BookmarkFolder, "paperCount">[],
     bookmarks: [] as BookmarkEntry[],
     collections: [] as Omit<Collection, "fileCount" | "matchedCount" | "heldCount">[],
+    // Each folder's lookup, as its status route reports it; idle when absent.
+    lookups: new Map<number, ImportStatus>(),
   };
   let nextId = 1;
   // The methods answering with an error, and what it says.
@@ -73,7 +75,23 @@ export function createTestApi() {
     getCollections: () => answer("getCollections", () => library.collections.map(collectionRow)),
 
     createBookmarkFolder: (name: string) =>
-      answer("createBookmarkFolder", () => folderRow(library.folders.find((f) => f.id === addFolder(name))!)),
+      answer("createBookmarkFolder", () => {
+        const id = addFolder(name);
+        return folderRow(library.folders.find((f) => f.id === id)!);
+      }),
+    // Every pmid is taken as a stored paper: the fake holds no papers.
+    addBookmarks: (folderId: number, pmids: string[]) =>
+      answer("addBookmarks", () => {
+        const fresh = pmids.filter(
+          (pmid) => !library.bookmarks.some((b) => b.folder_id === folderId && b.pmid === pmid)
+        );
+        for (const pmid of fresh) library.bookmarks.push({ folder_id: folderId, pmid });
+        return { added: fresh.length, alreadySaved: pmids.length - fresh.length, missing: 0 };
+      }),
+    removeBookmark: (folderId: number, pmid: string) =>
+      answer("removeBookmark", () => {
+        library.bookmarks = library.bookmarks.filter((b) => !(b.folder_id === folderId && b.pmid === pmid));
+      }),
     // Its bookmarks go with it, as the rows cascade on the server.
     deleteBookmarkFolder: (id: number) =>
       answer("deleteBookmarkFolder", () => {
@@ -81,9 +99,10 @@ export function createTestApi() {
         library.bookmarks = library.bookmarks.filter((b) => b.folder_id !== id);
       }),
     createCollection: (name: string) =>
-      answer("createCollection", () =>
-        collectionRow(library.collections.find((c) => c.id === addCollection(name))!)
-      ),
+      answer("createCollection", () => {
+        const id = addCollection(name);
+        return collectionRow(library.collections.find((c) => c.id === id)!);
+      }),
     deleteCollection: (id: number) =>
       answer("deleteCollection", () => {
         library.collections = library.collections.filter((c) => c.id !== id);
@@ -102,7 +121,8 @@ export function createTestApi() {
     getCollectionFiles: () => answer("getCollectionFiles", () => ({ files: [] })),
     getImportStatus: () => answer("getImportStatus", () => idle),
     getFolderImports: () => answer("getFolderImports", () => []),
-    getFolderImportStatus: () => answer("getFolderImportStatus", () => idle),
+    getFolderImportStatus: (folderId: number) =>
+      answer("getFolderImportStatus", () => library.lookups.get(folderId) ?? idle),
   } satisfies SourcesApi & Partial<Api>;
 
   return {

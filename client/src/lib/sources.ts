@@ -2,6 +2,8 @@ import { createContext, useContext, useSyncExternalStore } from "react";
 import type { api } from "../api";
 import type { BookmarkFolder, Collection, PaperSource, Topic } from "../types";
 import { errorMessage } from "./format";
+import { createImportJobs, type ImportJobs } from "./import-jobs";
+import { seedEmptySource } from "./papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor as tokenIn, type ReloadTokens } from "./reload";
 import { sourceKey } from "../../../shared/source";
 
@@ -20,7 +22,14 @@ import { sourceKey } from "../../../shared/source";
 // the tests.
 export type SourcesApi = Pick<
   typeof api,
-  "getTopics" | "getBookmarkFolders" | "getBookmarks" | "getCollections"
+  | "getTopics"
+  | "getBookmarkFolders"
+  | "getBookmarks"
+  | "getCollections"
+  | "createBookmarkFolder"
+  | "addBookmarks"
+  | "removeBookmark"
+  | "getFolderImportStatus"
 >;
 
 // Which folders each paper is saved in, keyed by pmid: the whole bookmarks
@@ -58,11 +67,47 @@ export type Sources = {
   loadBookmarks: () => Promise<void>;
   loadCollections: () => Promise<Collection[]>;
 
-  // A bookmark toggle, applied to the saved map in place of reading it again.
-  // A read of the map still out when it is applied is read again: it may have
-  // been answered before the toggle reached the server, and landing after it
-  // would put the paper back as it was.
-  applySaved: (pmid: string, update: (folders: Set<number>) => void) => void;
+  // The lookups running over bookmark folders' imported entries, followed for
+  // as long as the app is open rather than for as long as a folder is on
+  // screen (see lib/import-jobs). A lookup fills its folder for minutes after
+  // the import that started it, so each round that saves papers refreshes the
+  // folder as it goes, and so does the lookup's end.
+  lookups: ImportJobs;
+  // Stop following every job.
+  stop: () => void;
+
+  // Make a bookmark folder. Its empty list is known without asking, and is
+  // filed under its token, so a view opening on it paints the empty state at
+  // once rather than a skeleton on the way there (see seedEmptySource).
+  createFolder: (name: string) => Promise<BookmarkFolder>;
+  // The bookmark toggle. The saved map is patched in place of reading it
+  // again — in Interests the rows don't change, only the icon, and refetching
+  // a few thousand papers per click would be absurd. The folder is the
+  // exception: its membership *is* its paper list, so each toggle makes that
+  // one folder stale, on screen or not.
+  //
+  // A read of the map still out when a toggle is applied is read again: it may
+  // have been answered before the toggle reached the server, and landing after
+  // it would put the paper back as it was.
+  addBookmark: (folderId: number, pmid: string) => Promise<void>;
+  removeBookmark: (folderId: number, pmid: string) => Promise<void>;
+  // The bulk save. Papers the server skipped as unstored would leave a patched
+  // map claiming they're saved, so the whole map is read again instead — one
+  // request, and it can't drift.
+  addBookmarks: (
+    folderId: number,
+    pmids: string[]
+  ) => Promise<{ added: number; alreadySaved: number; missing: number }>;
+  // A folder's name changed.
+  folderChanged: (folderId: number) => Promise<void>;
+  // A folder gained or lost papers. Three things are stale — its list, its
+  // count in the picker, and the saved map, which fills the bookmark icon on
+  // every paper in Interests.
+  folderPapersChanged: (folderId: number) => Promise<void>;
+  // A folder was deleted. Taken off the list at once, so App's selection moves
+  // off it without waiting for the reads.
+  folderDeleted: (folderId: number) => Promise<void>;
+
   // Data under a papers view changed (poll, import, match, file delete, a paper
   // saved): invalidate that source's caches so the next look at it refetches.
   // What moved isn't always what's on screen — saving from Interests has to
@@ -164,7 +209,18 @@ export function createSources(port: SourcesApi): Sources {
       .catch(() => []);
   }
 
-  // A new map every time, so the hooks below see the change.
+  function reloadSource(source: PaperSource) {
+    reloads = bumpSource(reloads, sourceKey(source));
+    changed();
+  }
+
+  function reloadEverything() {
+    reloads = bumpAll(reloads);
+    changed();
+  }
+
+  // A toggle, patched into the saved map. A new map every time, so the hooks
+  // below see the change.
   function applySaved(pmid: string, update: (folders: Set<number>) => void) {
     const next = new Map(saved);
     const folders = new Set(next.get(pmid) ?? []);
@@ -177,6 +233,67 @@ export function createSources(port: SourcesApi): Sources {
     // the read it supersedes may carry changes of its own.
     if (bookmarksOut > 0) void loadBookmarks();
   }
+
+  async function createFolder(name: string): Promise<BookmarkFolder> {
+    const created = await port.createBookmarkFolder(name);
+    const source = { folder: created.id };
+    seedEmptySource(source, tokenIn(reloads, sourceKey(source)));
+    await loadFolders();
+    return created;
+  }
+
+  async function addBookmark(folderId: number, pmid: string) {
+    await port.addBookmarks(folderId, [pmid]);
+    applySaved(pmid, (folders) => folders.add(folderId));
+    await loadFolders();
+    reloadSource({ folder: folderId });
+  }
+
+  async function removeBookmark(folderId: number, pmid: string) {
+    await port.removeBookmark(folderId, pmid);
+    applySaved(pmid, (folders) => folders.delete(folderId));
+    await loadFolders();
+    reloadSource({ folder: folderId });
+  }
+
+  async function addBookmarks(folderId: number, pmids: string[]) {
+    const result = await port.addBookmarks(folderId, pmids);
+    await Promise.all([loadBookmarks(), loadFolders()]);
+    reloadSource({ folder: folderId });
+    return result;
+  }
+
+  async function folderChanged(folderId: number) {
+    await loadFolders();
+    reloadSource({ folder: folderId });
+  }
+
+  // Bumped before the reads, not after them: the papers fetch reads neither
+  // of the other two, and a removal's rows stay on screen, dimmed, until it
+  // lands.
+  async function folderPapersChanged(folderId: number) {
+    reloadSource({ folder: folderId });
+    await Promise.all([loadBookmarks(), loadFolders()]);
+  }
+
+  // Every source's caches, not just the folder's: SQLite may hand the dead id
+  // to the next folder created, which would then inherit its cache entries.
+  // Bumped with the list, in one change, so the folder the selection moves to
+  // is asked for once. The saved map comes back from the server too: the
+  // folder's bookmarks went with it, and a map left alone would show every
+  // paper it held as saved in a folder that no longer exists.
+  async function folderDeleted(folderId: number) {
+    folders = folders.filter((f) => f.id !== folderId);
+    reloads = bumpAll(reloads);
+    changed();
+    await Promise.all([loadBookmarks(), loadFolders()]);
+  }
+
+  const lookups = createImportJobs(
+    port.getFolderImportStatus,
+    (id) => void folderPapersChanged(id),
+    (id) => void folderPapersChanged(id)
+  );
 
   return {
     topics: () => topics,
@@ -193,15 +310,17 @@ export function createSources(port: SourcesApi): Sources {
     loadFolders,
     loadBookmarks,
     loadCollections,
-    applySaved,
-    reloadSource(source) {
-      reloads = bumpSource(reloads, sourceKey(source));
-      changed();
-    },
-    reloadEverything() {
-      reloads = bumpAll(reloads);
-      changed();
-    },
+    lookups,
+    stop: lookups.stop,
+    createFolder,
+    addBookmark,
+    removeBookmark,
+    addBookmarks,
+    folderChanged,
+    folderPapersChanged,
+    folderDeleted,
+    reloadSource,
+    reloadEverything,
   };
 }
 

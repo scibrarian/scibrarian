@@ -7,7 +7,6 @@ import { showToast } from "./lib/toast";
 import { useViewerCache } from "./lib/viewerCache";
 import type {
   AuthStatus,
-  BookmarkFolder,
   CollectionSelection,
   Topic,
   TopicDetail,
@@ -127,23 +126,8 @@ export default function App() {
     createImportJobs(api.getImportStatus, (id) => importSettled.current(id))
   );
   useEffect(() => importJobs.stop, [importJobs]);
-  // The same for reference files imported into bookmark folders, whose lookups
-  // fill a folder for minutes after the import that started them. A store of
-  // their own, because the two are keyed by ids from different tables. Told
-  // of each round that saves papers as well as of the end, so the folder fills
-  // in while a long lookup runs rather than all at once when it stops.
-  const folderImportSaved = useRef(refreshFolderPapers);
-  useEffect(() => {
-    folderImportSaved.current = refreshFolderPapers;
-  });
-  const [folderImportJobs] = useState(() =>
-    createImportJobs(
-      api.getFolderImportStatus,
-      (id) => void folderImportSaved.current(id),
-      (id) => void folderImportSaved.current(id)
-    )
-  );
-  useEffect(() => folderImportJobs.stop, [folderImportJobs]);
+  // The lookups over bookmark folders are the store's (see lib/sources).
+  useEffect(() => sources.stop, [sources]);
   const [namingFolder, setNamingFolder] = useState(false);
   const [namingCollection, setNamingCollection] = useState(false);
   // The topic dialog, the only one: closed, creating a topic, or editing this
@@ -214,7 +198,6 @@ export default function App() {
     loadFolders,
     loadBookmarks,
     loadCollections,
-    applySaved,
     reloadSource,
     reloadEverything,
   } = sources;
@@ -478,14 +461,6 @@ export default function App() {
     setActiveCollectionId(id);
   }
 
-  // Create a folder and stay put — what the bookmark menu needs, since the
-  // point there is to save the paper you're looking at, not to navigate away.
-  async function createFolderNamed(name: string): Promise<BookmarkFolder> {
-    const created = await api.createBookmarkFolder(name);
-    await loadFolders();
-    return created;
-  }
-
   // Creating a source and opening it are one gesture, so the view it lands on
   // would fetch a paper list the app already knows the answer to — and that
   // request is slow enough to paint a skeleton on the way to an empty state
@@ -496,48 +471,19 @@ export default function App() {
     seedEmptySource(source, sources.tokenFor(source));
   }
 
-  // The picker's "New folder" instead opens the folder it just made.
+  // The picker's "New folder" opens the folder it just made, where the bookmark
+  // menu's stays put: the point there is to save the paper you're looking at.
   async function createFolder(name: string) {
     setNamingFolder(false);
     try {
-      const created = await createFolderNamed(name);
+      const created = await sources.createFolder(name);
       setShowSettings(false);
       setMode("bookmarks");
-      seedNewSource({ folder: created.id });
       setActiveFolderId(created.id);
       setViewByMode((prev) => ({ ...prev, bookmarks: "table" }));
     } catch (e) {
       setStatus(errorMessage(e));
     }
-  }
-
-  // A bookmark toggle updates the in-memory map rather than invalidating the
-  // papers cache: in Interests the rows themselves don't change, only the icon,
-  // and refetching a few thousand papers per click would be absurd. The folder
-  // is the exception — its membership *is* its paper list — so each toggle
-  // invalidates that one folder, on screen or not.
-  async function addBookmark(folderId: number, pmid: string) {
-    await api.addBookmarks(folderId, [pmid]);
-    applySaved(pmid, (folders) => folders.add(folderId));
-    await loadFolders();
-    reloadSource({ folder: folderId });
-  }
-
-  // The bulk save. Papers the server skipped as unstored would leave the map
-  // claiming they're saved, so the whole map is reloaded from the server rather
-  // than patched — one request, and it can't drift.
-  async function addBookmarks(folderId: number, pmids: string[]) {
-    const result = await api.addBookmarks(folderId, pmids);
-    await Promise.all([loadBookmarks(), loadFolders()]);
-    reloadSource({ folder: folderId });
-    return result;
-  }
-
-  async function removeBookmark(folderId: number, pmid: string) {
-    await api.removeBookmark(folderId, pmid);
-    applySaved(pmid, (folders) => folders.delete(folderId));
-    await loadFolders();
-    reloadSource({ folder: folderId });
   }
 
   async function createCollection(name: string, shareWithOrg: boolean) {
@@ -574,27 +520,14 @@ export default function App() {
   // source's caches go — the folder listing / collection files are refetched by
   // the load above, not by the token.
   async function handleFolderChanged() {
-    await loadFolders();
-    if (activeFolderId != null) reloadSource({ folder: activeFolderId });
-  }
-
-  // A folder gained or lost papers. Three things are stale — its list, its
-  // count in the picker, and the map of what is saved where, which fills the
-  // bookmark icon on every paper in Interests.
-  //
-  // Bumped before the await, for the reason handleCollectionChanged gives just
-  // below: the papers fetch reads neither of the other two, and a removal's
-  // rows stay on screen, dimmed, until it lands.
-  async function refreshFolderPapers(folderId: number | null) {
-    if (folderId != null) reloadSource({ folder: folderId });
-    await Promise.all([loadBookmarks(), loadFolders()]);
+    if (activeFolderId != null) await sources.folderChanged(activeFolderId);
   }
 
   // The folder on screen: Add links put papers in, or the table's "Remove
   // selected" took some out. A folder's import lookup refreshes the folder it
-  // fills, which need not be the one on screen (see folderImportJobs).
+  // fills, which need not be the one on screen (see lookups in lib/sources).
   async function handleFolderPapersChanged() {
-    await refreshFolderPapers(activeFolderId);
+    if (activeFolderId != null) await sources.folderPapersChanged(activeFolderId);
   }
 
   async function handleCollectionChanged() {
@@ -969,10 +902,10 @@ export default function App() {
       : {
           folders,
           saved: savedByPmid,
-          add: addBookmark,
-          addMany: addBookmarks,
-          remove: removeBookmark,
-          createFolder: createFolderNamed,
+          add: sources.addBookmark,
+          addMany: sources.addBookmarks,
+          remove: sources.removeBookmark,
+          createFolder: sources.createFolder,
         };
 
   const module = source && (
@@ -1315,21 +1248,13 @@ export default function App() {
             folderId={activeFolderId!}
             isAdmin={isAdmin}
             summary={sourceSummary}
-            importJobs={folderImportJobs}
+            importJobs={sources.lookups}
             onChanged={handleFolderChanged}
             // The saved-papers map as well as the folder's list and count, the
             // same three a bulk save refreshes: a paper added here may be on
             // screen elsewhere, and its bookmark icon has to fill in.
             onPapersAdded={handleFolderPapersChanged}
-            onDeleted={async () => {
-              // The folder's bookmarks are deleted with it (the rows cascade),
-              // so the map of what's saved has to come back from the server
-              // too. Reloading only the folder list leaves every paper it held
-              // showing a filled icon and "Saved in 1 folder" for a folder that
-              // no longer exists — a claim nothing in the UI can then undo.
-              await Promise.all([loadBookmarks(), loadFolders()]);
-              reloadEverything();
-            }}
+            onDeleted={() => void sources.folderDeleted(activeFolderId!)}
           >
             {module}
           </BookmarkFolderView>
