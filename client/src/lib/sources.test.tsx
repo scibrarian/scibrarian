@@ -274,14 +274,39 @@ describe("topics", () => {
     expect(sources.tokenFor({ topic: asthma.id })).toBe(1);
   });
 
-  it("reads a saved topic's row again, and its papers only when a change of scope took some out", async () => {
+  // So that a caller can go to it, the list having it.
+  it("makes a topic, answering once the topics have been read with it", async () => {
+    const { sources } = setUp();
+    const made = await sources.createTopic(["D001249"], { allPubmed: true, journals: [] }, "Asthma");
+    expect(sources.topics().map((t) => t.id)).toEqual([made.id]);
+    expect(sources.tokenFor({ topic: made.id })).toBe(0);
+  });
+
+  it("reads a changed topic's row again, and its papers only when a change of scope took some out", async () => {
     const { server, sources } = setUp();
     const asthma = server.addTopic("Asthma");
-    await sources.topicSaved(asthma.id, 0);
-    expect(sources.topics()).toHaveLength(1);
+    await sources.updateTopic(asthma.id, { name: "Asthma in children" });
+    expect(sources.topics()[0].name).toBe("Asthma in children");
     expect(sources.tokenFor({ topic: asthma.id })).toBe(0);
-    await sources.topicSaved(asthma.id, 2);
+    server.library.outOfScope.set(asthma.id, 2);
+    const { removed } = await sources.updateTopic(asthma.id, { allPubmed: false, journals: ["1"] });
+    expect(removed.removedFromInterests).toBe(2);
     expect(sources.tokenFor({ topic: asthma.id })).toBe(1);
+  });
+
+  // Its papers are cached under the bookmarks and the graph as well as its
+  // own feed.
+  it("removes a topic, making every source stale when papers went with it", async () => {
+    const { server, sources } = setUp();
+    const asthma = server.addTopic("Asthma");
+    const gout = server.addTopic("Gout");
+    server.library.topics[1].articleCount = 4;
+    expect(await sources.deleteTopic(asthma.id)).toEqual({ deletedArticles: 0 });
+    expect(sources.topics().map((t) => t.id)).toEqual([gout.id]);
+    expect(sources.tokenFor({ folder: 9 })).toBe(0);
+    expect(await sources.deleteTopic(gout.id)).toEqual({ deletedArticles: 4 });
+    expect(sources.topics()).toEqual([]);
+    expect(sources.tokenFor({ folder: 9 })).toBe(1);
   });
 });
 
@@ -292,16 +317,13 @@ describe("a reset", () => {
     server.bookmark(server.addFolder("Reading"), "1");
     server.addCollection("Thesis");
     await Promise.all([sources.loadTopics(), sources.loadFolders(), sources.loadCollections(), sources.loadBookmarks()]);
-    // What the server's reset did.
-    Object.assign(server.library, { topics: [], folders: [], bookmarks: [], collections: [] });
     const release = server.hold("getTopics");
-    const reading = sources.libraryReset();
+    expect(await sources.resetLibrary()).toMatchObject({ topics: 1, folders: 1, collections: 1 });
     expect([sources.topics(), sources.folders(), sources.collections()]).toEqual([[], [], []]);
     expect(sources.saved().size).toBe(0);
     expect(sources.tokenFor({ topic: 1 })).toBe(1);
     release();
-    await reading;
-    expect(sources.topics()).toEqual([]);
+    await vi.waitFor(() => expect(sources.topicsError()).toBeNull());
   });
 });
 

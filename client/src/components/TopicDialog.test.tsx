@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createSources, SourcesContext, type SourcesApi } from "../lib/sources";
 import { medlineNote } from "./JournalPanes";
 import { TopicDialog, describeTopicSave } from "./TopicDialog";
 import { withAnExitAnimation } from "./test-exit-animation";
@@ -35,6 +36,7 @@ afterEach(cleanup);
 // take papers out says how many before it does, and only then.
 
 const api = vi.hoisted(() => ({
+  getTopics: vi.fn(),
   searchMesh: vi.fn(),
   suggestTopics: vi.fn(),
   previewTopic: vi.fn(),
@@ -47,6 +49,13 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock("../api", () => ({ api }));
+
+// For the tests that render the dialog themselves: one store, holding no
+// topics.
+const noTopics = createSources(api as unknown as SourcesApi);
+const withSources = ({ children }: { children: ReactNode }) => (
+  <SourcesContext.Provider value={noTopics}>{children}</SourcesContext.Provider>
+);
 
 const hit = (ui: string, name: string): MeshSearchResult => ({ ui, name, synonym: null });
 const ATHERO = hit("D050197", "Atherosclerosis");
@@ -109,6 +118,7 @@ const NOTHING_REMOVED = { deletedArticles: 0, removedFromInterests: 0 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getTopics.mockResolvedValue([]);
   api.searchMesh.mockResolvedValue({ results: [ATHERO, SLEEP] });
   api.suggestTopics.mockResolvedValue({ results: [], heldPapers: 0, unchecked: 0 });
   api.previewTopic.mockResolvedValue({ term: "", count: 119 });
@@ -120,10 +130,21 @@ beforeEach(() => {
   api.suggestJournals.mockResolvedValue({ results: [] });
 });
 
+// The dialog over the sources store, which holds the topics it copies lists
+// from and reads them again when one is saved, as the app does.
 function open(topic: Topic | null = null, topics: Topic[] = []) {
   const onSaved = vi.fn();
   const onClose = vi.fn();
-  render(<TopicDialog open topic={topic} topics={topics} onClose={onClose} onSaved={onSaved} />);
+  const sources = createSources(api as unknown as SourcesApi);
+  if (topics.length > 0) {
+    api.getTopics.mockResolvedValue(topics);
+    void sources.loadTopics();
+  }
+  render(
+    <SourcesContext.Provider value={sources}>
+      <TopicDialog open topic={topic} onClose={onClose} onSaved={onSaved} />
+    </SourcesContext.Provider>
+  );
   return { onSaved, onClose };
 }
 
@@ -322,8 +343,8 @@ describe("creating a topic", () => {
     // The headings are cleared as the dialog opens, but the count ran a
     // debounce behind them, and for that long still held the ones the last
     // opening ended with: a PubMed search for a set nobody was looking at.
-    const rest = { topic: null, topics: [], onClose: vi.fn(), onSaved: vi.fn() };
-    const { rerender } = render(<TopicDialog open {...rest} />);
+    const rest = { topic: null, onClose: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<TopicDialog open {...rest} />, { wrapper: withSources });
     await pick("Atherosclerosis");
     await waitFor(() => expect(api.previewTopic).toHaveBeenCalledTimes(1));
 
@@ -702,8 +723,8 @@ describe("editing a topic", () => {
     );
     let answer!: (r: { results: JournalSearchResult[] }) => void;
     api.suggestJournals.mockReturnValue(new Promise((r) => (answer = r)));
-    const rest = { topics: [TOPIC, other], onClose: vi.fn(), onSaved: vi.fn() };
-    const { rerender } = render(<TopicDialog open topic={TOPIC} {...rest} />);
+    const rest = { onClose: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<TopicDialog open topic={TOPIC} {...rest} />, { wrapper: withSources });
     await listLoaded();
     fireEvent.click(screen.getByRole("button", { name: "Auto" }));
     await waitFor(() => expect(api.suggestJournals).toHaveBeenCalled());
@@ -726,8 +747,8 @@ describe("a topic dialog while it closes", () => {
 
   it("is still the dialog for the topic it was editing", async () => {
     withAnExitAnimation();
-    const rest = { topics: [TOPIC], onClose: vi.fn(), onSaved: vi.fn() };
-    const { rerender } = render(<TopicDialog open topic={TOPIC} {...rest} />);
+    const rest = { onClose: vi.fn(), onSaved: vi.fn() };
+    const { rerender } = render(<TopicDialog open topic={TOPIC} {...rest} />, { wrapper: withSources });
     await listLoaded();
 
     rerender(<TopicDialog open={false} topic={null} {...rest} />);
@@ -774,14 +795,13 @@ describe("where the focus starts", () => {
           <TopicDialog
             open={shown}
             topic={null}
-            topics={[]}
             onClose={() => setShown(false)}
             onSaved={vi.fn()}
           />
         </>
       );
     }
-    render(<FromAMenu />);
+    render(<FromAMenu />, { wrapper: withSources });
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "Topics" }),
       new MouseEvent("pointerdown", { bubbles: true })

@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { Settings } from "./Settings";
+import { createSources, SourcesContext, type SourcesApi } from "../lib/sources";
 import { ClearCacheDialog } from "./CacheChip";
 import { useViewerCache } from "../lib/viewerCache";
 import type { AppSettings } from "../types";
@@ -27,6 +29,13 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock("../api", () => ({ api }));
+
+// Settings lists the topics from the sources store, which these tests leave
+// empty.
+const sources = createSources(api as unknown as SourcesApi);
+const withSources = ({ children }: { children: ReactNode }) => (
+  <SourcesContext.Provider value={sources}>{children}</SourcesContext.Provider>
+);
 
 const DESKTOP: AppSettings = {
   ncbi_email: "reader@example.com",
@@ -57,15 +66,11 @@ function Shell() {
       <Settings
         pro={null}
         viewerCache={viewerCache}
-        topics={[]}
-        topicsError={null}
         onAddTopic={() => {}}
         onEditTopic={() => {}}
-        onDataChanged={() => {}}
         onPairingChanged={() => {}}
         onSharingChanged={() => {}}
         onPapersRemoved={() => {}}
-        onLibraryReset={() => {}}
       />
       <ClearCacheDialog viewerCache={viewerCache} />
     </>
@@ -74,7 +79,7 @@ function Shell() {
 
 function renderSettings() {
   api.getSettings.mockResolvedValue(DESKTOP);
-  return render(<Shell />);
+  return render(<Shell />, { wrapper: withSources });
 }
 
 const clearButton = (): HTMLButtonElement =>

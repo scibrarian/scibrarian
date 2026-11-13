@@ -7,10 +7,15 @@ import type {
   Collection,
   CollectionFile,
   FolderImportResponse,
+  LibraryStats,
   LinkedPaper,
   PaperSource,
   PollResult,
   Topic,
+  TopicDetail,
+  TopicRemovalResult,
+  TopicScopeInput,
+  TopicUpdateResponse,
 } from "../types";
 import { errorMessage } from "./format";
 import { createImportJobs, type ImportJobs } from "./import-jobs";
@@ -40,6 +45,10 @@ const UPLOAD_BATCH = Math.min(20, MAX_UPLOAD_FILES);
 export type SourcesApi = Pick<
   typeof api,
   | "getTopics"
+  | "createTopic"
+  | "updateTopic"
+  | "deleteTopic"
+  | "resetLibrary"
   | "refresh"
   | "getBookmarkFolders"
   | "getBookmarks"
@@ -118,17 +127,27 @@ export type Sources = {
   // the poll did against. The topic's caches go, or every source's after a
   // poll across every topic.
   checkForPapers: (topicId: number | null) => Promise<{ results: PollResult[]; topics: Topic[] | null }>;
-  // A topic was made or changed: its row is read again either way, and its
-  // papers are stale only if a change of scope took some out — and then only
-  // its own feed is, no other topic having been touched.
-  topicSaved: (topicId: number, removedFromInterests: number) => Promise<void>;
-  // The library was deleted outright. Every list is emptied at once — nothing
-  // on them exists any more, so App's selections fall to none without waiting
-  // for the reads — and the saved map with them, which left standing would
-  // claim papers are saved in folders that no longer exist. Every source's
-  // caches go too: SQLite may hand a dead id to the next source created. Then
-  // all of it is read again.
-  libraryReset: () => Promise<void>;
+  // Make a topic, or change one's name or scope. Each answers once the topics
+  // have been read again, so a caller can go to the topic knowing the list
+  // has it. A topic's papers are stale only if a change of scope took some
+  // out — and then only its own feed is, no other topic having been touched.
+  createTopic: (headings: string[], scope: TopicScopeInput, name?: string) => Promise<TopicDetail>;
+  updateTopic: (
+    topicId: number,
+    change: Parameters<typeof api.updateTopic>[1]
+  ) => Promise<TopicUpdateResponse>;
+  // Remove a topic, answering once the topics have been read again. A
+  // removed topic's papers are cached under the bookmarks and the graph as
+  // well as its own feed, so when any were deleted nothing narrower than every
+  // source is safe.
+  deleteTopic: (topicId: number) => Promise<TopicRemovalResult>;
+  // Delete the library outright, answering with what went. Every list is
+  // emptied at once — nothing on them exists any more, so App's selections
+  // fall to none without waiting for the reads — and the saved map with them,
+  // which left standing would claim papers are saved in folders that no longer
+  // exist. Every source's caches go too: SQLite may hand a dead id to the next
+  // source created. Then all of it is read again, behind the answer.
+  resetLibrary: () => Promise<LibraryStats>;
 
   // The lookups running over bookmark folders' imported entries, followed for
   // as long as the app is open rather than for as long as a folder is on
@@ -379,6 +398,31 @@ export function createSources(port: SourcesApi): Sources {
     if (removedFromInterests > 0) reloadSource({ topic: topicId });
   }
 
+  async function createTopic(headings: string[], scope: TopicScopeInput, name?: string) {
+    const saved = await port.createTopic(headings, scope, name);
+    await topicSaved(saved.id, 0);
+    return saved;
+  }
+
+  async function updateTopic(topicId: number, change: Parameters<typeof api.updateTopic>[1]) {
+    const res = await port.updateTopic(topicId, change);
+    await topicSaved(topicId, res.removed.removedFromInterests);
+    return res;
+  }
+
+  async function deleteTopic(topicId: number) {
+    const res = await port.deleteTopic(topicId);
+    await loadTopics();
+    if (res.deletedArticles > 0) reloadEverything();
+    return res;
+  }
+
+  async function resetLibrary() {
+    const deleted = await port.resetLibrary();
+    void libraryReset();
+    return deleted;
+  }
+
   async function libraryReset() {
     topics = [];
     folders = [];
@@ -624,8 +668,10 @@ export function createSources(port: SourcesApi): Sources {
     loadBookmarks,
     loadCollections,
     checkForPapers,
-    topicSaved,
-    libraryReset,
+    createTopic,
+    updateTopic,
+    deleteTopic,
+    resetLibrary,
     scans,
     lookups,
     stop() {

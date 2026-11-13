@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { createSources, SourcesContext, type Sources } from "./lib/sources";
 import { createTestApi } from "./test-api";
@@ -34,6 +34,11 @@ vi.mock("./api", async (importOriginal) => ({
 
 let server: ReturnType<typeof createTestApi>;
 let sources: Sources;
+
+beforeAll(() => {
+  // jsdom has no layout; the heading search scrolls its options into view.
+  Element.prototype.scrollIntoView = () => {};
+});
 
 beforeEach(() => {
   server = createTestApi();
@@ -86,6 +91,23 @@ const noSource = () => document.querySelector("main > .empty")?.textContent ?? n
 
 function section(name: "Library" | "Interests" | "Bookmarks") {
   fireEvent.click(screen.getByRole("button", { name }));
+}
+
+function openPicker() {
+  fireEvent.pointerDown(
+    document.querySelector("button.picker-trigger")!,
+    new MouseEvent("pointerdown", { bubbles: true })
+  );
+}
+
+// Make a topic of one heading in the open dialog.
+async function makeTopic(heading: string) {
+  const search = await screen.findByRole("combobox");
+  fireEvent.focus(search);
+  fireEvent.change(search, { target: { value: heading } });
+  fireEvent.click(await screen.findByRole("option", { name: heading }));
+  fireEvent.click(screen.getByRole("button", { name: "Create topic" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Create topic" })).toBeNull());
 }
 
 async function confirmDelete(button: string) {
@@ -175,10 +197,7 @@ describe("when the list under a selection changes", () => {
   it("keeps every collection at once selected only while there are any", async () => {
     server.addCollection("Thesis");
     await boot();
-    fireEvent.pointerDown(
-      document.querySelector("button.picker-trigger")!,
-      new MouseEvent("pointerdown", { bubbles: true })
-    );
+    openPicker();
     fireEvent.click(await screen.findByRole("menuitem", { name: /All collections/ }));
     expect(picked()).toBe("All collections");
     await act(async () => {
@@ -201,5 +220,52 @@ describe("when the list under a selection changes", () => {
       await sources.loadCollections();
     });
     expect(picked()).toBe("Grants");
+  });
+});
+
+describe("where a topic leaves the reader", () => {
+  // It has no papers until it is checked, and its own view is where that
+  // button is.
+  it("goes to a topic made from the section bar", async () => {
+    server.addTopic("Gout");
+    await boot();
+    section("Interests");
+    openPicker();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add topic…" }));
+    await makeTopic("Asthma");
+    await waitFor(() => expect(picked()).toBe("Asthma"));
+  });
+
+  // Which leaves the reader at the list it has just joined.
+  it("stays put for a topic made in Settings", async () => {
+    server.addTopic("Gout");
+    await boot();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add topic…" }));
+    await makeTopic("Asthma");
+    expect(await screen.findByText("Asthma")).toBeTruthy();
+    section("Interests");
+    expect(picked()).toBe("Gout");
+  });
+
+  it("gives way to the first topic left when the one on screen is removed in Settings", async () => {
+    server.addTopic("Asthma");
+    server.addTopic("Gout");
+    await boot();
+    section("Interests");
+    expect(picked()).toBe("Asthma");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const row = await waitFor(() => {
+      const li = screen
+        .getAllByRole("listitem")
+        .find((l) => within(l).queryByText("Asthma") && within(l).queryByRole("button", { name: "Remove" }));
+      expect(li).toBeTruthy();
+      return li!;
+    });
+    fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(server.library.topics.map((t) => t.name)).toEqual(["Gout"]));
+    section("Interests");
+    await waitFor(() => expect(picked()).toBe("Gout"));
   });
 });

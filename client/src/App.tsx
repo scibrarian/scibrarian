@@ -20,7 +20,6 @@ import {
   useFolders,
   useSources,
   useTopics,
-  useTopicsError,
 } from "./lib/sources";
 import { SectionNav, MODES, type Mode } from "./components/SectionNav";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
@@ -88,7 +87,6 @@ function keptOrFirst(chosen: number | null, list: { id: number }[]): number | nu
 export default function App() {
   const sources = useSources();
   const topics = useTopics();
-  const topicsError = useTopicsError();
   const folders = useFolders();
   const collections = useCollections();
   const [mode, setMode] = useState<Mode>("papers");
@@ -176,14 +174,6 @@ export default function App() {
   // reading directly and that has to make an outstanding request stale too.
   const stampsRead = useRef(0);
   const [unlocking, setUnlocking] = useState(false);
-
-  const {
-    loadTopics,
-    loadFolders,
-    loadBookmarks,
-    loadCollections,
-    reloadEverything,
-  } = sources;
 
   // Each section's selection is kept to an entry of its list. A choice the list
   // no longer has — deleted here, in another tab, or by a reset — and no
@@ -325,7 +315,7 @@ export default function App() {
     // The token is the one a fresh view reads — nothing has bumped a source
     // yet, and nothing can, since every control is a stand-in until this
     // resolves.
-    const collectionsLoad = loadCollections();
+    const collectionsLoad = sources.loadCollections();
     const warmUp = collectionsLoad.then((cs) => {
       const landing: PaperSource | null =
         cs.length > 0 && cs[0].heldCount !== 0 ? { collection: cs[0].id } : null;
@@ -333,7 +323,13 @@ export default function App() {
       const token = tokenFor(NO_RELOADS, sourceKey(landing));
       return Promise.all([warmPapers(landing, token), warmFacets(landing, token)]);
     });
-    Promise.all([auth, loadTopics(), loadFolders(), collectionsLoad, loadBookmarks()]).then(
+    Promise.all([
+      auth,
+      sources.loadTopics(),
+      sources.loadFolders(),
+      collectionsLoad,
+      sources.loadBookmarks(),
+    ]).then(
       async ([status]) => {
         // Whatever of the warm-up is still out, waited for — usually nothing,
         // since it has been running beside the requests above. Bounded: past
@@ -416,13 +412,15 @@ export default function App() {
     setTopicDialog(which);
   }
 
-  // A topic was created or edited.
-  // Its row is stale either way; its papers are stale only if a change of scope
-  // took some out, and then only its own feed is — no other topic was touched.
-  async function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
+  // A topic was created or edited, and the topics read again with it (see
+  // createTopic in lib/sources). A new topic is where the reader goes next: it
+  // has no papers until it is checked, and its own view is where that button
+  // is. Unless it was made in Settings, which leaves the reader at the list it
+  // has just joined.
+  function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
     const said = describeTopicSave(saved, outcome);
     if (said) setStatus(said);
-    await sources.topicSaved(saved.id, outcome.removed);
+    if (outcome.created && !topicDialogInSettings.current) selectTopic(saved.id);
   }
 
   function selectTopic(id: number) {
@@ -1061,27 +1059,13 @@ export default function App() {
           <Settings
             pro={pro}
             viewerCache={viewerCache}
-            topics={topics}
-            topicsError={topicsError}
             onAddTopic={() => openTopicDialog("new", true)}
             onEditTopic={(topic) => openTopicDialog(topic, true)}
-            onDataChanged={loadTopics}
             onPairingChanged={handlePairingChanged}
             onSharingChanged={handleSharingChanged}
-            onPapersRemoved={(count) => {
-              setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`);
-              // A removed topic's papers are cached under the bookmarks and
-              // the graph as well as its own feed, so nothing narrower than
-              // everything is safe.
-              reloadEverything();
-            }}
-            onLibraryReset={async () => {
-              // No notice from here. What was deleted is reported in the panel
-              // the button is in — this runs with the reader scrolled to the
-              // foot of Settings, and a banner above the section bar is the
-              // one place they are certainly not looking.
-              await sources.libraryReset();
-            }}
+            onPapersRemoved={(count) =>
+              setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`)
+            }
           />
         ) : !source ? (
           <div className="empty">{noSourceState}</div>
@@ -1158,18 +1142,8 @@ export default function App() {
       <TopicDialog
         open={topicDialog != null}
         topic={topicDialog === "new" ? null : topicDialog}
-        topics={topics}
         onClose={() => setTopicDialog(null)}
-        onSaved={(saved, outcome) => {
-          // A new topic is where the reader goes next: it has no papers until
-          // it is checked, and its own view is where that button is. Unless it
-          // was made in Settings — read now, before the wait, while the answer
-          // is still this opening's.
-          const stay = topicDialogInSettings.current;
-          void handleTopicSaved(saved, outcome).then(
-            () => outcome.created && !stay && selectTopic(saved.id)
-          );
-        }}
+        onSaved={handleTopicSaved}
       />
 
       {/* One, for both ways of clearing the viewer cache: the header's warning

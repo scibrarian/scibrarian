@@ -10,6 +10,7 @@ import type {
   LinkAnswer,
   LinkedPaper,
   Topic,
+  TopicScopeInput,
 } from "./types";
 import { MAX_LINKS_PER_REQUEST } from "../../shared/limits";
 
@@ -39,6 +40,8 @@ export function createTestApi() {
     // What PubMed has for each topic that its feed doesn't yet: how many new
     // papers the next check finds.
     unpolled: new Map<number, number>(),
+    // How many of each topic's papers a change of its scope takes out.
+    outOfScope: new Map<number, number>(),
     // The collections shared with the organization.
     shared: new Set<number>(),
     // Entries imported into folders and not yet bookmarks.
@@ -85,6 +88,10 @@ export function createTestApi() {
     };
   }
 
+  // The headings the search has offered, by UI, so a topic made from them
+  // can be named as the server names one.
+  const headingNames = new Map<string, string>();
+
   // A file uploaded and not yet scanned.
   function addFile(collectionId: number, name: string): CollectionFile {
     const file: CollectionFile = {
@@ -100,6 +107,22 @@ export function createTestApi() {
     };
     library.files.push(file);
     return file;
+  }
+
+  function addTopic(name: string, scope?: TopicScopeInput): Topic {
+    const topic: Topic = {
+      id: nextId++,
+      name,
+      term: name,
+      headings: [],
+      all_pubmed: scope?.allPubmed ?? true,
+      journalCount: scope?.journals.length ?? 0,
+      last_polled_at: null,
+      created_at: created,
+      articleCount: 0,
+    };
+    library.topics.push(topic);
+    return topic;
   }
 
   function addFolder(name: string): number {
@@ -135,6 +158,40 @@ export function createTestApi() {
 
   const api = {
     getTopics: () => answer("getTopics", () => library.topics.map((t) => ({ ...t }))),
+    createTopic: (headings: string[], scope: TopicScopeInput, name?: string) =>
+      answer("createTopic", () => {
+        const named = name ?? headings.map((ui) => headingNames.get(ui) ?? ui).join(" + ");
+        return { ...addTopic(named, scope), journals: [] };
+      }),
+    // A change of scope takes out of the feed what the test said it would.
+    updateTopic: (id: number, change: { name?: string; allPubmed?: boolean }) =>
+      answer("updateTopic", () => {
+        const topic = library.topics.find((t) => t.id === id)!;
+        if (change.name) topic.name = change.name;
+        const removedFromInterests = change.allPubmed != null ? (library.outOfScope.get(id) ?? 0) : 0;
+        topic.articleCount = (topic.articleCount ?? 0) - removedFromInterests;
+        return { topic: { ...topic, journals: [] }, removed: { deletedArticles: 0, removedFromInterests } };
+      }),
+    // Every paper in its feed is taken as its own, and deleted with it.
+    deleteTopic: (id: number) =>
+      answer("deleteTopic", () => {
+        const topic = library.topics.find((t) => t.id === id)!;
+        library.topics = library.topics.filter((t) => t !== topic);
+        return { deletedArticles: topic.articleCount ?? 0 };
+      }),
+    resetLibrary: () =>
+      answer("resetLibrary", () => {
+        const stats = {
+          topics: library.topics.length,
+          journals: 0,
+          papers: 0,
+          folders: library.folders.length,
+          collections: library.collections.length,
+          files: library.files.length,
+        };
+        Object.assign(library, { topics: [], folders: [], bookmarks: [], collections: [], files: [] });
+        return stats;
+      }),
     // A check for new papers, under one topic or every one: each takes what
     // PubMed has for it into its feed.
     refresh: (topicId?: number) =>
@@ -258,6 +315,36 @@ export function createTestApi() {
         return { removed: going.length, papers: new Set(going.map((f) => f.pmid)).size };
       }),
 
+    // The heading search finds one heading, named as typed; it matches no
+    // papers, and the library suggests none.
+    searchMesh: (q: string) =>
+      answer("searchMesh", () => {
+        headingNames.set(`M-${q}`, q);
+        return { results: [{ ui: `M-${q}`, name: q, synonym: null }] };
+      }),
+    previewTopic: () => answer("previewTopic", () => ({ term: "", count: 0 })),
+    suggestTopics: () => answer("suggestTopics", () => ({ results: [], heldPapers: 0, unchecked: 0 })),
+    topicArticleCount: (id: number) =>
+      answer("topicArticleCount", () => ({
+        count: library.topics.find((t) => t.id === id)?.articleCount ?? 0,
+      })),
+    getSettings: () =>
+      answer("getSettings", () => ({
+        ncbi_email: "",
+        poll_cron: "",
+        poll_enabled: false,
+        library_open: false,
+        has_api_key: false,
+        alert_email_enabled: false,
+        alert_email_to: "",
+        smtp_host: "",
+        smtp_port: "",
+        smtp_user: "",
+        smtp_from: "",
+        has_smtp_pass: false,
+        share_urls: [],
+        desktop: false,
+      })),
     // The owner of a free, tokenless install.
     getAuth: () => answer("getAuth", () => ({ admin: true, token_required: false, library_open: false })),
     getWorkspaces: () => answer("getWorkspaces", () => ({ workspaces: [] })),
@@ -283,21 +370,7 @@ export function createTestApi() {
   return {
     api,
     library,
-    addTopic(name: string): Topic {
-      const topic: Topic = {
-        id: nextId++,
-        name,
-        term: name,
-        headings: [],
-        all_pubmed: true,
-        journalCount: 0,
-        last_polled_at: null,
-        created_at: created,
-        articleCount: 0,
-      };
-      library.topics.push(topic);
-      return topic;
-    },
+    addTopic: (name: string) => addTopic(name),
     addFolder,
     bookmark(folderId: number, ...pmids: string[]) {
       for (const pmid of pmids) library.bookmarks.push({ folder_id: folderId, pmid });

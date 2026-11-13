@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { api } from "../api";
 import { errorMessage, plural } from "../lib/format";
 import { useHeldWhile } from "../lib/hooks";
+import { useSources, useTopics } from "../lib/sources";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
 import { InfoTip } from "./InfoTip";
@@ -101,20 +102,20 @@ const sameJournals = (a: ListedJournal[], b: ListedJournal[]) =>
 export function TopicDialog({
   open,
   topic: current,
-  topics,
   onClose,
   onSaved,
 }: {
   open: boolean;
   // The topic being edited, or null to create one.
   topic: Topic | null;
-  // Every topic, for the lists that can be copied from.
-  topics: Topic[];
   onClose: () => void;
   // The topic as the server stored it, and what saving it did. Called before
-  // the dialog closes.
+  // the dialog closes, once the topics have been read again with it.
   onSaved: (topic: TopicDetail, outcome: TopicSaveOutcome) => void;
 }) {
+  const sources = useSources();
+  // Every topic, for the lists that can be copied from.
+  const topics = useTopics();
   // The topic this opening is about, kept through the close. The shell clears
   // its topic in the same update that closes the dialog, and the dialog stays
   // on screen after that for as long as its exit animation runs — as a dialog
@@ -173,9 +174,9 @@ export function TopicDialog({
     setSaving(false);
     setError(null);
     setLoadError(null);
-    // Keyed on which topic, not on the object: the shell reloads its topics
-    // when a check for new papers lands, which hands this a new object for the
-    // same topic and would otherwise wipe a name half typed.
+    // Keyed on which topic, not on the object: the topics are read again when a
+    // check for new papers lands, which hands this a new object for the same
+    // topic and would otherwise wipe a name half typed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, topic?.id]);
 
@@ -297,13 +298,13 @@ export function TopicDialog({
       let removed = 0;
       if (topic) {
         const change = renamed ? { name: typedName } : {};
-        const res = await api.updateTopic(topic.id, rescoped ? { ...change, ...scope } : change);
+        const res = await sources.updateTopic(topic.id, rescoped ? { ...change, ...scope } : change);
         saved = res.topic;
         removed = res.removed.removedFromInterests;
       } else {
         // A name nobody typed is left for the server to give, so the two can't
         // drift; a blanked box asks for the same thing.
-        saved = await api.createTopic(
+        saved = await sources.createTopic(
           headings.map((h) => h.ui),
           scope,
           nameTouched && typedName !== "" ? typedName : undefined

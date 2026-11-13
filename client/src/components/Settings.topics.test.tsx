@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { errorMessage } from "../lib/format";
+import { createSources, SourcesContext, useSources, type Sources, type SourcesApi } from "../lib/sources";
 import { Settings } from "./Settings";
 import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings, Topic } from "../types";
@@ -66,40 +66,38 @@ const NO_CACHE: ViewerCache = {
   cancel: () => {},
 };
 
+let sources: Sources;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  sources = createSources(api as unknown as SourcesApi);
   api.getSettings.mockResolvedValue(SAVED);
   api.topicArticleCount.mockResolvedValue({ count: 0 });
   api.deleteTopic.mockResolvedValue({ deletedArticles: 0 });
 });
 
-// Stands in for the shell, reading the topics as App's loadTopics does: a read
-// that fails leaves the list alone and says why.
+// The panel over the sources store, which reads the topics on mount as App's
+// first load does: a read that fails leaves the list alone and says why.
 function Shell() {
-  const [topics, setTopics] = useState<Topic[]>([]);
-  const [topicsError, setTopicsError] = useState<string | null>(null);
-  const load = () =>
-    void api.getTopics().then(
-      (ts: Topic[]) => {
-        setTopicsError(null);
-        setTopics(ts);
-      },
-      (e: unknown) => setTopicsError(errorMessage(e))
-    );
-  useEffect(load, []);
+  return (
+    <SourcesContext.Provider value={sources}>
+      <Panel />
+    </SourcesContext.Provider>
+  );
+}
+
+function Panel() {
+  const store = useSources();
+  useEffect(() => void store.loadTopics(), [store]);
   return (
     <Settings
       pro={null}
       viewerCache={NO_CACHE}
-      topics={topics}
-      topicsError={topicsError}
       onAddTopic={() => {}}
       onEditTopic={() => {}}
-      onDataChanged={load}
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}
       onPapersRemoved={() => {}}
-      onLibraryReset={() => {}}
     />
   );
 }
