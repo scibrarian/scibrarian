@@ -22,10 +22,20 @@ export function createTestApi() {
   let nextId = 1;
   // The methods answering with an error, and what it says.
   const failing = new Map<Method, string>();
+  // The next call to each of these methods, held back until it is released.
+  const held = new Map<Method, Promise<void>>();
 
+  // What the server says at the moment it is asked, sent once any hold on the
+  // call is released — so a held call answers with the library as it was.
   function answer<T>(method: Method, reply: () => T): Promise<T> {
     const message = failing.get(method);
-    return message != null ? Promise.reject(new Error(message)) : Promise.resolve(reply());
+    const value = message == null ? reply() : undefined;
+    const gate = held.get(method) ?? Promise.resolve();
+    held.delete(method);
+    return gate.then(() => {
+      if (message != null) throw new Error(message);
+      return value as T;
+    });
   }
 
   const api = {
@@ -83,6 +93,14 @@ export function createTestApi() {
     },
     recover(method: Method) {
       failing.delete(method);
+    },
+    // Hold back the next call to this method, answering it only when the
+    // function this returns is called: how a test lands two overlapping
+    // requests in the order it wants.
+    hold(method: Method): () => void {
+      let release!: () => void;
+      held.set(method, new Promise<void>((resolve) => (release = resolve)));
+      return release;
     },
   };
 }

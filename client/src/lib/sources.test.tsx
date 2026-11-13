@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { createSources, SourcesContext, useReloadToken, useSaved } from "./sources";
@@ -67,6 +67,80 @@ describe("reading the lists", () => {
     server.fail("getBookmarks");
     await sources.loadBookmarks();
     expect(sources.saved()).toBe(before);
+  });
+});
+
+// Reads overlap — a lookup round's refresh and a toggle's, two refreshes a
+// quick pair of clicks started — and the server answers them in whatever order
+// it likes. The last answer to land is not the latest, and a list that took it
+// went back to how it was before the newer read.
+describe("overlapping reads", () => {
+  it("keep the folders the later read found, whichever answer lands last", async () => {
+    const { server, sources } = setUp();
+    server.addFolder("Reading");
+    const release = server.hold("getBookmarkFolders");
+    const earlier = sources.loadFolders();
+    server.addFolder("Later");
+    await sources.loadFolders();
+    release();
+    await earlier;
+    expect(sources.folders().map((f) => f.name)).toEqual(["Reading", "Later"]);
+  });
+
+  it("keep the collections the later read found", async () => {
+    const { server, sources } = setUp();
+    const release = server.hold("getCollections");
+    const earlier = sources.loadCollections();
+    server.addCollection("Thesis");
+    await sources.loadCollections();
+    release();
+    await earlier;
+    expect(sources.collections()).toHaveLength(1);
+  });
+
+  it("keep the topics the later read found, and its word on whether they could be read", async () => {
+    const { server, sources } = setUp();
+    server.fail("getTopics");
+    const release = server.hold("getTopics");
+    const earlier = sources.loadTopics();
+    server.recover("getTopics");
+    server.addTopic("Asthma");
+    await sources.loadTopics();
+    release();
+    await earlier;
+    expect(sources.topics()).toHaveLength(1);
+    expect(sources.topicsError()).toBeNull();
+  });
+
+  it("keep the saved map the later read found", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    const release = server.hold("getBookmarks");
+    const earlier = sources.loadBookmarks();
+    server.bookmark(reading, "1");
+    await sources.loadBookmarks();
+    release();
+    await earlier;
+    expect(sources.saved().get("1")).toEqual(new Set([reading]));
+  });
+
+  // The toggle is applied to the map in place of a read, and a read already
+  // out may have been answered before the toggle reached the server: landing
+  // after it, it would put the paper back as it was. Nor can it simply be
+  // dropped, since it may carry other changes — a lookup round's bookmarks — so
+  // it is read again.
+  it("don't undo a toggle made while one was out", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    const release = server.hold("getBookmarks");
+    const earlier = sources.loadBookmarks();
+    server.bookmark(reading, "1"); // a lookup round, saving a paper
+    server.bookmark(reading, "2"); // the toggle, at the server
+    sources.applySaved("2", (folders) => folders.add(reading));
+    release();
+    await earlier;
+    await vi.waitFor(() => expect(sources.saved().get("1")).toEqual(new Set([reading])));
+    expect(sources.saved().get("2")).toEqual(new Set([reading]));
   });
 });
 

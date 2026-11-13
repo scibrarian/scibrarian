@@ -47,6 +47,10 @@ export type Sources = {
   // The topics, read again. Answers with them, or with null when they couldn't
   // be read: the list is then left as it was, and a caller that goes on to
   // count what it got back has nothing to count.
+  //
+  // Of reads that overlap, only the latest to start is taken as the list,
+  // whatever order they are answered in; an earlier one still answers its own
+  // caller. The same for each read below.
   loadTopics: () => Promise<Topic[] | null>;
   // The rest, read again. A failed read leaves the list as it was, and answers
   // with an empty one.
@@ -55,6 +59,9 @@ export type Sources = {
   loadCollections: () => Promise<Collection[]>;
 
   // A bookmark toggle, applied to the saved map in place of reading it again.
+  // A read of the map still out when it is applied is read again: it may have
+  // been answered before the toggle reached the server, and landing after it
+  // would put the paper back as it was.
   applySaved: (pmid: string, update: (folders: Set<number>) => void) => void;
   // Data under a papers view changed (poll, import, match, file delete, a paper
   // saved): invalidate that source's caches so the next look at it refetches.
@@ -76,42 +83,60 @@ export function createSources(port: SourcesApi): Sources {
   let saved: Map<string, Set<number>> = new Map();
   let reloads: ReloadTokens = NO_RELOADS;
   const listeners = new Set<() => void>();
+  // How many reads of each list have started. An answer is taken as the list
+  // only if no read of it started after its own, the way App's ticket for the
+  // stamps works: the last answer to land is not the latest, and taking it
+  // put a list back to how it was before a newer read.
+  const started = { topics: 0, folders: 0, bookmarks: 0, collections: 0 };
+  // Reads of the saved map not yet answered, for applySaved.
+  let bookmarksOut = 0;
 
   function changed() {
     for (const listener of listeners) listener();
   }
 
   function loadTopics(): Promise<Topic[] | null> {
+    const read = ++started.topics;
     return port
       .getTopics()
       .then((ds) => {
-        topicsError = null;
-        topics = ds;
-        changed();
+        if (read === started.topics) {
+          topicsError = null;
+          topics = ds;
+          changed();
+        }
         return ds;
       })
       .catch((e) => {
-        topicsError = errorMessage(e);
-        changed();
+        if (read === started.topics) {
+          topicsError = errorMessage(e);
+          changed();
+        }
         return null;
       });
   }
 
   function loadFolders(): Promise<BookmarkFolder[]> {
+    const read = ++started.folders;
     return port
       .getBookmarkFolders()
       .then((fs) => {
-        folders = fs;
-        changed();
+        if (read === started.folders) {
+          folders = fs;
+          changed();
+        }
         return fs;
       })
       .catch(() => []);
   }
 
   function loadBookmarks(): Promise<void> {
+    const read = ++started.bookmarks;
+    bookmarksOut++;
     return port
       .getBookmarks()
       .then((rows) => {
+        if (read !== started.bookmarks) return;
         const map = new Map<string, Set<number>>();
         for (const r of rows) {
           const folders = map.get(r.pmid);
@@ -121,15 +146,19 @@ export function createSources(port: SourcesApi): Sources {
         saved = map;
         changed();
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => bookmarksOut--);
   }
 
   function loadCollections(): Promise<Collection[]> {
+    const read = ++started.collections;
     return port
       .getCollections()
       .then((cs) => {
-        collections = cs;
-        changed();
+        if (read === started.collections) {
+          collections = cs;
+          changed();
+        }
         return cs;
       })
       .catch(() => []);
@@ -144,6 +173,9 @@ export function createSources(port: SourcesApi): Sources {
     else next.delete(pmid);
     saved = next;
     changed();
+    // Started after the toggle reached the server, so it can't undo it, and
+    // the read it supersedes may carry changes of its own.
+    if (bookmarksOut > 0) void loadBookmarks();
   }
 
   return {
