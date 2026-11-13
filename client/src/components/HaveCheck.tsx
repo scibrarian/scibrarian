@@ -34,19 +34,15 @@ export function HaveCheck({
   open,
   onClose,
   access,
-  onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   access: PaperAccess;
-  /**
-   * This modal wrote to the library — a copy was filed, or a collection was
-   * created to hold one. Reported upward because neither is visible from here:
-   * the sidebar, the source picker and the collection views are the shell's,
-   * and nothing else tells it a check modal just added to them.
-   */
-  onChanged: () => void;
 }) {
+  // What this modal writes to the library — a copy filed, a collection made to
+  // hold one — goes through the store, which tells the sidebar, the source
+  // picker and the collection views, none of them visible from here.
+  const sources = useSources();
   const [text, setText] = useState("");
   const [response, setResponse] = useState<HaveResponse | null>(null);
   const [checking, setChecking] = useState(false);
@@ -145,7 +141,10 @@ export function HaveCheck({
     setPulling(index);
     setError(null);
     try {
-      const result = await api.proPull(pmid, collectionIds);
+      // The collections it went into are stale from here, on screen or not —
+      // the store sees to that before answering. The re-check below only
+      // refreshes this row.
+      const result = await sources.pullToCollections(pmid, collectionIds);
       setChoosing(null);
       // The one thing the re-check below cannot re-derive.
       //
@@ -156,10 +155,6 @@ export function HaveCheck({
       // again does the same thing forever. Only the pull itself knows why, so
       // its answer is the one place that can say so.
       if (result.warning) setError(result.warning);
-      // Before the re-check, not after: the copy is already filed, and the
-      // collection the reader is looking at behind this modal is stale from
-      // this moment. The re-check below only refreshes this row.
-      onChanged();
       const fresh = await api.checkHave([line]);
       const updated = fresh.results[0];
       if (updated) {

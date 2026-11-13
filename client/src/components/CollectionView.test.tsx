@@ -538,7 +538,8 @@ describe("the unmatched files dialog", () => {
     api.getCollectionFiles.mockResolvedValue({
       files: [row(1, id, "matched"), row(2, id, "matched"), row(3, id, "unmatched")],
     });
-    await act(() => sources.collectionsChanged([id]));
+    api.startImport.mockResolvedValue(job({ total: 1, processed: 1, matched: 0, unmatched: 1 }));
+    await act(() => sources.scanCollection(id));
     await settle();
     expect(unmatchedLink()).not.toBeNull();
     expect(unmatchedDialog()).toBeNull();

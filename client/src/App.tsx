@@ -474,15 +474,6 @@ export default function App() {
     }
   }
 
-  // A copy pulled from the organization by the check-holdings dialog, into
-  // the collection on screen or not. Every collection at once goes stale with
-  // it, which the store sees to.
-  async function handleCollectionChanged() {
-    await sources.collectionsChanged(
-      typeof activeCollectionId === "number" ? [activeCollectionId] : []
-    );
-  }
-
   // Try a pasted admin token: store it, then let the server judge it.
   async function unlock(token: string) {
     setUnlocking(false);
@@ -1131,12 +1122,6 @@ export default function App() {
         open={checkingHave}
         onClose={() => setCheckingHave(false)}
         access={access}
-        // The check is the one modal that writes to the library from outside
-        // the Library view: a copy pulled from the organization lands in a
-        // collection. Without this the shell never hears about it — a paper
-        // copied into the collection already on screen didn't appear in it.
-        // The collection its destination picker can make is the store's.
-        onChanged={handleCollectionChanged}
       />
 
       <TopicDialog

@@ -308,6 +308,15 @@ export function createTestApi() {
       answer("deleteCollectionFile", () => {
         library.files = library.files.filter((f) => f.id !== fileId);
       }),
+    // A copy from the organization's library, filed matched in each
+    // collection asked for.
+    proPull: (pmid: string, collectionIds: number[]) =>
+      answer("proPull", () => {
+        for (const id of collectionIds) {
+          Object.assign(addFile(id, `${pmid}.pdf`), { pmid, match_status: "matched", match_method: "pmid" });
+        }
+        return { pmid, collection_ids: collectionIds, file_name: `${pmid}.pdf` };
+      }),
     removeCollectionPapers: (id: number, pmids: string[]) =>
       answer("removeCollectionPapers", () => {
         const going = library.files.filter((f) => f.collection_id === id && f.pmid && pmids.includes(f.pmid));

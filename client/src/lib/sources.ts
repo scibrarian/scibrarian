@@ -11,6 +11,7 @@ import type {
   LinkedPaper,
   PaperSource,
   PollResult,
+  ProPullResult,
   Topic,
   TopicDetail,
   TopicRemovalResult,
@@ -62,6 +63,7 @@ export type SourcesApi = Pick<
   | "setFilePmid"
   | "deleteCollectionFile"
   | "removeCollectionPapers"
+  | "proPull"
   | "getImportStatus"
   | "createBookmarkFolder"
   | "renameBookmarkFolder"
@@ -169,15 +171,11 @@ export type Sources = {
     name: string,
     options: { share: boolean }
   ) => Promise<{ collection: Collection; shareError: string | null }>;
-  // These collections' papers or files changed. Their caches go, and every
-  // collection's at once, which aggregates them all; and the list is read
-  // again for its counts. For what changes a collection without passing
-  // through one of the operations below.
-  collectionsChanged: (collectionIds: number[]) => Promise<void>;
 
   // The rest of what changes a collection. As for a folder, each answers once
   // the server has, and reads again behind it what it made stale: the
-  // collection's caches, every collection's at once, and the list's counts.
+  // collection's caches, every collection's at once, which aggregates them
+  // all, and the list's counts.
   renameCollection: (collectionId: number, name: string) => Promise<void>;
   // Taken off the list at once, so App's selection moves off it without
   // waiting for the read.
@@ -200,6 +198,11 @@ export type Sources = {
   // A file given the PMID the reader found for it, or taken out.
   matchFile: (file: CollectionFile, pmid: string) => Promise<void>;
   deleteFile: (file: CollectionFile) => Promise<void>;
+  // A copy from the organization's library, filed by the check-holdings
+  // dialog into the collections the writer chose. Every one of them is stale,
+  // on screen or not: one visited earlier in the session went on painting its
+  // cached list without the paper, under a count that already had it.
+  pullToCollections: (pmid: string, collectionIds: number[]) => Promise<ProPullResult>;
   // The collection table's "Remove selected": one request for the ticked set.
   removeFromCollection: (
     collectionId: number,
@@ -532,6 +535,12 @@ export function createSources(port: SourcesApi): Sources {
     void collectionsChanged([file.collection_id]);
   }
 
+  async function pullToCollections(pmid: string, collectionIds: number[]) {
+    const result = await port.proPull(pmid, collectionIds);
+    void collectionsChanged(collectionIds);
+    return result;
+  }
+
   async function removeFromCollection(collectionId: number, pmids: string[]) {
     const result = await port.removeCollectionPapers(collectionId, pmids);
     void collectionsChanged([collectionId]);
@@ -679,13 +688,13 @@ export function createSources(port: SourcesApi): Sources {
       lookups.stop();
     },
     createCollection,
-    collectionsChanged,
     renameCollection,
     deleteCollection,
     addFiles,
     scanCollection,
     matchFile,
     deleteFile,
+    pullToCollections,
     removeFromCollection,
     createFolder,
     addBookmark,

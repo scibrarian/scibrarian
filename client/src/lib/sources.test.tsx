@@ -347,21 +347,26 @@ describe("collections", () => {
     expect(sources.collections()).toEqual([expect.objectContaining({ id: collection.id })]);
   });
 
-  // Every collection at once aggregates them all, so a change to any one of
-  // them makes it stale too. Bumped before the list is read again, which the
-  // papers fetch doesn't wait on.
-  it("makes a changed collection stale, and every collection at once, before reading the list", async () => {
+  // The check-holdings dialog's copy from the organization. It used to make
+  // stale only the collection on screen, and one visited earlier in the
+  // session went on painting its cached list without the paper. Every
+  // collection at once aggregates them all, so it goes stale too. Bumped
+  // before the list is read again, which the papers fetch doesn't wait on.
+  it("makes every collection a copy went into stale, on screen or not, before reading the list", async () => {
     const { server, sources } = setUp();
     const thesis = server.addCollection("Thesis");
     const notes = server.addCollection("Notes");
+    const grants = server.addCollection("Grants");
     const release = server.hold("getCollections");
-    const reading = sources.collectionsChanged([thesis]);
+    await sources.pullToCollections("7", [thesis, notes]);
     expect(sources.tokenFor({ collection: thesis })).toBe(1);
+    expect(sources.tokenFor({ collection: notes })).toBe(1);
     expect(sources.tokenFor({ allCollections: true })).toBe(1);
-    expect(sources.tokenFor({ collection: notes })).toBe(0);
+    expect(sources.tokenFor({ collection: grants })).toBe(0);
     release();
-    await reading;
-    expect(sources.collections()).toHaveLength(2);
+    await vi.waitFor(() =>
+      expect(sources.collections().map((c) => c.heldCount)).toEqual([1, 1, 0])
+    );
   });
 
   it("takes a deleted collection off the list at once, and makes every source stale", async () => {
