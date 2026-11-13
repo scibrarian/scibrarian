@@ -285,11 +285,105 @@ describe("collections", () => {
     const notes = server.addCollection("Notes");
     await sources.loadCollections();
     const release = server.hold("getCollections");
-    const reading = sources.collectionDeleted(thesis);
+    await sources.deleteCollection(thesis);
     expect(sources.collections().map((c) => c.id)).toEqual([notes]);
     expect(sources.tokenFor({ folder: 9 })).toBe(1);
     release();
-    await reading;
+  });
+
+  it("renames a collection, reading the list again", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    await sources.renameCollection(thesis, "Dissertation");
+    await vi.waitFor(() => expect(sources.collections()[0].name).toBe("Dissertation"));
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
+  });
+
+  // The unmatched-files dialog: a file matched by hand, or taken out.
+  it("makes a collection stale when one of its files is matched or deleted", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    const file = server.addFile(thesis, "a.pdf");
+    await sources.matchFile(file, "7");
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
+    await vi.waitFor(() => expect(sources.collections()[0].heldCount).toBe(1));
+    await sources.deleteFile(file);
+    expect(sources.tokenFor({ collection: thesis })).toBe(2);
+    expect(sources.tokenFor({ allCollections: true })).toBe(2);
+    await vi.waitFor(() => expect(sources.collections()[0].fileCount).toBe(0));
+  });
+
+  // The collection's table, ticked.
+  it("takes papers out of a collection, and makes it stale at once", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    await sources.matchFile(server.addFile(thesis, "a.pdf"), "7");
+    await sources.matchFile(server.addFile(thesis, "b.pdf"), "7");
+    expect(await sources.removeFromCollection(thesis, ["7"])).toEqual({ removed: 2, papers: 1 });
+    expect(sources.tokenFor({ collection: thesis })).toBe(3);
+    await vi.waitFor(() => expect(sources.collections()[0].heldCount).toBe(0));
+  });
+});
+
+describe("adding files to a collection", () => {
+  const pdf = (name: string) => new File(["%PDF-1.4"], name, { type: "application/pdf" });
+  const pdfs = (n: number) => Array.from({ length: n }, (_, i) => pdf(`${i}.pdf`));
+
+  // Twenty to a request, so a large selection isn't one gigantic body.
+  it("sends them in batches, saying how many have gone up, then asks for the scan", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    const sent: number[] = [];
+    let uploadedBeforeScan = false;
+    const upload = await sources.addFiles(thesis, pdfs(45), {
+      batch: (n) => sent.push(n),
+      uploaded: () => {
+        uploadedBeforeScan = sources.scans.get(thesis) === undefined;
+      },
+    });
+    expect(sent).toEqual([20, 40, 45]);
+    expect(upload).toEqual({ added: 45, skipped: 0, failedFiles: 0, failure: null });
+    expect(uploadedBeforeScan).toBe(true);
+    expect(sources.scans.get(thesis)).toEqual({ state: "idle" });
+  });
+
+  it("refreshes the collection once, after the scan is asked for", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    await sources.addFiles(thesis, pdfs(45), { batch: () => {}, uploaded: () => {} });
+    // And once for the scan's end, which its start answered with here.
+    expect(sources.tokenFor({ collection: thesis })).toBe(2);
+    await vi.waitFor(() => expect(sources.collections()[0].fileCount).toBe(45));
+  });
+
+  // Whatever made one request fail usually has nothing to do with the next.
+  it("goes on past a batch that fails, and still asks for the scan", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    let calls = 0;
+    const upload = server.api.uploadFiles;
+    server.api.uploadFiles = (id, files) => (++calls === 2 ? Promise.reject(new Error("Blip.")) : upload(id, files));
+    const result = await sources.addFiles(thesis, pdfs(45), { batch: () => {}, uploaded: () => {} });
+    expect(result).toMatchObject({ added: 25, failedFiles: 20 });
+    expect((result.failure as Error).message).toBe("Blip.");
+    expect(sources.scans.get(thesis)).toEqual({ state: "idle" });
+  });
+
+  it("answers with the scan's failure to start when the upload went through", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    server.fail("startImport", "An import is already running for this collection.");
+    const result = await sources.addFiles(thesis, pdfs(1), { batch: () => {}, uploaded: () => {} });
+    expect(result).toMatchObject({ added: 1, failedFiles: 0 });
+    expect((result.failure as Error).message).toBe("An import is already running for this collection.");
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
+  });
+
+  it("scans the files an earlier scan didn't reach", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    await sources.scanCollection(thesis);
+    expect(sources.scans.get(thesis)).toEqual({ state: "idle" });
   });
 });
 

@@ -19,7 +19,8 @@ import {
 } from "../lib/dropped-files";
 import { errorMessage, plural } from "../lib/format";
 import { useCachedFetch, useDebounced, useHeldWhile, type FetchCache } from "../lib/hooks";
-import { useFollowedJob, type ImportJobs } from "../lib/import-jobs";
+import { useFollowedJob } from "../lib/import-jobs";
+import { useReloadToken, useSources } from "../lib/sources";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell, PromptDialog, STORED_COPIES_NOTE } from "./Dialogs";
 import type {
@@ -28,12 +29,7 @@ import type {
   ImportStatus,
   ProCollectionStamp,
 } from "../types";
-import { MAX_NAME_CHARS, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../../../shared/limits";
-
-// Files per upload request, so a large selection doesn't become one gigantic
-// multipart body. Clamped to the server's per-request cap so raising this for
-// speed can't silently start failing every upload.
-const UPLOAD_BATCH = Math.min(20, MAX_UPLOAD_FILES);
+import { MAX_NAME_CHARS, MAX_UPLOAD_BYTES } from "../../../shared/limits";
 
 const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
 
@@ -104,9 +100,9 @@ function isUnresolved(f: CollectionFile): boolean {
 
 // Cache the last file listing per collection, same pattern as papersCache:
 // re-entering Library paints from cache instead of refetching. Every mutation
-// (upload, import, match, delete) reports through onChanged, which bumps this
-// collection's reload token and thereby invalidates this cache along with the
-// modules'.
+// (upload, import, match, delete) goes through the sources store, which bumps
+// this collection's reload token and thereby invalidates this cache along
+// with the modules'.
 const filesCache: FetchCache<CollectionFilesResponse> = new Map();
 
 // The collection management shell: upload/import/rename/delete chrome and the
@@ -119,10 +115,6 @@ export function CollectionView({
   isAdmin,
   summary,
   stamp,
-  reloadToken,
-  importJobs,
-  onChanged,
-  onDeleted,
   children,
 }: {
   // Null when the Library is showing every collection at once. There is no
@@ -154,13 +146,14 @@ export function CollectionView({
    * go on compiling against a field that had been renamed out from under it.
    */
   stamp: ProCollectionStamp | null;
-  reloadToken: number;
-  // App's, so a scan goes on being followed after this view has gone.
-  importJobs: ImportJobs;
-  onChanged: () => void;
-  onDeleted: () => void;
   children: ReactNode;
 }) {
+  const sources = useSources();
+  // The store's, so a scan goes on being followed after this view has gone.
+  const importJobs = sources.scans;
+  const reloadToken = useReloadToken(
+    collectionId == null ? { allCollections: true } : { collection: collectionId }
+  );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -195,7 +188,7 @@ export function CollectionView({
   const [unmatchedError, setUnmatchedError] = useState<string | null>(null);
 
   // The file listing is fully derived: mutations never set it directly, they
-  // call onChanged() and the token bump refetches it here.
+  // go through the store, and its token bump refetches it here.
   const { data: filesData, error: filesError } = useCachedFetch(
     filesCache,
     `files:${collectionId ?? "all"}`,
@@ -241,7 +234,7 @@ export function CollectionView({
   }, []);
 
   // The scan over this collection, resumed on entry if one is running. When
-  // one ends, App refreshes the collection (see lib/import-jobs), so what is
+  // one ends, the store refreshes the collection (see scans), so what is
   // left here is reportSettled's part: the selection's notes or the scan's
   // error, and holding the pre-scan rows back until the fresh list lands.
   //
@@ -317,52 +310,25 @@ export function CollectionView({
       setError(`Nothing left to upload.${skipNote}${ignoredNote}`);
       return;
     }
-    let added = 0;
-    let skipped = 0;
-    let failedFiles = 0;
-    let failure: unknown = null;
+    // The upload, and then the scan the store asks for over it (see addFiles
+    // in lib/sources).
+    //
+    // `uploading` is deliberately still set until the scan has been asked
+    // for: releasing it when the last batch landed left the bar with nothing
+    // to draw for the two round trips that queue the job, so it vanished and
+    // came back as "Scanning" a moment later. Clearing it as the job status is
+    // set makes the handover one render.
     setUploading({ done: 0, total: uploadable.length });
-    for (let i = 0; i < uploadable.length; i += UPLOAD_BATCH) {
-      const batch = uploadable.slice(i, i + UPLOAD_BATCH);
-      try {
-        const res = await api.uploadFiles(collectionId, batch);
-        added += res.added;
-        skipped += res.skipped;
-      } catch (e) {
-        // One rejected batch is not a reason to abandon the other nineteen
-        // files the user picked. Keep going and report the shortfall at the
-        // end — whatever made this request fail (a file the browser can no
-        // longer read, a blip) usually has nothing to do with the next batch.
-        failedFiles += batch.length;
-        failure ??= e;
-      }
-      setUploading({ done: Math.min(i + batch.length, uploadable.length), total: uploadable.length });
-    }
-
-    // Start the scan even when a batch failed. Files that uploaded before the
-    // failure are sitting in 'pending' with no job queued, and nothing else in
-    // the UI can queue one — so without this they're stranded until the user
-    // happens to upload again. The job walks every pending row, so this also
-    // sweeps up whatever an earlier partial upload left behind.
-    //
-    // `uploading` is deliberately still set through both of these requests and
-    // cleared in the finally: releasing it when the last batch landed left the
-    // bar with nothing to draw for the two round trips that queue the job, so
-    // it vanished and came back as "Scanning" a moment later. Clearing it in
-    // the same tick that sets the job status makes the handover one render.
-    //
-    // When the upload has news of its own to give — nothing added, or a batch
-    // that failed — the selection's notes go with that, below, and the scan
-    // has none left to report when it settles.
-    if (failure || added === 0) selectionNotesRef.current = "";
-    try {
-      importJobs.start(collectionId, await api.startImport(collectionId));
-    } catch (e) {
-      failure ??= e; // the upload error, if there was one, is the more useful
-    } finally {
-      setUploading(null);
-    }
-    onChanged();
+    const { added, skipped, failedFiles, failure } = await sources.addFiles(collectionId, uploadable, {
+      batch: (sent) => setUploading({ done: sent, total: uploadable.length }),
+      // When the upload has news of its own to give — nothing added, or a
+      // batch that failed — the selection's notes go with that, below, and the
+      // scan has none left to report when it settles.
+      uploaded: (upload) => {
+        if (upload.failure || upload.added === 0) selectionNotesRef.current = "";
+      },
+    });
+    setUploading(null);
 
     if (failure) {
       // Two different shortfalls reach here: files that never uploaded, and a
@@ -487,8 +453,7 @@ export function CollectionView({
     setRenaming(false);
     if (collectionId == null) return;
     try {
-      await api.renameCollection(collectionId, next);
-      onChanged();
+      await sources.renameCollection(collectionId, next);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -498,8 +463,7 @@ export function CollectionView({
     setConfirmingDelete(false);
     if (collectionId == null) return;
     try {
-      await api.deleteCollection(collectionId);
-      onDeleted();
+      await sources.deleteCollection(collectionId);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -515,7 +479,7 @@ export function CollectionView({
     // An earlier upload's notes belong to that upload, not to this scan.
     selectionNotesRef.current = "";
     try {
-      importJobs.start(collectionId, await api.startImport(collectionId));
+      await sources.scanCollection(collectionId);
     } catch (e) {
       setUnmatchedError(errorMessage(e));
     }
@@ -776,7 +740,6 @@ export function CollectionView({
           error={unmatchedError}
           onClose={() => setShowingUnmatched(false)}
           onScan={scanUnscanned}
-          onChanged={onChanged}
           onError={setUnmatchedError}
         />
       )}
@@ -817,7 +780,6 @@ function UnresolvedFiles({
   error,
   onClose,
   onScan,
-  onChanged,
   onError,
 }: {
   open: boolean;
@@ -827,7 +789,6 @@ function UnresolvedFiles({
   error: string | null;
   onClose: () => void;
   onScan: () => Promise<void>;
-  onChanged: () => void;
   onError: (msg: string | null) => void;
 }) {
   const [scanning, setScanning] = useState(false);
@@ -856,7 +817,7 @@ function UnresolvedFiles({
   const rows = (list: CollectionFile[]) => (
     <ul className="unmatched-list">
       {list.map((f) => (
-        <UnmatchedRow key={f.id} file={f} onChanged={onChanged} onError={onError} />
+        <UnmatchedRow key={f.id} file={f} onError={onError} />
       ))}
     </ul>
   );
@@ -900,13 +861,12 @@ function UnresolvedFiles({
 
 function UnmatchedRow({
   file,
-  onChanged,
   onError,
 }: {
   file: CollectionFile;
-  onChanged: () => void;
   onError: (msg: string) => void;
 }) {
+  const sources = useSources();
   const [pmid, setPmid] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -915,8 +875,7 @@ function UnmatchedRow({
     if (!value) return;
     setBusy(true);
     try {
-      await api.setFilePmid(file.id, value);
-      onChanged();
+      await sources.matchFile(file, value);
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -927,8 +886,7 @@ function UnmatchedRow({
   async function remove() {
     setBusy(true);
     try {
-      await api.deleteCollectionFile(file.id);
-      onChanged();
+      await sources.deleteFile(file);
     } catch (e) {
       onError(errorMessage(e));
     } finally {

@@ -6,7 +6,6 @@ import {
   createSources,
   SourcesContext,
   useReloadToken,
-  useSources,
   type Sources,
   type SourcesApi,
 } from "../lib/sources";
@@ -77,8 +76,7 @@ function deferred<T>() {
 let sources: Sources;
 
 // A shell over the store, the way App is: the table takes its token from it,
-// asks for a reload through onCollectionChanged — a bookmark folder's removal
-// goes through the store itself — and the token moves by exactly one.
+// removes through it, and the token moves by exactly one.
 function Host(props: { source: PaperSource; knownEmpty?: boolean }) {
   return (
     <SourcesContext.Provider value={sources}>
@@ -88,7 +86,6 @@ function Host(props: { source: PaperSource; knownEmpty?: boolean }) {
 }
 
 function Table({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolean }) {
-  const store = useSources();
   const token = useReloadToken(source);
   const filters = usePaperFilters(source);
   return (
@@ -100,7 +97,6 @@ function Table({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boole
       tokenRequired={false}
       libraryOpen
       onAuthRefreshed={() => {}}
-      onCollectionChanged={() => store.reloadSource(source)}
       filters={filters}
       bookmarkable={false}
     />
@@ -119,6 +115,7 @@ beforeEach(() => {
   api.getMeshHeadings.mockResolvedValue(NO_MESH);
   api.getBookmarks.mockResolvedValue([]);
   api.getBookmarkFolders.mockResolvedValue([]);
+  api.getCollections.mockResolvedValue([]);
   sources = createSources(api as unknown as SourcesApi);
 });
 afterEach(() => {

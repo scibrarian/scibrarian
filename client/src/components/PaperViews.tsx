@@ -33,7 +33,6 @@ export function PaperViews({
   knownEmpty,
   access,
   bookmarkable,
-  onCollectionChanged,
 }: {
   source: PaperSource;
   viewMode: ViewMode;
@@ -53,10 +52,6 @@ export function PaperViews({
   // False in a section that doesn't bookmark (the Library, and Bookmarks
   // itself) — see App, which decides it.
   bookmarkable: boolean;
-  // Papers left the collection on screen (see PapersTable). Only the table
-  // offers it, so only the table is handed it. Named for the collection because
-  // Settings' onPapersRemoved is a different event with a different signature.
-  onCollectionChanged?: () => void;
 }) {
   const filters = usePaperFilters(source);
   const reloadToken = useReloadToken(source);
@@ -76,11 +71,6 @@ export function PaperViews({
   if (viewMode === "timeline")
     return <Timeline {...common} emptyState={emptyState} knownEmpty={knownEmpty} />;
   return (
-    <PapersTable
-      {...common}
-      emptyState={emptyState}
-      knownEmpty={knownEmpty}
-      onCollectionChanged={onCollectionChanged}
-    />
+    <PapersTable {...common} emptyState={emptyState} knownEmpty={knownEmpty} />
   );
 }

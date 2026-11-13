@@ -5,6 +5,7 @@ import type {
   BookmarkFolder,
   BookmarkImport,
   Collection,
+  CollectionFile,
   ImportStatus,
   LinkAnswer,
   LinkedPaper,
@@ -33,6 +34,8 @@ export function createTestApi() {
     folders: [] as Omit<BookmarkFolder, "paperCount">[],
     bookmarks: [] as BookmarkEntry[],
     collections: [] as Omit<Collection, "fileCount" | "matchedCount" | "heldCount">[],
+    // The files uploaded into collections, which their counts are taken from.
+    files: [] as CollectionFile[],
     // The collections shared with the organization.
     shared: new Set<number>(),
     // Entries imported into folders and not yet bookmarks.
@@ -69,7 +72,31 @@ export function createTestApi() {
   }
 
   function collectionRow(c: (typeof library.collections)[number]): Collection {
-    return { ...c, fileCount: 0, matchedCount: 0, heldCount: 0 };
+    const files = library.files.filter((f) => f.collection_id === c.id);
+    const matched = files.filter((f) => f.pmid != null);
+    return {
+      ...c,
+      fileCount: files.length,
+      matchedCount: matched.length,
+      heldCount: new Set(matched.map((f) => f.pmid)).size,
+    };
+  }
+
+  // A file uploaded and not yet scanned.
+  function addFile(collectionId: number, name: string): CollectionFile {
+    const file: CollectionFile = {
+      id: nextId++,
+      collection_id: collectionId,
+      file_name: name,
+      pmid: null,
+      match_status: "pending",
+      match_method: "",
+      match_error: "",
+      added_at: created,
+      exists: true,
+    };
+    library.files.push(file);
+    return file;
   }
 
   function addFolder(name: string): number {
@@ -180,9 +207,38 @@ export function createTestApi() {
         library.shared.add(id);
         return { shared_with: "The organization" };
       }),
+    renameCollection: (id: number, name: string) =>
+      answer("renameCollection", () => {
+        const collection = library.collections.find((c) => c.id === id)!;
+        collection.name = name;
+        return collectionRow(collection);
+      }),
     deleteCollection: (id: number) =>
       answer("deleteCollection", () => {
         library.collections = library.collections.filter((c) => c.id !== id);
+        library.files = library.files.filter((f) => f.collection_id !== id);
+      }),
+    uploadFiles: (id: number, files: File[]) =>
+      answer("uploadFiles", () => {
+        for (const file of files) addFile(id, file.name);
+        return { added: files.length, skipped: 0 };
+      }),
+    startImport: (id: number) => answer("startImport", () => library.scans.get(id) ?? idle),
+    setFilePmid: (fileId: number, pmid: string) =>
+      answer("setFilePmid", () => {
+        const file = library.files.find((f) => f.id === fileId)!;
+        Object.assign(file, { pmid, match_status: "matched", match_method: "manual" });
+        return { ...file };
+      }),
+    deleteCollectionFile: (fileId: number) =>
+      answer("deleteCollectionFile", () => {
+        library.files = library.files.filter((f) => f.id !== fileId);
+      }),
+    removeCollectionPapers: (id: number, pmids: string[]) =>
+      answer("removeCollectionPapers", () => {
+        const going = library.files.filter((f) => f.collection_id === id && f.pmid && pmids.includes(f.pmid));
+        library.files = library.files.filter((f) => !going.includes(f));
+        return { removed: going.length, papers: new Set(going.map((f) => f.pmid)).size };
       }),
 
     // The owner of a free, tokenless install.
@@ -195,7 +251,10 @@ export function createTestApi() {
         filing: { filed: 0, indexed: 0, none: 0, pending: 0, unchecked: 0 },
         truncated: false,
       })),
-    getCollectionFiles: () => answer("getCollectionFiles", () => ({ files: [] })),
+    getCollectionFiles: (id: number) =>
+      answer("getCollectionFiles", () => ({
+        files: library.files.filter((f) => f.collection_id === id).map((f) => ({ ...f })),
+      })),
     getImportStatus: (collectionId: number) =>
       answer("getImportStatus", () => library.scans.get(collectionId) ?? idle),
     getFolderImports: (folderId: number) =>
@@ -227,6 +286,7 @@ export function createTestApi() {
       for (const pmid of pmids) library.bookmarks.push({ folder_id: folderId, pmid });
     },
     addCollection,
+    addFile,
     // Every call to this method fails, saying so, until it recovers.
     fail(method: Method, message = "The server couldn't be reached.") {
       failing.set(method, message);

@@ -48,7 +48,6 @@ export function PapersTable({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
-  onCollectionChanged,
   filters,
   bookmarkable,
 }: PaperAccess & {
@@ -62,21 +61,6 @@ export function PapersTable({
    */
   knownEmpty?: boolean;
   filters: PaperFilterState;
-  /**
-   * Papers were taken out of the collection on screen, so the shell has to
-   * reload the sources that counted them. Only ever called for a single
-   * collection; a bookmark folder's removal goes through the sources store,
-   * which reloads what it changed itself.
-   *
-   * Named for the collection rather than for the papers because Settings has an
-   * `onPapersRemoved` of its own, with a different signature and a different
-   * meaning — papers dropped by a journal or topic removal, reported by count.
-   * Both are wired from App, so one name across the two left a reader tracing
-   * either of them having to work out which component it landed on. This is the
-   * same event CollectionView reports through `onChanged`, and App answers both
-   * with handleCollectionChanged.
-   */
-  onCollectionChanged?: () => void;
   bookmarkable: boolean;
 }) {
   const {
@@ -280,7 +264,7 @@ export function PapersTable({
     // warning — the one thing the dim exists to prevent.
     setLeaving((prev) => new Set([...prev, ...batch]));
     try {
-      if (removeFrom.place === "collection") await api.removeCollectionPapers(removeFrom.id, batch);
+      if (removeFrom.place === "collection") await sources.removeFromCollection(removeFrom.id, batch);
       else await sources.removeBookmarks(removeFrom.id, batch);
       // The token of the render the click came from, before the removal moved
       // it, which is the point: the refresh the dimmed rows wait for is the
@@ -289,9 +273,8 @@ export function PapersTable({
       setSelected(new Set());
       // The papers list, the source's count in the picker and — for a
       // collection — the file list in the view above are all now stale, and
-      // none of them is this component's to reload. A folder's are reloaded
-      // by the store, which made the removal.
-      if (removeFrom.place === "collection") onCollectionChanged?.();
+      // none of them is this component's to reload: the store, which made the
+      // removal, reloads them.
     } catch (err) {
       setActionError(errorMessage(err));
       // Nothing left the collection, so nothing should still look like it is

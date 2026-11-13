@@ -18,7 +18,6 @@ import { NO_RELOADS, tokenFor } from "./lib/reload";
 import {
   useCollections,
   useFolders,
-  useReloadToken,
   useSources,
   useTopics,
   useTopicsError,
@@ -479,8 +478,9 @@ export default function App() {
     }
   }
 
-  // The collection on screen changed, as its view or the table reports. Every
-  // collection at once goes stale with it, which the store sees to.
+  // A copy pulled from the organization by the check-holdings dialog, into
+  // the collection on screen or not. Every collection at once goes stale with
+  // it, which the store sees to.
   async function handleCollectionChanged() {
     await sources.collectionsChanged(
       typeof activeCollectionId === "number" ? [activeCollectionId] : []
@@ -699,9 +699,6 @@ export default function App() {
       : activeFolder && plural(activeFolder.paperCount, "paper");
   const showViewControls = !showSettings && source != null;
   const sourceId = source ? sourceKey(source) : null;
-  // The token every cached fetch under this source is stamped with; a bump to
-  // any other source leaves it alone, so the views keep painting from cache.
-  const reloadToken = useReloadToken(source);
 
   // A new source starts at the top, the same rule its filters follow (see
   // usePaperFilters). Nothing carries the offset over deliberately — scroll
@@ -837,9 +834,6 @@ export default function App() {
       knownEmpty={knownEmpty}
       access={access}
       bookmarkable={bookmarkable}
-      // The same handler the collection chrome uses: removing papers changes
-      // the collection's counts and its file list exactly as an upload does.
-      onCollectionChanged={handleCollectionChanged}
     />
   );
 
@@ -1150,10 +1144,6 @@ export default function App() {
                 ? (stampByCollection.get(activeCollectionId) ?? null)
                 : null
             }
-            reloadToken={reloadToken}
-            importJobs={sources.scans}
-            onChanged={handleCollectionChanged}
-            onDeleted={() => void sources.collectionDeleted(activeCollectionId as number)}
           >
             {module}
           </CollectionView>
@@ -1175,11 +1165,9 @@ export default function App() {
         access={access}
         // The check is the one modal that writes to the library from outside
         // the Library view: a copy pulled from the organization lands in a
-        // collection, and its destination picker can create one. Without this
-        // the shell never hears about either — a collection made here was
-        // missing from the sidebar and the source picker for the rest of the
-        // session, and a paper copied into the collection already on screen
-        // didn't appear in it.
+        // collection. Without this the shell never hears about it — a paper
+        // copied into the collection already on screen didn't appear in it.
+        // The collection its destination picker can make is the store's.
         onChanged={handleCollectionChanged}
       />
 

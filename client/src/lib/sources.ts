@@ -5,6 +5,7 @@ import type {
   BookmarkFolder,
   BookmarkImport,
   Collection,
+  CollectionFile,
   FolderImportResponse,
   LinkedPaper,
   PaperSource,
@@ -15,7 +16,12 @@ import { createImportJobs, type ImportJobs } from "./import-jobs";
 import { seedEmptySource } from "./papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor as tokenIn, type ReloadTokens } from "./reload";
 import { sourceKey } from "../../../shared/source";
-import { MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
+import { MAX_LINKS_PER_REQUEST, MAX_UPLOAD_FILES } from "../../../shared/limits";
+
+// Files per upload request, so a large selection doesn't become one gigantic
+// multipart body. Clamped to the server's per-request cap so raising this for
+// speed can't silently start failing every upload.
+const UPLOAD_BATCH = Math.min(20, MAX_UPLOAD_FILES);
 
 // The paper sources the app lists — its topics, bookmark folders and
 // collections (see "Source" in GLOSSARY.md) — with which folders each paper is
@@ -38,6 +44,13 @@ export type SourcesApi = Pick<
   | "getCollections"
   | "createCollection"
   | "proShareCollection"
+  | "renameCollection"
+  | "deleteCollection"
+  | "uploadFiles"
+  | "startImport"
+  | "setFilePmid"
+  | "deleteCollectionFile"
+  | "removeCollectionPapers"
   | "getImportStatus"
   | "createBookmarkFolder"
   | "renameBookmarkFolder"
@@ -51,6 +64,10 @@ export type SourcesApi = Pick<
   | "setImportPmid"
   | "getFolderImportStatus"
 >;
+
+// What adding files did: the files added and skipped, the files in batches
+// that failed, and the first failure — a batch's, or else the scan's start.
+export type Upload = { added: number; skipped: number; failedFiles: number; failure: unknown };
 
 // Which folders each paper is saved in, keyed by pmid: the whole bookmarks
 // table, held here so every view's icons agree and a toggle repaints without
@@ -115,11 +132,40 @@ export type Sources = {
   ) => Promise<{ collection: Collection; shareError: string | null }>;
   // These collections' papers or files changed. Their caches go, and every
   // collection's at once, which aggregates them all; and the list is read
-  // again for its counts.
+  // again for its counts. For what changes a collection without passing
+  // through one of the operations below.
   collectionsChanged: (collectionIds: number[]) => Promise<void>;
-  // A collection was deleted. Taken off the list at once, so App's selection
-  // moves off it without waiting for the read.
-  collectionDeleted: (collectionId: number) => Promise<void>;
+
+  // The rest of what changes a collection. As for a folder, each answers once
+  // the server has, and reads again behind it what it made stale: the
+  // collection's caches, every collection's at once, and the list's counts.
+  renameCollection: (collectionId: number, name: string) => Promise<void>;
+  // Taken off the list at once, so App's selection moves off it without
+  // waiting for the read.
+  deleteCollection: (collectionId: number) => Promise<void>;
+  // Add files: the PDFs, UPLOAD_BATCH to a request, then the scan over them,
+  // followed in `scans`. `on.batch` hears how many have gone up after each
+  // request, and `on.uploaded` what the upload did once the last has, before
+  // the scan is asked for: a scan with nothing to do ends at its start, and
+  // reports itself at once. A batch that fails doesn't stop the rest, and the
+  // scan is asked for after one does. Answers with what was added and the
+  // first failure, and refreshes the collection once, whatever happened.
+  addFiles: (
+    collectionId: number,
+    files: File[],
+    on: { batch: (sent: number) => void; uploaded: (upload: Upload) => void }
+  ) => Promise<Upload>;
+  // The unmatched-files dialog's "Scan them": a scan over the files an earlier
+  // one stopped before reaching.
+  scanCollection: (collectionId: number) => Promise<void>;
+  // A file given the PMID the reader found for it, or taken out.
+  matchFile: (file: CollectionFile, pmid: string) => Promise<void>;
+  deleteFile: (file: CollectionFile) => Promise<void>;
+  // The collection table's "Remove selected": one request for the ticked set.
+  removeFromCollection: (
+    collectionId: number,
+    pmids: string[]
+  ) => Promise<{ removed: number; papers: number }>;
 
   // Make a bookmark folder. Its empty list is known without asking, and is
   // filed under its token, so a view opening on it paints the empty state at
@@ -337,6 +383,74 @@ export function createSources(port: SourcesApi): Sources {
     await loadCollections();
   }
 
+  async function renameCollection(collectionId: number, name: string) {
+    await port.renameCollection(collectionId, name);
+    void collectionsChanged([collectionId]);
+  }
+
+  async function deleteCollection(collectionId: number) {
+    await port.deleteCollection(collectionId);
+    void collectionDeleted(collectionId);
+  }
+
+  async function addFiles(
+    collectionId: number,
+    files: File[],
+    on: { batch: (sent: number) => void; uploaded: (upload: Upload) => void }
+  ): Promise<Upload> {
+    const upload: Upload = { added: 0, skipped: 0, failedFiles: 0, failure: null };
+    for (let i = 0; i < files.length; i += UPLOAD_BATCH) {
+      const batch = files.slice(i, i + UPLOAD_BATCH);
+      try {
+        const res = await port.uploadFiles(collectionId, batch);
+        upload.added += res.added;
+        upload.skipped += res.skipped;
+      } catch (e) {
+        // One rejected batch is not a reason to abandon the other nineteen
+        // files the user picked. Keep going and report the shortfall at the
+        // end — whatever made this request fail (a file the browser can no
+        // longer read, a blip) usually has nothing to do with the next batch.
+        upload.failedFiles += batch.length;
+        upload.failure ??= e;
+      }
+      on.batch(Math.min(i + batch.length, files.length));
+    }
+    on.uploaded(upload);
+    // Asked for even when a batch failed. Files that uploaded before the
+    // failure are sitting in 'pending' with no job queued, and nothing else in
+    // the UI can queue one — so without this they're stranded until the user
+    // happens to upload again. The job walks every pending row, so this also
+    // sweeps up whatever an earlier partial upload left behind.
+    try {
+      scans.start(collectionId, await port.startImport(collectionId));
+    } catch (e) {
+      upload.failure ??= e; // the upload error, if there was one, is the more useful
+    } finally {
+      void collectionsChanged([collectionId]);
+    }
+    return upload;
+  }
+
+  async function scanCollection(collectionId: number) {
+    scans.start(collectionId, await port.startImport(collectionId));
+  }
+
+  async function matchFile(file: CollectionFile, pmid: string) {
+    await port.setFilePmid(file.id, pmid);
+    void collectionsChanged([file.collection_id]);
+  }
+
+  async function deleteFile(file: CollectionFile) {
+    await port.deleteCollectionFile(file.id);
+    void collectionsChanged([file.collection_id]);
+  }
+
+  async function removeFromCollection(collectionId: number, pmids: string[]) {
+    const result = await port.removeCollectionPapers(collectionId, pmids);
+    void collectionsChanged([collectionId]);
+    return result;
+  }
+
   async function createFolder(name: string): Promise<BookmarkFolder> {
     const created = await port.createBookmarkFolder(name);
     const source = { folder: created.id };
@@ -474,7 +588,13 @@ export function createSources(port: SourcesApi): Sources {
     },
     createCollection,
     collectionsChanged,
-    collectionDeleted,
+    renameCollection,
+    deleteCollection,
+    addFiles,
+    scanCollection,
+    matchFile,
+    deleteFile,
+    removeFromCollection,
     createFolder,
     addBookmark,
     removeBookmark,
