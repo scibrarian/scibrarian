@@ -286,9 +286,10 @@ export const api = {
       body: JSON.stringify({ pmids }),
     }),
   // One request of "Add links" — at most MAX_LINKS_PER_REQUEST lines. Unlike
-  // checkHave this does not split a long paste itself: the dialog sends the
-  // batches, so it can show its progress and keep the answers of the batches
-  // that landed when a later one fails.
+  // checkHave this does not split a long paste itself: the sources store sends
+  // the batches (see addLinks in lib/sources) and hands each answer to the
+  // dialog as it lands, so the dialog can show its progress and keep the
+  // answers of the batches that landed when a later one fails.
   addBookmarkLinks: (folderId: number, lines: string[]) =>
     req<AddLinksResponse>(`/api/bookmark-folders/${folderId}/links`, {
       method: "POST",

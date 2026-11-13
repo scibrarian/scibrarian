@@ -14,14 +14,12 @@ import type {
   ProCollectionStamp,
   ProStatus,
 } from "./types";
-import type { Bookmarking } from "./lib/bookmarking";
 import { seedEmptySource, sourceKey, warmPapers } from "./lib/papers";
 import { NO_RELOADS, tokenFor } from "./lib/reload";
 import {
   useCollections,
   useFolders,
   useReloadToken,
-  useSaved,
   useSources,
   useTopics,
   useTopicsError,
@@ -113,7 +111,6 @@ export default function App() {
     bookmarks: "table",
     papers: "table",
   });
-  const savedByPmid = useSaved();
   // Scans over collections, followed here so that one which ends after its
   // collection has been left still refreshes what it changed (see
   // lib/import-jobs). Made once, so it reaches handleImportSettled through a
@@ -516,20 +513,6 @@ export default function App() {
     }
   }
 
-  // Both are the shell reporting a change to the source it wraps, so only that
-  // source's caches go — the folder listing / collection files are refetched by
-  // the load above, not by the token.
-  async function handleFolderChanged() {
-    if (activeFolderId != null) await sources.folderChanged(activeFolderId);
-  }
-
-  // The folder on screen: Add links put papers in, or the table's "Remove
-  // selected" took some out. A folder's import lookup refreshes the folder it
-  // fills, which need not be the one on screen (see lookups in lib/sources).
-  async function handleFolderPapersChanged() {
-    if (activeFolderId != null) await sources.folderPapersChanged(activeFolderId);
-  }
-
   async function handleCollectionChanged() {
     // Bumped before the await, not after it. These two are independent — the
     // papers fetch doesn't read the collection list — and sequencing them cost
@@ -788,7 +771,7 @@ export default function App() {
   // row can: it sits in the sticky bar, clickable however deep you've scrolled.
   //
   // Not keyed on reloadToken. That bumps on in-place data changes too — see
-  // handleFolderPapersChanged, which invalidates the very folder you're reading
+  // removeBookmarks in lib/sources, which invalidates the very folder you're reading
   // — and yanking the page to the top mid-read is worse than the offset it'd
   // fix.
   //
@@ -890,23 +873,12 @@ export default function App() {
   // folder's table does that by tick now, as a collection's does (see
   // PapersTable's removeFrom). And not for viewers, since saving is a mutation
   // the server would refuse and a control that always fails is worse than none.
-  // null is what keeps the control out.
   //
   // Both halves of that rule live here rather than in the views. Each view used
   // to re-derive the viewer half itself, three ways, and one of them answered
   // `false` where the others answered null — which is how an empty filter row
   // ended up rendering for anyone who wasn't the owner.
-  const bookmarking: Bookmarking | null =
-    !inInterests || !isAdmin
-      ? null
-      : {
-          folders,
-          saved: savedByPmid,
-          add: sources.addBookmark,
-          addMany: sources.addBookmarks,
-          remove: sources.removeBookmark,
-          createFolder: sources.createFolder,
-        };
+  const bookmarkable = inInterests && isAdmin;
 
   const module = source && (
     <PaperViews
@@ -915,13 +887,10 @@ export default function App() {
       emptyState={emptyState}
       knownEmpty={knownEmpty}
       access={access}
-      bookmarking={bookmarking}
+      bookmarkable={bookmarkable}
       // The same handler the collection chrome uses: removing papers changes
       // the collection's counts and its file list exactly as an upload does.
       onCollectionChanged={handleCollectionChanged}
-      // And the folder chrome's, for the same reason: papers ticked out of a
-      // folder undo what Add links does.
-      onFolderChanged={handleFolderPapersChanged}
     />
   );
 
@@ -1248,13 +1217,6 @@ export default function App() {
             folderId={activeFolderId!}
             isAdmin={isAdmin}
             summary={sourceSummary}
-            importJobs={sources.lookups}
-            onChanged={handleFolderChanged}
-            // The saved-papers map as well as the folder's list and count, the
-            // same three a bulk save refreshes: a paper added here may be on
-            // screen elsewhere, and its bookmark icon has to fill in.
-            onPapersAdded={handleFolderPapersChanged}
-            onDeleted={() => void sources.folderDeleted(activeFolderId!)}
           >
             {module}
           </BookmarkFolderView>

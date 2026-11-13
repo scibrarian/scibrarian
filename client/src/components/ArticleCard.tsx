@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { FileText, ExternalLink } from "lucide-react";
 import type { Paper } from "../types";
-import type { Bookmarking } from "../lib/bookmarking";
 import { formatAuthors } from "../lib/format";
 import { openTitle, type PaperOpener } from "../lib/openPaper";
 import { BookmarkMenu } from "./BookmarkMenu";
@@ -13,7 +12,7 @@ export function ArticleCard({
   article,
   abstract,
   opener,
-  bookmarking,
+  bookmarkable,
   onError,
   onNewFolder,
 }: {
@@ -24,8 +23,8 @@ export function ArticleCard({
   // paper with none stored.
   abstract: string | undefined;
   opener: PaperOpener;
-  // null where the section doesn't bookmark, or for a viewer who can't write.
-  bookmarking: Bookmarking | null;
+  // False where the section doesn't bookmark, or for a viewer who can't write.
+  bookmarkable: boolean;
   onError: (message: string) => void;
   // Naming a new folder belongs to the timeline, not the card: one prompt for
   // the whole list instead of one behind every card's menu.
@@ -140,11 +139,10 @@ export function ArticleCard({
         )}
         {/* Pushed to the far end of the row: it's the card's one action, and
             grouping it with the links would read as a third destination. */}
-        {bookmarking && (
+        {bookmarkable && (
           <span className="card-bookmark">
             <BookmarkMenu
               pmid={article.pmid}
-              bookmarking={bookmarking}
               onError={onError}
               onNewFolder={onNewFolder}
             />

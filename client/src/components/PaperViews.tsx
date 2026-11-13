@@ -1,5 +1,4 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import type { Bookmarking } from "../lib/bookmarking";
 import type { PaperAccess } from "../lib/openPaper";
 import { usePaperFilters } from "../lib/papers";
 import { useReloadToken } from "../lib/sources";
@@ -33,9 +32,8 @@ export function PaperViews({
   emptyState,
   knownEmpty,
   access,
-  bookmarking,
+  bookmarkable,
   onCollectionChanged,
-  onFolderChanged,
 }: {
   source: PaperSource;
   viewMode: ViewMode;
@@ -52,19 +50,17 @@ export function PaperViews({
    */
   knownEmpty?: boolean;
   access: PaperAccess;
-  // null in a section that doesn't bookmark (the Library, and Bookmarks
-  // itself) — see Bookmarking.
-  bookmarking: Bookmarking | null;
+  // False in a section that doesn't bookmark (the Library, and Bookmarks
+  // itself) — see App, which decides it.
+  bookmarkable: boolean;
   // Papers left the collection on screen (see PapersTable). Only the table
   // offers it, so only the table is handed it. Named for the collection because
   // Settings' onPapersRemoved is a different event with a different signature.
   onCollectionChanged?: () => void;
-  // The same, for the bookmark folder on screen.
-  onFolderChanged?: () => void;
 }) {
   const filters = usePaperFilters(source);
   const reloadToken = useReloadToken(source);
-  const common = { source, reloadToken, filters, bookmarking, ...access };
+  const common = { source, reloadToken, filters, bookmarkable, ...access };
 
   if (viewMode === "graph") {
     // The boundary sits outside Suspense: Suspense handles the chunk being slow,
@@ -85,7 +81,6 @@ export function PaperViews({
       emptyState={emptyState}
       knownEmpty={knownEmpty}
       onCollectionChanged={onCollectionChanged}
-      onFolderChanged={onFolderChanged}
     />
   );
 }

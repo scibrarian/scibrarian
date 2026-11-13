@@ -1,6 +1,16 @@
 import type { api as realApi } from "./api";
 import type { SourcesApi } from "./lib/sources";
-import type { BookmarkEntry, BookmarkFolder, Collection, ImportStatus, Topic } from "./types";
+import type {
+  BookmarkEntry,
+  BookmarkFolder,
+  BookmarkImport,
+  Collection,
+  ImportStatus,
+  LinkAnswer,
+  LinkedPaper,
+  Topic,
+} from "./types";
+import { MAX_LINKS_PER_REQUEST } from "../../shared/limits";
 
 // An in-memory server for the client's tests: a library of topics, bookmark
 // folders, bookmarks and collections, answering as api.ts's methods do. The
@@ -23,6 +33,8 @@ export function createTestApi() {
     folders: [] as Omit<BookmarkFolder, "paperCount">[],
     bookmarks: [] as BookmarkEntry[],
     collections: [] as Omit<Collection, "fileCount" | "matchedCount" | "heldCount">[],
+    // Entries imported into folders and not yet bookmarks.
+    imports: [] as BookmarkImport[],
     // Each folder's lookup, as its status route reports it; idle when absent.
     lookups: new Map<number, ImportStatus>(),
   };
@@ -62,6 +74,25 @@ export function createTestApi() {
     return id;
   }
 
+  // The paper a PMID names. The fake holds no papers, so every PMID names one.
+  function paper(pmid: string): LinkedPaper {
+    return { pmid, title: `Paper ${pmid}`, authors: [], journal_name: "", pub_date_display: "", url: "" };
+  }
+
+  function bookmarked(folderId: number, pmid: string): boolean {
+    return library.bookmarks.some((b) => b.folder_id === folderId && b.pmid === pmid);
+  }
+
+  // One pasted line, read as a PubMed link and saved into the folder.
+  function addLink(folderId: number, input: string): LinkAnswer {
+    const pmid = input.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/)?.[1];
+    if (!pmid) return { parsed: { kind: "unknown", input }, outcome: "unreadable", paper: null };
+    const parsed = { kind: "pmid" as const, input, pmid };
+    if (bookmarked(folderId, pmid)) return { parsed, outcome: "already-saved", paper: paper(pmid) };
+    library.bookmarks.push({ folder_id: folderId, pmid });
+    return { parsed, outcome: "added", paper: paper(pmid) };
+  }
+
   function addCollection(name: string): number {
     const id = nextId++;
     library.collections.push({ id, name, created_at: created });
@@ -79,18 +110,55 @@ export function createTestApi() {
         const id = addFolder(name);
         return folderRow(library.folders.find((f) => f.id === id)!);
       }),
+    renameBookmarkFolder: (id: number, name: string) =>
+      answer("renameBookmarkFolder", () => {
+        const folder = library.folders.find((f) => f.id === id)!;
+        folder.name = name;
+        return folderRow(folder);
+      }),
     // Every pmid is taken as a stored paper: the fake holds no papers.
     addBookmarks: (folderId: number, pmids: string[]) =>
       answer("addBookmarks", () => {
-        const fresh = pmids.filter(
-          (pmid) => !library.bookmarks.some((b) => b.folder_id === folderId && b.pmid === pmid)
-        );
+        const fresh = pmids.filter((pmid) => !bookmarked(folderId, pmid));
         for (const pmid of fresh) library.bookmarks.push({ folder_id: folderId, pmid });
         return { added: fresh.length, alreadySaved: pmids.length - fresh.length, missing: 0 };
       }),
     removeBookmark: (folderId: number, pmid: string) =>
       answer("removeBookmark", () => {
         library.bookmarks = library.bookmarks.filter((b) => !(b.folder_id === folderId && b.pmid === pmid));
+      }),
+    removeBookmarks: (folderId: number, pmids: string[]) =>
+      answer("removeBookmarks", () => {
+        const before = library.bookmarks.length;
+        library.bookmarks = library.bookmarks.filter(
+          (b) => !(b.folder_id === folderId && pmids.includes(b.pmid))
+        );
+        return { removed: before - library.bookmarks.length };
+      }),
+    addBookmarkLinks: (folderId: number, lines: string[]) =>
+      answer("addBookmarkLinks", () => ({
+        results: lines.slice(0, MAX_LINKS_PER_REQUEST).map((line) => addLink(folderId, line)),
+        truncated: Math.max(0, lines.length - MAX_LINKS_PER_REQUEST),
+      })),
+    // What the file held is the test's to put in library.imports; this only
+    // starts the lookup the test has set for the folder.
+    importToFolder: (folderId: number) =>
+      answer("importToFolder", () => ({
+        read: 0,
+        notArticles: 0,
+        blank: 0,
+        queued: 0,
+        noIdentifier: 0,
+        status: library.lookups.get(folderId) ?? idle,
+      })),
+    startFolderImport: (folderId: number) =>
+      answer("startFolderImport", () => library.lookups.get(folderId) ?? idle),
+    setImportPmid: (entryId: number, pmid: string) =>
+      answer("setImportPmid", () => {
+        const entry = library.imports.find((e) => e.id === entryId)!;
+        library.imports = library.imports.filter((e) => e !== entry);
+        if (!bookmarked(entry.folder_id, pmid)) library.bookmarks.push({ folder_id: entry.folder_id, pmid });
+        return paper(pmid);
       }),
     // Its bookmarks go with it, as the rows cascade on the server.
     deleteBookmarkFolder: (id: number) =>
@@ -120,7 +188,8 @@ export function createTestApi() {
       })),
     getCollectionFiles: () => answer("getCollectionFiles", () => ({ files: [] })),
     getImportStatus: () => answer("getImportStatus", () => idle),
-    getFolderImports: () => answer("getFolderImports", () => []),
+    getFolderImports: (folderId: number) =>
+      answer("getFolderImports", () => library.imports.filter((e) => e.folder_id === folderId)),
     getFolderImportStatus: (folderId: number) =>
       answer("getFolderImportStatus", () => library.lookups.get(folderId) ?? idle),
   } satisfies SourcesApi & Partial<Api>;

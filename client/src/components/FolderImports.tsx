@@ -2,6 +2,7 @@ import { memo, useId, useState } from "react";
 import { api } from "../api";
 import { useHeldWhile, useIncrementalList } from "../lib/hooks";
 import { errorMessage } from "../lib/format";
+import { useSources } from "../lib/sources";
 import type { BookmarkImport, LinkedPaper } from "../types";
 import { Banner } from "./Banner";
 import { ConfirmDialog, ModalShell } from "./Dialogs";
@@ -53,11 +54,10 @@ export function ImportedEntries({
   onClose: () => void;
   // "Look them up": a lookup over the entries none has reached yet.
   onLookUp: () => Promise<void>;
-  // These entries were saved or removed, and leave the list. `saved` when one
-  // became a bookmark, which changes the folder's papers as well. The same
-  // function from one render to the next, so a row the change doesn't touch
-  // doesn't render again (see EntryRow).
-  onLeft: (ids: number[], saved: boolean) => void;
+  // These entries were saved or removed, and leave the list. The same function
+  // from one render to the next, so a row the change doesn't touch doesn't
+  // render again (see EntryRow).
+  onLeft: (ids: number[]) => void;
   onError: (msg: string | null) => void;
 }) {
   const [lookingUp, setLookingUp] = useState(false);
@@ -88,7 +88,7 @@ export function ImportedEntries({
     if (folderId == null) return;
     try {
       await api.removeUnmatchedImports(folderId);
-      onLeft(unmatched.map((e) => e.id), false);
+      onLeft(unmatched.map((e) => e.id));
     } catch (e) {
       onError(errorMessage(e));
     }
@@ -165,9 +165,10 @@ const EntryRow = memo(function EntryRow({
   onError,
 }: {
   entry: BookmarkImport;
-  onLeft: (ids: number[], saved: boolean) => void;
+  onLeft: (ids: number[]) => void;
   onError: (msg: string | null) => void;
 }) {
+  const sources = useSources();
   const [pmid, setPmid] = useState("");
   const [found, setFound] = useState<LinkedPaper | null>(null);
   const [busy, setBusy] = useState(false);
@@ -193,14 +194,15 @@ const EntryRow = memo(function EntryRow({
   const save = () =>
     run(async () => {
       if (!found) return;
-      await api.setImportPmid(entry.id, found.pmid);
-      onLeft([entry.id], true);
+      // A bookmark now, which the store tells the folder's papers about.
+      await sources.setImportPmid(entry, found.pmid);
+      onLeft([entry.id]);
     });
 
   const remove = () =>
     run(async () => {
       await api.removeImport(entry.id);
-      onLeft([entry.id], false);
+      onLeft([entry.id]);
     });
 
   const meta = [entry.authors, entry.journal, entry.year].filter(Boolean).join(" · ");

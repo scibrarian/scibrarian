@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Bookmark, Check } from "lucide-react";
 import { errorMessage } from "../lib/format";
-import { NO_FOLDERS, type Bookmarking } from "../lib/bookmarking";
+import { useFolders, useSavedIn, useSources } from "../lib/sources";
 import { FolderMenuContent } from "./FolderMenu";
 
 // The per-paper bookmark control, used identically by the table, the timeline
@@ -19,18 +19,17 @@ import { FolderMenuContent } from "./FolderMenu";
 // one prompt for the whole list rather than one per row.
 export function BookmarkMenu({
   pmid,
-  bookmarking,
   onError,
   onNewFolder,
 }: {
   pmid: string;
-  bookmarking: Bookmarking;
   onError: (message: string) => void;
   onNewFolder: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const { folders, saved } = bookmarking;
-  const inFolders = saved.get(pmid) ?? NO_FOLDERS;
+  const sources = useSources();
+  const folders = useFolders();
+  const inFolders = useSavedIn(pmid);
   const savedCount = inFolders.size;
 
   async function run(action: () => Promise<unknown>) {
@@ -47,8 +46,8 @@ export function BookmarkMenu({
   function toggle(folderId: number) {
     void run(() =>
       inFolders.has(folderId)
-        ? bookmarking.remove(folderId, pmid)
-        : bookmarking.add(folderId, pmid)
+        ? sources.removeBookmark(folderId, pmid)
+        : sources.addBookmark(folderId, pmid)
     );
   }
 

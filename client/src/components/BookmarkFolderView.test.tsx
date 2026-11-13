@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { BookmarkFolderView } from "./BookmarkFolderView";
-import { createImportJobs, type ImportJobs } from "../lib/import-jobs";
+import { createSources, SourcesContext, type Sources, type SourcesApi } from "../lib/sources";
 import type { BookmarkImport, FolderImportResponse, ImportJob } from "../types";
 
 // A folder's reference-file import, from the folder's side: what it says the
@@ -17,22 +17,28 @@ const api = vi.hoisted(() => ({
   setImportPmid: vi.fn(),
   removeImport: vi.fn(),
   removeUnmatchedImports: vi.fn(),
+  getBookmarks: vi.fn(),
+  getBookmarkFolders: vi.fn(),
 }));
 
 vi.mock("../api", () => ({ api }));
 
-let jobs: ImportJobs;
-const papersAdded = vi.fn();
+let sources: Sources;
+// How many times the folder's papers have been made stale: a saved entry is a
+// paper in the folder.
+const refreshes = () => sources.tokenFor({ folder: 7 });
 
 beforeEach(() => {
   api.getFolderImports.mockResolvedValue([]);
   api.getFolderImportStatus.mockResolvedValue({ state: "idle" });
-  jobs = createImportJobs(api.getFolderImportStatus, () => {});
+  api.getBookmarks.mockResolvedValue([]);
+  api.getBookmarkFolders.mockResolvedValue([]);
+  sources = createSources(api as unknown as SourcesApi);
 });
 
 afterEach(() => {
   cleanup();
-  jobs.stop();
+  sources.stop();
   vi.resetAllMocks();
 });
 
@@ -70,17 +76,11 @@ const done: ImportJob = {
 
 async function view({ isAdmin = true } = {}) {
   const { container } = render(
-    <BookmarkFolderView
-      folderId={7}
-      isAdmin={isAdmin}
-      summary="3 papers"
-      importJobs={jobs}
-      onChanged={() => {}}
-      onPapersAdded={papersAdded}
-      onDeleted={() => {}}
-    >
-      <div />
-    </BookmarkFolderView>
+    <SourcesContext.Provider value={sources}>
+      <BookmarkFolderView folderId={7} isAdmin={isAdmin} summary="3 papers">
+        <div />
+      </BookmarkFolderView>
+    </SourcesContext.Provider>
   );
   await settle();
   return container;
@@ -124,9 +124,10 @@ describe("importing a reference file", () => {
       screen.getByText("Skipped 2 that aren't journal articles. Skipped 1 with no title, DOI or PMID.")
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "1 unmatched" })).toBeTruthy();
-    // Sending the file saves nothing: the lookup App follows saves the papers,
-    // and refreshes the folder as it does.
-    expect(papersAdded).not.toHaveBeenCalled();
+    // Sending the file saves nothing: the lookup the store follows saves the
+    // papers, and refreshes the folder as it does — once here, for the end of
+    // a lookup that was over by the time the import answered.
+    expect(refreshes()).toBe(1);
   });
 
   it("says so when nothing in the file could be imported", async () => {
@@ -199,7 +200,7 @@ describe("an unmatched reference", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await settle();
     expect(api.setImportPmid).toHaveBeenCalledWith(1, "40000003");
-    expect(papersAdded).toHaveBeenCalled();
+    expect(refreshes()).toBe(1);
   });
 
   it("goes back to the box when the paper is the wrong one", async () => {
@@ -235,7 +236,7 @@ describe("an unmatched reference", () => {
     // Behind the dialog, so out of the accessibility tree while it is open.
     expect(screen.getByRole("button", { name: "1 unmatched", hidden: true })).toBeTruthy();
     expect(api.getFolderImports).toHaveBeenCalledTimes(asked);
-    expect(papersAdded).not.toHaveBeenCalled();
+    expect(refreshes()).toBe(0);
   });
 
   it("shows a long list a page at a time, as it is scrolled", async () => {

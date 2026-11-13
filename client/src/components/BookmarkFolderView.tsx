@@ -3,7 +3,8 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, FileInput, Link as LinkIcon, Plus } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
-import { useFollowedJob, type ImportJobs } from "../lib/import-jobs";
+import { useFollowedJob } from "../lib/import-jobs";
+import { useSources } from "../lib/sources";
 import type { BookmarkImport, FolderImportResponse } from "../types";
 import { AddLinks } from "./AddLinks";
 import { Banner } from "./Banner";
@@ -44,24 +45,17 @@ export function BookmarkFolderView({
   folderId,
   isAdmin,
   summary,
-  importJobs,
-  onChanged,
-  onPapersAdded,
-  onDeleted,
   children,
 }: {
   folderId: number;
   isAdmin: boolean;
   /** The folder counted out, for the row's left half — see App's sourceSummary. */
   summary: string | null;
-  /** App's, so a lookup goes on being followed after this view has gone. */
-  importJobs: ImportJobs;
-  onChanged: () => void;
-  /** Add links, or a PMID given to an imported entry, saved papers into this folder. */
-  onPapersAdded: () => void;
-  onDeleted: () => void;
   children: ReactNode;
 }) {
+  const sources = useSources();
+  // The store's, so a lookup goes on being followed after this view has gone.
+  const importJobs = sources.lookups;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [addingLinks, setAddingLinks] = useState(false);
@@ -101,8 +95,8 @@ export function BookmarkFolderView({
 
   // The lookup over this folder, resumed on entry if one is running; until the
   // probe has answered (lookupChecked), a pending entry may be one a lookup is
-  // working on right now. When one ends, App refreshes the folder's papers, as
-  // it does after each round (see folderImportJobs); what is left here is the
+  // working on right now. When one ends, the store refreshes the folder's
+  // papers, as it does after each round (see lookups); what is left here is the
   // list of entries it settled, and its failure if it failed.
   const { watched, checked: lookupChecked } = useFollowedJob(importJobs, folderId, (ended) => {
     if (ended.state === "lost") setError("Lost contact with the import. Reload to check its status.");
@@ -120,8 +114,7 @@ export function BookmarkFolderView({
     }
     setSending(true);
     try {
-      const res = await api.importToFolder(folderId, file);
-      importJobs.start(folderId, res.status);
+      const res = await sources.importToFolder(folderId, file);
       const note = leftOutNote(res);
       if (res.queued + res.noIdentifier === 0) {
         setNotice(`Nothing in that file could be imported. ${note}`.trim());
@@ -141,7 +134,7 @@ export function BookmarkFolderView({
       // One with nothing left to look up — another tab got there first —
       // answers over already, and the entries on screen as not looked up are
       // refreshed as they are for any lookup that ends.
-      importJobs.start(folderId, await api.startFolderImport(folderId));
+      await sources.lookUpImports(folderId);
     } catch (e) {
       setEntriesError(errorMessage(e));
     }
@@ -149,23 +142,17 @@ export function BookmarkFolderView({
 
   // Entries the dialog saved or removed, taken off the list here rather than
   // by asking for it again: it can run to thousands, and each save fetched and
-  // re-rendered all of them. Kept the same across renders, through a ref to
-  // App's callback, so the dialog's other rows skip theirs (see EntryRow).
-  const papersAdded = useRef(onPapersAdded);
-  useEffect(() => {
-    papersAdded.current = onPapersAdded;
-  });
-  const entriesLeft = useCallback((ids: number[], saved: boolean) => {
+  // re-rendered all of them. Kept the same across renders, so the dialog's
+  // other rows skip theirs (see EntryRow).
+  const entriesLeft = useCallback((ids: number[]) => {
     const gone = new Set(ids);
     setEntries((list) => list.filter((e) => !gone.has(e.id)));
-    if (saved) papersAdded.current();
   }, []);
 
   async function rename(next: string) {
     setRenaming(false);
     try {
-      await api.renameBookmarkFolder(folderId, next);
-      onChanged();
+      await sources.renameFolder(folderId, next);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -174,8 +161,7 @@ export function BookmarkFolderView({
   async function remove() {
     setConfirmingDelete(false);
     try {
-      await api.deleteBookmarkFolder(folderId);
-      onDeleted();
+      await sources.deleteFolder(folderId);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -327,7 +313,6 @@ export function BookmarkFolderView({
         open={addingLinks}
         onClose={() => setAddingLinks(false)}
         folderId={folderId}
-        onAdded={onPapersAdded}
       />
       <PromptDialog
         open={renaming}

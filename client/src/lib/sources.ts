@@ -1,11 +1,21 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 import type { api } from "../api";
-import type { BookmarkFolder, Collection, PaperSource, Topic } from "../types";
+import type {
+  AddLinksResponse,
+  BookmarkFolder,
+  BookmarkImport,
+  Collection,
+  FolderImportResponse,
+  LinkedPaper,
+  PaperSource,
+  Topic,
+} from "../types";
 import { errorMessage } from "./format";
 import { createImportJobs, type ImportJobs } from "./import-jobs";
 import { seedEmptySource } from "./papers";
 import { NO_RELOADS, bumpAll, bumpSource, tokenFor as tokenIn, type ReloadTokens } from "./reload";
 import { sourceKey } from "../../../shared/source";
+import { MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
 
 // The paper sources the app lists — its topics, bookmark folders and
 // collections (see "Source" in GLOSSARY.md) — with which folders each paper is
@@ -27,8 +37,15 @@ export type SourcesApi = Pick<
   | "getBookmarks"
   | "getCollections"
   | "createBookmarkFolder"
+  | "renameBookmarkFolder"
+  | "deleteBookmarkFolder"
   | "addBookmarks"
   | "removeBookmark"
+  | "removeBookmarks"
+  | "addBookmarkLinks"
+  | "importToFolder"
+  | "startFolderImport"
+  | "setImportPmid"
   | "getFolderImportStatus"
 >;
 
@@ -98,15 +115,36 @@ export type Sources = {
     folderId: number,
     pmids: string[]
   ) => Promise<{ added: number; alreadySaved: number; missing: number }>;
-  // A folder's name changed.
-  folderChanged: (folderId: number) => Promise<void>;
-  // A folder gained or lost papers. Three things are stale — its list, its
-  // count in the picker, and the saved map, which fills the bookmark icon on
-  // every paper in Interests.
-  folderPapersChanged: (folderId: number) => Promise<void>;
-  // A folder was deleted. Taken off the list at once, so App's selection moves
-  // off it without waiting for the reads.
-  folderDeleted: (folderId: number) => Promise<void>;
+
+  // The rest of what changes a folder. Each answers once the server has, and
+  // reads again behind it what it made stale. A folder that gained or lost
+  // papers has three things stale — its list, its count in the picker, and
+  // the saved map, which fills the bookmark icon on every paper in Interests.
+  renameFolder: (folderId: number, name: string) => Promise<void>;
+  // Taken off the list at once, so App's selection moves off it without
+  // waiting for the reads.
+  deleteFolder: (folderId: number) => Promise<void>;
+  // The folder table's "Remove selected": one request for the ticked set.
+  removeBookmarks: (folderId: number, pmids: string[]) => Promise<{ removed: number }>;
+  // Add links: the pasted lines, MAX_LINKS_PER_REQUEST to a request, one after
+  // another. Each batch's answer goes to `onBatch` as it lands — a DOI is a
+  // throttled PubMed search, so a long paste takes a while, and the rows
+  // arriving are the progress — which answers false to send no more: the
+  // dialog has gone. A batch that fails rejects, keeping what the earlier ones
+  // saved. The folder is refreshed once, after the last batch sent, if any
+  // saved a paper: per batch, the refreshes overlapped.
+  addLinks: (
+    folderId: number,
+    lines: string[],
+    onBatch: (batch: string[], answer: AddLinksResponse, from: number) => boolean
+  ) => Promise<void>;
+  // Import a reference file into a folder, and follow the lookup it starts.
+  importToFolder: (folderId: number, file: File) => Promise<FolderImportResponse>;
+  // Look up the entries a lookup stopped before reaching, and follow it.
+  lookUpImports: (folderId: number) => Promise<void>;
+  // Give an imported entry the PMID the reader found for it, which saves that
+  // paper into the entry's folder.
+  setImportPmid: (entry: BookmarkImport, pmid: string) => Promise<LinkedPaper>;
 
   // Data under a papers view changed (poll, import, match, file delete, a paper
   // saved): invalidate that source's caches so the next look at it refetches.
@@ -263,6 +301,8 @@ export function createSources(port: SourcesApi): Sources {
     return result;
   }
 
+  // A folder renamed: the list read again for its new name, and the folder's
+  // own caches dropped, as for any change its view reports.
   async function folderChanged(folderId: number) {
     await loadFolders();
     reloadSource({ folder: folderId });
@@ -287,6 +327,56 @@ export function createSources(port: SourcesApi): Sources {
     reloads = bumpAll(reloads);
     changed();
     await Promise.all([loadBookmarks(), loadFolders()]);
+  }
+
+  async function renameFolder(folderId: number, name: string) {
+    await port.renameBookmarkFolder(folderId, name);
+    void folderChanged(folderId);
+  }
+
+  async function deleteFolder(folderId: number) {
+    await port.deleteBookmarkFolder(folderId);
+    void folderDeleted(folderId);
+  }
+
+  async function removeBookmarks(folderId: number, pmids: string[]) {
+    const result = await port.removeBookmarks(folderId, pmids);
+    void folderPapersChanged(folderId);
+    return result;
+  }
+
+  async function addLinks(
+    folderId: number,
+    lines: string[],
+    onBatch: (batch: string[], answer: AddLinksResponse, from: number) => boolean
+  ) {
+    let added = false;
+    try {
+      for (let i = 0; i < lines.length; i += MAX_LINKS_PER_REQUEST) {
+        const batch = lines.slice(i, i + MAX_LINKS_PER_REQUEST);
+        const answer = await port.addBookmarkLinks(folderId, batch);
+        if (answer.results.some((a) => a.outcome === "added")) added = true;
+        if (!onBatch(batch, answer, i)) return;
+      }
+    } finally {
+      if (added) void folderPapersChanged(folderId);
+    }
+  }
+
+  async function importToFolder(folderId: number, file: File) {
+    const answer = await port.importToFolder(folderId, file);
+    lookups.start(folderId, answer.status);
+    return answer;
+  }
+
+  async function lookUpImports(folderId: number) {
+    lookups.start(folderId, await port.startFolderImport(folderId));
+  }
+
+  async function setImportPmid(entry: BookmarkImport, pmid: string) {
+    const paper = await port.setImportPmid(entry.id, pmid);
+    void folderPapersChanged(entry.folder_id);
+    return paper;
   }
 
   const lookups = createImportJobs(
@@ -316,9 +406,13 @@ export function createSources(port: SourcesApi): Sources {
     addBookmark,
     removeBookmark,
     addBookmarks,
-    folderChanged,
-    folderPapersChanged,
-    folderDeleted,
+    renameFolder,
+    deleteFolder,
+    removeBookmarks,
+    addLinks,
+    importToFolder,
+    lookUpImports,
+    setImportPmid,
     reloadSource,
     reloadEverything,
   };
@@ -344,7 +438,12 @@ export const useTopics = () => usePiece((s) => s.topics());
 export const useTopicsError = () => usePiece((s) => s.topicsError());
 export const useFolders = () => usePiece((s) => s.folders());
 export const useCollections = () => usePiece((s) => s.collections());
-export const useSaved = () => usePiece((s) => s.saved());
+// The folders one paper is saved in. A toggle replaces only that paper's set,
+// so of the hundreds of rows reading this, it re-renders one.
+export const useSavedIn = (pmid: string) => usePiece((s) => s.saved().get(pmid) ?? NO_FOLDERS);
+
+// Shared, so a paper saved nowhere doesn't allocate a set per render.
+const NO_FOLDERS: ReadonlySet<number> = new Set();
 
 // The token for a view's own source, or 0 with none.
 export function useReloadToken(source: PaperSource | null): number {

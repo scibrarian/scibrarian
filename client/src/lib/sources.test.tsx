@@ -2,9 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { createSources, SourcesContext, useReloadToken, useSaved } from "./sources";
+import { createSources, SourcesContext, useReloadToken, useSavedIn } from "./sources";
 import { createTestApi } from "../test-api";
 import type { PaperSource } from "../types";
+import { MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
 
 // The store's own bookkeeping, against a library held in memory (test-api.ts).
 // What a view does with what it holds is that view's test's.
@@ -197,24 +198,25 @@ describe("bookmark folders", () => {
     expect(sources.folders()).toEqual([made]);
   });
 
-  it("reads a folder again when its name changes", async () => {
+  it("renames a folder, and reads the list again for its new name", async () => {
     const { server, sources } = setUp();
     const reading = server.addFolder("Reading");
     await sources.loadFolders();
-    server.library.folders[0].name = "Read";
-    await sources.folderChanged(reading);
-    expect(sources.folders()[0].name).toBe("Read");
+    await sources.renameFolder(reading, "Read");
+    await vi.waitFor(() => expect(sources.folders()[0].name).toBe("Read"));
   });
 
-  // An imported entry given a PMID, Add links, a removal from its table.
-  it("reads a folder's list, its count and the saved map again when its papers change", async () => {
+  // The folder's table, ticked.
+  it("takes papers out of a folder, and reads its list, its count and the saved map again", async () => {
     const { server, sources } = setUp();
     const reading = server.addFolder("Reading");
-    server.bookmark(reading, "1");
-    await sources.folderPapersChanged(reading);
-    expect(sources.saved().get("1")).toEqual(new Set([reading]));
-    expect(sources.folders()[0].paperCount).toBe(1);
+    server.bookmark(reading, "1", "2");
+    await Promise.all([sources.loadFolders(), sources.loadBookmarks()]);
+    expect(await sources.removeBookmarks(reading, ["1"])).toEqual({ removed: 1 });
+    // At once, not behind the reads: the rows the table dimmed wait on it.
     expect(sources.tokenFor({ folder: reading })).toBe(1);
+    await vi.waitFor(() => expect(sources.folders()[0].paperCount).toBe(1));
+    expect(sources.saved().has("1")).toBe(false);
   });
 
   it("takes a deleted folder off the list at once, and its papers out of the saved map", async () => {
@@ -223,20 +225,123 @@ describe("bookmark folders", () => {
     const later = server.addFolder("Later");
     server.bookmark(reading, "1");
     await Promise.all([sources.loadFolders(), sources.loadBookmarks()]);
-    await server.api.deleteBookmarkFolder(reading);
-    const reading$ = sources.folderDeleted(reading);
+    const release = server.hold("getBookmarkFolders");
+    await sources.deleteFolder(reading);
     expect(sources.folders().map((f) => f.id)).toEqual([later]);
-    await reading$;
-    expect(sources.saved().has("1")).toBe(false);
+    release();
+    await vi.waitFor(() => expect(sources.saved().has("1")).toBe(false));
   });
 
   // SQLite may hand the dead id to the next folder created.
   it("makes every source stale when a folder is deleted", async () => {
     const { server, sources } = setUp();
     const reading = server.addFolder("Reading");
-    await sources.folderDeleted(reading);
+    await sources.deleteFolder(reading);
     expect(sources.tokenFor({ folder: reading })).toBe(1);
     expect(sources.tokenFor({ collection: 5 })).toBe(1);
+  });
+});
+
+describe("Add links", () => {
+  const links = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => `https://pubmed.ncbi.nlm.nih.gov/${from + i}/`);
+  // Two requests' worth: one full, one of five.
+  const paste = links(MAX_LINKS_PER_REQUEST + 5);
+
+  it("sends a batch at a time, in order, and refreshes the folder once, after the last", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    const sent: [number, number][] = [];
+    await sources.addLinks(reading, paste, (batch, _answer, from) => {
+      sent.push([from, batch.length]);
+      return true;
+    });
+    expect(sent).toEqual([
+      [0, MAX_LINKS_PER_REQUEST],
+      [MAX_LINKS_PER_REQUEST, 5],
+    ]);
+    expect(sources.tokenFor({ folder: reading })).toBe(1);
+    await vi.waitFor(() => expect(sources.saved().size).toBe(paste.length));
+  });
+
+  it("doesn't refresh the folder when nothing was added", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    server.bookmark(reading, "0", "1");
+    await sources.addLinks(reading, links(2), () => true);
+    expect(sources.tokenFor({ folder: reading })).toBe(0);
+  });
+
+  // The dialog has gone: the folder view is keyed by folder, so leaving the
+  // folder mid-paste unmounts it.
+  it("sends no more when told to, and still refreshes for the batch that landed", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    await sources.addLinks(reading, paste, () => false);
+    expect(server.library.bookmarks).toHaveLength(MAX_LINKS_PER_REQUEST);
+    expect(sources.tokenFor({ folder: reading })).toBe(1);
+  });
+
+  it("stops at a batch that fails, and refreshes once for those that landed before it", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    const run = sources.addLinks(reading, paste, () => {
+      server.fail("addBookmarkLinks", "Couldn’t reach PubMed.");
+      return true;
+    });
+    await expect(run).rejects.toThrow("Couldn’t reach PubMed.");
+    expect(server.library.bookmarks).toHaveLength(MAX_LINKS_PER_REQUEST);
+    expect(sources.tokenFor({ folder: reading })).toBe(1);
+  });
+});
+
+describe("imported entries", () => {
+  const lookup = {
+    jobId: "job",
+    state: "running" as const,
+    total: 2,
+    processed: 0,
+    matched: 0,
+    unmatched: 0,
+    errors: 0,
+    currentFile: null,
+    startedAt: "2026-11-04T00:00:00Z",
+    finishedAt: null,
+  };
+
+  it("follows the lookup an import starts, and the one Look them up does", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    const later = server.addFolder("Later");
+    server.library.lookups.set(reading, lookup);
+    server.library.lookups.set(later, lookup);
+    await sources.importToFolder(reading, new File([""], "refs.ris"));
+    await sources.lookUpImports(later);
+    expect(sources.lookups.get(reading)).toBe(lookup);
+    expect(sources.lookups.get(later)).toBe(lookup);
+    sources.stop();
+  });
+
+  it("saves the paper an entry is given into its folder", async () => {
+    const { server, sources } = setUp();
+    const reading = server.addFolder("Reading");
+    const entry = {
+      id: 50,
+      folder_id: reading,
+      title: "Not indexed",
+      authors: "",
+      journal: "",
+      year: "",
+      doi: null,
+      pmid: null,
+      status: "unmatched" as const,
+      reason: "not-in-pubmed" as const,
+      added_at: "",
+    };
+    server.library.imports.push(entry);
+    await sources.setImportPmid(entry, "9");
+    expect(sources.tokenFor({ folder: reading })).toBe(1);
+    await vi.waitFor(() => expect(sources.saved().get("9")).toEqual(new Set([reading])));
   });
 });
 
@@ -306,7 +411,7 @@ describe("reload tokens", () => {
 
 describe("the hooks", () => {
   function mount(read: () => unknown) {
-    const { sources } = setUp();
+    const { server, sources } = setUp();
     const wrapper = ({ children }: { children: ReactNode }) => (
       <SourcesContext.Provider value={sources}>{children}</SourcesContext.Provider>
     );
@@ -318,7 +423,7 @@ describe("the hooks", () => {
       },
       { wrapper }
     );
-    return { sources, view, renders: () => renders };
+    return { server, sources, view, renders: () => renders };
   }
 
   it("re-render a view when its own source's token moves, and not for another's", () => {
@@ -331,10 +436,22 @@ describe("the hooks", () => {
     expect(renders()).toBe(before + 1);
   });
 
-  it("don't re-render the saved map's readers when only a token moves", () => {
-    const { sources, renders } = mount(() => useSaved());
+  it("don't re-render a paper's bookmark control when only a token moves", () => {
+    const { sources, renders } = mount(() => useSavedIn("1"));
     const before = renders();
     act(() => sources.reloadSource({ folder: 1 }));
     expect(renders()).toBe(before);
+  });
+
+  // Hundreds of rows read the saved map, one paper each.
+  it("re-render the bookmark control of the paper toggled, and no other's", async () => {
+    const { server, sources, view, renders } = mount(() => useSavedIn("1"));
+    const reading = server.addFolder("Reading");
+    const before = renders();
+    await act(() => sources.addBookmark(reading, "2"));
+    expect(renders()).toBe(before);
+    await act(() => sources.addBookmark(reading, "1"));
+    expect(view.result.current).toEqual(new Set([reading]));
+    expect(renders()).toBe(before + 1);
   });
 });
