@@ -182,7 +182,6 @@ export default function App() {
     loadFolders,
     loadBookmarks,
     loadCollections,
-    reloadSource,
     reloadEverything,
   } = sources;
 
@@ -423,8 +422,7 @@ export default function App() {
   async function handleTopicSaved(saved: TopicDetail, outcome: TopicSaveOutcome) {
     const said = describeTopicSave(saved, outcome);
     if (said) setStatus(said);
-    await loadTopics();
-    if (outcome.removed > 0) reloadSource({ topic: saved.id });
+    await sources.topicSaved(saved.id, outcome.removed);
   }
 
   function selectTopic(id: number) {
@@ -569,10 +567,11 @@ export default function App() {
     try {
       const countPapers = (ds: Topic[]) => ds.reduce((s, d) => s + (d.articleCount ?? 0), 0);
       const before = countPapers(topics);
-      const res = await api.refresh(activeTopicId ?? undefined);
+      // /refresh polls the active topic, and every topic when there is none.
+      const res = await sources.checkForPapers(activeTopicId);
       const added = res.results.reduce((s, r) => s + r.added, 0);
       const errs = res.results.filter((r) => r.error);
-      const fresh = await loadTopics();
+      const fresh = res.topics;
       // Polling only adds, but papers can leave the feeds between refreshes
       // (e.g. a journal removal); surface that instead of just "Added 0". Not
       // when the topics couldn't be read again: there is no count to compare
@@ -617,9 +616,6 @@ export default function App() {
       // once gone — a toast can be sent away early, never called back.
       if (capped.length || errs.length) setStatus(msg);
       else showToast(msg);
-      // /refresh polls the active topic, and every topic when there is none.
-      if (activeTopicId != null) reloadSource({ topic: activeTopicId });
-      else reloadEverything();
     } catch (e) {
       setStatus(errorMessage(e));
     } finally {
@@ -1084,19 +1080,7 @@ export default function App() {
               // the button is in — this runs with the reader scrolled to the
               // foot of Settings, and a banner above the section bar is the
               // one place they are certainly not looking.
-              //
-              // Bookmarks with the folders: the map of what is saved drives the
-              // filled icon on every paper, and left standing it would claim
-              // papers are in folders that no longer exist.
-              await Promise.all([
-                loadTopics(),
-                loadFolders(),
-                loadCollections(),
-                loadBookmarks(),
-              ]);
-              // Nothing narrower would do: every source is gone, and SQLite may
-              // hand a dead id to the next one created.
-              reloadEverything();
+              await sources.libraryReset();
             }}
           />
         ) : !source ? (

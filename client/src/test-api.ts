@@ -36,6 +36,9 @@ export function createTestApi() {
     collections: [] as Omit<Collection, "fileCount" | "matchedCount" | "heldCount">[],
     // The files uploaded into collections, which their counts are taken from.
     files: [] as CollectionFile[],
+    // What PubMed has for each topic that its feed doesn't yet: how many new
+    // papers the next check finds.
+    unpolled: new Map<number, number>(),
     // The collections shared with the organization.
     shared: new Set<number>(),
     // Entries imported into folders and not yet bookmarks.
@@ -132,6 +135,20 @@ export function createTestApi() {
 
   const api = {
     getTopics: () => answer("getTopics", () => library.topics.map((t) => ({ ...t }))),
+    // A check for new papers, under one topic or every one: each takes what
+    // PubMed has for it into its feed.
+    refresh: (topicId?: number) =>
+      answer("refresh", () => ({
+        results: library.topics
+          .filter((t) => topicId == null || t.id === topicId)
+          .map((t) => {
+            const added = library.unpolled.get(t.id) ?? 0;
+            library.unpolled.delete(t.id);
+            t.articleCount = (t.articleCount ?? 0) + added;
+            return { topicId: t.id, topicName: t.name, found: added, added };
+          }),
+        polledAt: created,
+      })),
     getBookmarkFolders: () => answer("getBookmarkFolders", () => library.folders.map(folderRow)),
     getBookmarks: () => answer("getBookmarks", () => library.bookmarks.map((b) => ({ ...b }))),
     getCollections: () => answer("getCollections", () => library.collections.map(collectionRow)),

@@ -9,6 +9,7 @@ import type {
   FolderImportResponse,
   LinkedPaper,
   PaperSource,
+  PollResult,
   Topic,
 } from "../types";
 import { errorMessage } from "./format";
@@ -39,6 +40,7 @@ const UPLOAD_BATCH = Math.min(20, MAX_UPLOAD_FILES);
 export type SourcesApi = Pick<
   typeof api,
   | "getTopics"
+  | "refresh"
   | "getBookmarkFolders"
   | "getBookmarks"
   | "getCollections"
@@ -110,6 +112,24 @@ export type Sources = {
   // refreshes what it changed; otherwise the collection came back painting its
   // pre-scan file list from cache, every row still waiting on a scan.
   scans: ImportJobs;
+  // Check PubMed for new papers under one topic, or under every topic when
+  // given none. Answers with the poll's results and the topics read again
+  // after it — null when they couldn't be, and there is nothing to count what
+  // the poll did against. The topic's caches go, or every source's after a
+  // poll across every topic.
+  checkForPapers: (topicId: number | null) => Promise<{ results: PollResult[]; topics: Topic[] | null }>;
+  // A topic was made or changed: its row is read again either way, and its
+  // papers are stale only if a change of scope took some out — and then only
+  // its own feed is, no other topic having been touched.
+  topicSaved: (topicId: number, removedFromInterests: number) => Promise<void>;
+  // The library was deleted outright. Every list is emptied at once — nothing
+  // on them exists any more, so App's selections fall to none without waiting
+  // for the reads — and the saved map with them, which left standing would
+  // claim papers are saved in folders that no longer exist. Every source's
+  // caches go too: SQLite may hand a dead id to the next source created. Then
+  // all of it is read again.
+  libraryReset: () => Promise<void>;
+
   // The lookups running over bookmark folders' imported entries, followed for
   // as long as the app is open rather than for as long as a folder is on
   // screen (see lib/import-jobs). A lookup fills its folder for minutes after
@@ -346,6 +366,29 @@ export function createSources(port: SourcesApi): Sources {
     if (bookmarksOut > 0) void loadBookmarks();
   }
 
+  async function checkForPapers(topicId: number | null) {
+    const { results } = await port.refresh(topicId ?? undefined);
+    const fresh = await loadTopics();
+    if (topicId != null) reloadSource({ topic: topicId });
+    else reloadEverything();
+    return { results, topics: fresh };
+  }
+
+  async function topicSaved(topicId: number, removedFromInterests: number) {
+    await loadTopics();
+    if (removedFromInterests > 0) reloadSource({ topic: topicId });
+  }
+
+  async function libraryReset() {
+    topics = [];
+    folders = [];
+    collections = [];
+    saved = new Map();
+    reloads = bumpAll(reloads);
+    changed();
+    await Promise.all([loadTopics(), loadFolders(), loadCollections(), loadBookmarks()]);
+  }
+
   async function createCollection(name: string, { share }: { share: boolean }) {
     const collection = await port.createCollection(name);
     let shareError: string | null = null;
@@ -580,6 +623,9 @@ export function createSources(port: SourcesApi): Sources {
     loadFolders,
     loadBookmarks,
     loadCollections,
+    checkForPapers,
+    topicSaved,
+    libraryReset,
     scans,
     lookups,
     stop() {

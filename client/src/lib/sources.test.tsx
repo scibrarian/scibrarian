@@ -242,6 +242,69 @@ describe("bookmark folders", () => {
   });
 });
 
+describe("topics", () => {
+  it("checks one topic for new papers, reading the topics again, and makes that topic stale", async () => {
+    const { server, sources } = setUp();
+    const asthma = server.addTopic("Asthma");
+    const gout = server.addTopic("Gout");
+    server.library.unpolled.set(asthma.id, 3);
+    const { results, topics } = await sources.checkForPapers(asthma.id);
+    expect(results.map((r) => [r.topicName, r.added])).toEqual([["Asthma", 3]]);
+    expect(topics?.find((t) => t.id === asthma.id)?.articleCount).toBe(3);
+    expect(sources.topics()).toBe(topics);
+    expect(sources.tokenFor({ topic: asthma.id })).toBe(1);
+    expect(sources.tokenFor({ topic: gout.id })).toBe(0);
+  });
+
+  it("checks every topic when given none, making every source stale", async () => {
+    const { server, sources } = setUp();
+    server.addTopic("Asthma");
+    server.addTopic("Gout");
+    const { results } = await sources.checkForPapers(null);
+    expect(results).toHaveLength(2);
+    expect(sources.tokenFor({ folder: 9 })).toBe(1);
+  });
+
+  // There is nothing to count what the check did against.
+  it("answers with no topics when they couldn't be read after a check", async () => {
+    const { server, sources } = setUp();
+    const asthma = server.addTopic("Asthma");
+    server.fail("getTopics");
+    expect((await sources.checkForPapers(asthma.id)).topics).toBeNull();
+    expect(sources.tokenFor({ topic: asthma.id })).toBe(1);
+  });
+
+  it("reads a saved topic's row again, and its papers only when a change of scope took some out", async () => {
+    const { server, sources } = setUp();
+    const asthma = server.addTopic("Asthma");
+    await sources.topicSaved(asthma.id, 0);
+    expect(sources.topics()).toHaveLength(1);
+    expect(sources.tokenFor({ topic: asthma.id })).toBe(0);
+    await sources.topicSaved(asthma.id, 2);
+    expect(sources.tokenFor({ topic: asthma.id })).toBe(1);
+  });
+});
+
+describe("a reset", () => {
+  it("empties every list and the saved map at once, and makes every source stale", async () => {
+    const { server, sources } = setUp();
+    server.addTopic("Asthma");
+    server.bookmark(server.addFolder("Reading"), "1");
+    server.addCollection("Thesis");
+    await Promise.all([sources.loadTopics(), sources.loadFolders(), sources.loadCollections(), sources.loadBookmarks()]);
+    // What the server's reset did.
+    Object.assign(server.library, { topics: [], folders: [], bookmarks: [], collections: [] });
+    const release = server.hold("getTopics");
+    const reading = sources.libraryReset();
+    expect([sources.topics(), sources.folders(), sources.collections()]).toEqual([[], [], []]);
+    expect(sources.saved().size).toBe(0);
+    expect(sources.tokenFor({ topic: 1 })).toBe(1);
+    release();
+    await reading;
+    expect(sources.topics()).toEqual([]);
+  });
+});
+
 describe("collections", () => {
   it("makes a collection, listing it, and shares it only when asked", async () => {
     const { server, sources } = setUp();
