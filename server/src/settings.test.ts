@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 // Saving the settings, and the mail login a stored password belongs to — see
@@ -13,6 +13,21 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 let db: Db;
 let settings: typeof import("./settings.js");
+
+// What the schedule was each time a save reset it. The scheduler reads the
+// settings itself, so this is what they were when it was asked to; and none
+// is started in the test process.
+const rescheduled = vi.hoisted(() => [] as { poll_enabled: string; poll_cron: string }[]);
+vi.mock("./poller.js", async (importOriginal) => {
+  const { getSettings } = await import("./db.js");
+  return {
+    ...(await importOriginal<typeof import("./poller.js")>()),
+    rescheduleFromSettings: () => {
+      const { poll_enabled, poll_cron } = getSettings();
+      rescheduled.push({ poll_enabled, poll_cron });
+    },
+  };
+});
 
 // Alerts on, through a mail login with its password: what most tests change one
 // thing about.
@@ -52,6 +67,7 @@ afterAll(closeTempDb);
 
 beforeEach(() => {
   configure();
+  rescheduled.length = 0;
 });
 
 describe("a save", () => {
@@ -138,6 +154,65 @@ describe("a save", () => {
 
   it("refuses a port that isn't one", () => {
     expect(refusal(() => settings.saveSettings({ smtp_port: "smtp" }))).toMatchObject({ status: 400 });
+  });
+
+  // With alerts off, so each is refused by its own rule rather than by the
+  // check that alerts can send, which turns most of them away too. Checked
+  // whole before anything is written, so the good value beside it isn't.
+  it.each([
+    ["poll_cron", "every morning", "That isn't a valid cron expression."],
+    ["smtp_port", "smtp", "The port must be a number from 1 to 65535."],
+    ["alert_email_to", "reader", "The address to send alerts to isn't an email address."],
+    ["smtp_from", "alerts", "The address to send from isn't an email address."],
+  ])("refuses %s %j with alerts off, and writes nothing else it was sent", (key, value, message) => {
+    configure({ alert_email_enabled: "0" });
+    const before = db.getSettings();
+    expect(refusal(() => settings.saveSettings({ ncbi_email: "me@lab.org", [key]: value }))).toMatchObject({
+      status: 400,
+      message,
+    });
+    expect(db.getSettings()).toEqual(before);
+    expect(rescheduled).toEqual([]);
+  });
+
+  it("takes a blank schedule as the default one", () => {
+    settings.saveSettings({ poll_cron: "0 7 * * *" });
+    settings.saveSettings({ poll_cron: "  " });
+    expect(db.getSettings().poll_cron).toBe("");
+  });
+
+  // This client never sends a secret nobody typed, but anything can call the
+  // route: a blank secret is a field left alone, never a way to clear one.
+  it("keeps the stored secrets through a save that sends them blank", () => {
+    db.setSetting("ncbi_api_key", "key");
+    const view = settings.saveSettings({ ncbi_api_key: "", smtp_pass: "   " });
+    expect(db.getSettings()).toMatchObject({ ncbi_api_key: "key", smtp_pass: "secret" });
+    expect(view).toMatchObject({ has_api_key: true, has_smtp_pass: true });
+  });
+
+  // The password is the one exception, above.
+  it("trims what it saves", () => {
+    settings.saveSettings({ ncbi_email: "  me@lab.org ", smtp_host: " smtp.example.org ", ncbi_api_key: " key " });
+    expect(db.getSettings()).toMatchObject({
+      ncbi_email: "me@lab.org",
+      smtp_host: "smtp.example.org",
+      ncbi_api_key: "key",
+    });
+  });
+
+  it("saves each switch it is sent as it is set, and leaves the others", () => {
+    db.setSetting("poll_enabled", "1");
+    db.setSetting("library_open", "0");
+    const view = settings.saveSettings({ library_open: true, alert_email_enabled: false });
+    expect(db.getSettings()).toMatchObject({ poll_enabled: "1", library_open: "1", alert_email_enabled: "0" });
+    expect(view).toMatchObject({ poll_enabled: true, library_open: true, alert_email_enabled: false });
+    settings.saveSettings({ poll_enabled: false });
+    expect(db.getSettings()).toMatchObject({ poll_enabled: "0", library_open: "1" });
+  });
+
+  it("puts the schedule it saved into effect", () => {
+    settings.saveSettings({ poll_enabled: true, poll_cron: "0 7 * * *" });
+    expect(rescheduled).toEqual([{ poll_enabled: "1", poll_cron: "0 7 * * *" }]);
   });
 });
 
