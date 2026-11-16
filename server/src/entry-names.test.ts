@@ -1,5 +1,4 @@
 import type { Server } from "node:http";
-import express from "express";
 import { type AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeTempDb, openTempDb } from "./test-db.js";
@@ -16,6 +15,14 @@ import { MAX_NAME_CHARS } from "../../shared/limits.js";
 // The client sets the same number as the input's maxLength, so in the shipped
 // UI these requests can't be typed. That is what makes this the backstop worth
 // pinning: nothing in the browser would notice if it stopped being enforced.
+//
+// The whole app, error middleware included: a refused name is thrown, and the
+// middleware is what answers with it.
+
+// config.ts reads ADMIN_TOKEN at import time and vitest shares one process
+// across files, so this is set rather than assumed — see reset-route.test.ts.
+process.env.ADMIN_TOKEN = "entry-names-token";
+const HEADERS = { "x-admin-token": "entry-names-token", "Content-Type": "application/json" };
 
 let server: Server;
 let base: string;
@@ -28,10 +35,9 @@ const TOO_LONG = "a".repeat(MAX_NAME_CHARS + 1);
 
 beforeAll(async () => {
   await openTempDb("entry-names");
-  const { api } = await import("./routes.js");
-  const app = express();
-  app.use(express.json());
-  app.use("/api", api);
+  // index.ts builds the app at module scope and only listens inside start(),
+  // so importing it gives the whole middleware stack with nothing running.
+  const { app } = await import("./index.js");
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -52,7 +58,7 @@ afterAll(async () => {
 async function send(method: string, path: string, name: string) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: HEADERS,
     body: JSON.stringify({ name }),
   });
   return { status: res.status, body: await res.json().catch(() => null) };
@@ -93,10 +99,26 @@ describe("names a person types", () => {
     expect(String(res.body.error)).toMatch(/required/i);
   });
 
+  // Unique within a section whatever the case, since two entries named alike
+  // can't be told apart in the picker.
+  it("refuses a name another entry of its kind has, on all four routes", async () => {
+    expect((await post("/api/bookmark-folders", "Taken")).status).toBe(201);
+    expect((await post("/api/collections", "Taken")).status).toBe(201);
+    for (const res of [
+      await post("/api/bookmark-folders", "taken"),
+      await put(`/api/bookmark-folders/${folderId}`, "TAKEN"),
+      await post("/api/collections", "Taken"),
+      await put(`/api/collections/${collectionId}`, "taken"),
+    ]) {
+      expect(res.status).toBe(409);
+      expect(String(res.body.error)).toMatch(/named “Taken” already exists/);
+    }
+  });
+
   it("leaves the refused rename with its original name", async () => {
     // A 400 that had already written would be the worst outcome here: the
     // caller is told it failed and the entry is renamed anyway.
-    const res = await fetch(`${base}/api/collections`);
+    const res = await fetch(`${base}/api/collections`, { headers: HEADERS });
     const rows = (await res.json()) as { id: number; name: string }[];
     expect(rows.find((c) => c.id === collectionId)?.name).toBe(OK);
   });

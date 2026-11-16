@@ -159,8 +159,8 @@ import {
   workspacesEnabled,
   type WorkspaceRecord,
 } from "./workspaces.js";
-import { errMessage, round1 } from "./util.js";
-import { nameProblem, nameTakenBy } from "./names.js";
+import { errMessage, httpError, round1 } from "./util.js";
+import { checkName, checkNameFree } from "./names.js";
 import { mailSettingsFor, saveSettings, settingsView } from "./settings.js";
 import { readReferenceFile } from "./reference-file.js";
 import { addTopic, changeTopic, readHeadings, readScope, topicDetail } from "./topic-definition.js";
@@ -824,34 +824,17 @@ api.get(
 
 // ---------- section entry names (collections + bookmark folders) ----------
 
-// The name rules (names.ts), sent. A name a person typed is checked at both
-// ends before anything looks it up; each of these sends its own 400 or 409 and
-// returns true when the name can't be used, so each route below reads as one
-// line rather than repeating both branches four times.
-function badName(res: Response, name: string, max?: number, what?: string): boolean {
-  const problem = nameProblem(name, max, what);
-  if (problem) res.status(400).json({ error: problem });
-  return problem !== null;
-}
-
-function nameTaken(
-  res: Response,
-  label: string,
-  existing: { id: number; name: string } | undefined,
-  selfId: number | null
-): boolean {
-  const taken = nameTakenBy(label, existing, selfId);
-  if (taken) res.status(409).json({ error: taken });
-  return taken !== null;
-}
-
-// The lookup above and the write below aren't atomic, so two same-name requests
-// can both pass the check. The unique index is the real arbiter; translate its
-// error into the same 409 the check would have sent. Anything else is the
-// error middleware's to log and answer.
-function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void {
+// A name a person typed is held to the name rules (names.ts) before anything
+// looks it up, and each route below throws what they refuse, for the error
+// middleware to answer.
+//
+// The check and the write aren't atomic, so two same-name requests can both
+// pass the check. The unique index is the real arbiter; translate its error
+// into the same 409 the check would have thrown. Anything else is the error
+// middleware's to log and answer.
+function rethrowUnlessNameRace(err: unknown, label: string): never {
   if (!/UNIQUE/i.test(errMessage(err))) throw err;
-  res.status(409).json({ error: `That ${label} name is already taken.` });
+  throw httpError(409, `That ${label} name is already taken.`);
 }
 
 // ---------- bookmark folders (saved papers) ----------
@@ -868,25 +851,25 @@ api.get("/bookmark-folders", (_req, res) => {
 
 api.post("/bookmark-folders", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  if (badName(res, name)) return;
-  if (nameTaken(res, "folder", bookmarkFolderByName(name), null)) return;
+  checkName(name);
+  checkNameFree("folder", bookmarkFolderByName(name), null);
   try {
     res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 } satisfies BookmarkFolder);
   } catch (err) {
-    rethrowUnlessNameRace(err, res, "folder");
+    rethrowUnlessNameRace(err, "folder");
   }
 });
 
 api.put("/bookmark-folders/:id", (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name ?? "").trim();
-  if (badName(res, name)) return;
+  checkName(name);
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
-  if (nameTaken(res, "folder", bookmarkFolderByName(name), id)) return;
+  checkNameFree("folder", bookmarkFolderByName(name), id);
   try {
     renameBookmarkFolder(id, name);
   } catch (err) {
-    return rethrowUnlessNameRace(err, res, "folder");
+    rethrowUnlessNameRace(err, "folder");
   }
   res.json({
     ...getBookmarkFolder(id)!,
@@ -1220,25 +1203,25 @@ function collectionReply(
 
 api.post("/collections", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
-  if (badName(res, name)) return;
-  if (nameTaken(res, "collection", collectionByName(name), null)) return;
+  checkName(name);
+  checkNameFree("collection", collectionByName(name), null);
   try {
     res.status(201).json(collectionReply(createCollection(name)));
   } catch (err) {
-    rethrowUnlessNameRace(err, res, "collection");
+    rethrowUnlessNameRace(err, "collection");
   }
 });
 
 api.put("/collections/:id", (req, res) => {
   const id = Number(req.params.id);
   const name = String(req.body?.name ?? "").trim();
-  if (badName(res, name)) return;
+  checkName(name);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
-  if (nameTaken(res, "collection", collectionByName(name), id)) return;
+  checkNameFree("collection", collectionByName(name), id);
   try {
     renameCollection(id, name);
   } catch (err) {
-    return rethrowUnlessNameRace(err, res, "collection");
+    rethrowUnlessNameRace(err, "collection");
   }
   res.json(collectionReply(getCollection(id)!, collectionCounts(id)[id]));
 });

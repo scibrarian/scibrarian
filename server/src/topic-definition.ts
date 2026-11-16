@@ -17,7 +17,7 @@ import {
 import { changeTopicScope } from "./holding.js";
 import { ensureCatalogLoaded } from "./journal-catalog.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
-import { nameProblem, nameTakenBy } from "./names.js";
+import { checkName, checkNameFree } from "./names.js";
 import { isMedlineIndexed, topicTerm } from "./pubmed.js";
 import type {
   JournalRemovalResult,
@@ -126,14 +126,12 @@ export const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, jou
 
 // The name rules (names.ts), with the longer cap a topic's name gets (see
 // MAX_TOPIC_NAME_CHARS).
-function checkName(name: string): void {
-  const problem = nameProblem(name, MAX_TOPIC_NAME_CHARS, "topic name");
-  if (problem) throw httpError(400, problem);
+function checkTopicName(name: string): void {
+  checkName(name, MAX_TOPIC_NAME_CHARS, "topic name");
 }
 
-function checkNameFree(name: string, selfId: number | null): void {
-  const taken = nameTakenBy("topic", topicByName(name), selfId);
-  if (taken) throw httpError(409, taken);
+function checkTopicNameFree(name: string, selfId: number | null): void {
+  checkNameFree("topic", topicByName(name), selfId);
 }
 
 // Topics are strictly MeSH headings, one or several that a paper must carry all
@@ -145,14 +143,14 @@ export async function addTopic(body: unknown): Promise<TopicDetail> {
   const b = (body ?? {}) as { headings?: unknown; name?: unknown };
   const headings = await readHeadings(b.headings);
   const name = String(b.name ?? "").trim() || defaultTopicName(headings);
-  checkName(name);
+  checkTopicName(name);
   const term = topicTerm(headings);
   // Asked before the journals are resolved, which can take a request to NCBI
   // each, and again after: nothing awaits between the second and the insert.
   const checkFree = () => {
     const existing = topicByHeadings(headings.map((h) => h.ui)) ?? topicByTerm(term);
     if (existing) throw httpError(409, `These headings are already a topic (“${existing.name}”).`);
-    checkNameFree(name, null);
+    checkTopicNameFree(name, null);
   };
   checkFree();
   const scope = await resolveScope(body);
@@ -173,8 +171,8 @@ export async function changeTopic(id: number, body: unknown): Promise<TopicUpdat
   const renaming = b.name !== undefined;
   const name = renaming ? String(b.name ?? "").trim() : topic.name;
   if (renaming) {
-    checkName(name);
-    checkNameFree(name, id);
+    checkTopicName(name);
+    checkTopicNameFree(name, id);
   }
 
   let removed: JournalRemovalResult = { deletedArticles: 0, removedFromInterests: 0 };
@@ -196,7 +194,7 @@ export async function changeTopic(id: number, body: unknown): Promise<TopicUpdat
     // meanwhile. Here rather than at the rename, so a name refused now leaves
     // the scope unchanged too; nothing from here to the rename waits on
     // anything outside this process.
-    if (renaming) checkNameFree(name, id);
+    if (renaming) checkTopicNameFree(name, id);
     const changed = await changeTopicScope(id, scope);
     if (changed === null) throw httpError(409, "A check for new papers is running. Try again in a moment.");
     removed = changed.result;
