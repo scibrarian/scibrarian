@@ -101,7 +101,18 @@ async function drive(
   } finally {
     job.currentFile = null;
     job.finishedAt = new Date().toISOString();
+    runEnded();
   }
+}
+
+// Told each time a run ends, however it ended, for the sweep of papers nothing
+// holds: it skips its turn while any run is going, and this is how it learns to
+// take the one it is owed (see sweepUnheld in holding.ts). Registered rather
+// than imported, since holding.ts is built on this.
+let runEnded: () => void = () => {};
+
+export function onRunEnded(listener: () => void): void {
+  runEnded = listener;
 }
 
 export function jobStatus(kind: JobKind, id: number): ImportJob | null {

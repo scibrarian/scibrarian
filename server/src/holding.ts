@@ -16,8 +16,8 @@ import {
   type TopicScope,
 } from "./db.js";
 import { clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
-import { anyJobRunning, cancelJob, cancelJobs, clearJobs } from "./jobs.js";
-import { pollRunning, withPollLock } from "./poller.js";
+import { anyJobRunning, cancelJob, cancelJobs, clearJobs, onRunEnded } from "./jobs.js";
+import { onPollLockReleased, pollRunning, withPollLock } from "./poller.js";
 import { resetProContent } from "./pro-hooks.js";
 import type {
   StoredCollectionFile,
@@ -36,7 +36,7 @@ import { errMessage } from "./util.js";
 // checked-out copies no row names any longer go after them; the route answers;
 // then, behind the reply, the job is waited for and the sweep takes its turn —
 // unless something is part way through storing a paper and attaching it, in
-// which case it skips. Each removal used to spell that out for itself in its
+// which case it waits. Each removal used to spell that out for itself in its
 // route. Here because it needs db.ts, external-open.ts and jobs.ts at once, and
 // none of them can call the others: external-open.ts is built on db.ts, so
 // db.ts cannot reach the checked-out copies, and neither knows which jobs are
@@ -69,6 +69,7 @@ export async function whileAttaching<T>(kind: LeaseKind, work: () => Promise<T>)
     return await work();
   } finally {
     leases[kind]--;
+    sweepIfOwed();
   }
 }
 
@@ -79,40 +80,63 @@ export async function whileAttaching<T>(kind: LeaseKind, work: () => Promise<T>)
 // paper is stored before what it is stored for is attached to it, and one swept
 // in between leaves a file matched to a paper that isn't there.
 //
-// So it is skipped, not waited for, while anything is part way through that: a
-// collection's scan or a folder's lookup, a poll, or one of the writes counted
-// above. Nothing is lost by a skip. The sweep is of the whole library, so the
-// next removal to find the server idle takes what this one left, and a start
-// takes the rest.
-//
-// It can't fail the removal it follows: that has happened, and what a failed
-// sweep leaves behind is rows nobody can see.
+// So it skips its turn while anything is part way through that: a collection's
+// scan or a folder's lookup, a poll, or one of the writes counted above. A
+// skipped turn is owed rather than dropped, and taken once the last of those
+// has finished (sweepIfOwed). It used to be dropped, for the next removal to
+// find the server idle to make up, and a topic removed while a folder's lookup
+// ran, which can be most of an hour, kept its papers until then or until a
+// restart, after its reply had said they were deleted.
+let sweepOwed = false;
+
 function sweepUnheld(): void {
-  if (leases.attach > 0 || leases.transfer > 0 || anyJobRunning()) return;
-  if (pollRunning()) return;
-  try {
-    dropUnheldArticles();
-  } catch (err) {
-    console.warn(`[holding] sweeping papers nothing holds failed: ${errMessage(err)}`);
+  if (leases.attach > 0 || leases.transfer > 0 || anyJobRunning() || pollRunning()) {
+    sweepOwed = true;
+    return;
   }
+  sweepOwed = false;
+  dropUnheld("");
 }
+
+// Give a skipped sweep its turn, if one is owed, now that something holding it
+// off has finished: one of the writes counted above, a run (onRunEnded) or the
+// poll lock (onPollLockReleased). The turn checks again, so one finished while
+// another goes on leaves it owed for whichever finishes last.
+//
+// After setImmediate, as a removal's turn is (see behindReply): what finished
+// is answering a request or reporting a poll, and the sweep reads the whole
+// library.
+function sweepIfOwed(): void {
+  if (!sweepOwed) return;
+  setImmediate(() => {
+    if (sweepOwed) sweepUnheld();
+  });
+}
+
+onRunEnded(sweepIfOwed);
+onPollLockReleased(sweepIfOwed);
 
 // The papers nothing holds any longer, taken at startup because then is when
 // nothing is half way through storing one: before the bind, so no scan or
 // manual match can be running, and before loadPro, which arms Pro's sweep and
 // its pulls. See dropUnheldArticles.
-//
-// It can't fail the start, as it can't fail a removal: what a failed sweep
-// leaves behind is rows nobody can see, and the next removal to find the server
-// idle, or the next start, takes them.
 export function sweepAtStartup(): void {
+  const papers = dropUnheld(" at startup");
+  if (papers > 0) {
+    console.log(`[db] removed at startup — stored papers nothing held: ${papers}`);
+  }
+}
+
+// The sweep itself, for both of its turns, answering with how many papers it
+// took. It can't fail the removal or the start it follows: that has happened,
+// and what a failed sweep leaves behind is rows nobody can see, which the next
+// one takes.
+function dropUnheld(when: string): number {
   try {
-    const papers = dropUnheldArticles();
-    if (papers > 0) {
-      console.log(`[db] removed at startup — stored papers nothing held: ${papers}`);
-    }
+    return dropUnheldArticles();
   } catch (err) {
-    console.warn(`[db] sweeping papers nothing holds failed at startup: ${errMessage(err)}`);
+    console.warn(`[holding] sweeping papers nothing holds failed${when}: ${errMessage(err)}`);
+    return 0;
   }
 }
 

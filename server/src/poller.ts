@@ -279,7 +279,17 @@ export async function withPollLock<T>(fn: () => Promise<T>): Promise<T | null> {
     return await fn();
   } finally {
     isPolling = false;
+    lockReleased();
   }
+}
+
+// Told each time the lock is let go, for the same sweep, which takes the turn
+// it skipped once nothing holds the lock. Registered rather than imported, since
+// holding.ts is built on this.
+let lockReleased: () => void = () => {};
+
+export function onPollLockReleased(listener: () => void): void {
+  lockReleased = listener;
 }
 
 // ---------- scheduler ----------

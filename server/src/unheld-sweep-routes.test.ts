@@ -55,14 +55,6 @@ const request = (method: string, path: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-// A second removal, to give the sweep a turn. Of a paper a topic's feed goes on
-// holding, so the sweep is all it changes; and of a paper, because a removal
-// that takes nothing isn't given one.
-const anotherRemoval = () => {
-  db.addBookmarks(folder, [FED]);
-  return request("POST", `/bookmark-folders/${folder}/papers/remove`, { pmids: [FED] });
-};
-
 beforeAll(async () => {
   db = await openTempDb("unheld-sweep-routes");
   // index.ts builds the app at module scope and only listens inside start(),
@@ -200,7 +192,7 @@ describe("a removal while a request is attaching", () => {
   // this has run too.
   const afterItsTurn = () => new Promise((resolve) => setImmediate(resolve));
 
-  it("leaves the papers while links are being added, and the next removal takes them", async () => {
+  it("leaves the papers while links are being added, and takes them once it has finished", async () => {
     let answer!: () => void;
     busy.links = new Promise<void>((r) => (answer = r));
     const adding = request("POST", `/bookmark-folders/${folder}/links`, { lines: ["12345678"] });
@@ -216,11 +208,10 @@ describe("a removal while a request is attaching", () => {
       answer();
     }
     expect((await adding).status).toBe(200);
-    await anotherRemoval();
     await swept([FED, FILED]);
   });
 
-  it("leaves the papers while an entry is given its PMID, and the next removal takes them", async () => {
+  it("leaves the papers while an entry is given its PMID, and takes them once it has finished", async () => {
     const NAMED = "66666666";
     db.addBookmarkImports(folder, [
       {
@@ -249,7 +240,6 @@ describe("a removal while a request is attaching", () => {
       answer();
     }
     expect((await naming).status).toBe(200);
-    await anotherRemoval();
     await swept([FED, FILED]);
     // Bookmarked in its folder, so held, and not among the papers swept.
     expect(db.existingPmids([NAMED]).size).toBe(1);

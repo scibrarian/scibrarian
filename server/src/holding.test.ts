@@ -13,8 +13,8 @@ import { ALL, FED, FILED, LOOSE, SAVED, article, seedHoldings } from "./unheld-s
 // of, because a paper is stored before the file or bookmark it is stored for is
 // attached, and one deleted in between leaves a file matched to a paper that
 // isn't there. So the sweep follows the removal, behind its reply, skips its
-// turn while anything is attaching, and the next removal to find the server
-// idle takes what the skipped one left.
+// turn while anything is attaching, and takes it once the last of that has
+// finished.
 //
 // The routes that call these are unheld-sweep-routes.test.ts, one case each.
 //
@@ -37,6 +37,9 @@ let shelf: number;
 let folder: number;
 
 const stored = () => [...db.existingPmids(ALL)].sort();
+// An owed turn comes after what held it off has finished, so it is waited for
+// rather than read straight after.
+const swept = (pmids: string[]) => vi.waitFor(() => expect(stored()).toEqual(pmids));
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 function gate() {
@@ -353,7 +356,7 @@ describe("a removal while something is attaching", () => {
     ],
   ];
 
-  it.each(attaching)("leaves the papers while %s, and the next removal takes them", async (_, start) => {
+  it.each(attaching)("leaves the papers while %s, and takes them once it has finished", async (_, start) => {
     const busy = start();
     try {
       await holding.letGoOfFolderPapers(folder, [SAVED]).swept;
@@ -367,15 +370,35 @@ describe("a removal while something is attaching", () => {
       await busy.finish();
     }
 
-    await anotherRemoval();
-    expect(stored()).toEqual([FED, FILED]);
+    await swept([FED, FILED]);
+  });
+
+  it("keeps the turn owed until the last of two has finished", async () => {
+    const scan = runningJob("scan", db.createCollection("Scanning").id);
+    const { shut, open } = gate();
+    const attach = holding.whileAttaching("attach", () => shut);
+    try {
+      await holding.letGoOfFolderPapers(folder, [SAVED]).swept;
+      scan.open();
+      await scan.stopped();
+      // The scan's end gave the owed turn its chance, and the attach still out
+      // held it off again.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stored()).toEqual(ALL);
+    } finally {
+      scan.open();
+      open();
+      await Promise.all([scan.stopped(), attach]);
+    }
+
+    await swept([FED, FILED]);
   });
 
   // What a topic's removal used to get wrong, by deleting its papers itself: a
   // scan that had read one as stored, and was waiting on PubMed for the rest,
   // went on to match a file to a paper that was gone. collection_files.pmid is
   // a soft reference, so nothing refused the match.
-  it("leaves a deleted topic's papers while a collection is being scanned", async () => {
+  it("leaves a deleted topic's papers while a collection is being scanned, and takes them after", async () => {
     const scan = runningJob("scan", db.createCollection("Scanning").id);
     try {
       await holding.letGoOfTopic(topic).swept;
@@ -385,11 +408,10 @@ describe("a removal while something is attaching", () => {
       await scan.stopped();
     }
 
-    await anotherRemoval();
-    expect(stored()).toEqual([FILED, SAVED]);
+    await swept([FILED, SAVED]);
   });
 
-  it("leaves the papers a narrowed scope let go of while a collection is being scanned", async () => {
+  it("leaves the papers a narrowed scope let go of while a collection is being scanned, and takes them after", async () => {
     const scan = runningJob("scan", db.createCollection("Scanning").id);
     try {
       await (await holding.changeTopicScope(topic, { allPubmed: false, journals: [] }))!.swept;
@@ -399,8 +421,7 @@ describe("a removal while something is attaching", () => {
       await scan.stopped();
     }
 
-    await anotherRemoval();
-    expect(stored()).toEqual([FILED, SAVED]);
+    await swept([FILED, SAVED]);
   });
 
   it("gives the sweep back its turn when an attach fails", async () => {
