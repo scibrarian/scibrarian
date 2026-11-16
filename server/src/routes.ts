@@ -107,24 +107,42 @@ import {
 } from "./signing.js";
 import type {
   AbstractsResponse,
+  AddBookmarksResponse,
   AddLinksResponse,
+  AuthStatus,
+  BookmarkFolder,
+  Collection,
   CollectionFile,
+  CollectionFilesResponse,
+  CollectionRemovalResponse,
   FolderImportResponse,
   GraphEdge,
   GraphNode,
   GraphResponse,
   HaveResponse,
+  ImportStatus,
+  JournalSearchResponse,
+  JournalSuggestResponse,
   LinkedPaper,
   MeshHeadingsResponse,
   MeshSearchResponse,
+  PaperCountResponse,
   PaperProvenance,
   PapersResponse,
+  RefreshResponse,
+  RemovedResponse,
+  ShareLinkResponse,
+  StoredCollection,
   StoredCollectionFile,
+  TestEmailResponse,
+  Topic,
   TopicPreviewResponse,
   TopicSuggestResponse,
   TopicUpdateResponse,
+  UploadResponse,
   Workspace,
   WorkspaceContentsResponse,
+  WorkspaceSwitchResponse,
   WorkspacesResponse,
 } from "../../shared/types.js";
 import { workspaceContents } from "./elsewhere.js";
@@ -348,14 +366,14 @@ api.get("/auth", (req, res) => {
     library_open: libraryOpen(),
     pro: admin ? proStatus() : null,
     desktop: IS_DESKTOP,
-  });
+  } satisfies AuthStatus);
 });
 
 // ---------- topics ----------
 
 api.get("/topics", (_req, res) => {
   const counts = topicArticleCounts();
-  const topics = listTopics().map((d) => ({ ...d, articleCount: counts[d.id] ?? 0 }));
+  const topics: Topic[] = listTopics().map((d) => ({ ...d, articleCount: counts[d.id] ?? 0 }));
   res.json(topics);
 });
 
@@ -416,7 +434,7 @@ api.get("/topics/:id", (req, res) => {
 api.post("/topics/:id/scope/preview", (req, res) => {
   const id = Number(req.params.id);
   if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
-  res.json({ count: countScopeLeaving(id, readScope(req.body)) });
+  res.json({ count: countScopeLeaving(id, readScope(req.body)) } satisfies PaperCountResponse);
 });
 
 // Change a topic's name, where it searches, or both: see changeTopic.
@@ -431,7 +449,7 @@ api.patch(
 // How many stored papers removing this topic would delete (for the confirm):
 // papers exclusive to the topic and not saved in a library collection.
 api.get("/topics/:id/article-count", (req, res) => {
-  res.json({ count: countTopicArticles(Number(req.params.id)) });
+  res.json({ count: countTopicArticles(Number(req.params.id)) } satisfies PaperCountResponse);
 });
 
 // The papers only this topic held go behind the reply: see letGoOfTopic.
@@ -444,7 +462,7 @@ api.get(
   "/mesh/search",
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? "").trim();
-    if (q.length < 2) return res.json({ results: [] });
+    if (q.length < 2) return res.json({ results: [] } satisfies MeshSearchResponse);
     await ensureMeshLoaded();
     // Typed, so the shape the client reads is checked here rather than trusted.
     const body: MeshSearchResponse = {
@@ -492,7 +510,9 @@ api.get(
   "/journals/search",
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? "").trim();
-    if (q.length < 2) return res.json({ results: [] });
+    if (q.length < 2) {
+      return res.json({ results: [], neverIndexed: 0 } satisfies JournalSearchResponse);
+    }
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
     // Pull a wider name-matched pool, then surface the highest-impact journals
@@ -515,7 +535,7 @@ api.get(
       // The journals this matched and left out (see searchCatalog), for the
       // pane to say so where it would have said nothing matched.
       neverIndexed: countNeverIndexedMatches(q),
-    });
+    } satisfies JournalSearchResponse);
   })
 );
 
@@ -539,7 +559,9 @@ api.get(
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
     const results = await suggestJournals(headings, limit);
-    res.json({ results: results.map((r) => ({ ...r, metric: round1(r.metric) })) });
+    res.json({
+      results: results.map((r) => ({ ...r, metric: round1(r.metric) })),
+    } satisfies JournalSuggestResponse);
   })
 );
 
@@ -839,7 +861,9 @@ function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void
 // /api/papers?folder=<id>, since a folder is just another paper source.
 api.get("/bookmark-folders", (_req, res) => {
   const counts = bookmarkCounts();
-  res.json(listBookmarkFolders().map((f) => ({ ...f, paperCount: counts[f.id] ?? 0 })));
+  res.json(
+    listBookmarkFolders().map((f): BookmarkFolder => ({ ...f, paperCount: counts[f.id] ?? 0 }))
+  );
 });
 
 api.post("/bookmark-folders", (req, res) => {
@@ -847,7 +871,7 @@ api.post("/bookmark-folders", (req, res) => {
   if (badName(res, name)) return;
   if (nameTaken(res, "folder", bookmarkFolderByName(name), null)) return;
   try {
-    res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 });
+    res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 } satisfies BookmarkFolder);
   } catch (err) {
     rethrowUnlessNameRace(err, res, "folder");
   }
@@ -864,7 +888,10 @@ api.put("/bookmark-folders/:id", (req, res) => {
   } catch (err) {
     return rethrowUnlessNameRace(err, res, "folder");
   }
-  res.json({ ...getBookmarkFolder(id)!, paperCount: bookmarkCounts()[id] ?? 0 });
+  res.json({
+    ...getBookmarkFolder(id)!,
+    paperCount: bookmarkCounts()[id] ?? 0,
+  } satisfies BookmarkFolder);
 });
 
 // See letGoOfFolder: a lookup running over it stops, and the papers only it
@@ -920,7 +947,11 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
   // Counted against the de-duplicated request: `storable` is a Set, so a pmid
   // sent twice would otherwise be reported as a paper that isn't stored.
   const asked = new Set(pmids).size;
-  res.json({ added, alreadySaved: storable.length - added, missing: asked - storable.length });
+  res.json({
+    added,
+    alreadySaved: storable.length - added,
+    missing: asked - storable.length,
+  } satisfies AddBookmarksResponse);
 });
 
 // Save papers into a folder from pasted DOIs and PubMed links — the way into a
@@ -1021,8 +1052,11 @@ api.get("/bookmark-folders/:id/imports", (req, res) => {
   res.json(listBookmarkImports(Number(req.params.id)));
 });
 
+// What a status route answers for a folder or collection no job has run for.
+const IDLE: ImportStatus = { state: "idle" };
+
 api.get("/bookmark-folders/:id/imports/status", (req, res) => {
-  res.json(jobStatus("lookup", Number(req.params.id)) ?? { state: "idle" });
+  res.json(jobStatus("lookup", Number(req.params.id)) ?? IDLE);
 });
 
 // Look up the entries an earlier import stopped before reaching — the
@@ -1038,7 +1072,8 @@ api.post("/bookmark-folders/:id/imports/run", (req, res) => {
 
 // The unmatched dialog's "Remove all". `removed` is how many went.
 api.delete("/bookmark-folders/:id/imports/unmatched", (req, res) => {
-  res.json({ removed: dismissUnmatchedBookmarkImports(Number(req.params.id)) });
+  const removed = dismissUnmatchedBookmarkImports(Number(req.params.id));
+  res.json({ removed } satisfies RemovedResponse);
 });
 
 // The paper a PMID names, for the reader to compare with the entry before it is
@@ -1130,7 +1165,7 @@ api.post("/bookmark-folders/:id/papers/remove", (req, res) => {
   }
   const pmids = raw.map((p) => String(p).trim()).filter(Boolean);
   const { result: removed } = letGoOfFolderPapers(id, pmids);
-  res.json({ removed });
+  res.json({ removed } satisfies RemovedResponse);
 });
 
 // ---------- collections (uploaded PDF libraries) ----------
@@ -1166,22 +1201,29 @@ function uploadFiles(req: Request, res: Response, next: NextFunction): void {
 // needs it asks GET /api/pro/sync, which is behind Pro's own auth.
 api.get("/collections", (_req, res) => {
   const counts = collectionCounts();
-  res.json(
-    listCollections().map((c) => ({
-      ...c,
-      fileCount: counts[c.id]?.files ?? 0,
-      matchedCount: counts[c.id]?.matched ?? 0,
-      heldCount: counts[c.id]?.held ?? 0,
-    }))
-  );
+  res.json(listCollections().map((c) => collectionReply(c, counts[c.id])));
 });
+
+// A collection as the routes send it, with what its files come to: nothing yet,
+// for one just made.
+function collectionReply(
+  c: StoredCollection,
+  counts?: { files: number; matched: number; held: number }
+): Collection {
+  return {
+    ...c,
+    fileCount: counts?.files ?? 0,
+    matchedCount: counts?.matched ?? 0,
+    heldCount: counts?.held ?? 0,
+  };
+}
 
 api.post("/collections", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (badName(res, name)) return;
   if (nameTaken(res, "collection", collectionByName(name), null)) return;
   try {
-    res.status(201).json(createCollection(name));
+    res.status(201).json(collectionReply(createCollection(name)));
   } catch (err) {
     rethrowUnlessNameRace(err, res, "collection");
   }
@@ -1198,7 +1240,7 @@ api.put("/collections/:id", (req, res) => {
   } catch (err) {
     return rethrowUnlessNameRace(err, res, "collection");
   }
-  res.json(getCollection(id));
+  res.json(collectionReply(getCollection(id)!, collectionCounts()[id]));
 });
 
 api.delete(
@@ -1234,7 +1276,8 @@ api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
   const present = existingBlobHashes();
-  res.json({ files: listCollectionFiles(id).map((f) => apiFile(f, present)) });
+  const files = listCollectionFiles(id).map((f) => apiFile(f, present));
+  res.json({ files } satisfies CollectionFilesResponse);
 });
 
 // Upload PDFs into a collection. Each file is verified by magic bytes, hashed
@@ -1267,7 +1310,7 @@ api.post(
       }
       const added = addCollectionFiles(id, stored);
       skipped += stored.length - added;
-      res.status(201).json({ added, skipped });
+      res.status(201).json({ added, skipped } satisfies UploadResponse);
     } catch (err) {
       await discardTemps();
       // Blobs stored before the failure but never recorded would leak otherwise.
@@ -1351,7 +1394,7 @@ api.post("/collections/files/:fileId/share", (req, res) => {
   res.json({
     path: `/api/collections/files/${file.id}/content?exp=${exp}&sig=${sig}`,
     expiresAt: new Date(exp * 1000).toISOString(),
-  });
+  } satisfies ShareLinkResponse);
 });
 
 // Mint an expiring link to the whole collection as a zip download. The grant
@@ -1371,7 +1414,7 @@ api.post("/collections/:id/share", (req, res) => {
   res.json({
     path: `/api/collections/${id}/archive?exp=${exp}&sig=${sig}`,
     expiresAt: new Date(exp * 1000).toISOString(),
-  });
+  } satisfies ShareLinkResponse);
 });
 
 // Two uploads can share a display name; suffix "(2)", "(3)", … keeps every
@@ -1431,7 +1474,7 @@ api.get("/collections/:id/archive", (req, res) => {
 });
 
 api.get("/collections/:id/import/status", (req, res) => {
-  res.json(jobStatus("scan", Number(req.params.id)) ?? { state: "idle" });
+  res.json(jobStatus("scan", Number(req.params.id)) ?? IDLE);
 });
 
 // Manually assign a PMID to a file the scanner couldn't match. The PMID is
@@ -1502,7 +1545,7 @@ api.post(
     // removes fewer papers than were asked for. The notice reports what happened,
     // which needs the pair; see removeCollectionPapers.
     const { result: removal } = await letGoOfCollectionPapers(id, pmids);
-    res.json(removal);
+    res.json(removal satisfies CollectionRemovalResponse);
   })
 );
 
@@ -1522,7 +1565,7 @@ api.post(
     if (results === null) {
       return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
     }
-    res.json({ results, polledAt: new Date().toISOString() });
+    res.json({ results, polledAt: new Date().toISOString() } satisfies RefreshResponse);
   })
 );
 
@@ -1559,7 +1602,7 @@ api.post(
   asyncHandler(async (req, res) => {
     if (noEmailAlerts(res)) return;
     await sendTestEmail(mailSettingsFor(req.body));
-    res.json({ ok: true });
+    res.json({ ok: true } satisfies TestEmailResponse);
   })
 );
 
@@ -1767,7 +1810,7 @@ api.post("/workspaces/switch", (req, res) => {
   res.on("finish", () => {
     requestRestart();
   });
-  res.json({ ok: true, restarting: canRestart() });
+  res.json({ ok: true, restarting: canRestart() } satisfies WorkspaceSwitchResponse);
 });
 
 // ---------- delete everything ----------

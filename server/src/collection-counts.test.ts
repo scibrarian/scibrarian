@@ -1,3 +1,6 @@
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
@@ -13,6 +16,8 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 
 let db: Db;
 let collection: number;
+let server: Server;
+let base: string;
 
 // Two files for one paper — the preprint and the published PDF, say. Distinct
 // hashes because UNIQUE(collection_id, content_hash) is what stops a genuine
@@ -59,9 +64,22 @@ beforeAll(async () => {
     const pmid = byHash[f.content_hash];
     if (pmid) db.setFileMatched(f.id, pmid, "manual");
   }
+  const { api } = await import("./routes.js");
+  const app = express();
+  app.use(express.json());
+  app.use("/api", api);
+  server = app.listen(0);
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
-afterAll(closeTempDb);
+afterAll(async () => {
+  await new Promise<void>((resolve) => server?.close(() => resolve()));
+  closeTempDb();
+});
 
 const counts = () => db.collectionCounts()[collection];
 
@@ -84,5 +102,34 @@ describe("the counts a collection reports", () => {
     // The point of spelling this count with heldFileSql: it cannot answer a
     // different number than the join that actually selects the papers.
     expect(db.listPapers({ collection }, {}).length).toBe(counts().held);
+  });
+});
+
+// Every route that answers with a collection answers with its counts, as the
+// list does: the client takes each reply as the same shape.
+describe("the collection a route answers with", () => {
+  const send = async (method: string, path: string, name: string) =>
+    (await fetch(`${base}/api${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    })).json();
+
+  it("carries its counts when renamed", async () => {
+    expect(await send("PUT", `/collections/${collection}`, "Renamed")).toMatchObject({
+      name: "Renamed",
+      fileCount: 4,
+      matchedCount: 3,
+      heldCount: 2,
+    });
+  });
+
+  it("carries counts of nothing yet when just made", async () => {
+    expect(await send("POST", "/collections", "Fresh")).toMatchObject({
+      name: "Fresh",
+      fileCount: 0,
+      matchedCount: 0,
+      heldCount: 0,
+    });
   });
 });
