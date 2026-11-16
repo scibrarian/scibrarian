@@ -1240,7 +1240,7 @@ api.put("/collections/:id", (req, res) => {
   } catch (err) {
     return rethrowUnlessNameRace(err, res, "collection");
   }
-  res.json(collectionReply(getCollection(id)!, collectionCounts()[id]));
+  res.json(collectionReply(getCollection(id)!, collectionCounts(id)[id]));
 });
 
 api.delete(

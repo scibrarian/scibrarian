@@ -2507,15 +2507,22 @@ export function deleteCollection(id: number): void {
 // The CASE is not there to skip nulls (COUNT DISTINCT already does) but so the
 // custody predicate is named rather than inlined: heldFileSql changing has to move
 // this count with it, which is the whole point of one spelling.
-export function collectionCounts(): Record<number, { files: number; matched: number; held: number }> {
+//
+// Of every collection, or of the one named: a rename answers with its own
+// counts, and has no reason to read every other collection's files for them.
+export function collectionCounts(
+  only?: number
+): Record<number, { files: number; matched: number; held: number }> {
+  const where = only === undefined ? "" : "WHERE collection_id = ?";
+  const params = only === undefined ? [] : [only];
   const rows = db
     .prepare(
       `SELECT collection_id, COUNT(*) AS files,
               SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched,
               COUNT(DISTINCT CASE WHEN ${heldFileSql()} THEN pmid END) AS held
-       FROM collection_files GROUP BY collection_id`
+       FROM collection_files ${where} GROUP BY collection_id`
     )
-    .all() as { collection_id: number; files: number; matched: number; held: number }[];
+    .all(...params) as { collection_id: number; files: number; matched: number; held: number }[];
   const out: Record<number, { files: number; matched: number; held: number }> = {};
   for (const r of rows) {
     out[r.collection_id] = { files: r.files, matched: r.matched ?? 0, held: r.held ?? 0 };

@@ -103,6 +103,16 @@ describe("the counts a collection reports", () => {
     // different number than the join that actually selects the papers.
     expect(db.listPapers({ collection }, {}).length).toBe(counts().held);
   });
+
+  it("counts only the collection it is asked about, the same as it counts it among all", () => {
+    const other = db.createCollection("Elsewhere").id;
+    db.addCollectionFiles(other, [{ hash: "hash-elsewhere", name: "elsewhere.pdf" }]);
+    try {
+      expect(db.collectionCounts(collection)).toEqual({ [collection]: counts() });
+    } finally {
+      db.deleteCollection(other);
+    }
+  });
 });
 
 // Every route that answers with a collection answers with its counts, as the
