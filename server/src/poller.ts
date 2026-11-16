@@ -21,7 +21,7 @@ import { refreshCatalogIfStale } from "./journal-catalog.js";
 import { recheckMeshVersion } from "./mesh-catalog.js";
 import { backfillArticleMesh } from "./mesh-index.js";
 import { buildTerm, EUTILS_BATCH, fetchArticles, searchWithTotal } from "./pubmed.js";
-import type { PollResult } from "./types.js";
+import type { PollResult } from "../../shared/types.js";
 import { chunk, errMessage, safeMessage } from "./util.js";
 import { canPoll } from "../../shared/topic.js";
 

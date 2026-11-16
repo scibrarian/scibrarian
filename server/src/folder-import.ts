@@ -9,7 +9,7 @@ import {
 import { startJob, type JobRun } from "./jobs.js";
 import { lookUpPapers } from "./paper-lookup.js";
 import { warmCitations } from "./poller.js";
-import type { BookmarkImport, ImportJob } from "./types.js";
+import type { BookmarkImport, ImportJob } from "../../shared/types.js";
 import { chunk, errMessage, httpError } from "./util.js";
 
 // Looking up the entries a reference file brought into a bookmark folder, and

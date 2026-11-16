@@ -24,7 +24,7 @@ import type {
   JournalRemovalResult,
   LibraryStats,
   TopicRemovalResult,
-} from "./types.js";
+} from "../../shared/types.js";
 import { errMessage } from "./util.js";
 
 // Letting go of papers: every way a holder lets go of what it holds, and the

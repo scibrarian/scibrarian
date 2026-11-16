@@ -125,7 +125,7 @@ import type {
   Workspace,
   WorkspaceContentsResponse,
   WorkspacesResponse,
-} from "./types.js";
+} from "../../shared/types.js";
 import { workspaceContents } from "./elsewhere.js";
 import {
   activeWorkspace,

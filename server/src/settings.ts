@@ -1,9 +1,9 @@
 import os from "node:os";
 import { BAD_SMTP_PORT, isEmailAddress, mailConfig, smtpPort, type MailSettings } from "./alerts.js";
-import { boundPort, HOST, HOST_IS_LOOPBACK, IS_DESKTOP } from "./config.js";
+import { boundPort, HOST, HOST_IS_LOOPBACK, IS_DESKTOP, type Settings } from "./config.js";
 import { getSettings, setSetting } from "./db.js";
 import { isValidCron, rescheduleFromSettings } from "./poller.js";
-import type { AppSettings, Settings } from "./types.js";
+import type { AppSettings } from "../../shared/types.js";
 import { httpError } from "./util.js";
 import { MAIL_FIELDS, mailFieldsOf } from "../../shared/mail.js";
 

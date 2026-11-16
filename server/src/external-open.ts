@@ -22,7 +22,7 @@ import {
   savePdfText,
 } from "./db.js";
 import { extractPdf } from "./pdf-text.js";
-import type { CacheStats, ClearedCache, CollectionFile } from "./types.js";
+import type { CacheStats, ClearedCache, CollectionFile } from "../../shared/types.js";
 import { errMessage } from "./util.js";
 
 // Opening a stored PDF in whatever this machine already opens PDFs with, for

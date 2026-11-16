@@ -13,7 +13,7 @@ import { findDois, findPmid } from "./pdf-match.js";
 import { hintProSync } from "./pro-hooks.js";
 import { EUTILS_BATCH, fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
-import type { CollectionFile, ImportJob } from "./types.js";
+import type { CollectionFile, ImportJob } from "../../shared/types.js";
 import { startJob, type JobRun } from "./jobs.js";
 import { chunk, errMessage } from "./util.js";
 

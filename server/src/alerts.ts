@@ -1,9 +1,8 @@
 import { plural as pluralIn } from "../../shared/format.js";
 import type { MailField } from "../../shared/mail.js";
-import { IS_DESKTOP } from "./config.js";
+import { IS_DESKTOP, type Settings } from "./config.js";
 import { alertArticles, getSettings, type AlertArticle } from "./db.js";
 import type { TopicPoll } from "./poller.js";
-import type { Settings } from "./types.js";
 import { errMessage, httpError } from "./util.js";
 
 // Email alerts: one message after a poll nobody was watching — the cron, or

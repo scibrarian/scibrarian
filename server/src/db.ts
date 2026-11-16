@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs, existingBlobHashes } from "./blobstore.js";
-import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
+import { DB_PATH, SETTING_DEFAULTS, type Settings } from "./config.js";
 import { FTS_TOKENIZE, toFtsQuery } from "./fts-query.js";
 import { searchIdentifiers } from "./identifiers.js";
 import {
@@ -34,9 +34,8 @@ import type {
   MeshHeading,
   MeshSearchResult,
   Paper,
-  Settings,
   TopicSuggestion,
-} from "./types.js";
+} from "../../shared/types.js";
 
 // Ensure the data directory exists before opening the database.
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });

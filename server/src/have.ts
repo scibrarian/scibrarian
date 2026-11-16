@@ -13,8 +13,7 @@ import { orgCheck, proActive } from "./pro-hooks.js";
 import { workspacesEnabled } from "./workspaces.js";
 import { evidenceFromRows } from "./pubmed-parse.js";
 import type { OrgHolding } from "../../shared/pro.js";
-import type { ElsewhereHolding } from "../../shared/types.js";
-import type { HaveAnswer, HaveMatch } from "./types.js";
+import type { ElsewhereHolding, HaveAnswer, HaveMatch } from "../../shared/types.js";
 
 // "Do I already have this?" — the custody question, answered for a list of
 // pasted references.

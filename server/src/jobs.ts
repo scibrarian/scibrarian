@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ImportJob } from "./types.js";
+import type { ImportJob } from "../../shared/types.js";
 import { errMessage, safeMessage } from "./util.js";
 
 // The background jobs this process runs on a timer of its own making, long after

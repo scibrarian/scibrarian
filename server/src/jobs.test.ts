@@ -9,7 +9,7 @@ import {
   startJob,
   type JobRun,
 } from "./jobs.js";
-import type { ImportJob } from "./types.js";
+import type { ImportJob } from "../../shared/types.js";
 import { GENERIC_SERVER_ERROR, httpError } from "./util.js";
 
 // The bookkeeping a collection's scan and a folder's lookup share: one job per

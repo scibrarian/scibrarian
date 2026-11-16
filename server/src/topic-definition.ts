@@ -24,7 +24,7 @@ import type {
   MeshDescriptorRef,
   TopicDetail,
   TopicUpdateResponse,
-} from "./types.js";
+} from "../../shared/types.js";
 import { httpError } from "./util.js";
 import { MAX_TOPIC_HEADINGS, MAX_TOPIC_NAME_CHARS } from "../../shared/limits.js";
 import { defaultTopicName } from "../../shared/topic.js";
