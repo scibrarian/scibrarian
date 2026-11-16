@@ -12,7 +12,7 @@ import {
 import { lookUpPapers, type RefIds } from "./paper-lookup.js";
 import { warmCitations } from "./poller.js";
 import { errMessage, httpError } from "./util.js";
-import type { LinkAnswer, LinkedPaper } from "./types.js";
+import type { LinkAnswer, LinkedPaper } from "../../shared/types.js";
 
 // "Add links" — saving papers into a bookmark folder from pasted DOIs and
 // PubMed links, for a paper found somewhere other than Interests.

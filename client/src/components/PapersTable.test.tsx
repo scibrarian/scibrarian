@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
-import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { usePaperFilters } from "../lib/papers";
+import {
+  createSources,
+  SourcesContext,
+  useReloadToken,
+  type Sources,
+  type SourcesApi,
+} from "../lib/sources";
 import type { Paper, PaperSource } from "../types";
 import { PapersTable } from "./PapersTable";
 
@@ -66,11 +72,21 @@ function deferred<T>() {
   };
 }
 
-// A shell that owns the reload token, the way App does: the table asks for a
-// reload through onCollectionChanged — or onFolderChanged, for a bookmark
-// folder — and the token moves by exactly one.
-function Host({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolean }) {
-  const [token, setToken] = useState(0);
+// The sources store on the mocked api, made afresh for each test.
+let sources: Sources;
+
+// A shell over the store, the way App is: the table takes its token from it,
+// removes through it, and the token moves by exactly one.
+function Host(props: { source: PaperSource; knownEmpty?: boolean }) {
+  return (
+    <SourcesContext.Provider value={sources}>
+      <Table {...props} />
+    </SourcesContext.Provider>
+  );
+}
+
+function Table({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolean }) {
+  const token = useReloadToken(source);
   const filters = usePaperFilters(source);
   return (
     <PapersTable
@@ -81,10 +97,8 @@ function Host({ source, knownEmpty }: { source: PaperSource; knownEmpty?: boolea
       tokenRequired={false}
       libraryOpen
       onAuthRefreshed={() => {}}
-      onCollectionChanged={() => setToken((t) => t + 1)}
-      onFolderChanged={() => setToken((t) => t + 1)}
       filters={filters}
-      bookmarking={null}
+      bookmarkable={false}
     />
   );
 }
@@ -99,6 +113,10 @@ let source: PaperSource;
 beforeEach(() => {
   source = { collection: nextCollection++ };
   api.getMeshHeadings.mockResolvedValue(NO_MESH);
+  api.getBookmarks.mockResolvedValue([]);
+  api.getBookmarkFolders.mockResolvedValue([]);
+  api.getCollections.mockResolvedValue([]);
+  sources = createSources(api as unknown as SourcesApi);
 });
 afterEach(() => {
   cleanup();

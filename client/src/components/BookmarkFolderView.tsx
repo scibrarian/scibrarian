@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown, FileInput, Link as LinkIcon, Plus } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../lib/format";
-import { useImportJob, type ImportJobs } from "../lib/import-jobs";
+import { useFollowedJob } from "../lib/import-jobs";
+import { useSources } from "../lib/sources";
 import type { BookmarkImport, FolderImportResponse } from "../types";
 import { AddLinks } from "./AddLinks";
 import { Banner } from "./Banner";
@@ -44,30 +45,22 @@ export function BookmarkFolderView({
   folderId,
   isAdmin,
   summary,
-  importJobs,
-  onChanged,
-  onPapersAdded,
-  onDeleted,
   children,
 }: {
   folderId: number;
   isAdmin: boolean;
   /** The folder counted out, for the row's left half — see App's sourceSummary. */
   summary: string | null;
-  /** App's, so a lookup goes on being followed after this view has gone. */
-  importJobs: ImportJobs;
-  onChanged: () => void;
-  /** Add links, or a PMID given to an imported entry, saved papers into this folder. */
-  onPapersAdded: () => void;
-  onDeleted: () => void;
   children: ReactNode;
 }) {
+  const sources = useSources();
+  // The store's, so a lookup goes on being followed after this view has gone.
+  const importJobs = sources.lookups;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [addingLinks, setAddingLinks] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const watched = useImportJob(importJobs, folderId);
   // While a file is being sent and read, before any lookup has started.
   const [sending, setSending] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -79,9 +72,6 @@ export function BookmarkFolderView({
   const [entries, setEntries] = useState<BookmarkImport[]>([]);
   const [entriesToken, setEntriesToken] = useState(0);
   const [entriesStale, setEntriesStale] = useState(false);
-  // Whether the resume probe below has answered: until it has, a pending entry
-  // may be one a lookup is working on right now.
-  const [lookupChecked, setLookupChecked] = useState(false);
   const [showingEntries, setShowingEntries] = useState(false);
   const [entriesError, setEntriesError] = useState<string | null>(null);
 
@@ -103,28 +93,17 @@ export function BookmarkFolderView({
 
   const refreshEntries = () => setEntriesToken((t) => t + 1);
 
-  // Resume the progress bar if a lookup is already running over this folder.
-  useEffect(() => {
-    void importJobs.check(folderId).then(() => setLookupChecked(true));
-  }, [folderId, importJobs]);
-
-  // A lookup this view was watching has ended. App refreshes the folder's
-  // papers when it does, and after each round (see folderImportJobs); what is
-  // left here is the list of entries it settled, and its failure if it failed.
-  //
-  // Before paint, for CollectionView's reason: the render that first sees the
-  // lookup over still holds its entries as pending, and with nothing running
-  // any more a passive effect would paint them for a frame as not looked up.
-  const lastWatched = useRef(watched);
-  useLayoutEffect(() => {
-    const was = lastWatched.current;
-    lastWatched.current = watched;
-    if (was?.state !== "running" || !watched || watched.state === "running") return;
-    if (watched.state === "lost") setError("Lost contact with the import. Reload to check its status.");
-    else if (watched.state === "error") setError(watched.error ?? "The import failed.");
+  // The lookup over this folder, resumed on entry if one is running; until the
+  // probe has answered (lookupChecked), a pending entry may be one a lookup is
+  // working on right now. When one ends, the store refreshes the folder's
+  // papers, as it does after each round (see lookups); what is left here is the
+  // list of entries it settled, and its failure if it failed.
+  const { watched, checked: lookupChecked } = useFollowedJob(importJobs, folderId, (ended) => {
+    if (ended.state === "lost") setError("Lost contact with the import. Reload to check its status.");
+    else if (ended.state === "error") setError(ended.error ?? "The import failed.");
     setEntriesStale(true);
     refreshEntries();
-  }, [watched]);
+  });
 
   async function importFile(file: File) {
     setError(null);
@@ -135,8 +114,7 @@ export function BookmarkFolderView({
     }
     setSending(true);
     try {
-      const res = await api.importToFolder(folderId, file);
-      importJobs.follow(folderId, res.status);
+      const res = await sources.importToFolder(folderId, file);
       const note = leftOutNote(res);
       if (res.queued + res.noIdentifier === 0) {
         setNotice(`Nothing in that file could be imported. ${note}`.trim());
@@ -153,12 +131,10 @@ export function BookmarkFolderView({
   async function lookUp() {
     setEntriesError(null);
     try {
-      const started = await api.startFolderImport(folderId);
-      importJobs.follow(folderId, started);
-      // Nothing was left to look up: another tab got there first, so the
-      // entries on screen as not looked up are out of date. A lookup with
-      // anything to do answers "running", and saves nothing before it has.
-      if (started.state !== "running") refreshEntries();
+      // One with nothing left to look up — another tab got there first —
+      // answers over already, and the entries on screen as not looked up are
+      // refreshed as they are for any lookup that ends.
+      await sources.lookUpImports(folderId);
     } catch (e) {
       setEntriesError(errorMessage(e));
     }
@@ -166,23 +142,17 @@ export function BookmarkFolderView({
 
   // Entries the dialog saved or removed, taken off the list here rather than
   // by asking for it again: it can run to thousands, and each save fetched and
-  // re-rendered all of them. Kept the same across renders, through a ref to
-  // App's callback, so the dialog's other rows skip theirs (see EntryRow).
-  const papersAdded = useRef(onPapersAdded);
-  useEffect(() => {
-    papersAdded.current = onPapersAdded;
-  });
-  const entriesLeft = useCallback((ids: number[], saved: boolean) => {
+  // re-rendered all of them. Kept the same across renders, so the dialog's
+  // other rows skip theirs (see EntryRow).
+  const entriesLeft = useCallback((ids: number[]) => {
     const gone = new Set(ids);
     setEntries((list) => list.filter((e) => !gone.has(e.id)));
-    if (saved) papersAdded.current();
   }, []);
 
   async function rename(next: string) {
     setRenaming(false);
     try {
-      await api.renameBookmarkFolder(folderId, next);
-      onChanged();
+      await sources.renameFolder(folderId, next);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -191,8 +161,7 @@ export function BookmarkFolderView({
   async function remove() {
     setConfirmingDelete(false);
     try {
-      await api.deleteBookmarkFolder(folderId);
-      onDeleted();
+      await sources.deleteFolder(folderId);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -344,7 +313,6 @@ export function BookmarkFolderView({
         open={addingLinks}
         onClose={() => setAddingLinks(false)}
         folderId={folderId}
-        onAdded={onPapersAdded}
       />
       <PromptDialog
         open={renaming}

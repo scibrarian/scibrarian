@@ -1,4 +1,6 @@
+import type { BookmarkImportInsert } from "./db.js";
 import { findDoi, labelledPmid, PMID_LABEL_RE } from "./identifiers.js";
+import { MAX_IMPORT_ENTRIES } from "../../shared/limits.js";
 
 // Read a reference manager's export into the entries a bookmark folder import
 // looks up: RIS, which EndNote, Zotero and Mendeley all write, and PubMed's own
@@ -11,7 +13,14 @@ import { findDoi, labelledPmid, PMID_LABEL_RE } from "./identifiers.js";
 //
 // Pure and tested, like citation-ref.ts. What it decides — which number in a
 // record is a PMID — is the difference between an entry saved as the paper it
-// names and one saved as a different paper that really exists.
+// names and one saved as a different paper that really exists. And which entry
+// already in a folder a record is the same one as, which decides whether an
+// export imported again lists its references twice.
+//
+// readReferenceFile is what an import calls: a file's bytes in, and out the
+// rows to list and the counts its reply gives, or the reason the file can't be
+// taken. parseReferenceFile is the step inside it that reads the two formats,
+// and is tested on its own.
 
 export type ReferenceFormat = "ris" | "medline";
 
@@ -50,6 +59,99 @@ export function parseReferenceFile(text: string): ReferenceFile | null {
     return { format: "medline", entries: medlineRecords(lines).map(medlineEntry) };
   }
   return null;
+}
+
+// What an import into a bookmark folder takes from a file: the rows to list,
+// keyed for the folder (see bookmark_imports), and what its reply counts of the
+// references the file held — how many there were, how many the file's own types
+// said aren't journal articles, how many articles had nothing to show or look
+// up by, and how many of those listed have no DOI or PMID to look up.
+export interface ReferenceImport {
+  rows: BookmarkImportInsert[];
+  read: number;
+  notArticles: number;
+  blank: number;
+  noIdentifier: number;
+}
+
+/**
+ * A file as an import takes it: its bytes decoded and read, its journal
+ * articles kept and keyed. Or, for one an import can't take, why, in the words
+ * the reader is shown.
+ */
+export function readReferenceFile(bytes: Uint8Array): ReferenceImport | { refused: string } {
+  const parsed = parseReferenceFile(decodeReferenceFile(bytes));
+  if (!parsed) {
+    return {
+      refused:
+        "That file isn’t one this can read. Export RIS from your reference manager, or use PubMed’s " +
+        "“Send to → Citation manager”.",
+    };
+  }
+  const { entries } = parsed;
+  if (entries.length === 0) return { refused: "There are no references in that file." };
+  if (entries.length > MAX_IMPORT_ENTRIES) {
+    return {
+      refused:
+        `That file has ${entries.length.toLocaleString("en-US")} references. Import at most ` +
+        `${MAX_IMPORT_ENTRIES.toLocaleString("en-US")} at a time.`,
+    };
+  }
+  const articles = entries.filter((e) => e.article);
+  const kept = articles.filter((e) => e.title || e.doi || e.pmid);
+  return {
+    rows: kept.map((e) => ({
+      ...importKeys(e),
+      title: e.title,
+      authors: e.authors,
+      journal: e.journal,
+      year: e.year,
+      doi: e.doi,
+      pmid: e.pmid,
+    })),
+    read: entries.length,
+    notArticles: entries.length - articles.length,
+    blank: articles.length - kept.length,
+    noIdentifier: kept.filter((e) => !e.doi && !e.pmid).length,
+  };
+}
+
+// UTF-8, which every current exporter writes, and Windows-1252 for a file that
+// isn't — EndNote's "ANSI" export, among others. Only titles and names are at
+// stake: the DOIs and PMIDs the lookup reads are ASCII either way.
+//
+// Except in UTF-16, which Windows offers as "Unicode" and EndNote among others
+// can save: every other byte is a NUL, and read as either of the above no line
+// is a tag, so the file was refused as a format this can't read. It is known by
+// its byte-order mark, which the decoder drops.
+function decodeReferenceFile(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
+}
+
+// An entry's identity in its folder — see bookmark_imports — and the keys it
+// would have had before its reference manager filled in a DOI or PMID, most
+// specific first.
+//
+// One with neither is known by its title, year, journal and first author's
+// surname: title and year alone made every "Editorial" of a year one entry.
+// Each is folded to letters and digits, so a re-export that changed only
+// punctuation or case is still the same entry.
+function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
+  const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  // "Polack, Fernando P." as RIS writes a name, "Polack FP" as PubMed does.
+  const surname = e.authors.split(";")[0].split(",")[0].trim().split(/\s+/)[0] ?? "";
+  const [key, ...formerKeys] = [
+    e.pmid && `pmid:${e.pmid}`,
+    e.doi && `doi:${e.doi}`,
+    `ref:${[e.title, e.year, e.journal, surname].map(fold).join("|")}`,
+  ].filter((k): k is string => !!k);
+  return { key, formerKeys };
 }
 
 // A record's fields, each tag's values in the order they appeared.

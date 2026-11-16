@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { CollectionView } from "./CollectionView";
-import { createImportJobs, type ImportJobs } from "../lib/import-jobs";
+import { createSources, SourcesContext, type Sources, type SourcesApi } from "../lib/sources";
 import { dataTransfer, fileEntry, folderEntry } from "../lib/test-drops";
 import type { CollectionFile, ImportJob } from "../types";
 
@@ -15,23 +15,26 @@ const api = vi.hoisted(() => ({
   uploadFiles: vi.fn(),
   startImport: vi.fn(),
   setFilePmid: vi.fn(),
+  getCollections: vi.fn(),
 }));
 
 vi.mock("../api", () => ({ api }));
 
-// App's half: the scans it follows, and what it is told when one ends.
-let jobs: ImportJobs;
-const settled = vi.fn();
+// The store's half: the scans it follows, and the refresh it makes when one
+// ends or a file changes — counted by how far the collection's token has moved.
+let sources: Sources;
+const refreshes = (id: number) => sources.tokenFor({ collection: id });
 
 beforeEach(() => {
   api.getCollectionFiles.mockResolvedValue({ files: [] });
   api.getImportStatus.mockResolvedValue({ state: "idle" });
-  jobs = createImportJobs(api.getImportStatus, settled);
+  api.getCollections.mockResolvedValue([]);
+  sources = createSources(api as unknown as SourcesApi);
 });
 
 afterEach(() => {
   cleanup();
-  jobs.stop();
+  sources.stop();
   vi.useRealTimers();
   vi.resetAllMocks();
 });
@@ -75,31 +78,13 @@ function job(over: Partial<ImportJob>): ImportJob {
   };
 }
 
-function View({
-  id,
-  reloadToken = 0,
-  onChanged = () => {},
-  isAdmin = true,
-}: {
-  id: number;
-  reloadToken?: number;
-  onChanged?: () => void;
-  isAdmin?: boolean;
-}) {
+function View({ id, isAdmin = true }: { id: number; isAdmin?: boolean }) {
   return (
-    <CollectionView
-      collectionId={id}
-      name="Cardiology"
-      isAdmin={isAdmin}
-      summary="1 paper"
-      stamp={null}
-      reloadToken={reloadToken}
-      importJobs={jobs}
-      onChanged={onChanged}
-      onDeleted={() => {}}
-    >
-      <div />
-    </CollectionView>
+    <SourcesContext.Provider value={sources}>
+      <CollectionView collectionId={id} name="Cardiology" isAdmin={isAdmin} summary="1 paper" stamp={null}>
+        <div />
+      </CollectionView>
+    </SourcesContext.Provider>
   );
 }
 
@@ -129,12 +114,12 @@ describe("a scan that ends after its collection has been left", () => {
 
     api.getImportStatus.mockResolvedValue(job({ total: 2, processed: 2, matched: 1, unmatched: 1 }));
     await tick();
-    expect(settled).toHaveBeenCalledWith(id);
+    // The collection's token moved on, so coming back to it fetches the list
+    // the scan left rather than painting the cached one.
+    expect(refreshes(id)).toBe(1);
 
-    // What App does with that: the collection's token moves on, so coming back
-    // to it fetches the list the scan left rather than painting the cached one.
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "unmatched")] });
-    render(<View id={id} reloadToken={1} />);
+    render(<View id={id} />);
     const dialog = await openUnmatched(1);
     expect(api.getCollectionFiles).toHaveBeenCalledTimes(2);
     expect(within(dialog).getByText("paper-2.pdf")).toBeTruthy();
@@ -146,13 +131,12 @@ describe("a scan that ends after its collection has been left", () => {
     api.getCollectionFiles.mockResolvedValue({ files: [row(3, id, "pending")] });
     // The server restarted mid-job: no job, and the row is still pending.
     api.getImportStatus.mockResolvedValue({ state: "idle" });
-    const onChanged = vi.fn();
-    render(<View id={id} onChanged={onChanged} />);
+    render(<View id={id} />);
     const dialog = await openFiles("1 not scanned");
 
     const group = within(dialog).getByRole("region", { name: /Not scanned/ });
     expect(within(group).getByText("paper-3.pdf")).toBeTruthy();
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(refreshes(id)).toBe(0);
     expect(api.getCollectionFiles).toHaveBeenCalledTimes(1);
   });
 });
@@ -163,19 +147,20 @@ describe("a scan that ends while the view is open", () => {
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending")] });
     api.getImportStatus.mockResolvedValue(job({ state: "running", total: 1, processed: 0, matched: 0 }));
-    const { rerender } = render(<View id={id} />);
+    render(<View id={id} />);
     await settle();
     expect(screen.getByText(/Scanning 0 \/ 1/)).toBeTruthy();
 
+    let land!: (files: { files: CollectionFile[] }) => void;
+    api.getCollectionFiles.mockReturnValue(new Promise((resolve) => (land = resolve)));
     api.getImportStatus.mockResolvedValue(job({ total: 1, processed: 1, matched: 0, unmatched: 1 }));
     await tick();
-    expect(settled).toHaveBeenCalledWith(id);
+    expect(refreshes(id)).toBe(1);
     // Over, but the row on screen is still the pre-scan one, and not an answer.
     expect(screen.queryByText(/Scanning/)).toBeNull();
     expect(unmatchedLink()).toBeNull();
 
-    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "unmatched")] });
-    rerender(<View id={id} reloadToken={1} />);
+    await act(async () => land({ files: [row(1, id, "unmatched")] }));
     const dialog = await openUnmatched(1);
     expect(within(dialog).queryByText(/never scanned/)).toBeNull();
   });
@@ -191,36 +176,42 @@ describe("a scan that ends while the view is open", () => {
     await tick(5000);
     expect(screen.getByText(/Lost contact with the import job/)).toBeTruthy();
     expect(screen.queryByText(/Scanning/)).toBeNull();
-    expect(settled).not.toHaveBeenCalled();
+    expect(refreshes(id)).toBe(0);
   });
 });
 
 describe("what a finished scan says", () => {
   const pdf = (name: string) => new File(["%PDF-1.4"], name, { type: "application/pdf" });
 
-  // Pick files and let a scan that is over before the first poll settle.
+  // Pick files and let a scan that is over before the first poll settle: its
+  // start answers with it finished.
   async function scan(files: File[], finished: ImportJob) {
     const id = nextId++;
     const added = files.filter((f) => f.name.endsWith(".pdf")).length;
-    api.getImportStatus.mockResolvedValueOnce({ state: "idle" }).mockResolvedValueOnce(finished);
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
     api.uploadFiles.mockResolvedValue({ added, skipped: 0 });
-    api.startImport.mockResolvedValue({ jobId: "job", total: added });
+    api.startImport.mockResolvedValue(finished);
     const { container } = render(<View id={id} />);
     await settle();
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files } });
-    await waitFor(() => expect(api.getImportStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
     await settle();
-    return container;
+    return { container, id };
   }
 
-  it("says nothing when everything matched", async () => {
-    const container = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
+  it("says nothing when everything matched, and has the store refresh what it changed", async () => {
+    const { container, id } = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
     expect(container.querySelector(".banner")).toBeNull();
+    // Once for the files the upload added, and once for the scan's end: over
+    // before anything could poll it, so its start is where it ends.
+    expect(refreshes(id)).toBe(2);
+    // Followed from the start's answer, with nothing asked after it.
+    expect(api.getImportStatus).toHaveBeenCalledTimes(1);
   });
 
   it("says nothing about files it couldn't match or read, which the summary line counts", async () => {
     const files = [pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")];
-    const container = await scan(files, job({ matched: 1, unmatched: 1, errors: 1 }));
+    const { container } = await scan(files, job({ matched: 1, unmatched: 1, errors: 1 }));
     expect(container.querySelector(".banner")).toBeNull();
   });
 
@@ -236,18 +227,35 @@ describe("what a finished scan says", () => {
     await scan(picked, job({ total: 2, processed: 2, matched: 2 }));
     expect(screen.getByText("Ignored 2 files that aren't PDFs.")).toBeTruthy();
   });
+
+  // The upload's own error says what the selection left behind, so the scan —
+  // over at its start, which reports it at once — has nothing left to say.
+  it("names what the selection left behind once when the upload fails", async () => {
+    const id = nextId++;
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
+    api.uploadFiles.mockRejectedValue(new Error("Couldn't upload."));
+    api.startImport.mockResolvedValue(job({ total: 0, processed: 0, matched: 0 }));
+    const { container } = render(<View id={id} />);
+    await settle();
+    const files = [pdf("a.pdf"), new File(["x"], "notes.txt", { type: "text/plain" })];
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files } });
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    await settle();
+    expect(screen.getByText(/Couldn't upload\./)).toBeTruthy();
+    expect(screen.getAllByText(/Ignored 1 file/)).toHaveLength(1);
+  });
 });
 
 describe("files dropped onto a collection", () => {
   // The view, with uploads that take whatever is sent and a scan that is over
   // before the first poll. Returns the element drops land on.
   async function view({ isAdmin = true } = {}): Promise<HTMLElement> {
-    api.getImportStatus.mockResolvedValueOnce({ state: "idle" }).mockResolvedValue(job({}));
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
     api.uploadFiles.mockImplementation(async (_id: number, files: File[]) => ({
       added: files.length,
       skipped: 0,
     }));
-    api.startImport.mockResolvedValue({ jobId: "job", total: 1 });
+    api.startImport.mockResolvedValue(job({}));
     const { container } = render(<View id={nextId++} isAdmin={isAdmin} />);
     await settle();
     return container.firstElementChild as HTMLElement;
@@ -515,16 +523,13 @@ describe("the unmatched files dialog", () => {
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "unmatched")] });
     api.setFilePmid.mockResolvedValue({});
-    const onChanged = vi.fn();
-    const { rerender } = render(<View id={id} onChanged={onChanged} />);
+    render(<View id={id} />);
     const dialog = await openUnmatched(1);
 
+    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "matched")] });
     fireEvent.change(within(dialog).getByPlaceholderText("PMID"), { target: { value: "30000002" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Match" }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    // What App does with onChanged.
-    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "matched")] });
-    rerender(<View id={id} reloadToken={1} onChanged={onChanged} />);
+    await waitFor(() => expect(refreshes(id)).toBe(1));
     await settle();
     expect(unmatchedDialog()).toBeNull();
     expect(unmatchedLink()).toBeNull();
@@ -533,7 +538,8 @@ describe("the unmatched files dialog", () => {
     api.getCollectionFiles.mockResolvedValue({
       files: [row(1, id, "matched"), row(2, id, "matched"), row(3, id, "unmatched")],
     });
-    rerender(<View id={id} reloadToken={2} onChanged={onChanged} />);
+    api.startImport.mockResolvedValue(job({ total: 1, processed: 1, matched: 0, unmatched: 1 }));
+    await act(() => sources.scanCollection(id));
     await settle();
     expect(unmatchedLink()).not.toBeNull();
     expect(unmatchedDialog()).toBeNull();
@@ -555,15 +561,27 @@ describe("the unmatched files dialog", () => {
     fakePoll();
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending"), row(2, id, "pending")] });
-    api.startImport.mockResolvedValue({ jobId: "job", total: 2 });
+    api.startImport.mockResolvedValue(job({ state: "running", total: 2, processed: 0, matched: 0 }));
     render(<View id={id} />);
     const dialog = await openFiles("2 not scanned");
 
-    api.getImportStatus.mockResolvedValue(job({ state: "running", total: 2, processed: 0, matched: 0 }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Scan them" }));
     await waitFor(() => expect(unmatchedDialog()).toBeNull());
     expect(api.startImport).toHaveBeenCalledWith(id);
     expect(screen.getByText(/Scanning 0 \/ 2/)).toBeTruthy();
+  });
+
+  it("has the store refresh a scan that was over by the time it started", async () => {
+    const id = nextId++;
+    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending")] });
+    api.startImport.mockResolvedValue(job({ total: 1, processed: 1, matched: 1 }));
+    render(<View id={id} />);
+    const dialog = await openFiles("1 not scanned");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Scan them" }));
+    await waitFor(() => expect(refreshes(id)).toBe(1));
+    await settle();
+    expect(refreshes(id)).toBe(1);
   });
 
   it("says so inside itself when the scan won't start", async () => {

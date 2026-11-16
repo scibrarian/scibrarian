@@ -1,5 +1,6 @@
 import type {
   AbstractsResponse,
+  AddBookmarksResponse,
   AddLinksResponse,
   AppSettings,
   AuthStatus,
@@ -11,12 +12,12 @@ import type {
   Collection,
   CollectionFile,
   CollectionFilesResponse,
+  CollectionRemovalResponse,
   FolderImportResponse,
   Topic,
   GraphResponse,
   HaveAnswer,
   HaveResponse,
-  ImportStartResponse,
   ImportStatus,
   JournalSearchResponse,
   JournalSuggestResponse,
@@ -25,6 +26,7 @@ import type {
   MailSettingsDraft,
   MeshHeadingsResponse,
   MeshSearchResponse,
+  PaperCountResponse,
   PaperQuery,
   PaperSource,
   PapersResponse,
@@ -36,8 +38,10 @@ import type {
   ProPushResult,
   ProSyncStatus,
   RefreshResponse,
+  RemovedResponse,
   SettingsUpdate,
   ShareLinkResponse,
+  TestEmailResponse,
   TopicDetail,
   TopicPreviewResponse,
   TopicRemovalResult,
@@ -46,6 +50,7 @@ import type {
   TopicUpdateResponse,
   UploadResponse,
   WorkspaceContentsResponse,
+  WorkspaceSwitchResponse,
   WorkspacesResponse,
 } from "./types";
 import { MAX_HAVE_REFS, MAX_REFS_PER_HAVE_REQUEST } from "../../shared/limits";
@@ -186,11 +191,11 @@ export const api = {
     }),
   // How many papers that change of scope would take out, for the confirm.
   scopeChangeCount: (id: number, scope: TopicScopeInput) =>
-    req<{ count: number }>(`/api/topics/${id}/scope/preview`, {
+    req<PaperCountResponse>(`/api/topics/${id}/scope/preview`, {
       method: "POST",
       body: JSON.stringify(scope),
     }),
-  topicArticleCount: (id: number) => req<{ count: number }>(`/api/topics/${id}/article-count`),
+  topicArticleCount: (id: number) => req<PaperCountResponse>(`/api/topics/${id}/article-count`),
   deleteTopic: (id: number) =>
     req<TopicRemovalResult>(`/api/topics/${id}`, { method: "DELETE" }),
   searchMesh: (q: string) =>
@@ -273,7 +278,7 @@ export const api = {
   // is just a longer list. `alreadySaved` is what lets the bulk result say how
   // many papers actually landed rather than overclaiming.
   addBookmarks: (folderId: number, pmids: string[]) =>
-    req<{ added: number; alreadySaved: number; missing: number }>(
+    req<AddBookmarksResponse>(
       `/api/bookmark-folders/${folderId}/papers`,
       { method: "POST", body: JSON.stringify({ pmids }) }
     ),
@@ -282,14 +287,15 @@ export const api = {
   // Take a ticked set out of one folder. `removed` is how many were still in it
   // — not the length of what was sent, for removeCollectionPapers' reason below.
   removeBookmarks: (folderId: number, pmids: string[]) =>
-    req<{ removed: number }>(`/api/bookmark-folders/${folderId}/papers/remove`, {
+    req<RemovedResponse>(`/api/bookmark-folders/${folderId}/papers/remove`, {
       method: "POST",
       body: JSON.stringify({ pmids }),
     }),
   // One request of "Add links" — at most MAX_LINKS_PER_REQUEST lines. Unlike
-  // checkHave this does not split a long paste itself: the dialog sends the
-  // batches, so it can show its progress and keep the answers of the batches
-  // that landed when a later one fails.
+  // checkHave this does not split a long paste itself: the sources store sends
+  // the batches (see addLinks in lib/sources) and hands each answer to the
+  // dialog as it lands, so the dialog can show its progress and keep the
+  // answers of the batches that landed when a later one fails.
   addBookmarkLinks: (folderId: number, lines: string[]) =>
     req<AddLinksResponse>(`/api/bookmark-folders/${folderId}/links`, {
       method: "POST",
@@ -313,7 +319,7 @@ export const api = {
   startFolderImport: (folderId: number) =>
     req<ImportStatus>(`/api/bookmark-folders/${folderId}/imports/run`, { method: "POST" }),
   removeUnmatchedImports: (folderId: number) =>
-    req<{ removed: number }>(`/api/bookmark-folders/${folderId}/imports/unmatched`, {
+    req<RemovedResponse>(`/api/bookmark-folders/${folderId}/imports/unmatched`, {
       method: "DELETE",
     }),
   // The paper a PMID names, to compare with an unmatched entry. Saves nothing.
@@ -344,7 +350,7 @@ export const api = {
     return req<UploadResponse>(`/api/collections/${id}/files`, { method: "POST", body: form });
   },
   startImport: (id: number) =>
-    req<ImportStartResponse>(`/api/collections/${id}/import`, { method: "POST" }),
+    req<ImportStatus>(`/api/collections/${id}/import`, { method: "POST" }),
   getImportStatus: (id: number) => req<ImportStatus>(`/api/collections/${id}/import/status`),
   fileContentUrl: (fileId: number) => `/api/collections/files/${fileId}/content`,
   // Admin-only: mint an expiring signed URL for a stored PDF. Omitting
@@ -374,7 +380,7 @@ export const api = {
   // to remove — see removeCollectionPapers on the server. Neither is the length
   // of what was sent, and reporting that instead is what this pair is for.
   removeCollectionPapers: (collectionId: number, pmids: string[]) =>
-    req<{ removed: number; papers: number }>(`/api/collections/${collectionId}/papers/remove`, {
+    req<CollectionRemovalResponse>(`/api/collections/${collectionId}/papers/remove`, {
       method: "POST",
       body: JSON.stringify({ pmids }),
     }),
@@ -389,7 +395,7 @@ export const api = {
   // Sends with the mail settings given, saved or not; a blank password means
   // the stored one. Rejects with what the mail server objected to.
   testEmail: (s: MailSettingsDraft) =>
-    req<{ ok: true }>("/api/settings/test-email", { method: "POST", body: JSON.stringify(s) }),
+    req<TestEmailResponse>("/api/settings/test-email", { method: "POST", body: JSON.stringify(s) }),
 
   // Irreversible. Answers with what it deleted.
   resetLibrary: () => req<LibraryStats>("/api/data/reset", { method: "POST" }),
@@ -441,7 +447,7 @@ export const api = {
   // nothing can restart the process (a browser pointed at the desktop build's
   // port), and then the choice simply applies the next time it is opened.
   switchWorkspace: (id: string) =>
-    req<{ ok: true; restarting: boolean }>("/api/workspaces/switch", {
+    req<WorkspaceSwitchResponse>("/api/workspaces/switch", {
       method: "POST",
       body: JSON.stringify({ id }),
     }),

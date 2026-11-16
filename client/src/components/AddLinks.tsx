@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { BookmarkCheck, Check, TriangleAlert } from "lucide-react";
-import { api } from "../api";
 import { describeRef, errorMessage, paperMeta, plural } from "../lib/format";
+import { useSources } from "../lib/sources";
 import { MAX_LINKS, MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
 import type { LinkAnswer, LinkOutcome, LinkedPaper } from "../types";
 import { Banner } from "./Banner";
@@ -28,14 +28,12 @@ export function AddLinks({
   open,
   onClose,
   folderId,
-  onAdded,
 }: {
   open: boolean;
   onClose: () => void;
   folderId: number;
-  /** Papers were saved into the folder — its list and counts behind this modal are stale. */
-  onAdded: () => void;
 }) {
+  const sources = useSources();
   const [text, setText] = useState("");
   const [answers, setAnswers] = useState<LinkAnswer[] | null>(null);
   // Lines done of lines sent, while a paste is being added; null otherwise.
@@ -66,11 +64,11 @@ export function AddLinks({
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // Batches go one after another, and each one's answers are shown as it
-  // lands: a DOI is a throttled PubMed search, so a long paste takes a while,
-  // and the rows arriving are the progress. A batch that fails stops the run
-  // but keeps what the earlier ones did — those papers are saved, and their
-  // rows are the only record of which lines got in.
+  // The store sends the batches one after another (see addLinks in
+  // lib/sources), and each one's answers are shown here as it lands. A batch
+  // that fails stops the run but keeps what the earlier ones did — those
+  // papers are saved, and their rows are the only record of which lines got
+  // in.
   //
   // The last paste's rows come down as this one starts. Left up under
   // "Adding…", they read as this paste's answers — a reader closing the
@@ -88,25 +86,23 @@ export function AddLinks({
     // The first line of the paste that no batch has answered.
     let next = 0;
     let over = lines.length - capped.length;
-    let added = false;
     setError(null);
     setAnswers(null);
     setSkipped(over);
+    setProgress({ done: 0, total: capped.length });
     try {
-      for (let i = 0; i < capped.length; i += MAX_LINKS_PER_REQUEST) {
-        setProgress({ done: i, total: capped.length });
-        const batch = capped.slice(i, i + MAX_LINKS_PER_REQUEST);
-        const res = await api.addBookmarkLinks(folderId, batch);
-        if (res.results.some((a) => a.outcome === "added")) added = true;
-        if (!mounted.current) return;
+      await sources.addLinks(folderId, capped, (batch, res, from) => {
+        if (!mounted.current) return false;
         done.push(...res.results);
         over += res.truncated;
         // One answer per line, in order; a line past the answers was cut.
         missed.push(...batch.filter((_, j) => !landed(res.results[j])));
-        next = i + batch.length;
+        next = from + batch.length;
         setAnswers([...done]);
         setSkipped(over);
-      }
+        setProgress({ done: next, total: capped.length });
+        return true;
+      });
     } catch (err) {
       if (!mounted.current) return;
       const left = capped.length - done.length;
@@ -116,11 +112,6 @@ export function AddLinks({
           : errorMessage(err)
       );
     } finally {
-      // Once per paste: after the last batch, the one that failed, or the one
-      // in flight when the dialog went away. Called per batch, the reloads it
-      // starts overlapped, and an older one landing last showed papers just
-      // saved as unsaved.
-      if (added) onAdded();
       if (mounted.current) {
         setProgress(null);
         // The box keeps only what is left to do: the lines that came back

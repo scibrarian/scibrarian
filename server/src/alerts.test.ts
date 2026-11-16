@@ -1,7 +1,10 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mailFieldsOf } from "../../shared/mail.js";
+import type { MailSettings } from "./alerts.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import { article } from "./unheld-sweep-fixture.js";
 
 // Email alerts after an unattended poll — see alerts.ts.
@@ -23,29 +26,8 @@ delete process.env.SCIBRARIAN_DESKTOP;
 process.env.ADMIN_TOKEN = "alerts-token";
 const HEADERS = { "x-admin-token": "alerts-token", "content-type": "application/json" };
 
-const ncbi = vi.hoisted(() => ({
-  fail: false,
-  // What a search answers, by whether its term names the topic's heading.
-  answers: new Map<string, string[]>(),
-}));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    searchWithTotal: async (term: string) => {
-      if (ncbi.fail) throw new Error("NCBI unreachable");
-      for (const [heading, ids] of ncbi.answers) {
-        if (term.includes(heading)) return { ids, total: ids.length };
-      }
-      return { ids: [], total: 0 };
-    },
-    fetchArticles: async (pmids: string[]) => pmids.map(paper),
-  };
-});
-vi.mock("./icite.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./icite.js")>()),
-  ensureCitations: async () => {},
-}));
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 const mail = vi.hoisted(() => ({
   sent: [] as { from: unknown; to: string; subject: string; text: string; html?: string }[],
@@ -74,10 +56,17 @@ function paper(pmid: string) {
   return { ...article(pmid), title: `Title ${pmid}`, pub_date: `2026-10-${pmid.slice(-2)}` };
 }
 
+// What a search whose term names `key` finds, each a paper PubMed has.
+function finds(key: string, pmids: string[]) {
+  pubmed.answer(key, pmids);
+  pubmed.add(...pmids.map(paper));
+}
+
 let db: Db;
 let server: Server;
 let base: string;
 let poller: typeof import("./poller.js");
+let sendTestEmail: typeof import("./alerts.js").sendTestEmail;
 
 // A topic past its first poll, so the next one is incremental and lists what
 // it finds. `heading` is what the stand-in search keys its answer on.
@@ -116,6 +105,13 @@ function configure(overrides: Record<string, string> = {}) {
   }
 }
 
+// What configure() saved, with these changed: the settings a test email is
+// sent with.
+function mailWith(overrides: Partial<MailSettings> = {}): MailSettings {
+  const s = db.getSettings();
+  return { ...mailFieldsOf(s), smtp_pass: s.smtp_pass, ...overrides };
+}
+
 const put = (body: unknown) =>
   fetch(`${base}/api/settings`, { method: "PUT", headers: HEADERS, body: JSON.stringify(body) });
 const testEmail = (body: unknown) =>
@@ -128,6 +124,7 @@ const testEmail = (body: unknown) =>
 beforeAll(async () => {
   db = await openTempDb("alerts");
   poller = await import("./poller.js");
+  ({ sendTestEmail } = await import("./alerts.js"));
   const { app } = await import("./index.js");
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
@@ -144,8 +141,6 @@ afterAll(async () => {
 
 beforeEach(() => {
   db.db.exec("DELETE FROM topics; DELETE FROM articles;");
-  ncbi.fail = false;
-  ncbi.answers.clear();
   mail.sent = [];
   mail.options = [];
   mail.error = null;
@@ -156,8 +151,8 @@ describe("what a scheduled check sends", () => {
   it("sends one email for the run, listing a paper two topics found once", async () => {
     await polledTopic("Sleep", "Sleep");
     await polledTopic("Obesity", "Obesity");
-    ncbi.answers.set("Sleep", ["40000001", "40000002"]);
-    ncbi.answers.set("Obesity", ["40000002", "40000003"]);
+    finds("Sleep", ["40000001", "40000002"]);
+    finds("Obesity", ["40000002", "40000003"]);
 
     await poller.runPoll("scheduled");
 
@@ -177,7 +172,7 @@ describe("what a scheduled check sends", () => {
   it("lists a topic's papers newest first, up to its cap, and counts the rest", async () => {
     await polledTopic("Sleep", "Sleep");
     const ids = Array.from({ length: 25 }, (_, i) => String(40000001 + i));
-    ncbi.answers.set("Sleep", ids);
+    finds("Sleep", ids);
 
     await poller.runPoll("scheduled");
 
@@ -189,7 +184,7 @@ describe("what a scheduled check sends", () => {
   });
 
   it("sums up a topic's first check rather than listing its whole history", async () => {
-    ncbi.answers.set("Sleep", ["40000001", "40000002"]);
+    finds("Sleep", ["40000001", "40000002"]);
     db.createTopic("Sleep", '"Sleep"[MeSH]', [], { allPubmed: true });
 
     await poller.runPoll("scheduled");
@@ -205,8 +200,8 @@ describe("what a scheduled check sends", () => {
   // topic summed up for one new journal was a day's papers in no alert at all.
   it("lists a topic's news and counts what a journal new to it brought", async () => {
     await topicGivenTheLancet("Sleep", "Sleep");
-    ncbi.answers.set(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
-    ncbi.answers.set(BMJ.nlmId, ["40000001", "40000002"]);
+    finds(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
+    finds(BMJ.nlmId, ["40000001", "40000002"]);
 
     await poller.runPoll("scheduled");
 
@@ -221,7 +216,7 @@ describe("what a scheduled check sends", () => {
 
   it("mentions only the back catalog when there's no news to go with it", async () => {
     await topicGivenTheLancet("Sleep", "Sleep");
-    ncbi.answers.set(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
+    finds(LANCET.nlmId, ["30000001", "30000002", "30000003"]);
 
     await poller.runPoll("scheduled");
 
@@ -235,8 +230,8 @@ describe("what a scheduled check sends", () => {
   // Both searches can find one paper where a journal is searched by name.
   it("counts a paper the topic's news also found as news", async () => {
     await topicGivenTheLancet("Sleep", "Sleep");
-    ncbi.answers.set(LANCET.nlmId, ["30000001", "40000001"]);
-    ncbi.answers.set(BMJ.nlmId, ["40000001"]);
+    finds(LANCET.nlmId, ["30000001", "40000001"]);
+    finds(BMJ.nlmId, ["40000001"]);
 
     await poller.runPoll("scheduled");
 
@@ -271,7 +266,7 @@ describe("what a scheduled check sends", () => {
 
   it("reports a topic that couldn't be checked, with nothing new to go with it", async () => {
     await polledTopic("Sleep", "Sleep");
-    ncbi.fail = true;
+    pubmed.fail = true;
 
     await poller.runPoll("scheduled");
 
@@ -282,7 +277,7 @@ describe("what a scheduled check sends", () => {
 
   it("escapes what it puts in the HTML", async () => {
     await polledTopic("Sleep <b>", "Sleep");
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
 
     await poller.runPoll("scheduled");
 
@@ -301,7 +296,7 @@ describe("when nothing is sent", () => {
   it("sends nothing with alerts off", async () => {
     await polledTopic("Sleep", "Sleep");
     configure({ alert_email_enabled: "0" });
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
     await poller.runPoll("scheduled");
     expect(mail.sent).toEqual([]);
   });
@@ -309,7 +304,7 @@ describe("when nothing is sent", () => {
   // The reader asked for that check and is watching the page it answers.
   it("sends nothing for a manual check", async () => {
     const t = await polledTopic("Sleep", "Sleep");
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
     const res = await fetch(`${base}/api/refresh?topic=${t.id}`, {
       method: "POST",
       headers: HEADERS,
@@ -322,7 +317,7 @@ describe("when nothing is sent", () => {
   // the log calls it: a mail server being down is not the poll failing.
   it("logs a refused email as the email's failure, not the poll's", async () => {
     await polledTopic("Sleep", "Sleep");
-    ncbi.answers.set("Sleep", ["40000001"]);
+    finds("Sleep", ["40000001"]);
     mail.error = Object.assign(new Error("Connection refused"), { code: "ECONNECTION" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -339,15 +334,8 @@ describe("when nothing is sent", () => {
   });
 });
 
+// What PUT /settings sends. The rules of a save are settings.test.ts's.
 describe("the settings", () => {
-  it("won't turn alerts on without somewhere to send them", async () => {
-    configure({ alert_email_enabled: "0", smtp_host: "" });
-    const res = await put({ alert_email_enabled: true });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Add the mail server to send through.");
-    expect(db.getSettings().alert_email_enabled).toBe("0");
-  });
-
   it("keeps the password write-only", async () => {
     const res = await put({ smtp_host: "mail.example.org", smtp_pass: "another" });
     const body = await res.json();
@@ -357,90 +345,11 @@ describe("the settings", () => {
     expect(JSON.stringify(body)).not.toContain("another");
     expect(db.getSettings().smtp_pass).toBe("another");
   });
-
-  // nodemailer would refuse every send before reaching the server, while the
-  // switch said On.
-  it("won't turn alerts on with a username but no password", async () => {
-    configure({ alert_email_enabled: "0", smtp_pass: "" });
-    const res = await put({ alert_email_enabled: true });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
-      "Add the password, or clear the username if the mail server needs no login."
-    );
-    expect(db.getSettings().alert_email_enabled).toBe("0");
-  });
-
-  // Each is read by nodemailer as something other than the one address typed.
-  it.each([
-    "me@lab.org,boss",
-    "me@lab.org;boss@x.org",
-    '"boss@x.org"me@lab.org',
-    "me(boss@x.org)@lab.org",
-    "me@lab.org:boss",
-    "me\\,x@lab.org",
-  ])("refuses %s as the address to send to", async (address) => {
-    const res = await put({ alert_email_to: address });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("The address to send alerts to isn't an email address.");
-    expect(db.getSettings().alert_email_to).toBe("reader@example.org");
-  });
-
-  it.each(["first.last+tag@sub.example.co.uk", "o'brien@example.ie", "me@[192.0.2.1]"])(
-    "takes %s as the address to send to",
-    async (address) => {
-      const res = await put({ alert_email_to: address });
-      expect(res.status).toBe(200);
-      expect(db.getSettings().alert_email_to).toBe(address);
-    }
-  );
-
-  // With alerts off too: saved, the moved login would keep the old password,
-  // and send it to the new server once alerts went on.
-  it("won't save a new server without its password", async () => {
-    configure({ alert_email_enabled: "0" });
-    const res = await put({ smtp_host: "mail.elsewhere.org" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Enter the password for the new mail server.");
-    expect(db.getSettings().smtp_host).toBe("smtp.example.org");
-  });
-
-  it("replaces the password with one typed over it", async () => {
-    const res = await put({ smtp_user: "sender@example.org", smtp_pass: "changed" });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe("changed");
-  });
-
-  it("removes the password along with the username", async () => {
-    const res = await put({ smtp_user: "", smtp_from: "alerts@example.org" });
-    expect(res.status).toBe(200);
-    expect((await res.json()).has_smtp_pass).toBe(false);
-    expect(db.getSettings().smtp_pass).toBe("");
-  });
-
-  it("doesn't keep a password typed without a username", async () => {
-    const res = await put({ smtp_user: "", smtp_pass: "typed", smtp_from: "alerts@example.org" });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe("");
-  });
-
-  it("keeps the password through a save that leaves the login alone", async () => {
-    const res = await put({ poll_cron: "0 7 * * *" });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe("secret");
-  });
-
-  it("keeps a password's leading and trailing spaces", async () => {
-    const res = await put({ smtp_pass: " spaced out " });
-    expect(res.status).toBe(200);
-    expect(db.getSettings().smtp_pass).toBe(" spaced out ");
-  });
-
-  it("refuses a port that isn't one", async () => {
-    const res = await put({ smtp_port: "smtp" });
-    expect(res.status).toBe(400);
-  });
 });
 
+// The route once, over HTTP. The rest asks sendTestEmail itself, with the
+// settings a test email is sent with; which login those may carry is
+// settings.test.ts's.
 describe("the test email", () => {
   it("sends with the dialog's values and the stored password", async () => {
     const res = await testEmail({
@@ -462,69 +371,32 @@ describe("the test email", () => {
     });
   });
 
-  // Otherwise the stored password goes to whatever server the request names,
-  // which would let an admin read the write-only secret back.
-  it("won't send the stored password to another server", async () => {
-    const res = await testEmail({ smtp_host: "mail.elsewhere.org" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Enter the password for the new mail server.");
-    expect(mail.options).toEqual([]);
-  });
-
-  it("won't send the stored password with another username", async () => {
-    const res = await testEmail({ smtp_user: "someone-else@example.org" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Enter the password for the new username.");
-    expect(mail.options).toEqual([]);
-  });
-
-  it("sends to another server with the password typed for it", async () => {
-    const res = await testEmail({ smtp_host: "mail.elsewhere.org", smtp_pass: "theirs" });
-    expect(res.status).toBe(200);
-    expect(mail.options[0]).toMatchObject({
-      host: "mail.elsewhere.org",
-      auth: { user: "sender@example.org", pass: "theirs" },
-    });
-  });
-
-  it("sends to another server without a password when there's no username", async () => {
-    const res = await testEmail({
-      smtp_host: "relay.elsewhere.org",
-      smtp_user: "",
-      smtp_from: "sender@example.org",
-    });
-    expect(res.status).toBe(200);
-    expect(mail.options[0]).toMatchObject({ host: "relay.elsewhere.org", auth: undefined });
-  });
-
   // Not "the mail server didn't accept that username and password": no
   // password was ever sent.
   it("asks for the password a username needs, rather than trying without", async () => {
-    configure({ smtp_pass: "" });
-    const res = await testEmail({});
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
-      "Add the password, or clear the username if the mail server needs no login."
-    );
+    await expect(sendTestEmail(mailWith({ smtp_pass: "" }))).rejects.toMatchObject({
+      status: 400,
+      message: "Add the password, or clear the username if the mail server needs no login.",
+    });
     expect(mail.options).toEqual([]);
   });
 
   it("sends through a relay with neither username nor password", async () => {
-    configure({ smtp_user: "", smtp_pass: "", smtp_from: "sender@example.org" });
-    const res = await testEmail({});
-    expect(res.status).toBe(200);
+    await sendTestEmail(mailWith({ smtp_user: "", smtp_pass: "", smtp_from: "sender@example.org" }));
     expect(mail.options[0]).toMatchObject({ auth: undefined, requireTLS: false });
   });
 
-  it("treats the server's name the same whatever its case", async () => {
-    const res = await testEmail({ smtp_host: "SMTP.Example.org" });
-    expect(res.status).toBe(200);
-    expect(mail.options[0]).toMatchObject({ auth: { pass: "secret" } });
+  // The stored password comes along, and stays behind: a login takes a username.
+  it("sends to another server without a password when there's no username", async () => {
+    await sendTestEmail(
+      mailWith({ smtp_host: "relay.elsewhere.org", smtp_user: "", smtp_from: "sender@example.org" })
+    );
+    expect(mail.options[0]).toMatchObject({ host: "relay.elsewhere.org", auth: undefined });
   });
 
   // A password must never go over a connection that was never encrypted.
   it("requires STARTTLS on any other port once there is a password", async () => {
-    await testEmail({ smtp_port: "587" });
+    await sendTestEmail(mailWith({ smtp_port: "587" }));
     expect(mail.options[0]).toMatchObject({ port: 587, secure: false, requireTLS: true });
   });
 
@@ -533,20 +405,19 @@ describe("the test email", () => {
       code: "EAUTH",
       response: "535 5.7.8 Username and Password not accepted",
     });
-    const res = await testEmail({});
-    expect(res.status).toBe(502);
-    expect((await res.json()).error).toBe(
-      "The mail server didn't accept that username and password. " +
-        "The server said: 535 5.7.8 Username and Password not accepted"
-    );
+    await expect(sendTestEmail(mailWith())).rejects.toMatchObject({
+      status: 502,
+      message:
+        "The mail server didn't accept that username and password. " +
+        "The server said: 535 5.7.8 Username and Password not accepted",
+    });
   });
 
   it("asks for a From address when the username isn't one", async () => {
-    const res = await testEmail({ smtp_user: "apikey", smtp_pass: "key" });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
-      "Add a From address — the username isn't an email address."
-    );
+    await expect(sendTestEmail(mailWith({ smtp_user: "apikey", smtp_pass: "key" }))).rejects.toMatchObject({
+      status: 400,
+      message: "Add a From address — the username isn't an email address.",
+    });
     expect(mail.sent).toEqual([]);
   });
 });

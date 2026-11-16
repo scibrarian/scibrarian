@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
 import { useAbstracts } from "../lib/abstracts";
-import type { Bookmarking } from "../lib/bookmarking";
 import { useIncrementalList, useReveal } from "../lib/hooks";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
 import { usePapers, type PaperFilterState } from "../lib/papers";
@@ -31,7 +30,7 @@ export function Timeline({
   libraryOpen,
   onAuthRefreshed,
   filters,
-  bookmarking,
+  bookmarkable,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
@@ -43,7 +42,7 @@ export function Timeline({
    */
   knownEmpty?: boolean;
   filters: PaperFilterState;
-  bookmarking: Bookmarking | null;
+  bookmarkable: boolean;
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -101,12 +100,11 @@ export function Timeline({
         facets={facets}
         settling={!revealed}
         action={
-          bookmarking && (
+          bookmarkable && (
             // The full filtered list; the timeline renders it a chunk at a time.
             <SaveAllButton
               pmids={visible.map((p) => p.pmid)}
               total={total}
-              bookmarking={bookmarking}
               onError={setActionError}
               onDone={setNotice}
             />
@@ -150,7 +148,7 @@ export function Timeline({
                     article={p}
                     abstract={abstracts.get(p.pmid)}
                     opener={opener}
-                    bookmarking={bookmarking}
+                    bookmarkable={bookmarkable}
                     onError={setActionError}
                     onNewFolder={() => setNamingFor(p.pmid)}
                   />
@@ -167,10 +165,9 @@ export function Timeline({
         </div>
       )}
 
-      {bookmarking && (
+      {bookmarkable && (
         <NewFolderDialog
           pmid={namingFor}
-          bookmarking={bookmarking}
           onError={setActionError}
           onClose={() => setNamingFor(null)}
         />

@@ -3,6 +3,7 @@ import { Boxes, Check, FileText, Minus, TriangleAlert, Users } from "lucide-reac
 import { api } from "../api";
 import { describeRef, errorMessage, paperMeta } from "../lib/format";
 import { usePaperOpener, type PaperAccess } from "../lib/openPaper";
+import { useSources } from "../lib/sources";
 import { MAX_HAVE_REFS, MAX_NAME_CHARS } from "../../../shared/limits";
 import type { Collection, HaveAnswer, HaveMatch, HaveResponse } from "../types";
 import { Banner } from "./Banner";
@@ -33,19 +34,15 @@ export function HaveCheck({
   open,
   onClose,
   access,
-  onChanged,
 }: {
   open: boolean;
   onClose: () => void;
   access: PaperAccess;
-  /**
-   * This modal wrote to the library — a copy was filed, or a collection was
-   * created to hold one. Reported upward because neither is visible from here:
-   * the sidebar, the source picker and the collection views are the shell's,
-   * and nothing else tells it a check modal just added to them.
-   */
-  onChanged: () => void;
 }) {
+  // What this modal writes to the library — a copy filed, a collection made to
+  // hold one — goes through the store, which tells the sidebar, the source
+  // picker and the collection views, none of them visible from here.
+  const sources = useSources();
   const [text, setText] = useState("");
   const [response, setResponse] = useState<HaveResponse | null>(null);
   const [checking, setChecking] = useState(false);
@@ -144,7 +141,10 @@ export function HaveCheck({
     setPulling(index);
     setError(null);
     try {
-      const result = await api.proPull(pmid, collectionIds);
+      // The collections it went into are stale from here, on screen or not —
+      // the store sees to that before answering. The re-check below only
+      // refreshes this row.
+      const result = await sources.pullToCollections(pmid, collectionIds);
       setChoosing(null);
       // The one thing the re-check below cannot re-derive.
       //
@@ -155,10 +155,6 @@ export function HaveCheck({
       // again does the same thing forever. Only the pull itself knows why, so
       // its answer is the one place that can say so.
       if (result.warning) setError(result.warning);
-      // Before the re-check, not after: the copy is already filed, and the
-      // collection the reader is looking at behind this modal is stale from
-      // this moment. The re-check below only refreshes this row.
-      onChanged();
       const fresh = await api.checkHave([line]);
       const updated = fresh.results[0];
       if (updated) {
@@ -257,13 +253,7 @@ export function HaveCheck({
                 destinations={destinations}
                 destError={destError}
                 onReloadDestinations={() => void loadDestinations()}
-                onCreated={(c) => {
-                  setDestinations((d) => [...d, c]);
-                  // The collection exists whether or not a copy ever lands in
-                  // it, so the shell is told here rather than waiting for the
-                  // Copy that may never be clicked.
-                  onChanged();
-                }}
+                onCreated={(c) => setDestinations((d) => [...d, c])}
                 pulling={pulling === i}
                 // "One at a time" was the stated design but nothing enforced
                 // it: only the pulling row's own button was disabled, so a
@@ -488,6 +478,7 @@ function DestinationPicker({
   onConfirm: (collectionIds: number[]) => void;
   busy: boolean;
 }) {
+  const sources = useSources();
   const [picked, setPicked] = useState<number[]>([]);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -504,31 +495,30 @@ function DestinationPicker({
     setCreating(true);
     setCreateError(null);
 
+    // Made and shared in one, by the store, which lists it in the shell
+    // whether or not a copy ever lands in it.
     let made: Collection;
+    let shareError: string | null;
     try {
-      made = await api.createCollection(name);
+      ({ collection: made, shareError } = await sources.createCollection(name, { share: true }));
     } catch (err) {
       setCreateError(errorMessage(err));
       setCreating(false);
       return;
     }
 
-    // Sharing is a second request, and its failure must not lose the
-    // collection — it exists, and its name is now taken under a unique index,
-    // so an unwound-looking failure sends the writer to retype a name that can
-    // only ever answer "name taken" from here on. Same reasoning as
-    // createCollection in App.tsx, which wraps this identical call for this
-    // identical reason.
+    // A failure to share doesn't lose the collection — it exists, and its name
+    // is now taken under a unique index, so an unwound-looking failure would
+    // send the writer to retype a name that can only ever answer "name taken"
+    // from here on.
     //
     // Not offered as a destination, though: unshared is exactly what the pull
     // route refuses, so listing it would be the untakeable choice this picker
     // exists to avoid. Named in the message instead, so the writer knows what
     // exists and what to do about it.
-    try {
-      await api.proShareCollection(made.id);
-    } catch (err) {
+    if (shareError) {
       setCreateError(
-        `Created “${made.name}”, but sharing it with your organization failed: ${errorMessage(err)} ` +
+        `Created “${made.name}”, but sharing it with your organization failed: ${shareError} ` +
           `Copies can only go to a shared collection — share it in Settings, then check again.`
       );
       setNewName("");

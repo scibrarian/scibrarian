@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronUp, ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { api } from "../api";
-import type { Bookmarking } from "../lib/bookmarking";
 import { errorMessage, formatAuthors } from "../lib/format";
 import { useIncrementalList, useMediaQuery, useReveal } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
@@ -11,6 +10,7 @@ import {
   usePapers,
   type PaperFilterState,
 } from "../lib/papers";
+import { useSources } from "../lib/sources";
 import type { Paper, PaperSource } from "../types";
 import { Banner } from "./Banner";
 import { BookmarkMenu } from "./BookmarkMenu";
@@ -48,10 +48,8 @@ export function PapersTable({
   tokenRequired,
   libraryOpen,
   onAuthRefreshed,
-  onCollectionChanged,
-  onFolderChanged,
   filters,
-  bookmarking,
+  bookmarkable,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
@@ -63,27 +61,7 @@ export function PapersTable({
    */
   knownEmpty?: boolean;
   filters: PaperFilterState;
-  /**
-   * Papers were taken out of the collection on screen, so the shell has to
-   * reload the sources that counted them. Only ever called for a single
-   * collection; a bookmark folder's removal reports through onFolderChanged.
-   *
-   * Named for the collection rather than for the papers because Settings has an
-   * `onPapersRemoved` of its own, with a different signature and a different
-   * meaning — papers dropped by a journal or topic removal, reported by count.
-   * Both are wired from App, so one name across the two left a reader tracing
-   * either of them having to work out which component it landed on. This is the
-   * same event CollectionView reports through `onChanged`, and App answers both
-   * with handleCollectionChanged.
-   */
-  onCollectionChanged?: () => void;
-  /**
-   * The same event for a bookmark folder: papers were ticked out of the one on
-   * screen. A prop of its own because what App reloads for it is different —
-   * the folder's list and count, and the map of what is saved where.
-   */
-  onFolderChanged?: () => void;
-  bookmarking: Bookmarking | null;
+  bookmarkable: boolean;
 }) {
   const {
     key,
@@ -166,6 +144,7 @@ export function PapersTable({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const sources = useSources();
   // Papers the removal request is out for, by pmid. Their rows dim while it is
   // in flight (see .paper-rows.leaving) — the only feedback the click has other
   // than the button's own label, and the thing that stops the rows vanishing
@@ -285,17 +264,17 @@ export function PapersTable({
     // warning — the one thing the dim exists to prevent.
     setLeaving((prev) => new Set([...prev, ...batch]));
     try {
-      if (removeFrom.place === "collection") await api.removeCollectionPapers(removeFrom.id, batch);
-      else await api.removeBookmarks(removeFrom.id, batch);
-      // Read before the callback below bumps it, which is the point: the
-      // refresh the dimmed rows wait for is the next one, not this one.
+      if (removeFrom.place === "collection") await sources.removeFromCollection(removeFrom.id, batch);
+      else await sources.removeBookmarks(removeFrom.id, batch);
+      // The token of the render the click came from, before the removal moved
+      // it, which is the point: the refresh the dimmed rows wait for is the
+      // next one, not this one.
       setRemovalToken(reloadToken);
       setSelected(new Set());
       // The papers list, the source's count in the picker and — for a
       // collection — the file list in the view above are all now stale, and
-      // none of them is this component's to reload.
-      if (removeFrom.place === "collection") onCollectionChanged?.();
-      else onFolderChanged?.();
+      // none of them is this component's to reload: the store, which made the
+      // removal, reloads them.
     } catch (err) {
       setActionError(errorMessage(err));
       // Nothing left the collection, so nothing should still look like it is
@@ -338,7 +317,7 @@ export function PapersTable({
   // Whether saving is offered at all is App's call (only Interests gets it,
   // and not for viewers); the column follows from that rather than re-deciding
   // it.
-  const showBookmarkCol = bookmarking != null;
+  const showBookmarkCol = bookmarkable;
   // Only across every collection: inside one, every row is in it, and a topic
   // or folder holds nothing. This is the column that turns "we have it" into
   // "we have it in the Pfizer package", which is what decides reuse.
@@ -371,7 +350,7 @@ export function PapersTable({
         action={
           showSelectCol ? (
             // Sits where the bulk save does in the section that has one. The
-            // two never coexist — bookmarking is null in the Library and in
+            // two never coexist — bookmarkable is false in the Library and in
             // Bookmarks, the two places removal is offered — so the slot
             // carries whichever bulk action this source actually has.
             //
@@ -399,7 +378,6 @@ export function PapersTable({
               <SaveAllButton
                 pmids={visible.map((p) => p.pmid)}
                 total={total}
-                bookmarking={bookmarking!}
                 onError={setActionError}
                 onDone={setNotice}
               />
@@ -557,7 +535,6 @@ export function PapersTable({
                       <td className="bookmark-cell">
                         <BookmarkMenu
                           pmid={p.pmid}
-                          bookmarking={bookmarking!}
                           onError={setActionError}
                           onNewFolder={() => setNamingFor(p.pmid)}
                         />
@@ -600,10 +577,9 @@ export function PapersTable({
         </>
       )}
 
-      {bookmarking && (
+      {bookmarkable && (
         <NewFolderDialog
           pmid={namingFor}
-          bookmarking={bookmarking}
           onError={setActionError}
           onClose={() => setNamingFor(null)}
         />

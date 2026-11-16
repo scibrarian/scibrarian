@@ -22,7 +22,7 @@ import {
   savePdfText,
 } from "./db.js";
 import { extractPdf } from "./pdf-text.js";
-import type { CacheStats, ClearedCache, CollectionFile } from "./types.js";
+import type { CacheStats, ClearedCache, StoredCollectionFile } from "../../shared/types.js";
 import { errMessage } from "./util.js";
 
 // Opening a stored PDF in whatever this machine already opens PDFs with, for
@@ -221,7 +221,7 @@ export async function checkOutForExternalOpen(fileId: number): Promise<string> {
   return handing;
 }
 
-async function handOver(checkout: string, file: CollectionFile): Promise<string> {
+async function handOver(checkout: string, file: StoredCollectionFile): Promise<string> {
   const dir = checkoutDir(checkout);
 
   // Whatever copy is already here, under whatever name it is under — rather
@@ -590,7 +590,7 @@ export async function collectPendingCheckins(): Promise<void> {
  * to the collections that kept the paper. The delete unlinks the blob and
  * cannot reach this: the store and the cache are different directories, and
  * db.ts sits underneath this module rather than above it, so the sweep is
- * called from the routes.
+ * called from holding.ts, which sits above both.
  *
  * By orphanhood rather than by a list of ids the caller captured before its
  * delete. Nothing has to be remembered at the call site — which is what the

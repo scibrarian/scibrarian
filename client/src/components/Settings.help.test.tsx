@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { Settings } from "./Settings";
+import { createSources, SourcesContext, type SourcesApi } from "../lib/sources";
 import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings } from "../types";
 
@@ -25,6 +27,13 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock("../api", () => ({ api }));
+
+// Settings lists the topics from the sources store, which these tests leave
+// empty.
+const sources = createSources(api as unknown as SourcesApi);
+const withSources = ({ children }: { children: ReactNode }) => (
+  <SourcesContext.Provider value={sources}>{children}</SourcesContext.Provider>
+);
 
 // A shared server, so the Sharing panel shows its addresses and Open Library.
 const SHARED: AppSettings = {
@@ -64,16 +73,13 @@ async function renderSettings(settings: AppSettings = SHARED) {
     <Settings
       pro={null}
       viewerCache={NO_CACHE}
-      topics={[]}
-      topicsError={null}
       onAddTopic={() => {}}
       onEditTopic={() => {}}
-      onDataChanged={() => {}}
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}
       onPapersRemoved={() => {}}
-      onLibraryReset={() => {}}
-    />
+    />,
+    { wrapper: withSources }
   );
   await screen.findByRole("switch", { name: "Scheduled polling" });
 }

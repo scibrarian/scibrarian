@@ -1,9 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
-import { paperProvenance, proStatus, resetProContent } from "./pro-hooks.js";
+import { paperProvenance, proStatus } from "./pro-hooks.js";
 import {
   addBookmarkImports,
   addBookmarks,
@@ -16,23 +15,10 @@ import {
   createBookmarkFolder,
   createCollection,
   countTopicArticles,
-  createTopic,
   countNeverIndexedMatches,
-  deleteBookmarkFolder,
-  deleteCollection,
-  deleteCollectionFile,
   dismissBookmarkImport,
   dismissUnmatchedBookmarkImports,
-  dropUnheldArticles,
-  removeCollectionPapers,
-  removeTopicWithArticles,
-  renameTopic,
-  storedHeading,
-  topicByHeadings,
-  topicByName,
-  topicByTerm,
   topicArticleCounts,
-  topicJournals,
   existingPmids,
   gcBlobsIfOrphaned,
   getArticleAbstracts,
@@ -44,8 +30,6 @@ import {
   getSettings,
   getTopic,
   graphPapersForSource,
-  findCatalogByNlmId,
-  journalByNlmId,
   journalsForSource,
   linkedPapersByPmids,
   listBookmarkFolders,
@@ -55,31 +39,20 @@ import {
   listPapers,
   listCollections,
   listTopics,
-  findMeshByUi,
   libraryFilingCounts,
   meshFacetsForSource,
   meshFilingForSource,
   missingOrStaleCitations,
-  removeBookmark,
-  removeBookmarks,
   renameBookmarkFolder,
   renameCollection,
-  resetLibrary,
   searchCatalog,
   searchMesh,
-  setFileMatched,
   settleBookmarkImports,
-  setTopicScope,
-  setSetting,
   sourceHasFiles,
   suggestTopicsFromLibrary,
   upsertArticles,
-  type BookmarkImportInsert,
-  type JournalSpec,
   type PaperFilter,
   type PaperSource,
-  type ScopeIds,
-  type TopicScope,
 } from "./db.js";
 import { decodeSource } from "../../shared/source.js";
 import {
@@ -91,65 +64,38 @@ import {
   safeFileName,
   storeBlobFromTemp,
 } from "./blobstore.js";
-import {
-  ADMIN_TOKEN,
-  boundPort,
-  HOST,
-  HOST_IS_LOOPBACK,
-  IS_DESKTOP,
-  UPLOAD_TMP_DIR,
-} from "./config.js";
-import {
-  BAD_SMTP_PORT,
-  isEmailAddress,
-  mailConfig,
-  sendTestEmail,
-  smtpPort,
-  type MailSettings,
-} from "./alerts.js";
-import { checkoutCacheStats, clearCheckouts, discardOrphanedCheckouts } from "./external-open.js";
+import { ADMIN_TOKEN, IS_DESKTOP, UPLOAD_TMP_DIR } from "./config.js";
+import { sendTestEmail } from "./alerts.js";
+import { checkoutCacheStats, clearCheckouts } from "./external-open.js";
 import { addLinksToFolder, toPaper } from "./bookmark-links.js";
-import {
-  anyFolderImportRunning,
-  cancelFolderImport,
-  cancelFolderImports,
-  clearFolderImportJobs,
-  getFolderImportStatus,
-  isFolderImportRunning,
-  startFolderImport,
-} from "./folder-import.js";
+import { startFolderImport } from "./folder-import.js";
 import { splitRefs } from "./citation-ref.js";
 import { barePmid } from "./identifiers.js";
 import { checkHoldings, MAX_REFS_PER_REQUEST } from "./have.js";
+import { startImport } from "./importer.js";
 import {
-  anyImportRunning,
-  cancelImport,
-  clearImportJobs,
-  getImportStatus,
-  isImportRunning,
-  startImport,
-} from "./importer.js";
+  deleteAllData,
+  letGoOfCollection,
+  letGoOfCollectionPapers,
+  letGoOfFile,
+  letGoOfFolder,
+  letGoOfFolderPaper,
+  letGoOfFolderPapers,
+  letGoOfTopic,
+  rematchFile,
+  whileAttaching,
+} from "./holding.js";
+import { isJobRunning, jobStatus } from "./jobs.js";
 import { attachMetrics, ensureCatalogLoaded } from "./journal-catalog.js";
 import { suggestJournals } from "./journal-suggest.js";
 import { ensureMeshLoaded } from "./mesh-catalog.js";
-import { anyTransferInFlight } from "./pro-storage.js";
 import {
   countMatches,
   fetchArticles,
   fetchSummaries,
-  isMedlineIndexed,
   topicTerm,
 } from "./pubmed.js";
-import {
-  isValidCron,
-  nothingToPoll,
-  pollAll,
-  pollRunning,
-  pollTopic,
-  rescheduleFromSettings,
-  warmCitations,
-  withPollLock,
-} from "./poller.js";
+import { nothingToPoll, pollAll, pollTopic, warmCitations, withPollLock } from "./poller.js";
 import { ZipArchive } from "archiver";
 import {
   signCollectionShare,
@@ -161,29 +107,44 @@ import {
 } from "./signing.js";
 import type {
   AbstractsResponse,
+  AddBookmarksResponse,
   AddLinksResponse,
+  AuthStatus,
+  BookmarkFolder,
+  Collection,
   CollectionFile,
+  CollectionFilesResponse,
+  CollectionRemovalResponse,
   FolderImportResponse,
   GraphEdge,
   GraphNode,
   GraphResponse,
   HaveResponse,
-  JournalRemovalResult,
+  ImportStatus,
+  JournalSearchResponse,
+  JournalSuggestResponse,
   LinkedPaper,
-  MeshDescriptorRef,
   MeshHeadingsResponse,
   MeshSearchResponse,
+  PaperCountResponse,
   PaperProvenance,
   PapersResponse,
-  Settings,
-  TopicDetail,
+  RefreshResponse,
+  RemovedResponse,
+  ShareLinkResponse,
+  StoredCollection,
+  StoredCollectionFile,
+  TestEmailResponse,
+  Topic,
   TopicPreviewResponse,
   TopicSuggestResponse,
   TopicUpdateResponse,
+  UploadResponse,
   Workspace,
   WorkspaceContentsResponse,
+  WorkspaceSwitchResponse,
   WorkspacesResponse,
-} from "./types.js";
+} from "../../shared/types.js";
 import { workspaceContents } from "./elsewhere.js";
 import {
   activeWorkspace,
@@ -199,21 +160,18 @@ import {
   type WorkspaceRecord,
 } from "./workspaces.js";
 import { errMessage, round1 } from "./util.js";
-import { parseReferenceFile, type FileEntry } from "./reference-file.js";
+import { nameProblem, nameTakenBy } from "./names.js";
+import { mailSettingsFor, saveSettings, settingsView } from "./settings.js";
+import { readReferenceFile } from "./reference-file.js";
+import { addTopic, changeTopic, readHeadings, readScope, topicDetail } from "./topic-definition.js";
 import {
   MAX_BULK_BOOKMARK_PMIDS,
   MAX_IMPORT_BYTES,
-  MAX_IMPORT_ENTRIES,
   MAX_LINKS_PER_REQUEST,
-  MAX_NAME_CHARS,
-  MAX_TOPIC_HEADINGS,
-  MAX_TOPIC_NAME_CHARS,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_FILES,
 } from "../../shared/limits.js";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
-import { defaultTopicName } from "../../shared/topic.js";
-import { MAIL_FIELDS, mailFieldsOf } from "../../shared/mail.js";
 
 // Express 4 doesn't forward a rejected promise to the error middleware, so
 // async handlers without their own catch are wrapped in this.
@@ -367,51 +325,6 @@ function requireStoredPdfAccess(req: Request, res: Response, verify: () => Share
   return true;
 }
 
-// ---------- papers nothing holds ----------
-
-// Requests here that have found a paper stored and have yet to attach what it
-// is stored for: pasted links, which read which of their papers the library
-// has, wait on PubMed for the rest, and bookmark them all after the wait; and a
-// PMID given to an imported entry, which does the same for one paper. A
-// count for the reason transfersInFlight is one (pro-storage.ts): two can be
-// out at once.
-let attaching = 0;
-
-async function whileAttaching<T>(work: () => Promise<T>): Promise<T> {
-  attaching++;
-  try {
-    return await work();
-  } finally {
-    attaching--;
-  }
-}
-
-// Delete the papers nothing holds any longer, after a removal that may have let
-// go of some. dropUnheldArticles says why this is not part of the removal: a
-// paper is stored before what it is stored for is attached to it, and one swept
-// in between leaves a file matched to a paper that isn't there.
-//
-// So it is skipped, not waited for, while anything is part way through that: an
-// import of PDFs or of a reference file, a copy arriving from another library,
-// a poll, or one of the requests counted above. Nothing is lost by a skip. The sweep is of the whole library,
-// so the next removal to find the server idle takes what this one left, and a
-// start takes the rest.
-//
-// A removal that says how much it took doesn't call this when it took nothing:
-// the sweep reads every stored paper, and there is nothing new for it to find.
-//
-// It can't fail the removal it follows: that has happened, and what a failed
-// sweep leaves behind is rows nobody can see.
-function sweepUnheld(): void {
-  if (attaching > 0 || anyImportRunning() || anyFolderImportRunning()) return;
-  if (anyTransferInFlight() || pollRunning()) return;
-  try {
-    dropUnheldArticles();
-  } catch (err) {
-    console.warn(`[routes] sweeping papers nothing holds failed: ${errMessage(err)}`);
-  }
-}
-
 // Lets the client decide whether to show mutating UI, and whether stored PDFs
 // need minted links (token mode) or open directly (tokenless single-user or
 // an open library).
@@ -453,144 +366,22 @@ api.get("/auth", (req, res) => {
     library_open: libraryOpen(),
     pro: admin ? proStatus() : null,
     desktop: IS_DESKTOP,
-  });
+  } satisfies AuthStatus);
 });
 
 // ---------- topics ----------
 
 api.get("/topics", (_req, res) => {
   const counts = topicArticleCounts();
-  const topics = listTopics().map((d) => ({ ...d, articleCount: counts[d.id] ?? 0 }));
+  const topics: Topic[] = listTopics().map((d) => ({ ...d, articleCount: counts[d.id] ?? 0 }));
   res.json(topics);
 });
 
-// What a request for headings or a scope comes back as when it can't be used:
-// the response to send, in place of the thing asked for.
-type Refusal = { status: number; error: string };
-
-// The headings a request names, as descriptors — or the refusal to send. One
-// reading for POST /topics, its preview and the journal suggestions, so the
-// count the dialog shows is for exactly the set the create would accept.
-//
-// `raw` is descriptor ids, the way the picker holds them. Repeats collapse
-// rather than fail: the same heading twice is the same requirement once.
-//
-// `orStored` also takes a heading the vocabulary has dropped, as a topic
-// recorded it. For the journal suggestions alone, which an existing topic asks
-// for by headings it cannot change; a new topic is still made only of headings
-// NLM has now.
-async function resolveHeadings(
-  raw: unknown,
-  orStored = false
-): Promise<{ headings: MeshDescriptorRef[] } | Refusal> {
-  const uis = distinctStrings(raw);
-  if (uis.length === 0) return { status: 400, error: "Pick at least one MeSH heading." };
-  if (uis.length > MAX_TOPIC_HEADINGS) {
-    return { status: 400, error: `A topic can have at most ${MAX_TOPIC_HEADINGS} headings.` };
-  }
-  await ensureMeshLoaded();
-  const headings: MeshDescriptorRef[] = [];
-  for (const ui of uis) {
-    const descriptor = findMeshByUi(ui) ?? (orStored ? storedHeading(ui) : undefined);
-    if (!descriptor) {
-      return {
-        status: 422,
-        error: `"${ui}" isn't a MeSH heading. Pick headings from the suggestions.`,
-      };
-    }
-    headings.push({ ui: descriptor.ui, name: descriptor.name });
-  }
-  return { headings };
-}
-
-// A list of ids as a request carries it — an array in a body, and in a query
-// either a repeated parameter or, for one value, a bare string.
-function distinctStrings(raw: unknown): string[] {
-  const given = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
-  return [...new Set(given.map((v) => String(v).trim()).filter(Boolean))];
-}
-
-// The scope a request names, as the journals' ids and nothing else: all the
-// count ahead of a change needs (see ScopeIds).
-function scopeIdsOf(body: unknown): ScopeIds {
-  const b = (body ?? {}) as { allPubmed?: unknown; journals?: unknown };
-  const allPubmed = b.allPubmed === true;
-  return { allPubmed, nlmIds: allPubmed ? [] : distinctStrings(b.journals) };
-}
-
-// The same scope, with each journal resolved: against the journals some topic
-// already lists, and otherwise against the NLM catalog.
-//
-// A journal new to the library gets its MEDLINE check here. Advisory, not a
-// gate: the journal is real and the user asked for it, so it is listed either
-// way — but if NLM doesn't index it for MEDLINE its papers carry no MeSH
-// headings, and topics are MeSH terms. Left unsaid, that journal just quietly
-// never yields a paper. An NCBI hiccup answers null, which stores as "not
-// established yet". One already listed keeps the answer it was given then.
-async function resolveScope(body: unknown): Promise<{ scope: TopicScope } | Refusal> {
-  const ids = scopeIdsOf(body);
-  if (ids.allPubmed) return { scope: { allPubmed: true } };
-  const journals: JournalSpec[] = [];
-  for (const nlmId of ids.nlmIds) {
-    const listed = journalByNlmId(nlmId);
-    if (listed) {
-      journals.push({ nlmId, name: listed.name, medlineIndexed: listed.medline_indexed });
-      continue;
-    }
-    await ensureCatalogLoaded();
-    // By catalog id rather than by name: catalog names aren't unique, so a name
-    // round-trip could land on a different journal than the one picked.
-    const cat = findCatalogByNlmId(nlmId);
-    if (!cat) return { status: 422, error: `"${nlmId}" isn't a journal in the NLM catalog.` };
-    journals.push({
-      nlmId: cat.nlm_id,
-      name: cat.med_abbr || cat.title,
-      medlineIndexed: await isMedlineIndexed(cat.nlm_id),
-    });
-  }
-  return { scope: { allPubmed: false, journals } };
-}
-
-const topicDetail = (id: number): TopicDetail => ({ ...getTopic(id)!, journals: topicJournals(id) });
-
-// badName for a topic, with the longer cap a topic's name gets (see
-// MAX_TOPIC_NAME_CHARS).
-function badTopicName(res: Response, name: string): boolean {
-  return badName(res, name, MAX_TOPIC_NAME_CHARS, "topic name");
-}
-
-// Topics are strictly MeSH headings, one or several that a paper must carry all
-// of: the client sends headings picked from the autocomplete, we validate each
-// against the indexed descriptor list, and build the PubMed term ourselves so a
-// topic can never carry an invalid MeSH term. With them comes where the topic
-// searches — all of PubMed, or journals of its own.
+// What a topic may be is topic-definition.ts; this sends it.
 api.post(
   "/topics",
   asyncHandler(async (req, res) => {
-    const resolved = await resolveHeadings(req.body?.headings);
-    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
-    const { headings } = resolved;
-    const name = String(req.body?.name ?? "").trim() || defaultTopicName(headings);
-    if (badTopicName(res, name)) return;
-    const term = topicTerm(headings);
-    // Asked before the journals are resolved, which can take a request to NCBI
-    // each, and again after: nothing awaits between the second and the insert.
-    const taken = () => {
-      const existing = topicByHeadings(headings.map((h) => h.ui)) ?? topicByTerm(term);
-      if (existing) {
-        res
-          .status(409)
-          .json({ error: `These headings are already a topic (“${existing.name}”).` });
-        return true;
-      }
-      return nameTaken(res, "topic", topicByName(name), null);
-    };
-    if (taken()) return;
-    const scoped = await resolveScope(req.body);
-    if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
-    if (taken()) return;
-    const topic = createTopic(name, term, headings, scoped.scope);
-    res.status(201).json(topicDetail(topic.id));
+    res.status(201).json(await addTopic(req.body));
   })
 );
 
@@ -608,9 +399,7 @@ api.get(
     if (!isAdminRequest(req)) {
       return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
     }
-    const resolved = await resolveHeadings(req.query.ui);
-    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
-    const term = topicTerm(resolved.headings);
+    const term = topicTerm(await readHeadings(req.query.ui));
     const body: TopicPreviewResponse = { term, count: await countMatches(term) };
     res.json(body);
   })
@@ -645,64 +434,14 @@ api.get("/topics/:id", (req, res) => {
 api.post("/topics/:id/scope/preview", (req, res) => {
   const id = Number(req.params.id);
   if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
-  res.json({ count: countScopeLeaving(id, scopeIdsOf(req.body)) });
+  res.json({ count: countScopeLeaving(id, readScope(req.body)) } satisfies PaperCountResponse);
 });
 
-// Change a topic's name, where it searches, or both. Its headings are not here
-// to change: they are fixed when it is created (see Topic.headings).
-//
-// A change of scope runs under the poll lock, like a reset: a poll of this
-// topic still running would finish against the scope it started with, and then
-// stamp the watermark the change had just cleared (see setTopicScope).
+// Change a topic's name, where it searches, or both: see changeTopic.
 api.patch(
   "/topics/:id",
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
-    const topic = getTopic(id);
-    if (!topic) return res.status(404).json({ error: "Topic not found." });
-
-    const renaming = req.body?.name !== undefined;
-    const name = renaming ? String(req.body.name ?? "").trim() : topic.name;
-    if (renaming) {
-      if (badTopicName(res, name)) return;
-      if (nameTaken(res, "topic", topicByName(name), id)) return;
-    }
-
-    let removed: JournalRemovalResult = { deletedArticles: 0, removedFromInterests: 0 };
-    if (req.body?.allPubmed !== undefined || req.body?.journals !== undefined) {
-      // A scope is replaced whole, so half of one is refused rather than
-      // completed: a list with no `journals` would resolve to an empty one and
-      // take every paper out of the topic, with no count shown ahead of it. An
-      // empty list is still there to be asked for, by name.
-      //
-      // A list, and nothing that could pass for one left out: a client that
-      // writes a list it doesn't have as null, or as "", was completed the same
-      // way, which a test for `undefined` let through.
-      if (req.body.allPubmed !== true && !Array.isArray(req.body.journals)) {
-        return res
-          .status(400)
-          .json({ error: "'journals' must be an array unless 'allPubmed' is true." });
-      }
-      const scoped = await resolveScope(req.body);
-      if ("error" in scoped) return res.status(scoped.status).json({ error: scoped.error });
-      // Asked again, as POST /topics asks twice: resolving the journals can
-      // take a request to NCBI each, and another topic could have taken the
-      // name meanwhile. Here rather than at the rename, so a name refused now
-      // leaves the scope unchanged too; nothing from here to the rename waits
-      // on anything outside this process.
-      if (renaming && nameTaken(res, "topic", topicByName(name), id)) return;
-      const result = await withPollLock(async () => setTopicScope(id, scoped.scope));
-      if (result === null) {
-        return res
-          .status(409)
-          .json({ error: "A check for new papers is running. Try again in a moment." });
-      }
-      removed = result;
-    }
-    // Last, so a scope that was refused doesn't leave the topic renamed.
-    if (renaming) renameTopic(id, name);
-    if (!getTopic(id)) return res.status(404).json({ error: "Topic not found." });
-    const body: TopicUpdateResponse = { topic: topicDetail(id), removed };
+    const body: TopicUpdateResponse = await changeTopic(Number(req.params.id), req.body);
     res.json(body);
   })
 );
@@ -710,11 +449,12 @@ api.patch(
 // How many stored papers removing this topic would delete (for the confirm):
 // papers exclusive to the topic and not saved in a library collection.
 api.get("/topics/:id/article-count", (req, res) => {
-  res.json({ count: countTopicArticles(Number(req.params.id)) });
+  res.json({ count: countTopicArticles(Number(req.params.id)) } satisfies PaperCountResponse);
 });
 
+// The papers only this topic held go behind the reply: see letGoOfTopic.
 api.delete("/topics/:id", (req, res) => {
-  res.json(removeTopicWithArticles(Number(req.params.id)));
+  res.json(letGoOfTopic(Number(req.params.id)).result);
 });
 
 // Autocomplete against the local MeSH descriptor list (headings + synonyms).
@@ -722,7 +462,7 @@ api.get(
   "/mesh/search",
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? "").trim();
-    if (q.length < 2) return res.json({ results: [] });
+    if (q.length < 2) return res.json({ results: [] } satisfies MeshSearchResponse);
     await ensureMeshLoaded();
     // Typed, so the shape the client reads is checked here rather than trusted.
     const body: MeshSearchResponse = {
@@ -770,7 +510,9 @@ api.get(
   "/journals/search",
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? "").trim();
-    if (q.length < 2) return res.json({ results: [] });
+    if (q.length < 2) {
+      return res.json({ results: [], neverIndexed: 0 } satisfies JournalSearchResponse);
+    }
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
     // Pull a wider name-matched pool, then surface the highest-impact journals
@@ -793,7 +535,7 @@ api.get(
       // The journals this matched and left out (see searchCatalog), for the
       // pane to say so where it would have said nothing matched.
       neverIndexed: countNeverIndexedMatches(q),
-    });
+    } satisfies JournalSearchResponse);
   })
 );
 
@@ -813,12 +555,13 @@ api.get(
     if (!isAdminRequest(req)) {
       return res.status(401).json({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
     }
-    const resolved = await resolveHeadings(req.query.ui, true);
-    if ("error" in resolved) return res.status(resolved.status).json({ error: resolved.error });
+    const headings = await readHeadings(req.query.ui, true);
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 10));
     await ensureCatalogLoaded();
-    const results = await suggestJournals(resolved.headings, limit);
-    res.json({ results: results.map((r) => ({ ...r, metric: round1(r.metric) })) });
+    const results = await suggestJournals(headings, limit);
+    res.json({
+      results: results.map((r) => ({ ...r, metric: round1(r.metric) })),
+    } satisfies JournalSuggestResponse);
   })
 );
 
@@ -1081,41 +824,25 @@ api.get(
 
 // ---------- section entry names (collections + bookmark folders) ----------
 
-// A name a person typed, checked at both ends before anything looks it up:
-// non-empty once trimmed, and no longer than the picker has room to draw. Sends
-// its own 400 and returns true when the name is unusable, so each route below
-// reads as one line rather than repeating both branches four times.
-//
-// The cap is shared with the client, which sets it as the input's maxLength —
-// this is the backstop for a request that didn't come from that box. `max` and
-// `what` are a section entry's unless a caller has a cap of its own, as a topic
-// does (badTopicName).
-function badName(res: Response, name: string, max = MAX_NAME_CHARS, what = "name"): boolean {
-  if (!name) {
-    res.status(400).json({ error: "'name' is required." });
-    return true;
-  }
-  if (name.length > max) {
-    res.status(400).json({ error: `A ${what} can be at most ${max} characters.` });
-    return true;
-  }
-  return false;
+// The name rules (names.ts), sent. A name a person typed is checked at both
+// ends before anything looks it up; each of these sends its own 400 or 409 and
+// returns true when the name can't be used, so each route below reads as one
+// line rather than repeating both branches four times.
+function badName(res: Response, name: string, max?: number, what?: string): boolean {
+  const problem = nameProblem(name, max, what);
+  if (problem) res.status(400).json({ error: problem });
+  return problem !== null;
 }
 
-// Names within a section are unique case-insensitively (see the unique index
-// in db.ts) — two entries with the same name are indistinguishable in the
-// picker. Sends the 409 and returns true when the requested name belongs to a
-// different row; `selfId` is the row being renamed, so re-saving an entry's own
-// name (or just changing its case) isn't a conflict.
 function nameTaken(
   res: Response,
   label: string,
   existing: { id: number; name: string } | undefined,
   selfId: number | null
 ): boolean {
-  if (!existing || existing.id === selfId) return false;
-  res.status(409).json({ error: `A ${label} named “${existing.name}” already exists.` });
-  return true;
+  const taken = nameTakenBy(label, existing, selfId);
+  if (taken) res.status(409).json({ error: taken });
+  return taken !== null;
 }
 
 // The lookup above and the write below aren't atomic, so two same-name requests
@@ -1134,7 +861,9 @@ function rethrowUnlessNameRace(err: unknown, res: Response, label: string): void
 // /api/papers?folder=<id>, since a folder is just another paper source.
 api.get("/bookmark-folders", (_req, res) => {
   const counts = bookmarkCounts();
-  res.json(listBookmarkFolders().map((f) => ({ ...f, paperCount: counts[f.id] ?? 0 })));
+  res.json(
+    listBookmarkFolders().map((f): BookmarkFolder => ({ ...f, paperCount: counts[f.id] ?? 0 }))
+  );
 });
 
 api.post("/bookmark-folders", (req, res) => {
@@ -1142,7 +871,7 @@ api.post("/bookmark-folders", (req, res) => {
   if (badName(res, name)) return;
   if (nameTaken(res, "folder", bookmarkFolderByName(name), null)) return;
   try {
-    res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 });
+    res.status(201).json({ ...createBookmarkFolder(name), paperCount: 0 } satisfies BookmarkFolder);
   } catch (err) {
     rethrowUnlessNameRace(err, res, "folder");
   }
@@ -1159,27 +888,18 @@ api.put("/bookmark-folders/:id", (req, res) => {
   } catch (err) {
     return rethrowUnlessNameRace(err, res, "folder");
   }
-  res.json({ ...getBookmarkFolder(id)!, paperCount: bookmarkCounts()[id] ?? 0 });
+  res.json({
+    ...getBookmarkFolder(id)!,
+    paperCount: bookmarkCounts()[id] ?? 0,
+  } satisfies BookmarkFolder);
 });
 
-api.delete(
-  "/bookmark-folders/:id",
-  asyncHandler(async (req, res) => {
-    // The folder's bookmark rows cascade, and so do the entries an import left
-    // unmatched; the papers they pointed at stay, but for the ones nothing else
-    // holds, which the sweep takes.
-    //
-    // An import still looking entries up is told to stop in the same tick, as a
-    // collection's scan is (see the collection delete), and waited for after
-    // the response and before the sweep, which skips its turn while it runs.
-    const id = Number(req.params.id);
-    const lookupStopped = cancelFolderImport(id);
-    deleteBookmarkFolder(id);
-    res.status(204).end();
-    await lookupStopped;
-    sweepUnheld();
-  })
-);
+// See letGoOfFolder: a lookup running over it stops, and the papers only it
+// held go behind the reply.
+api.delete("/bookmark-folders/:id", (req, res) => {
+  letGoOfFolder(Number(req.params.id));
+  res.status(204).end();
+});
 
 // Every (folder, paper) pair in one payload. Deliberately not folded into
 // /papers or /graph as a per-row flag: the client keeps this whole set in
@@ -1227,7 +947,11 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
   // Counted against the de-duplicated request: `storable` is a Set, so a pmid
   // sent twice would otherwise be reported as a paper that isn't stored.
   const asked = new Set(pmids).size;
-  res.json({ added, alreadySaved: storable.length - added, missing: asked - storable.length });
+  res.json({
+    added,
+    alreadySaved: storable.length - added,
+    missing: asked - storable.length,
+  } satisfies AddBookmarksResponse);
 });
 
 // Save papers into a folder from pasted DOIs and PubMed links — the way into a
@@ -1251,7 +975,7 @@ api.post(
     const batch = lines.slice(0, MAX_LINKS_PER_REQUEST);
     // Counted as attaching: it reads which of the papers are stored, waits on
     // PubMed for the rest, and bookmarks the stored ones after the wait.
-    const results = await whileAttaching(() => addLinksToFolder(id, batch));
+    const results = await whileAttaching("attach", () => addLinksToFolder(id, batch));
     if (!results) {
       return res.status(404).json({ error: "This folder was deleted while the links were being looked up." });
     }
@@ -1281,44 +1005,6 @@ function uploadReferenceFile(req: Request, res: Response, next: NextFunction): v
   });
 }
 
-// UTF-8, which every current exporter writes, and Windows-1252 for a file that
-// isn't — EndNote's "ANSI" export, among others. Only titles and names are at
-// stake: the DOIs and PMIDs the lookup reads are ASCII either way.
-//
-// Except in UTF-16, which Windows offers as "Unicode" and EndNote among others
-// can save: every other byte is a NUL, and read as either of the above no line
-// is a tag, so the file was refused as a format this can't read. It is known by
-// its byte-order mark, which the decoder drops.
-function decodeReferenceFile(bytes: Buffer): string {
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return new TextDecoder("windows-1252").decode(bytes);
-  }
-}
-
-// An entry's identity in its folder — see bookmark_imports — and the keys it
-// would have had before its reference manager filled in a DOI or PMID, most
-// specific first.
-//
-// One with neither is known by its title, year, journal and first author's
-// surname: title and year alone made every "Editorial" of a year one entry.
-// Each is folded to letters and digits, so a re-export that changed only
-// punctuation or case is still the same entry.
-function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
-  const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  // "Polack, Fernando P." as RIS writes a name, "Polack FP" as PubMed does.
-  const surname = e.authors.split(";")[0].split(",")[0].trim().split(/\s+/)[0] ?? "";
-  const [key, ...formerKeys] = [
-    e.pmid && `pmid:${e.pmid}`,
-    e.doi && `doi:${e.doi}`,
-    `ref:${[e.title, e.year, e.journal, surname].map(fold).join("|")}`,
-  ].filter((k): k is string => !!k);
-  return { key, formerKeys };
-}
-
 // Bring a reference manager's export into a folder: read it, keep its journal
 // articles as entries, and start looking them up. One request does all three
 // because there is nothing to batch — the file is read whole — and the lookup
@@ -1331,48 +1017,23 @@ function importKeys(e: FileEntry): { key: string; formerKeys: string[] } {
 api.post("/bookmark-folders/:id/imports", uploadReferenceFile, (req, res) => {
   const id = Number(req.params.id);
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
-  if (isFolderImportRunning(id)) {
+  if (isJobRunning("lookup", id)) {
     return res
       .status(409)
       .json({ error: "This folder is still importing. Wait for it to finish, then try again." });
   }
   if (!req.file) return res.status(400).json({ error: "Choose a file to import." });
-  const parsed = parseReferenceFile(decodeReferenceFile(req.file.buffer));
-  if (!parsed) {
-    return res.status(400).json({
-      error:
-        "That file isn’t one this can read. Export RIS from your reference manager, or use PubMed’s " +
-        "“Send to → Citation manager”.",
-    });
-  }
-  const { entries } = parsed;
-  if (entries.length === 0) return res.status(400).json({ error: "There are no references in that file." });
-  if (entries.length > MAX_IMPORT_ENTRIES) {
-    return res.status(400).json({
-      error:
-        `That file has ${entries.length.toLocaleString("en-US")} references. Import at most ` +
-        `${MAX_IMPORT_ENTRIES.toLocaleString("en-US")} at a time.`,
-    });
-  }
-  const articles = entries.filter((e) => e.article);
-  const kept = articles.filter((e) => e.title || e.doi || e.pmid);
-  const rows: BookmarkImportInsert[] = kept.map((e) => ({
-    ...importKeys(e),
-    title: e.title,
-    authors: e.authors,
-    journal: e.journal,
-    year: e.year,
-    doi: e.doi,
-    pmid: e.pmid,
-  }));
-  addBookmarkImports(id, rows);
+  // Read, kept and keyed in reference-file.ts, or refused there in so many words.
+  const imported = readReferenceFile(req.file.buffer);
+  if ("refused" in imported) return res.status(400).json({ error: imported.refused });
+  addBookmarkImports(id, imported.rows);
   const status = startFolderImport(id);
   const body: FolderImportResponse = {
-    read: entries.length,
-    notArticles: entries.length - articles.length,
-    blank: articles.length - kept.length,
+    read: imported.read,
+    notArticles: imported.notArticles,
+    blank: imported.blank,
     queued: status.total,
-    noIdentifier: kept.filter((e) => !e.doi && !e.pmid).length,
+    noIdentifier: imported.noIdentifier,
     status,
   };
   res.status(201).json(body);
@@ -1391,8 +1052,11 @@ api.get("/bookmark-folders/:id/imports", (req, res) => {
   res.json(listBookmarkImports(Number(req.params.id)));
 });
 
+// What a status route answers for a folder or collection no job has run for.
+const IDLE: ImportStatus = { state: "idle" };
+
 api.get("/bookmark-folders/:id/imports/status", (req, res) => {
-  res.json(getFolderImportStatus(Number(req.params.id)) ?? { state: "idle" });
+  res.json(jobStatus("lookup", Number(req.params.id)) ?? IDLE);
 });
 
 // Look up the entries an earlier import stopped before reaching — the
@@ -1400,7 +1064,7 @@ api.get("/bookmark-folders/:id/imports/status", (req, res) => {
 api.post("/bookmark-folders/:id/imports/run", (req, res) => {
   const id = Number(req.params.id);
   if (!getBookmarkFolder(id)) return res.status(404).json({ error: "Folder not found." });
-  if (isFolderImportRunning(id)) {
+  if (isJobRunning("lookup", id)) {
     return res.status(409).json({ error: "This folder is still importing." });
   }
   res.status(202).json(startFolderImport(id));
@@ -1408,7 +1072,8 @@ api.post("/bookmark-folders/:id/imports/run", (req, res) => {
 
 // The unmatched dialog's "Remove all". `removed` is how many went.
 api.delete("/bookmark-folders/:id/imports/unmatched", (req, res) => {
-  res.json({ removed: dismissUnmatchedBookmarkImports(Number(req.params.id)) });
+  const removed = dismissUnmatchedBookmarkImports(Number(req.params.id));
+  res.json({ removed } satisfies RemovedResponse);
 });
 
 // The paper a PMID names, for the reader to compare with the entry before it is
@@ -1452,7 +1117,7 @@ api.post(
     if (!getBookmarkImport(entryId)) {
       return res.status(404).json({ error: "That entry is no longer listed." });
     }
-    const saved = await whileAttaching(async () => {
+    const saved = await whileAttaching("attach", async () => {
       const fetched = existingPmids([pmid]).has(pmid) ? [] : await fetchArticles([pmid]);
       // Nothing awaited from here on, so the entry and its folder are read
       // after the wait and the paper is stored and bookmarked in one tick.
@@ -1476,11 +1141,9 @@ api.delete("/bookmark-imports/:entryId", (req, res) => {
   res.status(204).end();
 });
 
-// No sweep after this one. It is the toggle in Interests, pressed a paper at a
-// time, and a paper listed there is in a topic's feed: taking it off a folder
-// leaves it held.
+// The toggle in Interests, which gives the sweep no turn: see letGoOfFolderPaper.
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
-  removeBookmark(Number(req.params.id), String(req.params.pmid));
+  letGoOfFolderPaper(Number(req.params.id), String(req.params.pmid));
   res.status(204).end();
 });
 
@@ -1501,9 +1164,8 @@ api.post("/bookmark-folders/:id/papers/remove", (req, res) => {
     return res.status(400).json({ error: `At most ${MAX_BULK_BOOKMARK_PMIDS} papers at a time.` });
   }
   const pmids = raw.map((p) => String(p).trim()).filter(Boolean);
-  const removed = removeBookmarks(id, pmids);
-  res.json({ removed });
-  if (removed > 0) sweepUnheld();
+  const { result: removed } = letGoOfFolderPapers(id, pmids);
+  res.json({ removed } satisfies RemovedResponse);
 });
 
 // ---------- collections (uploaded PDF libraries) ----------
@@ -1539,22 +1201,29 @@ function uploadFiles(req: Request, res: Response, next: NextFunction): void {
 // needs it asks GET /api/pro/sync, which is behind Pro's own auth.
 api.get("/collections", (_req, res) => {
   const counts = collectionCounts();
-  res.json(
-    listCollections().map((c) => ({
-      ...c,
-      fileCount: counts[c.id]?.files ?? 0,
-      matchedCount: counts[c.id]?.matched ?? 0,
-      heldCount: counts[c.id]?.held ?? 0,
-    }))
-  );
+  res.json(listCollections().map((c) => collectionReply(c, counts[c.id])));
 });
+
+// A collection as the routes send it, with what its files come to: nothing yet,
+// for one just made.
+function collectionReply(
+  c: StoredCollection,
+  counts?: { files: number; matched: number; held: number }
+): Collection {
+  return {
+    ...c,
+    fileCount: counts?.files ?? 0,
+    matchedCount: counts?.matched ?? 0,
+    heldCount: counts?.held ?? 0,
+  };
+}
 
 api.post("/collections", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (badName(res, name)) return;
   if (nameTaken(res, "collection", collectionByName(name), null)) return;
   try {
-    res.status(201).json(createCollection(name));
+    res.status(201).json(collectionReply(createCollection(name)));
   } catch (err) {
     rethrowUnlessNameRace(err, res, "collection");
   }
@@ -1571,29 +1240,16 @@ api.put("/collections/:id", (req, res) => {
   } catch (err) {
     return rethrowUnlessNameRace(err, res, "collection");
   }
-  res.json(getCollection(id));
+  res.json(collectionReply(getCollection(id)!, collectionCounts()[id]));
 });
 
 api.delete(
   "/collections/:id",
   asyncHandler(async (req, res) => {
-    // Rows cascade and orphaned blobs are GC'd inside deleteCollection. The
-    // checked-out copies of those rows are the half it cannot reach — see
-    // discardOrphanedCheckouts, and the note on the dialog that promises "any
-    // stored PDF copies are deleted".
-    //
-    // A scan over the collection is told to stop in the same tick as the
-    // delete, which is what keeps it from writing after it (see cancelImport).
-    // Its stopping is waited for after the response, so a PubMed request it is
-    // part way through doesn't hold the delete up, and before the sweep, which
-    // skips its turn while any scan is running.
-    const id = Number(req.params.id);
-    const scanStopped = cancelImport(id);
-    deleteCollection(id);
-    await discardOrphanedCheckouts();
+    // See letGoOfCollection: its scan stops, its checked-out copies go before
+    // the reply, and the papers only it held behind it.
+    await letGoOfCollection(Number(req.params.id));
     res.status(204).end();
-    await scanStopped;
-    sweepUnheld();
   })
 );
 
@@ -1605,9 +1261,9 @@ api.delete(
 // a list of files resolves `exists` without a stat syscall per row; a lone file
 // (manual match) just stats directly.
 function apiFile(
-  row: CollectionFile,
+  row: StoredCollectionFile,
   present?: Set<string>
-): Omit<CollectionFile, "content_hash"> & { exists: boolean } {
+): CollectionFile {
   const { content_hash, ...rest } = row;
   const exists = present ? present.has(content_hash) : blobExists(content_hash);
   return { ...rest, exists };
@@ -1620,7 +1276,8 @@ api.get("/collections/:id/files", (req, res) => {
   const id = Number(req.params.id);
   if (!getCollection(id)) return res.status(404).json({ error: "Collection not found." });
   const present = existingBlobHashes();
-  res.json({ files: listCollectionFiles(id).map((f) => apiFile(f, present)) });
+  const files = listCollectionFiles(id).map((f) => apiFile(f, present));
+  res.json({ files } satisfies CollectionFilesResponse);
 });
 
 // Upload PDFs into a collection. Each file is verified by magic bytes, hashed
@@ -1653,7 +1310,7 @@ api.post(
       }
       const added = addCollectionFiles(id, stored);
       skipped += stored.length - added;
-      res.status(201).json({ added, skipped });
+      res.status(201).json({ added, skipped } satisfies UploadResponse);
     } catch (err) {
       await discardTemps();
       // Blobs stored before the failure but never recorded would leak otherwise.
@@ -1670,11 +1327,12 @@ api.post("/collections/:id/import", (req, res) => {
   const id = Number(req.params.id);
   const collection = getCollection(id);
   if (!collection) return res.status(404).json({ error: "Collection not found." });
-  if (isImportRunning(id)) {
+  if (isJobRunning("scan", id)) {
     return res.status(409).json({ error: "An import is already running for this collection." });
   }
-  const status = startImport(id, collection.name);
-  res.status(202).json({ jobId: status.jobId, total: status.total });
+  // The job itself, as a folder's lookup answers with, so the client follows it
+  // from this answer rather than asking again.
+  res.status(202).json(startImport(id, collection.name));
 });
 
 // Stream a stored PDF for viewing in a browser tab. Unlike the rest of the
@@ -1736,7 +1394,7 @@ api.post("/collections/files/:fileId/share", (req, res) => {
   res.json({
     path: `/api/collections/files/${file.id}/content?exp=${exp}&sig=${sig}`,
     expiresAt: new Date(exp * 1000).toISOString(),
-  });
+  } satisfies ShareLinkResponse);
 });
 
 // Mint an expiring link to the whole collection as a zip download. The grant
@@ -1756,7 +1414,7 @@ api.post("/collections/:id/share", (req, res) => {
   res.json({
     path: `/api/collections/${id}/archive?exp=${exp}&sig=${sig}`,
     expiresAt: new Date(exp * 1000).toISOString(),
-  });
+  } satisfies ShareLinkResponse);
 });
 
 // Two uploads can share a display name; suffix "(2)", "(3)", … keeps every
@@ -1816,7 +1474,7 @@ api.get("/collections/:id/archive", (req, res) => {
 });
 
 api.get("/collections/:id/import/status", (req, res) => {
-  res.json(getImportStatus(Number(req.params.id)) ?? { state: "idle" });
+  res.json(jobStatus("scan", Number(req.params.id)) ?? IDLE);
 });
 
 // Manually assign a PMID to a file the scanner couldn't match. The PMID is
@@ -1835,30 +1493,25 @@ api.post(
     if (articles.length === 0) {
       return res.status(422).json({ error: `PubMed doesn't recognize PMID ${pmid}.` });
     }
-    // Stored and matched with nothing awaited in between, so there is no instant
-    // at which the paper is stored and the file doesn't hold it yet, for the
-    // sweep of papers nothing holds to take it in. Its citation counts follow.
-    upsertArticles(articles);
-    setFileMatched(fileId, pmid, "manual");
+    // Stored and matched in one tick (see rematchFile), and its citation counts
+    // follow. The file is read again there, after the wait: one deleted while
+    // PubMed was asked is gone, not a row to answer with.
+    const { result: matched } = rematchFile(fileId, pmid, articles);
+    if (!matched) return res.status(404).json({ error: "File not found." });
     await warmCitations([pmid], "manual match");
     // Return the same shape as the files list (content_hash stripped, exists
-    // added), not the raw row. getCollectionFile can't be missing here — the
-    // row was verified above and setFileMatched only updates it.
-    res.json(apiFile(getCollectionFile(fileId)!));
-    // For the paper the file was matched to before, if this was a second match.
-    if (file.pmid && file.pmid !== pmid) sweepUnheld();
+    // added), not the raw row: the row as it was matched, which a delete during
+    // the citation fetch doesn't make any less the answer.
+    res.json(apiFile(matched));
   })
 );
 
 api.delete(
   "/collections/files/:fileId",
   asyncHandler(async (req, res) => {
-    // The row's blob is GC'd inside deleteCollectionFile if this was the last
-    // reference; its checked-out copy is swept here, for the same reason.
-    deleteCollectionFile(Number(req.params.fileId));
-    await discardOrphanedCheckouts();
+    // See letGoOfFile: its checked-out copy goes before the reply.
+    await letGoOfFile(Number(req.params.fileId));
     res.status(204).end();
-    sweepUnheld();
   })
 );
 
@@ -1891,10 +1544,8 @@ api.post(
     // removes more files than papers, and a paper something else already took
     // removes fewer papers than were asked for. The notice reports what happened,
     // which needs the pair; see removeCollectionPapers.
-    const removal = removeCollectionPapers(id, pmids);
-    await discardOrphanedCheckouts();
-    res.json(removal);
-    if (removal.removed > 0) sweepUnheld();
+    const { result: removal } = await letGoOfCollectionPapers(id, pmids);
+    res.json(removal satisfies CollectionRemovalResponse);
   })
 );
 
@@ -1914,100 +1565,11 @@ api.post(
     if (results === null) {
       return res.status(409).json({ error: "A refresh is already running. Try again in a moment." });
     }
-    res.json({ results, polledAt: new Date().toISOString() });
+    res.json({ results, polledAt: new Date().toISOString() } satisfies RefreshResponse);
   })
 );
 
 // ---------- settings ----------
-
-// Where other machines can reach this server, for the Settings sharing panel.
-// A loopback bind isn't shareable; a wildcard bind maps to every external IPv4
-// address this machine has (LAN, Tailscale, …).
-//
-// boundPort(), not PORT: these are addresses someone is about to type into
-// another machine's browser, so they have to name the port the socket is
-// actually on. With PORT=0 the configured value is 0 and the OS picked the real
-// one at bind time.
-function shareUrls(): string[] {
-  if (HOST_IS_LOOPBACK) return [];
-  const port = boundPort();
-  if (HOST !== "0.0.0.0" && HOST !== "::") return [`http://${HOST}:${port}`];
-  const urls: string[] = [];
-  for (const infos of Object.values(os.networkInterfaces())) {
-    for (const info of infos ?? []) {
-      if (info.family === "IPv4" && !info.internal) urls.push(`http://${info.address}:${port}`);
-    }
-  }
-  return urls;
-}
-
-// Never echo the raw API key back; just whether one is set.
-// How the API treats each setting: how PUT persists it and how the response
-// echoes it. `satisfies Record<keyof Settings, …>` makes the table exhaustive —
-// adding a setting to SETTING_DEFAULTS without deciding its rule is a compile
-// error, so a new toggle can never round-trip 200 without persisting.
-type SettingRule =
-  | { kind: "string"; validate?: (value: string) => string | null } // returns an error message
-  | { kind: "boolean" }
-  // write-only; response carries presence. `verbatim` stores it untrimmed.
-  | { kind: "secret"; expose: `has_${string}`; verbatim?: true };
-
-const SETTING_RULES = {
-  ncbi_email: { kind: "string" },
-  // A blank cron means "use the default"; anything else must be valid, or the
-  // scheduler would silently fall back to the default while the UI reported a
-  // successful save.
-  poll_cron: {
-    kind: "string",
-    validate: (v) => (v && !isValidCron(v) ? "That isn't a valid cron expression." : null),
-  },
-  poll_enabled: { kind: "boolean" },
-  library_open: { kind: "boolean" },
-  ncbi_api_key: { kind: "secret", expose: "has_api_key" },
-  alert_email_enabled: { kind: "boolean" },
-  alert_email_to: { kind: "string", validate: validEmailOrBlank("send alerts to") },
-  smtp_host: { kind: "string" },
-  smtp_port: {
-    kind: "string",
-    validate: (v) => (smtpPort(v) === null ? BAD_SMTP_PORT : null),
-  },
-  smtp_user: { kind: "string" },
-  // Stored as typed, where an API key is trimmed: a password can begin or end
-  // with a space.
-  smtp_pass: { kind: "secret", expose: "has_smtp_pass", verbatim: true },
-  smtp_from: { kind: "string", validate: validEmailOrBlank("send from") },
-} satisfies Record<keyof Settings, SettingRule>;
-
-function validEmailOrBlank(purpose: string) {
-  return (v: string) =>
-    v && !isEmailAddress(v) ? `The address to ${purpose} isn't an email address.` : null;
-}
-
-// The mail settings a request would leave saved: its own values over the
-// stored ones. A blank password keeps the stored one, as it does on a save —
-// but only for the server and username it was saved with. Anywhere else it
-// would hand one mail server the password for another, and let an admin read
-// the write-only secret back by pointing the test email at a server of their
-// own. So a request that moves the login has to bring its password with it,
-// and the string is the reason it didn't.
-function mailSettingsAfter(body: Record<string, unknown>): MailSettings | string {
-  const s = getSettings();
-  const after = mailFieldsOf(s);
-  for (const key of MAIL_FIELDS) {
-    const v = body[key];
-    if (typeof v === "string") after[key] = v.trim();
-  }
-  const typed = body.smtp_pass;
-  if (typeof typed === "string" && typed.trim()) return { ...after, smtp_pass: typed };
-  // Without a username no password is sent, so there is nothing to refuse.
-  if (s.smtp_pass && after.smtp_user) {
-    if (after.smtp_host.toLowerCase() !== s.smtp_host.toLowerCase()) {
-      return "Enter the password for the new mail server.";
-    }
-    if (after.smtp_user !== s.smtp_user) return "Enter the password for the new username.";
-  }
-  return { ...after, smtp_pass: s.smtp_pass };
-}
 
 // The viewer cache's 404, the other way round: email alerts are a server
 // build's, since the desktop app only polls while someone is looking at it.
@@ -2017,81 +1579,19 @@ function noEmailAlerts(res: Response): boolean {
   return true;
 }
 
-const SETTING_KEYS = Object.keys(SETTING_RULES) as (keyof Settings)[];
-
-function settingsResponse() {
-  const s = getSettings();
-  const out: Record<string, unknown> = {};
-  for (const key of SETTING_KEYS) {
-    const rule: SettingRule = SETTING_RULES[key];
-    if (rule.kind === "string") out[key] = s[key];
-    else if (rule.kind === "boolean") out[key] = s[key] === "1";
-    else out[rule.expose] = Boolean(s[key]); // never echo the secret itself
-  }
-  out.share_urls = shareUrls(); // derived from the bind address, not a setting
-  // Also not a setting: how the server was launched. share_urls is empty for
-  // both a loopback server and a desktop app, but the fix differs — one can be
-  // rebound via server/.env, the other has no .env to edit — so the UI needs to
-  // tell the two apart.
-  out.desktop = IS_DESKTOP;
-  return out;
-}
-
 // Unlike other reads, this one is admin-only: it exposes the owner's NCBI email
 // and this machine's external IPs (share_urls). The global gate above only
 // covers mutations, so GETs need their own check — without it, any viewer on a
 // shared instance could read these.
 api.get("/settings", (req, res) => {
   if (!isAdminRequest(req)) return res.status(401).json({ error: "Admin access required." });
-  res.json(settingsResponse());
+  res.json(settingsView());
 });
 
+// A patch of settings, saved whole or refused with the reason the dialog shows:
+// see saveSettings.
 api.put("/settings", (req, res) => {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  // Validate everything before persisting anything, so a rejected value can't
-  // leave the save half-applied.
-  for (const key of SETTING_KEYS) {
-    const rule: SettingRule = SETTING_RULES[key];
-    const value = body[key];
-    if (rule.kind === "string" && rule.validate && typeof value === "string") {
-      const err = rule.validate(value.trim());
-      if (err) return res.status(400).json({ error: err });
-    }
-  }
-  // Whether alerts are on or not: a login moved without its password would
-  // otherwise be saved with the old one, which would go to the new server as
-  // soon as alerts were on.
-  const mail = mailSettingsAfter(body);
-  if (typeof mail === "string") return res.status(400).json({ error: mail });
-  // Alerts that are on have to be able to send, judged on what the save would
-  // leave rather than on the fields it carries. Turned on without a mail server,
-  // they would fail in the log after every scheduled check while the switch
-  // said all was well.
-  const enabledAfter =
-    typeof body.alert_email_enabled === "boolean"
-      ? body.alert_email_enabled
-      : getSettings().alert_email_enabled === "1";
-  if (enabledAfter) {
-    const config = mailConfig(mail);
-    if (typeof config === "string") return res.status(400).json({ error: config });
-  }
-  for (const key of SETTING_KEYS) {
-    const rule: SettingRule = SETTING_RULES[key];
-    const value = body[key];
-    if (rule.kind === "string" && typeof value === "string") {
-      setSetting(key, value.trim());
-    } else if (rule.kind === "boolean" && typeof value === "boolean") {
-      setSetting(key, value ? "1" : "0");
-    } else if (rule.kind === "secret" && typeof value === "string" && value.trim()) {
-      // Secrets are write-only: only overwrite on an explicit non-empty value.
-      setSetting(key, rule.verbatim ? value : value.trim());
-    }
-  }
-  // A password is only ever sent with a username, so one left without could
-  // never be used again. Clearing the username is how a login is taken away.
-  if (!mail.smtp_user) setSetting("smtp_pass", "");
-  rescheduleFromSettings();
-  res.json(settingsResponse());
+  res.json(saveSettings(req.body));
 });
 
 // Send a test email with the mail settings in the body, which are the dialog's
@@ -2101,10 +1601,8 @@ api.post(
   "/settings/test-email",
   asyncHandler(async (req, res) => {
     if (noEmailAlerts(res)) return;
-    const mail = mailSettingsAfter((req.body ?? {}) as Record<string, unknown>);
-    if (typeof mail === "string") return res.status(400).json({ error: mail });
-    await sendTestEmail(mail);
-    res.json({ ok: true });
+    await sendTestEmail(mailSettingsFor(req.body));
+    res.json({ ok: true } satisfies TestEmailResponse);
   })
 );
 
@@ -2312,100 +1810,26 @@ api.post("/workspaces/switch", (req, res) => {
   res.on("finish", () => {
     requestRestart();
   });
-  res.json({ ok: true, restarting: canRestart() });
+  res.json({ ok: true, restarting: canRestart() } satisfies WorkspaceSwitchResponse);
 });
 
 // ---------- delete everything ----------
 
 // Delete the whole library. Irreversible, and the only route here that is.
 //
-// Held against the same lock a manual refresh takes, rather than merely
-// checking a flag: a poll that overlapped this would be inserting papers into
-// topics as they are deleted — articles saved against a topic_id the
-// transaction is removing, which the foreign key refuses, and a poller that
-// then reports a failure for a topic the user meant to be gone.
-//
-// Imports are a separate question and answered separately, because they are not
-// what the poll lock covers. They also cannot be waited for: an import is a
-// background job with no lock to take and no bound on how long it runs, so the
-// honest answer is to refuse and let the owner press the button again once it
-// finishes.
-//
-// Except a folder's reference-file lookup, which is stopped instead. It can run
-// for most of an hour, and the reset is deleting everything it works on — the
-// folder, its entries, their bookmarks — so there is nothing to wait for. It
-// is stopped in the tick the reset runs in, under the lock, so a reset the lock
-// refuses stops nothing; and each round's writes check that its folder still
-// exists, so one between awaits when the reset lands writes nothing after it.
-//
-// Transfers are the third, and the one easiest to forget, because on a Pro
-// instance the writer is not this instance at all. A paired node pushing up and
-// a master being pulled from both land in storePulledFile, which is mounted
-// outside this router, is not a job in `jobs`, and takes no lock — so the poll
-// lock below says nothing about it. The refusals are ordered cheapest first and
-// both ahead of the lock, so a refused reset never takes one.
+// What it refuses to run alongside, and the order it tidies up in, are
+// deleteAllData's (holding.ts).
 api.post(
   "/data/reset",
   asyncHandler(async (req, res) => {
-    if (anyImportRunning()) {
-      return res.status(409).json({
-        error: "A collection is still importing files. Wait for it to finish, then try again.",
-      });
-    }
-    // The same answer for the same reason, to a writer nobody here can see. A
-    // push arriving from a paired node and a pull coming down from a master both
-    // write article rows and blobs across awaits, and neither is a job in `jobs`
-    // or a holder of the poll lock — so without this the wipe lands between a
-    // transfer's checks and its writes, leaving a blob nothing references or an
-    // articles row that outlived "delete everything".
-    //
-    // Refused rather than waited for, like the import above: the transfer is not
-    // this instance's to hurry, and the window is a network round trip wide.
-    if (anyTransferInFlight()) {
-      return res.status(409).json({
-        error: "Files are being copied into this library right now. Wait for it to finish, then try again.",
-      });
-    }
-    const stats = await withPollLock(async () => {
-      cancelFolderImports();
-      return resetLibrary();
-    });
-    if (stats === null) {
-      return res.status(409).json({ error: "A refresh is running. Try again in a moment." });
-    }
-    // After the deletion, never before it: each of these is tidying up around a
-    // wipe that has already happened, and none is allowed to prevent one.
-    clearImportJobs();
-    clearFolderImportJobs();
-    resetProContent();
-    // The checked-out copies, which are the one part of a stored PDF that
-    // resetLibrary cannot reach. It deletes the blobs and the rows; a copy is
-    // neither, and it is a plaintext PDF under the paper's own name sitting in
-    // a directory the reader can open. Leaving those behind would make "and
-    // every stored PDF" false in the sentence the button is asking about, for
-    // every paper opened in a viewer — which is exactly the set someone
-    // resetting a library to get rid of sensitive papers has been reading.
-    //
-    // Here rather than in resetLibrary, for the reason resetProContent is here:
-    // external-open.ts is built on db.ts, so db.ts cannot call into it, and the
-    // route is where the halves of a reset are already put together.
-    //
-    // Every row is gone by now, so each copy is an orphan and clearCheckouts
-    // takes it — its one refusal, a save that was never finished, cannot arise
-    // when there is no row left to hold the changes for.
-    //
-    // Allowed to fail, like the blob sweep inside resetLibrary and for the same
-    // reason: the wipe has committed, nothing rolls it back, and a directory
-    // that could not be removed must not be reported as a reset that did not
-    // happen.
-    try {
-      await clearCheckouts();
-    } catch (err) {
-      console.warn(`[routes] clearing checked-out copies after reset failed: ${errMessage(err)}`);
-    }
-    // The schedule survives (poll_cron and poll_enabled are settings, not
-    // contents), and with no topics left there is nothing for it to poll — but
-    // it is still armed, so nothing needs rescheduling here.
-    res.json(stats);
+    const outcome = await deleteAllData();
+    if ("stats" in outcome) return res.json(outcome.stats);
+    const error = {
+      scan: "A collection is still importing files. Wait for it to finish, then try again.",
+      transfer:
+        "Files are being copied into this library right now. Wait for it to finish, then try again.",
+      refresh: "A refresh is running. Try again in a moment.",
+    }[outcome.refused];
+    res.status(409).json({ error });
   })
 );

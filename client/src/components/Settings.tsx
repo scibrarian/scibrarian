@@ -3,6 +3,7 @@ import { Share2, Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useReveal } from "../lib/hooks";
+import { useSources, useTopics, useTopicsError } from "../lib/sources";
 import {
   describeCacheCleared,
   describeResetDone,
@@ -89,15 +90,11 @@ function alertsLine(s: AppSettings): string {
 export function Settings({
   pro,
   viewerCache,
-  topics,
-  topicsError,
   onAddTopic,
   onEditTopic,
-  onDataChanged,
   onPairingChanged,
   onSharingChanged,
   onPapersRemoved,
-  onLibraryReset,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
   // panel — there is no separate feature flag to keep in step with it.
@@ -106,22 +103,11 @@ export function Settings({
   // from the same reading this panel prints, and either can clear it. Inert on
   // every other build, where the section that uses it is not drawn.
   viewerCache: ViewerCache;
-  // The topics, which are the shell's: its section bar draws from the same
-  // list, and one reading can't disagree with itself. Adding and editing go to
-  // the shell's dialog for the same reason — there is one, wired once. This
-  // panel used to keep a list and a dialog of its own, and every save fetched
+  // Adding and editing a topic go to the shell's dialog: there is one, wired
+  // once. This panel used to keep a dialog of its own, and every save fetched
   // the topics twice.
-  topics: Topic[];
-  // Why the shell's last reading of them failed, or null when it didn't. The
-  // list above is then whatever the reading before it left: with a topic just
-  // removed still on it, or empty because nothing has been read at all. This
-  // panel reported that when the list was its own, and went quiet when it
-  // stopped being.
-  topicsError: string | null;
   onAddTopic: () => void;
   onEditTopic: (topic: Topic) => void;
-  // Read the topics again: after a removal here, and when asked to try again.
-  onDataChanged: () => void;
   // This instance connected to an organization's library or left one, so the
   // `pro` block above is now stale. Passed straight through to the panel that
   // does it — Settings has no opinion on it beyond being in the way.
@@ -131,20 +117,19 @@ export function Settings({
   // icon and badge from, and nothing else. Carries the panel's fresh reading of
   // those stamps, or null if it couldn't take one; see ProPanel.
   onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
-  // Papers left the Interests feeds (a topic removed): the app refreshes the
-  // paper views and reports the count.
+  // Papers left the Interests feeds (a topic removed), for the shell to report
+  // the count. A reset reports nothing there: what it destroyed is reported in
+  // the panel the button is in, beside the button, rather than in a notice at
+  // the top of a page the reader has scrolled to the bottom of.
   onPapersRemoved: (count: number) => void;
-  // The library was deleted outright. Separate from onPapersRemoved, which the
-  // panel could otherwise have reused: that one describes papers leaving the
-  // topic feeds, and the shell answers it by reloading them. Here every source
-  // is gone — folders and collections included — so the selections pointing at
-  // them have to be dropped too, and only the shell can do that.
-  //
-  // Carries nothing, because the shell has nothing to say: what was destroyed is
-  // reported in the panel the button is in, beside the button, rather than in a
-  // notice at the top of a page the reader has scrolled to the bottom of.
-  onLibraryReset: () => void;
 }) {
+  // The topics, the same list the section bar draws from, and why the last
+  // reading of them failed, or null when it didn't. The list is then whatever
+  // the reading before it left: with a topic just removed still on it, or
+  // empty because nothing has been read at all.
+  const sources = useSources();
+  const topics = useTopics();
+  const topicsError = useTopicsError();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
@@ -251,8 +236,7 @@ export function Settings({
     if (!topicToRemove) return;
     setTopicToRemove(null);
     try {
-      const res = await api.deleteTopic(topicToRemove.topic.id);
-      onDataChanged();
+      const res = await sources.deleteTopic(topicToRemove.topic.id);
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
@@ -279,15 +263,15 @@ export function Settings({
     setResetResult(null);
     setResetting(true);
     try {
-      const deleted = await api.resetLibrary();
+      // The store empties and reads again the topics listed here and every
+      // other view of all of it.
+      const deleted = await sources.resetLibrary();
       setResetResult({ kind: "info", message: describeResetDone(deleted) });
-      // ProPanel first, which is counting over collections that went with
-      // them, then the shell, which owns the topics listed here and every other
-      // view of all of it. Nothing of this panel's own: the settings are what a
-      // reset keeps, and reading them again would only put the stored copy back
-      // over an edit not yet saved.
+      // And ProPanel, which is counting over collections that went with them.
+      // Nothing of this panel's own: the settings are what a reset keeps, and
+      // reading them again would only put the stored copy back over an edit
+      // not yet saved.
       setProReloadToken((n) => n + 1);
-      onLibraryReset();
     } catch (err) {
       setResetResult({ kind: "error", message: errorMessage(err) });
     } finally {
@@ -434,7 +418,7 @@ export function Settings({
                     Couldn’t load the topics: {topicsError}
                   </span>
                   <div className="list-actions">
-                    <button className="link-btn" onClick={onDataChanged}>
+                    <button className="link-btn" onClick={() => void sources.loadTopics()}>
                       Try again
                     </button>
                   </div>

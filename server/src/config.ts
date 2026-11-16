@@ -106,6 +106,14 @@ export const SETTING_DEFAULTS = {
   smtp_from: "",
 };
 
+// The settings table as the server reads it. The client is served the settings
+// response, which never carries the API key. The key set derives from
+// SETTING_DEFAULTS, so adding a setting there forces the save's rules
+// (SETTING_RULES in settings.ts) to cover it — the compiler catches a forgotten
+// branch instead of the toggle silently round-tripping 200 without persisting.
+// The settings table stores strings, so the booleans are "1"/"0".
+export type Settings = Record<keyof typeof SETTING_DEFAULTS, string>;
+
 // Path to the built client (used in production / `npm start`). Overridable
 // because PROJECT_ROOT is only meaningful when the server runs from a checkout:
 // the desktop build points this at the client bundle inside the app's

@@ -2,15 +2,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MAX_LINKS, MAX_LINKS_PER_REQUEST } from "../../../shared/limits";
+import { createSources, SourcesContext, type Sources, type SourcesApi } from "../lib/sources";
 import type { AddLinksResponse, LinkAnswer, LinkOutcome } from "../types";
 import { AddLinks } from "./AddLinks";
 
-// The batch loop behind a long paste. The server is mocked: each request is a
-// promise the test settles, so it decides when a batch lands relative to the
-// dialog going away.
+// The dialog over the store's batch loop (see addLinks in lib/sources). The
+// server is mocked: each request is a promise the test settles, so it decides
+// when a batch lands relative to the dialog going away.
 
-const addBookmarkLinks = vi.hoisted(() => vi.fn());
-vi.mock("../api", () => ({ api: { addBookmarkLinks } }));
+const addBookmarkLinks = vi.fn();
+let sources: Sources;
+// How many times the folder's papers have been made stale.
+const refreshes = () => sources.tokenFor({ folder: 7 });
 
 afterEach(cleanup);
 
@@ -54,6 +57,11 @@ let batches: ReturnType<typeof deferred<AddLinksResponse>>[];
 
 beforeEach(() => {
   batches = [];
+  sources = createSources({
+    addBookmarkLinks,
+    getBookmarks: async () => [],
+    getBookmarkFolders: async () => [],
+  } as unknown as SourcesApi);
   addBookmarkLinks.mockReset();
   addBookmarkLinks.mockImplementation(() => {
     const d = deferred<AddLinksResponse>();
@@ -67,11 +75,18 @@ function submit(lines: string[]) {
   fireEvent.submit(screen.getByRole("textbox").closest("form")!);
 }
 
+function dialog() {
+  return render(
+    <SourcesContext.Provider value={sources}>
+      <AddLinks open onClose={() => {}} folderId={7} />
+    </SourcesContext.Provider>
+  );
+}
+
 function paste(lines: string[]) {
-  const onAdded = vi.fn();
-  const view = render(<AddLinks open onClose={() => {}} folderId={7} onAdded={onAdded} />);
+  const view = dialog();
   submit(lines);
-  return { onAdded, view };
+  return { view };
 }
 
 // Lets the loop run on past a settled request to its next await.
@@ -87,43 +102,43 @@ async function landAll(lines: string[]) {
 
 describe("AddLinks' batches", () => {
   it("sends them in turn and refreshes the folder once, after the last", async () => {
-    const { onAdded } = paste(LINES);
+    paste(LINES);
     batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
     await settle();
     // Per batch, the reloads overlapped and could land out of order.
-    expect(onAdded).not.toHaveBeenCalled();
+    expect(refreshes()).toBe(0);
     expect(addBookmarkLinks).toHaveBeenCalledTimes(2);
     batches[1].resolve(response(LINES.slice(MAX_LINKS_PER_REQUEST)));
     await settle();
-    expect(onAdded).toHaveBeenCalledTimes(1);
+    expect(refreshes()).toBe(1);
   });
 
   it("doesn't refresh the folder when nothing was added", async () => {
-    const { onAdded } = paste(LINES.slice(0, 2));
+    paste(LINES.slice(0, 2));
     batches[0].resolve(response(LINES.slice(0, 2), "already-saved"));
     await settle();
-    expect(onAdded).not.toHaveBeenCalled();
+    expect(refreshes()).toBe(0);
   });
 
   it("sends no more once the dialog is gone, and still refreshes for the batch in flight", async () => {
     // Leaving the folder unmounts the dialog — the folder view is keyed by it.
-    const { onAdded, view } = paste(LINES);
+    const { view } = paste(LINES);
     view.unmount();
     batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
     await settle();
     expect(addBookmarkLinks).toHaveBeenCalledTimes(1);
     // That batch's papers were saved, so the bookmark icons and folder counts
     // elsewhere still need to hear about them.
-    expect(onAdded).toHaveBeenCalledTimes(1);
+    expect(refreshes()).toBe(1);
   });
 
   it("refreshes once for the batches that landed before one failed", async () => {
-    const { onAdded } = paste(LINES);
+    paste(LINES);
     batches[0].resolve(response(LINES.slice(0, MAX_LINKS_PER_REQUEST)));
     await settle();
     batches[1].reject(new Error("Couldn’t reach PubMed."));
     await settle();
-    expect(onAdded).toHaveBeenCalledTimes(1);
+    expect(refreshes()).toBe(1);
     expect(screen.getByText(/Couldn’t reach PubMed/)).toBeTruthy();
   });
 });
@@ -182,7 +197,7 @@ describe("AddLinks' paste box and rows", () => {
   });
 
   it("leaves the box as typed when nothing got in", async () => {
-    render(<AddLinks open onClose={() => {}} folderId={7} onAdded={() => {}} />);
+    dialog();
     const typed = `  ${LINES[0]}\n\n${LINES[1]}`;
     fireEvent.change(box(), { target: { value: typed } });
     fireEvent.submit(box().closest("form")!);
@@ -240,7 +255,7 @@ describe("AddLinks' focus", () => {
   const addButton = () => screen.getByRole("button", { name: /^Add/ });
 
   it("opens on the box", async () => {
-    render(<AddLinks open onClose={() => {}} folderId={7} onAdded={() => {}} />);
+    dialog();
     await settle();
     expect(document.activeElement).toBe(box());
   });
@@ -267,7 +282,7 @@ describe("AddLinks' focus", () => {
   });
 
   it("takes it back from the Add button the run disabled", async () => {
-    render(<AddLinks open onClose={() => {}} folderId={7} onAdded={() => {}} />);
+    dialog();
     fireEvent.change(box(), { target: { value: LINES[0] } });
     addButton().focus();
     fireEvent.submit(box().closest("form")!);

@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ImportStatus } from "../types";
 
 // The scans running over collections, followed for as long as the app is open
@@ -26,14 +26,21 @@ export type ImportWatch = ImportStatus | { state: "lost" };
 export type ImportJobs = {
   // Undefined for a collection nothing has asked about yet.
   get: (collectionId: number) => ImportWatch | undefined;
+  // How many times a scan over this collection has been seen to end, for
+  // useFollowedJob, which reacts to each.
+  endings: (collectionId: number) => number;
   subscribe: (onChange: () => void) => () => void;
   // Ask whether a scan is running over this collection, and follow it if one
   // is. Resolves once the server has answered or failed to, and at once for a
-  // scan already being followed.
+  // scan already being followed. A scan it finds already over is not an end
+  // seen here: it ended before anyone was looking, and what it changed was
+  // refreshed when it did, so arriving at its collection is no reason to again.
   check: (collectionId: number) => Promise<void>;
-  // Take a status already read — the one asked for right after starting a
-  // scan — and follow the scan if it is still running.
-  follow: (collectionId: number, status: ImportStatus) => void;
+  // Take the job a start answered with, and follow it while it runs. One that
+  // is over already — a scan with nothing to do, or one that finished before
+  // its answer was read — ended here and now: onSettled is told, and so is the
+  // view, as when the poll sees one end.
+  start: (collectionId: number, status: ImportStatus) => void;
   // Stop every poll.
   stop: () => void;
 };
@@ -47,6 +54,7 @@ export function createImportJobs(
   onMatched?: (collectionId: number) => void
 ): ImportJobs {
   const known = new Map<number, ImportWatch>();
+  const ended = new Map<number, number>();
   const polls = new Map<number, ReturnType<typeof setInterval>>();
   // A check already on its way, so a second one waits on it rather than asking
   // again — StrictMode mounts the view twice.
@@ -56,6 +64,14 @@ export function createImportJobs(
   function record(id: number, watch: ImportWatch) {
     known.set(id, watch);
     for (const listener of listeners) listener();
+  }
+
+  // Counted before the answer is recorded, so the view the record re-renders
+  // reads both together.
+  function end(id: number, watch: ImportWatch, settled: boolean) {
+    ended.set(id, (ended.get(id) ?? 0) + 1);
+    record(id, watch);
+    if (settled) onSettled(id);
   }
 
   function stopPolling(id: number) {
@@ -77,22 +93,25 @@ export function createImportJobs(
         const s = await getStatus(id);
         failures = 0;
         const before = known.get(id);
-        record(id, s);
         // Idle as well as done or failed: a job the server has dropped — it
         // restarted, or the collection was deleted — is over too.
         if (s.state !== "running") {
           stopPolling(id);
-          onSettled(id);
-        } else if (onMatched && before && "matched" in before && s.matched > before.matched) {
-          onMatched(id);
+          end(id, s, true);
+        } else {
+          record(id, s);
+          const grew = before && "matched" in before && s.matched > before.matched;
+          if (onMatched && grew) onMatched(id);
         }
       } catch {
         // A transient failure must not freeze the progress bar: keep polling
         // and retry next tick. Only give up after several failures in a row,
         // so the "running" UI doesn't hang forever.
+        // An end to the view, which says so, but not one to settle: nothing is
+        // known of what the scan did.
         if (++failures >= MAX_POLL_FAILURES) {
           stopPolling(id);
-          record(id, { state: "lost" });
+          end(id, { state: "lost" }, false);
         }
       } finally {
         inFlight = false;
@@ -104,6 +123,11 @@ export function createImportJobs(
   function follow(id: number, s: ImportStatus) {
     record(id, s);
     if (s.state === "running") poll(id);
+  }
+
+  function start(id: number, s: ImportStatus) {
+    if (s.state === "running") follow(id, s);
+    else end(id, s, true);
   }
 
   function check(id: number): Promise<void> {
@@ -125,22 +149,62 @@ export function createImportJobs(
 
   return {
     get: (id) => known.get(id),
+    endings: (id) => ended.get(id) ?? 0,
     subscribe(onChange) {
       listeners.add(onChange);
       return () => listeners.delete(onChange);
     },
     check,
-    follow,
+    start,
     stop() {
       for (const id of [...polls.keys()]) stopPolling(id);
     },
   };
 }
 
-// One collection's scan, kept current as the poll moves it on. Undefined when
-// there is no collection, or nothing has asked about this one yet.
-export function useImportJob(jobs: ImportJobs, collectionId: number | null): ImportWatch | undefined {
-  return useSyncExternalStore(jobs.subscribe, () =>
-    collectionId == null ? undefined : jobs.get(collectionId)
-  );
+// One collection's scan, or one folder's lookup, as the view showing it needs
+// it.
+//
+// `watched` is the job, kept current as the poll moves it on: undefined when
+// there is no id, or nothing has asked about this one yet. `checked` is whether
+// the probe made on every arrival has answered — asked each time rather than
+// taken from what App last heard, which may predate a job started since — for
+// until it has, a pending row may be one a job is working on right now.
+//
+// `onEnded` is called once for each end of a job this view could see: one the
+// poll found over, or lost contact with, and one a start answered with that was
+// over already. Two things can be first to see a job end, and both come here,
+// so a view has one place to report it. Before paint, from a layout effect: the
+// render that first sees the job over still has its pre-job rows, every one
+// pending, and with nothing running any more a passive effect would paint them
+// for a frame as rows nothing ever looked at.
+export function useFollowedJob(
+  jobs: ImportJobs,
+  id: number | null,
+  onEnded: (watch: ImportWatch) => void
+): { watched: ImportWatch | undefined; checked: boolean } {
+  const watched = useSyncExternalStore(jobs.subscribe, () => (id == null ? undefined : jobs.get(id)));
+  const endings = useSyncExternalStore(jobs.subscribe, () => (id == null ? 0 : jobs.endings(id)));
+
+  const [checked, setChecked] = useState(false);
+  useEffect(() => {
+    if (id == null) return;
+    void jobs.check(id).then(() => setChecked(true));
+  }, [id, jobs]);
+
+  const react = useRef(onEnded);
+  useLayoutEffect(() => {
+    react.current = onEnded;
+  });
+  // What was last seen, so an id changing under the view is not taken for an
+  // end of the job it changed to.
+  const seen = useRef({ id, endings });
+  useLayoutEffect(() => {
+    const was = seen.current;
+    seen.current = { id, endings };
+    if (was.id !== id || was.endings === endings || !watched) return;
+    react.current(watched);
+  }, [id, endings, watched]);
+
+  return { watched, checked };
 }

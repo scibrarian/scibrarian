@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createSources, SourcesContext, useSources, type Sources, type SourcesApi } from "../lib/sources";
 import { Settings } from "./Settings";
 import { TopicDialog } from "./TopicDialog";
 import type { ViewerCache } from "../lib/viewerCache";
@@ -58,6 +59,7 @@ const TOPIC: Topic = {
   journalCount: 0,
   last_polled_at: null,
   created_at: "2026-10-01 00:00:00",
+  articleCount: 0,
 };
 const RENAMED: Topic = { ...TOPIC, name: "Rest" };
 
@@ -73,8 +75,11 @@ const NO_CACHE: ViewerCache = {
   cancel: () => {},
 };
 
+let sources: Sources;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  sources = createSources(api as unknown as SourcesApi);
   api.getSettings.mockResolvedValue(SAVED);
   api.getTopic.mockResolvedValue({ ...TOPIC, journals: [] } satisfies TopicDetail);
   api.updateTopic.mockResolvedValue({
@@ -88,38 +93,35 @@ beforeEach(() => {
 const email = () => screen.getByRole("textbox", { name: "Contact email" }) as HTMLInputElement;
 const saveSettings = () => screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement;
 
-// The topics and the dialog that edits them are the shell's, handed down, so
-// this stands in for the shell: it reads the list as App does, again whenever
-// the panel or the dialog says it changed, and puts the dialog beside the
-// panel. The real dialog rather than a stub, because what these pin is what
-// the form keeps when a topic really is saved or removed.
+// The dialog that edits the topics is the shell's, so this stands in for the
+// shell: it reads the topics on mount, as App's first load does, and puts the
+// dialog beside the panel. The real dialog rather than a stub, because what
+// these pin is what the form keeps when a topic really is saved or removed —
+// and the store reads the list again when one is.
 function Shell() {
-  const [topics, setTopics] = useState<Topic[]>([]);
+  return (
+    <SourcesContext.Provider value={sources}>
+      <Panel />
+    </SourcesContext.Provider>
+  );
+}
+
+function Panel() {
+  const store = useSources();
   const [editing, setEditing] = useState<Topic | null>(null);
-  const load = () => void api.getTopics().then(setTopics);
-  useEffect(load, []);
+  useEffect(() => void store.loadTopics(), [store]);
   return (
     <>
       <Settings
         pro={null}
         viewerCache={NO_CACHE}
-        topics={topics}
-        topicsError={null}
         onAddTopic={() => {}}
         onEditTopic={setEditing}
-        onDataChanged={load}
         onPairingChanged={() => {}}
         onSharingChanged={() => {}}
         onPapersRemoved={() => {}}
-        onLibraryReset={() => {}}
       />
-      <TopicDialog
-        open={editing != null}
-        topic={editing}
-        topics={topics}
-        onClose={() => setEditing(null)}
-        onSaved={load}
-      />
+      <TopicDialog open={editing != null} topic={editing} onClose={() => setEditing(null)} onSaved={() => {}} />
     </>
   );
 }

@@ -1,63 +1,7 @@
-// Shapes shared with the server live in shared/types.ts. Some are re-exported
-// unchanged; others are extended below with the extra fields the API attaches
-// to its responses.
-import type {
-  AbstractsResponse,
-  AddLinksResponse,
-  BookmarkEntry,
-  BookmarkFolder as BookmarkFolderRow,
-  BookmarkImport,
-  CacheStats,
-  ClearedCache,
-  Collection as CollectionRow,
-  CollectionFile as CollectionFileRow,
-  CollectionFileStatus,
-  Topic as TopicRow,
-  TopicDetail as TopicDetailRow,
-  ElsewhereHolding,
-  EvidenceClass,
-  FolderImportResponse,
-  GraphEdge,
-  GraphNode,
-  GraphResponse,
-  HaveAnswer,
-  HaveMatch,
-  HaveResponse,
-  ImportJob,
-  ImportReason,
-  ImportStatus,
-  Journal,
-  JournalRemovalResult,
-  LibraryStats,
-  LinkAnswer,
-  LinkOutcome,
-  LinkedPaper,
-  MedlineStatus,
-  MeshDescriptorRef,
-  MeshFacet,
-  MeshFiling,
-  MeshHeadingsResponse,
-  MeshSearchResponse,
-  MeshSearchResult,
-  Paper,
-  PaperProvenance,
-  PapersResponse,
-  ParsedRefView,
-  PollResult,
-  RefKind,
-  ShareLinkResponse,
-  TopicPreviewResponse,
-  TopicRemovalResult,
-  TopicSuggestion,
-  TopicSuggestResponse,
-  TopicUpdateResponse,
-  Workspace,
-  WorkspaceContents,
-  WorkspaceContentsResponse,
-  WorkspacesResponse,
-} from "../../shared/types";
-
-import type { ProStatus as ProStatusRow } from "../../shared/pro";
+// The server's shapes — what it stores and every reply it sends — live in
+// shared/types.ts and are re-exported here. Below them is what only the client
+// has: what it sends, and its own state.
+import type { AppSettings } from "../../shared/types";
 import type { MailField } from "../../shared/mail";
 
 // The Pro tier's wire shapes. Public like the rest of the client — only the
@@ -78,12 +22,20 @@ export type {
 
 export type {
   AbstractsResponse,
+  AddBookmarksResponse,
   AddLinksResponse,
+  AppSettings,
+  AuthStatus,
   BookmarkEntry,
+  BookmarkFolder,
   BookmarkImport,
   CacheStats,
   ClearedCache,
+  Collection,
+  CollectionFile,
   CollectionFileStatus,
+  CollectionFilesResponse,
+  CollectionRemovalResponse,
   ElsewhereHolding,
   EvidenceClass,
   FolderImportResponse,
@@ -98,6 +50,9 @@ export type {
   ImportStatus,
   Journal,
   JournalRemovalResult,
+  JournalSearchResponse,
+  JournalSearchResult,
+  JournalSuggestResponse,
   LibraryStats,
   LinkAnswer,
   LinkOutcome,
@@ -110,22 +65,30 @@ export type {
   MeshSearchResponse,
   MeshSearchResult,
   Paper,
+  PaperCountResponse,
   PaperProvenance,
   PapersResponse,
   ParsedRefView,
   PollResult,
   RefKind,
+  RefreshResponse,
+  RemovedResponse,
   ShareLinkResponse,
+  TestEmailResponse,
+  Topic,
+  TopicDetail,
   TopicPreviewResponse,
   TopicRemovalResult,
   TopicSuggestion,
   TopicSuggestResponse,
   TopicUpdateResponse,
+  UploadResponse,
   Workspace,
   WorkspaceContents,
   WorkspaceContentsResponse,
+  WorkspaceSwitchResponse,
   WorkspacesResponse,
-};
+} from "../../shared/types";
 
 // What narrows a paper source server-side, shared by /api/papers and /api/graph
 // so both views select the same papers. Journals, the citation threshold and
@@ -137,87 +100,11 @@ export interface PaperQuery {
   meshMajor?: boolean; // keep only papers every selected descriptor is a main point of
 }
 
-export interface Topic extends TopicRow {
-  articleCount?: number;
-}
-
-export type TopicDetail = TopicDetailRow;
-
-export interface JournalSearchResult {
-  nlm_id: string; // the journal identity key — used to dedupe against added journals
-  title: string;
-  abbr: string;
-  issn: string;
-  metric: number | null; // OpenAlex 2-yr mean citedness
-  // What MEDLINE has to do with the journal; null while the catalog doesn't
-  // say. Never 'never' from a search, which leaves those out.
-  medline: MedlineStatus | null;
-}
-
-export interface JournalSearchResponse {
-  results: JournalSearchResult[];
-  // Journals the search matched and left out of `results`: ones MEDLINE has
-  // never indexed, whose papers carry no MeSH headings and can't match a topic.
-  neverIndexed: number;
-}
-
-// What /api/journals/suggest ("Auto") returns for a set of headings: catalog
-// journals, in the catalog search's own shape.
-export interface JournalSuggestResponse {
-  results: JournalSearchResult[];
-}
-
 // What a topic is to search, as the dialog sends it: all of PubMed, or the
 // journals named by NLM id.
 export interface TopicScopeInput {
   allPubmed: boolean;
   journals: string[];
-}
-
-export interface RefreshResponse {
-  results: PollResult[];
-  polledAt: string;
-}
-
-// What /api/auth reports: whether this browser's requests count as admin,
-// whether an ADMIN_TOKEN is configured at all (false = tokenless single-user
-// mode, where stored PDFs stay openly fetchable), and whether the owner has
-// opened the Library so viewers can download PDFs without a share link.
-export interface AuthStatus {
-  admin: boolean;
-  token_required: boolean;
-  library_open: boolean;
-  // The Pro module's report, or null in a free build — which is what every
-  // piece of Pro UI keys off. Optional so a response from an older server
-  // (or a test stub) doesn't have to carry it.
-  pro?: ProStatusRow | null;
-  // True in the desktop build. The same fact AppSettings.desktop carries, here
-  // as well because the shell needs it and only the owner's Settings panel
-  // loads that one. Optional for the reason `pro` is.
-  desktop?: boolean;
-}
-
-// What /api/settings exposes: never the API key itself, just whether one is set.
-export interface AppSettings {
-  ncbi_email: string;
-  poll_cron: string;
-  poll_enabled: boolean;
-  library_open: boolean;
-  has_api_key: boolean;
-  // Email alerts after scheduled checks, and the mail server they go out
-  // through. Server builds only; see EmailAlertsDialog.
-  alert_email_enabled: boolean;
-  alert_email_to: string;
-  smtp_host: string;
-  smtp_port: string;
-  smtp_user: string;
-  smtp_from: string;
-  has_smtp_pass: boolean;
-  // URLs where other machines can reach this server; empty when bound to loopback.
-  share_urls: string[];
-  // True in the desktop build, which is loopback-only by construction — so
-  // share_urls is always empty there and can never be filled in.
-  desktop: boolean;
 }
 
 // What the email alerts dialog edits, and what a test email is sent with. The
@@ -226,35 +113,6 @@ export type MailSettingsDraft = Pick<AppSettings, MailField> & { smtp_pass?: str
 
 // A settings save. Patch semantics: only the keys sent are changed.
 export type SettingsUpdate = Partial<AppSettings> & { ncbi_api_key?: string; smtp_pass?: string };
-
-export interface BookmarkFolder extends BookmarkFolderRow {
-  paperCount: number;
-}
-
-export interface Collection extends CollectionRow {
-  fileCount: number;
-  matchedCount: number; // uploads that found a paper — files, and what the picker badge draws
-  heldCount: number; // distinct papers held, the count the papers views actually list
-}
-
-// The API strips content_hash (blob-store key) from what viewers can see.
-export interface CollectionFile extends Omit<CollectionFileRow, "content_hash"> {
-  exists: boolean; // whether the stored PDF is still present
-}
-
-export interface CollectionFilesResponse {
-  files: CollectionFile[];
-}
-
-export interface UploadResponse {
-  added: number; // new file rows inserted
-  skipped: number; // already in the collection (or not a PDF)
-}
-
-export interface ImportStartResponse {
-  jobId: string;
-  total: number; // pending files the job will scan
-}
 
 // Which paper set a view reads from: an Interests topic, a Bookmarks folder, a
 // Library collection, or every collection at once. Every analysis module

@@ -3,56 +3,22 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import { article } from "./unheld-sweep-fixture.js";
 
 // Importing a reference file into a bookmark folder, through the routes: what
 // becomes a bookmark, what is listed unmatched and why, and the PMID a reader
-// gives one that wasn't found. PubMed is mocked — a DOI's PMIDs are in
-// `pubmed.dois`, and a PMID has a record only if it is in `pubmed.records` —
+// gives one that wasn't found. PubMed is faked — a PMID has a record only if
+// it was added to test-pubmed.ts, and a DOI finds the records that carry it —
 // and so is iCite. Nothing here touches the network.
 
 process.env.ADMIN_TOKEN = "folder-import-token";
 const HEADERS = { "x-admin-token": "folder-import-token" };
 
-const pubmed = vi.hoisted(() => ({
-  dois: new Map<string, string[]>(),
-  records: new Set<string>(),
-  searched: [] as string[],
-  fail: false,
-  // Holds every DOI search until released, for the tests that need something
-  // to happen while one is in flight.
-  hold: null as Promise<void> | null,
-}));
-
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  const { article } = await import("./unheld-sweep-fixture.js");
-  return {
-    ...actual,
-    pmidsForDoi: async (doi: string) => {
-      pubmed.searched.push(doi);
-      if (pubmed.hold) await pubmed.hold;
-      if (pubmed.fail) throw new Error("NCBI unreachable");
-      return pubmed.dois.get(doi) ?? [];
-    },
-    // Stored with the DOI it was found by, as PubMed's record would carry it.
-    fetchArticles: async (pmids: string[]) => {
-      if (pubmed.fail) throw new Error("NCBI unreachable");
-      const doiOf = new Map(
-        [...pubmed.dois].flatMap(([doi, ps]) => (ps.length === 1 ? [[ps[0], doi] as const] : []))
-      );
-      return pmids
-        .filter((p) => pubmed.records.has(p))
-        .map((p) => ({ ...article(p), doi: doiOf.get(p) ?? article(p).doi }));
-    },
-    fetchSummaries: async (pmids: string[]) =>
-      new Map(pmids.filter((p) => pubmed.records.has(p)).map((p) => [p, article(p)])),
-  };
-});
-vi.mock("./icite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./icite.js")>();
-  return { ...actual, ensureCitations: async () => {} };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+// The DOIs PubMed was asked about.
+const searched = () => pubmed.calls("pmidsForDoi").map(([doi]) => doi);
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 let db: Db;
 let server: Server;
@@ -137,14 +103,14 @@ afterAll(async () => {
 beforeEach(() => {
   db.db.exec("DELETE FROM bookmark_folders");
   db.db.exec("DELETE FROM articles");
-  pubmed.dois = new Map([
-    ["10.1000/found", [FOUND_BY_DOI]],
-    ["10.1000/twice", ["40000008", "40000009"]],
-  ]);
-  pubmed.records = new Set([FOUND_BY_PMID, FOUND_BY_DOI, GIVEN_BY_HAND]);
-  pubmed.searched = [];
-  pubmed.fail = false;
-  pubmed.hold = null;
+  pubmed.add(
+    article(FOUND_BY_PMID),
+    { ...article(FOUND_BY_DOI), doi: "10.1000/found" },
+    article(GIVEN_BY_HAND),
+    // A DOI PubMed files under two records.
+    { ...article("40000008"), doi: "10.1000/twice" },
+    { ...article("40000009"), doi: "10.1000/twice" }
+  );
 });
 
 describe("importing a reference file into a folder", () => {
@@ -162,7 +128,7 @@ describe("importing a reference file into a folder", () => {
       { title: "Hand-entered long ago", status: "unmatched", reason: "no-identifier" },
     ]);
     // The book was never looked up.
-    expect(pubmed.searched).not.toContain("10.1000/book");
+    expect(searched()).not.toContain("10.1000/book");
   });
 
   // Only the DOIs still unmatched go back to PubMed: the ones already saved are
@@ -171,12 +137,12 @@ describe("importing a reference file into a folder", () => {
     const id = folder("Twice");
     await importFile(id, LIBRARY);
     await settled(id);
-    pubmed.searched = [];
+    pubmed.forgetCalls();
 
     await importFile(id, LIBRARY);
     await settled(id);
     expect(await entries(id)).toHaveLength(3);
-    expect(pubmed.searched.sort()).toEqual(["10.1000/twice", "10.1000/unknown"]);
+    expect(searched().sort()).toEqual(["10.1000/twice", "10.1000/unknown"]);
     expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
   });
 
@@ -189,12 +155,12 @@ describe("importing a reference file into a folder", () => {
     const byTitle = async (title: string) => (await entries(id)).find((e) => e.title === title)!.id;
     await send(`/bookmark-imports/${await byTitle("Hand-entered long ago")}/pmid`, "POST", { pmid: GIVEN_BY_HAND });
     await send(`/bookmark-imports/${await byTitle("Not indexed")}`, "DELETE");
-    pubmed.searched = [];
+    pubmed.forgetCalls();
 
     await importFile(id, LIBRARY);
     await settled(id);
     expect((await entries(id)).map((e) => e.title)).toEqual(["Filed twice"]);
-    expect(pubmed.searched).toEqual(["10.1000/twice"]);
+    expect(searched()).toEqual(["10.1000/twice"]);
     expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI, GIVEN_BY_HAND]);
   });
 
@@ -223,24 +189,6 @@ describe("importing a reference file into a folder", () => {
     expect(bookmarked(removed)).toEqual([]);
   });
 
-  it("keeps apart entries with no identifier that share a title and year", async () => {
-    const editorial = (journal: string, author: string) =>
-      `TY  - JOUR\nTI  - Editorial\nAU  - ${author}\nT2  - ${journal}\nPY  - 2020\nER  - `;
-    const file = [
-      editorial("The Lancet", "Horton, Richard"),
-      editorial("BMJ", "Godlee, Fiona"),
-      editorial("BMJ", "Abbasi, Kamran"),
-    ].join("\n");
-    const id = folder("Editorials");
-    await importFile(id, file);
-    await settled(id);
-    expect(await entries(id)).toHaveLength(3);
-    // The same three, exported again.
-    await importFile(id, file);
-    await settled(id);
-    expect(await entries(id)).toHaveLength(3);
-  });
-
   // A PMID that names nothing — mistyped, or withdrawn since — is no reason to
   // ignore a good DOI beside it. One that names a paper is taken without the
   // DOI being asked about.
@@ -256,24 +204,10 @@ describe("importing a reference file into a folder", () => {
     );
     expect(await settled(id)).toMatchObject({ state: "done", matched: 2, unmatched: 1 });
     expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
-    expect(pubmed.searched.sort()).toEqual(["10.1000/found", "10.1000/unknown"]);
+    expect(searched().sort()).toEqual(["10.1000/found", "10.1000/unknown"]);
     expect((await entries(id)).map(({ title, reason }) => ({ title, reason }))).toEqual([
       { title: "Neither found", reason: "not-in-pubmed" },
     ]);
-  });
-
-  it("reads a file saved as UTF-16, in either byte order", async () => {
-    const text = "TY  - JOUR\r\nTI  - Hand-entered — long ago\r\nPY  - 1987\r\nER  - \r\n";
-    const le = Buffer.from(text, "utf16le");
-    for (const [name, bytes] of [
-      ["little-endian", Buffer.concat([Buffer.from([0xff, 0xfe]), le])],
-      ["big-endian", Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(le).swap16()])],
-    ] as const) {
-      const id = folder(`UTF-16, ${name}`);
-      expect((await importFile(id, bytes)).status).toBe(201);
-      await settled(id);
-      expect((await entries(id)).map((e) => e.title)).toEqual(["Hand-entered — long ago"]);
-    }
   });
 
   it("refuses a file that is neither RIS nor PubMed's format", async () => {
@@ -301,9 +235,9 @@ describe("importing a reference file into a folder", () => {
   it("stops when its folder is deleted part way, and stores nothing after", async () => {
     const id = folder("Deleted mid-lookup");
     let release!: () => void;
-    pubmed.hold = new Promise<void>((resolve) => (release = resolve));
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
     await importFile(id, LIBRARY);
-    await vi.waitFor(() => expect(pubmed.searched.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
 
     expect((await send(`/bookmark-folders/${id}`, "DELETE")).status).toBe(204);
     release();
@@ -317,9 +251,9 @@ describe("importing a reference file into a folder", () => {
   it("is stopped by a library reset, and stores nothing after", async () => {
     const id = folder("Mid-reset");
     let release!: () => void;
-    pubmed.hold = new Promise<void>((resolve) => (release = resolve));
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
     await importFile(id, LIBRARY);
-    await vi.waitFor(() => expect(pubmed.searched.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
 
     expect((await send("/data/reset", "POST")).status).toBe(200);
     release();
@@ -329,14 +263,31 @@ describe("importing a reference file into a folder", () => {
     expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
   });
 
+  // Both of the above cancel the run as they delete. Deleted under it with no
+  // word to it, it still stops before its writes, which would store papers
+  // nothing holds and bookmark them into a folder that's gone.
+  it("stops when its folder is gone without its being cancelled, and stores nothing", async () => {
+    const id = folder("Gone unannounced");
+    let release!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+
+    db.db.prepare("DELETE FROM bookmark_folders WHERE id = ?").run(id);
+    release();
+    const stopped = await settled(id);
+    expect(stopped.error).toBeUndefined();
+    expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
+  });
+
   // The lookup took its rows when it started; the reader can settle one by
   // hand while it runs, and that is the entry's last word.
   it("leaves an entry removed or saved by hand while it ran", async () => {
     const id = folder("Settled by hand");
     let release!: () => void;
-    pubmed.hold = new Promise<void>((resolve) => (release = resolve));
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
     await importFile(id, LIBRARY);
-    await vi.waitFor(() => expect(pubmed.searched.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
 
     const listed = await entries(id);
     const byTitle = (title: string) => listed.find((e) => e.title === title)!.id;

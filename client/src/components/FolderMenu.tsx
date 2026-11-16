@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Plus } from "lucide-react";
 import { errorMessage } from "../lib/format";
-import type { Bookmarking } from "../lib/bookmarking";
+import { useSources } from "../lib/sources";
 import type { BookmarkFolder } from "../types";
 import { PromptDialog } from "./Dialogs";
 import { MAX_NAME_CHARS } from "../../../shared/limits";
@@ -51,15 +51,14 @@ export function FolderMenuContent({
 // pair in one place instead of repeating it in every view that lists papers.
 export function NewFolderDialog({
   pmid,
-  bookmarking,
   onError,
   onClose,
 }: {
   pmid: string | null;
-  bookmarking: Bookmarking;
   onError: (message: string) => void;
   onClose: () => void;
 }) {
+  const sources = useSources();
   return (
     <PromptDialog
       open={pmid != null}
@@ -75,8 +74,8 @@ export function NewFolderDialog({
         // it.
         void (async () => {
           try {
-            const folder = await bookmarking.createFolder(name);
-            await bookmarking.add(folder.id, pmid);
+            const folder = await sources.createFolder(name);
+            await sources.addBookmark(folder.id, pmid);
           } catch (e) {
             onError(errorMessage(e));
           }
