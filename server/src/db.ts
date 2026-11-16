@@ -18,11 +18,11 @@ import { errMessage } from "./util.js";
 import type {
   Article,
   BookmarkEntry,
-  BookmarkFolder,
+  StoredBookmarkFolder,
   BookmarkImport,
-  Collection,
-  CollectionFile,
-  Topic,
+  StoredCollection,
+  StoredCollectionFile,
+  StoredTopic,
   TopicRemovalResult,
   Journal,
   JournalRemovalResult,
@@ -642,7 +642,7 @@ const TOPIC_SELECT = `SELECT t.id, t.name, t.term, t.all_pubmed, t.last_polled_a
 
 // A topics row as selected: all_pubmed still SQLite's 1/0, and neither its
 // headings nor its journals read yet.
-type TopicRow = Omit<Topic, "headings" | "all_pubmed" | "journalCount"> & { all_pubmed: number };
+type TopicRow = Omit<StoredTopic, "headings" | "all_pubmed" | "journalCount"> & { all_pubmed: number };
 
 const topicHeadingsStmt = db.prepare(
   "SELECT ui, name FROM topic_terms WHERE topic_id = ? ORDER BY position"
@@ -653,7 +653,7 @@ const topicJournalCountStmt = db.prepare(
 
 // One query a topic rather than a join: a join would repeat the topic's row
 // for every heading and need regrouping, and there are tens of topics at most.
-function toTopic(row: TopicRow): Topic {
+function toTopic(row: TopicRow): StoredTopic {
   return {
     ...row,
     all_pubmed: row.all_pubmed === 1,
@@ -662,12 +662,12 @@ function toTopic(row: TopicRow): Topic {
   };
 }
 
-export function listTopics(): Topic[] {
+export function listTopics(): StoredTopic[] {
   const rows = db.prepare(`${TOPIC_SELECT} ORDER BY t.id ASC`).all() as unknown as TopicRow[];
   return rows.map(toTopic);
 }
 
-export function getTopic(id: number): Topic | undefined {
+export function getTopic(id: number): StoredTopic | undefined {
   const row = db.prepare(`${TOPIC_SELECT} WHERE t.id = ?`).get(id) as TopicRow | undefined;
   return row && toTopic(row);
 }
@@ -677,7 +677,7 @@ export function getTopic(id: number): Topic | undefined {
 // the same set always yields the same term whatever order it was picked in;
 // NOCASE also catches an equivalent legacy/seed term. The scope is no part of
 // it: the same headings searched somewhere else are still the same topic.
-export function topicByTerm(term: string): Topic | undefined {
+export function topicByTerm(term: string): StoredTopic | undefined {
   const row = db.prepare(`${TOPIC_SELECT} WHERE t.term = ? COLLATE NOCASE`).get(term) as
     | TopicRow
     | undefined;
@@ -691,7 +691,7 @@ export function topicByTerm(term: string): Topic | undefined {
 // second topic in for one set of headings. Asked first, with the term still
 // asked after it: a topic from before headings were recorded has no rows in
 // topic_terms, and its term is all that says what it is.
-export function topicByHeadings(uis: string[]): Topic | undefined {
+export function topicByHeadings(uis: string[]): StoredTopic | undefined {
   if (uis.length === 0) return undefined;
   const row = db
     .prepare(
@@ -773,7 +773,7 @@ export const createTopic = transaction(
     term: string,
     headings: MeshDescriptorRef[] = [],
     scope: TopicScope = NO_JOURNALS
-  ): Topic => {
+  ): StoredTopic => {
     const info = db
       .prepare("INSERT INTO topics (name, term, all_pubmed) VALUES (?, ?, ?)")
       .run(name, term, Number(scope.allPubmed));
@@ -790,7 +790,7 @@ export const createTopic = transaction(
 // collections and bookmark folders are unique by name. Checked by the routes
 // rather than by a unique index, which topics never had: while a topic was one
 // heading, its name was the heading and the term check above covered both.
-export function topicByName(name: string): Topic | undefined {
+export function topicByName(name: string): StoredTopic | undefined {
   const row = db.prepare(`${TOPIC_SELECT} WHERE t.name = ? COLLATE NOCASE`).get(name) as
     | TopicRow
     | undefined;
@@ -980,7 +980,7 @@ const TOPIC_LINKS = `SELECT at.pmid FROM article_topics at
 // dropped journals rather than for "outside the list": that would sweep those
 // papers out on every edit, including one that only added a journal.
 function leavingLinks(
-  topic: Topic,
+  topic: StoredTopic,
   current: Journal[],
   next: ScopeIds
 ): { sql: string; params: (string | number)[] } | null {
@@ -2194,23 +2194,23 @@ function safeParseRefs(raw: string): string[] {
 
 const FOLDER_SELECT = "SELECT id, name, created_at FROM bookmark_folders";
 
-export function listBookmarkFolders(): BookmarkFolder[] {
-  return db.prepare(`${FOLDER_SELECT} ORDER BY id ASC`).all() as unknown as BookmarkFolder[];
+export function listBookmarkFolders(): StoredBookmarkFolder[] {
+  return db.prepare(`${FOLDER_SELECT} ORDER BY id ASC`).all() as unknown as StoredBookmarkFolder[];
 }
 
-export function getBookmarkFolder(id: number): BookmarkFolder | undefined {
-  return db.prepare(`${FOLDER_SELECT} WHERE id = ?`).get(id) as BookmarkFolder | undefined;
+export function getBookmarkFolder(id: number): StoredBookmarkFolder | undefined {
+  return db.prepare(`${FOLDER_SELECT} WHERE id = ?`).get(id) as StoredBookmarkFolder | undefined;
 }
 
 // Used to reject a create/rename that would duplicate a name. NOCASE matches
 // the unique index, so this finds exactly what the index would refuse.
-export function bookmarkFolderByName(name: string): BookmarkFolder | undefined {
+export function bookmarkFolderByName(name: string): StoredBookmarkFolder | undefined {
   return db.prepare(`${FOLDER_SELECT} WHERE name = ? COLLATE NOCASE`).get(name) as
-    | BookmarkFolder
+    | StoredBookmarkFolder
     | undefined;
 }
 
-export function createBookmarkFolder(name: string): BookmarkFolder {
+export function createBookmarkFolder(name: string): StoredBookmarkFolder {
   const info = db.prepare("INSERT INTO bookmark_folders (name) VALUES (?)").run(name);
   return getBookmarkFolder(Number(info.lastInsertRowid))!;
 }
@@ -2458,26 +2458,26 @@ export function bookmarkCounts(): Record<number, number> {
 
 // ---------- collections (local PDF libraries) ----------
 
-export function listCollections(): Collection[] {
+export function listCollections(): StoredCollection[] {
   return db
     .prepare("SELECT id, name, created_at FROM collections ORDER BY id ASC")
-    .all() as unknown as Collection[];
+    .all() as unknown as StoredCollection[];
 }
 
-export function getCollection(id: number): Collection | undefined {
+export function getCollection(id: number): StoredCollection | undefined {
   return db
     .prepare("SELECT id, name, created_at FROM collections WHERE id = ?")
-    .get(id) as Collection | undefined;
+    .get(id) as StoredCollection | undefined;
 }
 
 // The collection-side counterpart of bookmarkFolderByName.
-export function collectionByName(name: string): Collection | undefined {
+export function collectionByName(name: string): StoredCollection | undefined {
   return db
     .prepare("SELECT id, name, created_at FROM collections WHERE name = ? COLLATE NOCASE")
-    .get(name) as Collection | undefined;
+    .get(name) as StoredCollection | undefined;
 }
 
-export function createCollection(name: string): Collection {
+export function createCollection(name: string): StoredCollection {
   const info = db.prepare("INSERT INTO collections (name) VALUES (?)").run(name);
   return getCollection(Number(info.lastInsertRowid))!;
 }
@@ -2664,10 +2664,10 @@ function hashesForCollection(collectionId: number): string[] {
 const FILE_COLS =
   "id, collection_id, content_hash, file_name, pmid, match_status, match_method, match_error, added_at";
 
-export function listCollectionFiles(collectionId: number): CollectionFile[] {
+export function listCollectionFiles(collectionId: number): StoredCollectionFile[] {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? ORDER BY file_name ASC`)
-    .all(collectionId) as unknown as CollectionFile[];
+    .all(collectionId) as unknown as StoredCollectionFile[];
 }
 
 // The two halves of "matched": by evidence the scanner found, or by a person
@@ -2712,25 +2712,25 @@ export function collectionManualMatchCount(collectionId: number): number {
 export function collectionFileByHash(
   collectionId: number,
   hash: string
-): CollectionFile | undefined {
+): StoredCollectionFile | undefined {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? AND content_hash = ?`)
-    .get(collectionId, hash) as CollectionFile | undefined;
+    .get(collectionId, hash) as StoredCollectionFile | undefined;
 }
 
-export function pendingCollectionFiles(collectionId: number): CollectionFile[] {
+export function pendingCollectionFiles(collectionId: number): StoredCollectionFile[] {
   return db
     .prepare(
       `SELECT ${FILE_COLS} FROM collection_files
        WHERE collection_id = ? AND match_status = 'pending' ORDER BY file_name ASC`
     )
-    .all(collectionId) as unknown as CollectionFile[];
+    .all(collectionId) as unknown as StoredCollectionFile[];
 }
 
-export function getCollectionFile(fileId: number): CollectionFile | undefined {
+export function getCollectionFile(fileId: number): StoredCollectionFile | undefined {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE id = ?`)
-    .get(fileId) as CollectionFile | undefined;
+    .get(fileId) as StoredCollectionFile | undefined;
 }
 
 export function setFileMatched(fileId: number, pmid: string, method: "pmid" | "doi" | "manual"): void {

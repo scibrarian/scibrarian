@@ -59,6 +59,7 @@ const TOPIC: Topic = {
   journalCount: 0,
   last_polled_at: null,
   created_at: "2026-10-01 00:00:00",
+  articleCount: 0,
 };
 const RENAMED: Topic = { ...TOPIC, name: "Rest" };
 

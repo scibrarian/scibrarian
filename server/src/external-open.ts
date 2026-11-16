@@ -22,7 +22,7 @@ import {
   savePdfText,
 } from "./db.js";
 import { extractPdf } from "./pdf-text.js";
-import type { CacheStats, ClearedCache, CollectionFile } from "../../shared/types.js";
+import type { CacheStats, ClearedCache, StoredCollectionFile } from "../../shared/types.js";
 import { errMessage } from "./util.js";
 
 // Opening a stored PDF in whatever this machine already opens PDFs with, for
@@ -221,7 +221,7 @@ export async function checkOutForExternalOpen(fileId: number): Promise<string> {
   return handing;
 }
 
-async function handOver(checkout: string, file: CollectionFile): Promise<string> {
+async function handOver(checkout: string, file: StoredCollectionFile): Promise<string> {
   const dir = checkoutDir(checkout);
 
   // Whatever copy is already here, under whatever name it is under — rather

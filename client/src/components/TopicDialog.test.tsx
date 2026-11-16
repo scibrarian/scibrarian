@@ -110,6 +110,7 @@ const TOPIC: Topic = {
   journalCount: 2,
   last_polled_at: null,
   created_at: "2026-10-01 00:00:00",
+  articleCount: 0,
 };
 const DETAIL: TopicDetail = { ...TOPIC, journals: [BMJ, LANCET] };
 const EVERYWHERE: Topic = { ...TOPIC, all_pubmed: true, journalCount: 0 };

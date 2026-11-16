@@ -13,7 +13,7 @@ import { findDois, findPmid } from "./pdf-match.js";
 import { hintProSync } from "./pro-hooks.js";
 import { EUTILS_BATCH, fetchArticles, resolveDoiToPmid } from "./pubmed.js";
 import { warmCitations } from "./poller.js";
-import type { CollectionFile, ImportJob } from "../../shared/types.js";
+import type { StoredCollectionFile, ImportJob } from "../../shared/types.js";
 import { startJob, type JobRun } from "./jobs.js";
 import { chunk, errMessage } from "./util.js";
 
@@ -42,14 +42,14 @@ export function startImport(collectionId: number, collectionName: string): Impor
 }
 
 interface Candidate {
-  file: CollectionFile;
+  file: StoredCollectionFile;
   pmid: string | null; // from an explicit PMID label
   dois: string[];
 }
 
 async function runImport(
   job: ImportJob,
-  files: CollectionFile[],
+  files: StoredCollectionFile[],
   label: string,
   control: JobRun
 ): Promise<void> {

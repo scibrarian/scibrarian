@@ -20,7 +20,7 @@ import { anyJobRunning, cancelJob, cancelJobs, clearJobs } from "./jobs.js";
 import { pollRunning, withPollLock } from "./poller.js";
 import { resetProContent } from "./pro-hooks.js";
 import type {
-  CollectionFile,
+  StoredCollectionFile,
   JournalRemovalResult,
   LibraryStats,
   TopicRemovalResult,
@@ -223,7 +223,7 @@ export function rematchFile(
   fileId: number,
   pmid: string,
   articles: ArticleInsert[]
-): Released<CollectionFile | null> {
+): Released<StoredCollectionFile | null> {
   const before = getCollectionFile(fileId);
   if (!before) return { result: null, swept: Promise.resolve() };
   upsertArticles(articles);

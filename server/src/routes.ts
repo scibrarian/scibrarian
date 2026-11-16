@@ -119,6 +119,7 @@ import type {
   MeshSearchResponse,
   PaperProvenance,
   PapersResponse,
+  StoredCollectionFile,
   TopicPreviewResponse,
   TopicSuggestResponse,
   TopicUpdateResponse,
@@ -1218,9 +1219,9 @@ api.delete(
 // a list of files resolves `exists` without a stat syscall per row; a lone file
 // (manual match) just stats directly.
 function apiFile(
-  row: CollectionFile,
+  row: StoredCollectionFile,
   present?: Set<string>
-): Omit<CollectionFile, "content_hash"> & { exists: boolean } {
+): CollectionFile {
   const { content_hash, ...rest } = row;
   const exists = present ? present.has(content_hash) : blobExists(content_hash);
   return { ...rest, exists };

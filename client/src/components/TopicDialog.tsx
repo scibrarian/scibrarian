@@ -68,7 +68,7 @@ export interface TopicSaveOutcome {
 // That outcome as a sentence or two, or null when there is nothing to say.
 // For the shell's notice, wherever the dialog was opened from: a warning
 // inside a dialog that has just closed is one nobody reads.
-export function describeTopicSave(topic: Topic, outcome: TopicSaveOutcome): string | null {
+export function describeTopicSave(topic: Pick<Topic, "name">, outcome: TopicSaveOutcome): string | null {
   const parts: string[] = [];
   if (outcome.removed > 0) {
     parts.push(`Removed ${plural(outcome.removed, "paper")} from “${topic.name}”.`);
