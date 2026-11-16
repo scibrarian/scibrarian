@@ -180,10 +180,15 @@ if (fs.existsSync(CLIENT_DIST)) {
 
 // Uncaught route errors land here as the JSON shape the client's error handling
 // expects, instead of Express's default HTML error page. The raw message is
-// always logged for the operator, but only returned to the client when it was
-// explicitly marked safe to expose — client-facing 4xx (body-parser's parse
-// errors, our httpError()s). Everything else gets a generic body, so internal
-// detail (fs paths, upstream/library strings, stack messages) never leaks in 5xx.
+// only returned to the client when it was explicitly marked safe to expose —
+// client-facing 4xx (body-parser's parse errors, our httpError()s). Everything
+// else gets a generic body, so internal detail (fs paths, upstream/library
+// strings, stack messages) never leaks in 5xx.
+//
+// Only a 5xx is logged, with its raw message, for the operator. A 4xx is a
+// refusal whose reason is the reply: a mistyped cron, a name already taken, a
+// check already running. Once routes threw their refusals here rather than
+// sending them, logging every error put each of those in the log as a failure.
 app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (res.headersSent) return next(err);
   const e = err as { status?: unknown; statusCode?: unknown; expose?: unknown } | null;
@@ -193,7 +198,7 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
       : typeof e?.statusCode === "number"
         ? e.statusCode
         : 500;
-  console.warn(`[server] ${errMessage(err)}`);
+  if (status >= 500) console.warn(`[server] ${errMessage(err)}`);
   // http-errors (body-parser) sets expose=true on its safe 4xx; treat any 4xx as
   // exposable unless explicitly flagged otherwise, plus anything we deliberately
   // marked via httpError().
