@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Plus } from "lucide-react";
 import { errorMessage } from "../lib/format";
-import { useSources } from "../lib/sources";
+import { useFolders, useSources } from "../lib/sources";
 import type { BookmarkFolder } from "../types";
 import { PromptDialog } from "./Dialogs";
 import { MAX_NAME_CHARS } from "../../../shared/limits";
@@ -18,11 +18,9 @@ import { MAX_NAME_CHARS } from "../../../shared/limits";
 // badge, and anything about how folders are listed — sorting, a search box,
 // truncation, the empty copy — had to be changed in both or in neither.
 export function FolderMenuContent({
-  folders,
   renderFolder,
   onNewFolder,
 }: {
-  folders: BookmarkFolder[];
   // Returns one menu row; it owns the row's key, since only the caller knows
   // which Radix item type its semantics need.
   renderFolder: (folder: BookmarkFolder) => ReactNode;
@@ -31,13 +29,26 @@ export function FolderMenuContent({
   return (
     <DropdownMenu.Portal>
       <DropdownMenu.Content className="bookmark-menu" align="end" sideOffset={4} loop>
-        {folders.map((f) => renderFolder(f))}
-        {folders.length === 0 && <div className="bookmark-empty">No folders yet.</div>}
+        <FolderRows renderFolder={renderFolder} />
         <DropdownMenu.Item className="bookmark-add" onSelect={onNewFolder}>
           <Plus size={14} aria-hidden /> New folder…
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Portal>
+  );
+}
+
+// The folders, read from the store only while the menu is open: Radix mounts
+// nothing inside a closed menu's portal. There is a per-paper menu on every row
+// on screen, and each one reading the list re-rendered them all whenever it was
+// read again, which a toggle and each round of a lookup both do.
+function FolderRows({ renderFolder }: { renderFolder: (folder: BookmarkFolder) => ReactNode }) {
+  const folders = useFolders();
+  return (
+    <>
+      {folders.map((f) => renderFolder(f))}
+      {folders.length === 0 && <div className="bookmark-empty">No folders yet.</div>}
+    </>
   );
 }
 

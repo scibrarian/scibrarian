@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Bookmark, ChevronDown } from "lucide-react";
 import { errorMessage } from "../lib/format";
-import { useFolders, useSources } from "../lib/sources";
+import { useSources } from "../lib/sources";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { FolderMenuContent } from "./FolderMenu";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS } from "../../../shared/limits";
@@ -35,7 +35,6 @@ export function SaveAllButton({
   onDone: (message: string) => void;
 }) {
   const sources = useSources();
-  const folders = useFolders();
   const [naming, setNaming] = useState(false);
   const [target, setTarget] = useState<Target | null>(null);
   const [busy, setBusy] = useState(false);
@@ -116,7 +115,6 @@ export function SaveAllButton({
         </DropdownMenu.Trigger>
 
         <FolderMenuContent
-          folders={folders}
           onNewFolder={() => setNaming(true)}
           renderFolder={(f) => (
             <DropdownMenu.Item

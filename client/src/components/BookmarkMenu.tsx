@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Bookmark, Check } from "lucide-react";
 import { errorMessage } from "../lib/format";
-import { useFolders, useSavedIn, useSources } from "../lib/sources";
+import { useSavedIn, useSources } from "../lib/sources";
 import { FolderMenuContent } from "./FolderMenu";
 
 // The per-paper bookmark control, used identically by the table, the timeline
@@ -28,7 +28,6 @@ export function BookmarkMenu({
 }) {
   const [busy, setBusy] = useState(false);
   const sources = useSources();
-  const folders = useFolders();
   const inFolders = useSavedIn(pmid);
   const savedCount = inFolders.size;
 
@@ -70,7 +69,6 @@ export function BookmarkMenu({
       </DropdownMenu.Trigger>
 
       <FolderMenuContent
-        folders={folders}
         onNewFolder={onNewFolder}
         renderFolder={(f) => (
           <DropdownMenu.CheckboxItem
