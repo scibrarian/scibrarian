@@ -437,13 +437,41 @@ describe("adding files to a collection", () => {
     expect(sources.scans.get(thesis)).toEqual({ state: "idle" });
   });
 
+  // Here the scan's start answers with it over already, and its end is the
+  // refresh. It used to be followed by a second, whose read overtook the
+  // first's and threw it away.
   it("refreshes the collection once, after the scan is asked for", async () => {
     const { server, sources } = setUp();
     const thesis = server.addCollection("Thesis");
+    const reads = vi.spyOn(server.api, "getCollections");
     await sources.addFiles(thesis, pdfs(45), { batch: () => {}, uploaded: () => {} });
-    // And once for the scan's end, which its start answered with here.
-    expect(sources.tokenFor({ collection: thesis })).toBe(2);
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
     await vi.waitFor(() => expect(sources.collections()[0].fileCount).toBe(45));
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  // For the files just added, now; the scan's end refreshes it again for what
+  // the scan matched.
+  it("refreshes the collection while its scan runs", async () => {
+    const { server, sources } = setUp();
+    const thesis = server.addCollection("Thesis");
+    server.library.scans.set(thesis, {
+      jobId: "job",
+      state: "running",
+      total: 1,
+      processed: 0,
+      matched: 0,
+      unmatched: 0,
+      errors: 0,
+      currentFile: null,
+      startedAt: "2026-11-04T00:00:00Z",
+      finishedAt: null,
+    });
+    await sources.addFiles(thesis, pdfs(1), { batch: () => {}, uploaded: () => {} });
+    expect(sources.scans.get(thesis)).toMatchObject({ state: "running" });
+    expect(sources.tokenFor({ collection: thesis })).toBe(1);
+    await vi.waitFor(() => expect(sources.collections()[0].fileCount).toBe(1));
+    sources.stop();
   });
 
   // Whatever made one request fail usually has nothing to do with the next.

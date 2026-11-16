@@ -202,9 +202,9 @@ describe("what a finished scan says", () => {
   it("says nothing when everything matched, and has the store refresh what it changed", async () => {
     const { container, id } = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
     expect(container.querySelector(".banner")).toBeNull();
-    // Once for the files the upload added, and once for the scan's end: over
+    // Once, for the scan's end, which takes in the files the upload added: over
     // before anything could poll it, so its start is where it ends.
-    expect(refreshes(id)).toBe(2);
+    expect(refreshes(id)).toBe(1);
     // Followed from the start's answer, with nothing asked after it.
     expect(api.getImportStatus).toHaveBeenCalledTimes(1);
   });

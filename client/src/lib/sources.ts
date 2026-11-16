@@ -512,12 +512,16 @@ export function createSources(port: SourcesApi): Sources {
     // happens to upload again. The job walks every pending row, so this also
     // sweeps up whatever an earlier partial upload left behind.
     try {
-      scans.start(collectionId, await port.startImport(collectionId));
+      const status = await port.startImport(collectionId);
+      scans.start(collectionId, status);
+      // A scan over by the time it answered was ended by start, and its end
+      // refreshed the collection (onSettled). A second refresh here only sent
+      // a read that the first one's overtook.
+      if (status.state !== "running") return upload;
     } catch (e) {
       upload.failure ??= e; // the upload error, if there was one, is the more useful
-    } finally {
-      void collectionsChanged([collectionId]);
     }
+    void collectionsChanged([collectionId]);
     return upload;
   }
 
