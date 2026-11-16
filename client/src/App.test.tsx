@@ -207,6 +207,35 @@ describe("when the list under a selection changes", () => {
     expect(noSource()).toMatch(/^No collections yet/);
   });
 
+  // The folder list's own read for a create is dropped when a newer one has
+  // started, so the list can lack the folder just made for a moment. The
+  // selection used to give way to the first folder in that moment, and the
+  // reader was left in a folder other than the one they had just made.
+  it("keeps a folder just made while the list catches up with it", async () => {
+    server.addFolder("Reading");
+    await boot();
+    section("Bookmarks");
+    const reads = vi.spyOn(server.api, "getBookmarkFolders");
+    const createsRead = server.hold("getBookmarkFolders");
+    openPicker();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New folder" }));
+    fireEvent.change(screen.getByPlaceholderText("Folder name"), { target: { value: "Later" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+    // A newer read, as a folder's lookup asks for after a round, started
+    // behind the create's and held until the create has finished.
+    const newersRead = server.hold("getBookmarkFolders");
+    let newer!: Promise<unknown>;
+    act(() => void (newer = sources.loadFolders()));
+    await act(async () => createsRead());
+    await waitFor(() => expect(screen.queryByPlaceholderText("Folder name")).toBeNull());
+    await act(async () => {
+      newersRead();
+      await newer;
+    });
+    expect(picked()).toBe("Later");
+  });
+
   it("forgets what was selected when the library is emptied", async () => {
     server.addCollection("Thesis");
     await boot();

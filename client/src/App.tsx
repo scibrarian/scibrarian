@@ -91,9 +91,9 @@ export default function App() {
   const collections = useCollections();
   const [mode, setMode] = useState<Mode>("papers");
   const [showSettings, setShowSettings] = useState(false);
-  const [activeTopicId, setActiveTopicId] = useState<number | null>(null);
-  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
-  const [activeCollectionId, setActiveCollectionId] = useState<CollectionSelection | null>(null);
+  const [chosenTopicId, setChosenTopicId] = useState<number | null>(null);
+  const [chosenFolderId, setChosenFolderId] = useState<number | null>(null);
+  const [chosenCollectionId, setChosenCollectionId] = useState<CollectionSelection | null>(null);
   // Each section remembers its own view, and every one of them opens on
   // Table. Interests used to open on Timeline, on the grounds that what it is
   // for — reading what's new — is the one question a date axis answers. That
@@ -184,18 +184,19 @@ export default function App() {
   // stands while there is any collection for it to span.
   //
   // Worked out while rendering, so a list and the selection that fits it
-  // commit together. Written back rather than derived afresh each time: a dead
-  // id left in state would come back to life when SQLite hands it to the next
-  // source created.
-  const topicId = keptOrFirst(activeTopicId, topics);
-  if (topicId !== activeTopicId) setActiveTopicId(topicId);
-  const folderId = keptOrFirst(activeFolderId, folders);
-  if (folderId !== activeFolderId) setActiveFolderId(folderId);
-  const collectionId =
-    activeCollectionId === "all" && collections.length > 0
+  // commit together, and from the reader's choice rather than written back over
+  // it. The list can be a read behind a source just created, since the create's
+  // own read is dropped when a newer one has started (see lib/sources), and a
+  // write-back replaced the new source's id with the list's first entry before
+  // the newer read could bring it. Left alone, the choice holds until a list
+  // has it. A dead one is safe to leave: ids are never handed out twice, not
+  // even after a reset (see RESET_TABLES in server/src/db.ts).
+  const activeTopicId = keptOrFirst(chosenTopicId, topics);
+  const activeFolderId = keptOrFirst(chosenFolderId, folders);
+  const activeCollectionId: CollectionSelection | null =
+    chosenCollectionId === "all" && collections.length > 0
       ? "all"
-      : keptOrFirst(typeof activeCollectionId === "number" ? activeCollectionId : null, collections);
-  if (collectionId !== activeCollectionId) setActiveCollectionId(collectionId);
+      : keptOrFirst(typeof chosenCollectionId === "number" ? chosenCollectionId : null, collections);
 
   /**
    * Take a reading of the stamps as the current one, and make any request still
@@ -426,19 +427,19 @@ export default function App() {
   function selectTopic(id: number) {
     setShowSettings(false);
     setMode("interests");
-    setActiveTopicId(id);
+    setChosenTopicId(id);
   }
 
   function selectFolder(id: number) {
     setShowSettings(false);
     setMode("bookmarks");
-    setActiveFolderId(id);
+    setChosenFolderId(id);
   }
 
   function selectCollection(id: CollectionSelection) {
     setShowSettings(false);
     setMode("papers");
-    setActiveCollectionId(id);
+    setChosenCollectionId(id);
   }
 
   // The picker's "New folder" opens the folder it just made, where the bookmark
@@ -449,7 +450,7 @@ export default function App() {
       const created = await sources.createFolder(name);
       setShowSettings(false);
       setMode("bookmarks");
-      setActiveFolderId(created.id);
+      setChosenFolderId(created.id);
       setViewByMode((prev) => ({ ...prev, bookmarks: "table" }));
     } catch (e) {
       setStatus(errorMessage(e));
@@ -467,7 +468,7 @@ export default function App() {
       if (shareError) setStatus(`Collection created, but sharing couldn't be set up: ${shareError}`);
       setShowSettings(false);
       setMode("papers");
-      setActiveCollectionId(created.id);
+      setChosenCollectionId(created.id);
       setViewByMode((prev) => ({ ...prev, papers: "table" }));
     } catch (e) {
       setStatus(errorMessage(e));
