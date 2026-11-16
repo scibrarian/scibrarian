@@ -6,9 +6,13 @@ import type {
   BookmarkImport,
   Collection,
   CollectionFile,
+  ElsewhereHolding,
+  HaveAnswer,
   ImportStatus,
   LinkAnswer,
   LinkedPaper,
+  ProPullResult,
+  ProSyncStatus,
   Topic,
   TopicScopeInput,
 } from "./types";
@@ -20,7 +24,9 @@ import { MAX_LINKS_PER_REQUEST } from "../../shared/limits";
 // library, does what the reader would, and asks what the store holds after —
 // rather than which requests went out. App's tests render the whole shell on
 // it, which is what the reads below the store's own are for: what the views
-// ask for as they mount, answered as an empty source would be.
+// ask for as they mount, answered as an empty source would be. The
+// check-holdings dialog's tests ask it what the library, the organization and
+// the other workspaces hold.
 //
 // `satisfies` below is what keeps it honest: the store asking the server for
 // something new is a compile error here until the fake answers it, and every
@@ -44,6 +50,14 @@ export function createTestApi() {
     outOfScope: new Map<number, number>(),
     // The collections shared with the organization.
     shared: new Set<number>(),
+    // The collections shared with an organization this library is no longer
+    // paired with.
+    sharedBefore: new Set<number>(),
+    // The papers the organization holds, by PMID, and whether it can be asked.
+    orgHolds: new Set<string>(),
+    orgUnreachable: false,
+    // The papers held in another workspace on this machine, by PMID.
+    elsewhere: new Map<string, ElsewhereHolding>(),
     // Entries imported into folders and not yet bookmarks.
     imports: [] as BookmarkImport[],
     // Each collection's scan, as its status route reports it; idle when absent.
@@ -72,6 +86,7 @@ export function createTestApi() {
 
   const created = new Date(0).toISOString();
   const idle: ImportStatus = { state: "idle" };
+  const ORG = "The organization";
 
   function folderRow(f: (typeof library.folders)[number]): BookmarkFolder {
     return { ...f, paperCount: library.bookmarks.filter((b) => b.folder_id === f.id).length };
@@ -154,6 +169,50 @@ export function createTestApi() {
     const id = nextId++;
     library.collections.push({ id, name, created_at: created });
     return id;
+  }
+
+  // One line of a holdings check, read as a PubMed link. The library holds a
+  // paper when a collection has a file matched to it.
+  function haveAnswer(input: string): HaveAnswer {
+    const pmid = input.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/)?.[1];
+    const checked = {
+      identifierChecked: true,
+      orgChecked: !library.orgUnreachable,
+      elsewhereChecked: true,
+      verdictComplete: !library.orgUnreachable,
+    };
+    if (!pmid) {
+      const parsed = { kind: "unknown" as const, input, reason: "No DOI or PubMed link in this line." };
+      return { parsed, held: false, match: null, org: null, elsewhere: null, ...checked };
+    }
+    const file = library.files.find((f) => f.pmid === pmid);
+    const collection = file && library.collections.find((c) => c.id === file.collection_id);
+    const match = file && {
+      ...paper(pmid),
+      pub_date: "",
+      doi: "",
+      held: true,
+      file_id: file.id,
+      file_name: file.file_name,
+      file_exists: file.exists,
+      collection_id: file.collection_id,
+      collection_name: collection?.name ?? null,
+      evidence: "untyped" as const,
+      pub_types: [],
+    };
+    return {
+      parsed: { kind: "pmid", input, pmid },
+      held: file != null,
+      match: match ?? null,
+      org: !library.orgUnreachable && library.orgHolds.has(pmid) ? { pmid, node: ORG } : null,
+      elsewhere: library.elsewhere.get(pmid) ?? null,
+      ...checked,
+    };
+  }
+
+  function stamp(collectionId: number, active: boolean) {
+    const master_url = "https://org.example";
+    return { collection_id: collectionId, master_url, org_name: ORG, since: created, active, ended: false };
   }
 
   const api = {
@@ -279,7 +338,7 @@ export function createTestApi() {
     proShareCollection: (id: number) =>
       answer("proShareCollection", () => {
         library.shared.add(id);
-        return { shared_with: "The organization" };
+        return { shared_with: ORG };
       }),
     renameCollection: (id: number, name: string) =>
       answer("renameCollection", () => {
@@ -309,13 +368,28 @@ export function createTestApi() {
         library.files = library.files.filter((f) => f.id !== fileId);
       }),
     // A copy from the organization's library, filed matched in each
-    // collection asked for.
+    // collection asked for — except one already holding the same file matched
+    // by hand to another paper, which is left alone and warned about.
     proPull: (pmid: string, collectionIds: number[]) =>
-      answer("proPull", () => {
-        for (const id of collectionIds) {
-          Object.assign(addFile(id, `${pmid}.pdf`), { pmid, match_status: "matched", match_method: "pmid" });
+      answer<ProPullResult>("proPull", () => {
+        const fileName = `${pmid}.pdf`;
+        const clashes = (id: number) =>
+          library.files.some(
+            (f) => f.collection_id === id && f.file_name === fileName && f.match_method === "manual"
+          );
+        const filed = collectionIds.filter((id) => !clashes(id));
+        for (const id of filed) {
+          Object.assign(addFile(id, fileName), { pmid, match_status: "matched", match_method: "pmid" });
         }
-        return { pmid, collection_ids: collectionIds, file_name: `${pmid}.pdf` };
+        const left = collectionIds
+          .filter(clashes)
+          .map((id) => library.collections.find((c) => c.id === id)!.name);
+        return {
+          pmid,
+          collection_ids: filed,
+          file_name: fileName,
+          ...(left.length > 0 && { warning: `${left.join(", ")} already holds this file, matched by hand.` }),
+        };
       }),
     removeCollectionPapers: (id: number, pmids: string[]) =>
       answer("removeCollectionPapers", () => {
@@ -323,6 +397,17 @@ export function createTestApi() {
         library.files = library.files.filter((f) => !going.includes(f));
         return { removed: going.length, papers: new Set(going.map((f) => f.pmid)).size };
       }),
+
+    // The check-holdings dialog's.
+    checkHave: (refs: string[]) =>
+      answer("checkHave", () => ({ results: refs.map(haveAnswer), truncated: 0 })),
+    proSync: () =>
+      answer<ProSyncStatus>("proSync", () => ({
+        stamps: [
+          ...[...library.shared].map((id) => stamp(id, true)),
+          ...[...library.sharedBefore].map((id) => stamp(id, false)),
+        ],
+      })),
 
     // The heading search finds one heading, named as typed; it matches no
     // papers, and the library suggests none.
