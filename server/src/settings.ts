@@ -20,10 +20,11 @@ import { MAIL_FIELDS, mailFieldsOf } from "../../shared/mail.js";
 
 // Every setting but the secrets, of which it is told only whether one is set,
 // and two facts that aren't settings. Written out rather than derived from the
-// rules below, so the compiler holds it to AppSettings.
+// rules below, so the compiler holds it to AppSettings, and AppSettings to the
+// settings (ShownSettings).
 export function settingsView(): AppSettings {
   const s = getSettings();
-  return {
+  const view: AppSettings = {
     ncbi_email: s.ncbi_email,
     poll_cron: s.poll_cron,
     poll_enabled: s.poll_enabled === "1",
@@ -43,7 +44,17 @@ export function settingsView(): AppSettings {
     // to tell the two apart.
     desktop: IS_DESKTOP,
   };
+  return view satisfies ShownSettings;
 }
+
+// The settings the client is shown under their own names: every one but the
+// secrets, by the kind its rule gives it. AppSettings has to have each of them,
+// or a setting given a rule below would be saved and never shown, and the form
+// that read it as undefined would save it back blank.
+type ShownSettings = {
+  [K in keyof Settings as (typeof SETTING_RULES)[K] extends { kind: "secret" } ? never : K]:
+    (typeof SETTING_RULES)[K] extends { kind: "boolean" } ? boolean : string;
+};
 
 // Where other machines can reach this server, for the Settings sharing panel.
 // A loopback bind isn't shareable; a wildcard bind maps to every external IPv4
