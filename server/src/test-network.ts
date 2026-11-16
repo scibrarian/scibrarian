@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, expect } from "vitest";
 
 // No server test reaches the network: a vitest setup file (vitest.config.ts)
@@ -19,13 +21,27 @@ const LOCAL = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const realFetch = globalThis.fetch;
 let tried: string[] = [];
 
+// This file's own directory, which is server/src. A test is guarded when its
+// file is inside it. Searching the test's path for "/server/src/" instead also
+// guarded the client's and Pro's tests in a checkout that sat under another
+// server/src.
+const SERVER_SRC = path.dirname(fileURLToPath(import.meta.url));
+
 function guarded(): boolean {
-  return (expect.getState().testPath ?? "").replaceAll("\\", "/").includes("/server/src/");
+  const test = expect.getState().testPath;
+  if (test == null) return false;
+  const within = path.relative(SERVER_SRC, test);
+  return within !== "" && !within.startsWith("..") && !path.isAbsolute(within);
 }
 
+// Asked whether the test is guarded before anything else, so a test that isn't
+// gets the platform's fetch untouched. A URL that doesn't parse goes to it as
+// well, and is rejected there, where parsing it here threw before fetch could
+// return the promise its caller was waiting to catch.
 globalThis.fetch = (input, init) => {
-  const url = new URL(input instanceof Request ? input.url : input);
-  if (!LOCAL.has(url.hostname) && guarded()) {
+  if (!guarded()) return realFetch(input, init);
+  const url = URL.parse(input instanceof Request ? input.url : input);
+  if (url && !LOCAL.has(url.hostname)) {
     // Origin and path only: a query to NCBI can carry the reader's API key.
     const where = `${url.origin}${url.pathname}`;
     tried.push(where);
