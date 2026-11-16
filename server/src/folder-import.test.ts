@@ -1,0 +1,363 @@
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_TOKEN_REJECTED } from "../../shared/auth.js";
+import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
+import { article } from "./unheld-sweep-fixture.js";
+
+// Importing a reference file into a bookmark folder, through the routes: what
+// becomes a bookmark, what is listed unmatched and why, and the PMID a reader
+// gives one that wasn't found. PubMed is faked — a PMID has a record only if
+// it was added to test-pubmed.ts, and a DOI finds the records that carry it —
+// and so is iCite. Nothing here touches the network.
+
+process.env.ADMIN_TOKEN = "folder-import-token";
+const HEADERS = { "x-admin-token": "folder-import-token" };
+
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+// The DOIs PubMed was asked about.
+const searched = () => pubmed.calls("pmidsForDoi").map(([doi]) => doi);
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
+
+let db: Db;
+let server: Server;
+let base: string;
+
+const FOUND_BY_PMID = "40000001";
+const FOUND_BY_DOI = "40000002";
+const GIVEN_BY_HAND = "40000003";
+
+// One record of each kind an import sorts.
+const LIBRARY = [
+  // A PubMed record's PMID, where EndNote and Zotero put it.
+  `TY  - JOUR\nTI  - Found by its PMID\nAN  - ${FOUND_BY_PMID}\nDB  - PubMed\nER  - `,
+  // Only a DOI, which PubMed resolves.
+  "TY  - JOUR\nTI  - Found by its DOI\nDO  - 10.1000/found\nER  - ",
+  // A DOI PubMed has no record of.
+  "TY  - JOUR\nTI  - Not indexed\nAU  - Roe, R\nT2  - Small Journal\nPY  - 2019\nDO  - 10.1000/unknown\nER  - ",
+  // A DOI PubMed files under two records.
+  "TY  - JOUR\nTI  - Filed twice\nDO  - 10.1000/twice\nER  - ",
+  // Nothing to look it up by.
+  "TY  - JOUR\nTI  - Hand-entered long ago\nPY  - 1987\nER  - ",
+  // Not a journal article.
+  "TY  - BOOK\nTI  - A textbook\nDO  - 10.1000/book\nER  - ",
+  // Nothing to look up or show.
+  "TY  - JOUR\nPY  - 2020\nER  - ",
+].join("\n");
+
+const folder = (name: string) => db.createBookmarkFolder(name).id;
+const bookmarked = (id: number) =>
+  db.listBookmarks().filter((b) => b.folder_id === id).map((b) => b.pmid).sort();
+
+async function importFile(folderId: number, text: string | Buffer) {
+  const form = new FormData();
+  form.append("file", new Blob([typeof text === "string" ? text : new Uint8Array(text)]), "library.ris");
+  const res = await fetch(`${base}/api/bookmark-folders/${folderId}/imports`, {
+    method: "POST",
+    headers: HEADERS,
+    body: form,
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+const status = async (folderId: number) =>
+  (await fetch(`${base}/api/bookmark-folders/${folderId}/imports/status`)).json();
+
+async function settled(folderId: number) {
+  await vi.waitFor(async () => expect((await status(folderId)).state).not.toBe("running"));
+  return status(folderId);
+}
+
+const entries = async (folderId: number) =>
+  (await (await fetch(`${base}/api/bookmark-folders/${folderId}/imports`, { headers: HEADERS })).json()) as {
+    id: number;
+    title: string;
+    status: string;
+    reason: string;
+  }[];
+
+const send = (path: string, method: string, body?: unknown) =>
+  fetch(`${base}/api${path}`, {
+    method,
+    headers: { ...HEADERS, "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+beforeAll(async () => {
+  db = await openTempDb("folder-import");
+  const { app } = await import("./index.js");
+  server = app.listen(0);
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => server?.close(() => resolve()));
+  closeTempDb();
+});
+
+beforeEach(() => {
+  db.db.exec("DELETE FROM bookmark_folders");
+  db.db.exec("DELETE FROM articles");
+  pubmed.add(
+    article(FOUND_BY_PMID),
+    { ...article(FOUND_BY_DOI), doi: "10.1000/found" },
+    article(GIVEN_BY_HAND),
+    // A DOI PubMed files under two records.
+    { ...article("40000008"), doi: "10.1000/twice" },
+    { ...article("40000009"), doi: "10.1000/twice" }
+  );
+});
+
+describe("importing a reference file into a folder", () => {
+  it("saves what PubMed knows as bookmarks and lists the rest, saying why", async () => {
+    const id = folder("Imported");
+    const { status: code, body } = await importFile(id, LIBRARY);
+    expect(code).toBe(201);
+    expect(body).toMatchObject({ read: 7, notArticles: 1, blank: 1, queued: 4, noIdentifier: 1 });
+
+    expect(await settled(id)).toMatchObject({ state: "done", total: 4, matched: 2, unmatched: 2 });
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
+    expect((await entries(id)).map(({ title, status, reason }) => ({ title, status, reason }))).toEqual([
+      { title: "Not indexed", status: "unmatched", reason: "not-in-pubmed" },
+      { title: "Filed twice", status: "unmatched", reason: "ambiguous-doi" },
+      { title: "Hand-entered long ago", status: "unmatched", reason: "no-identifier" },
+    ]);
+    // The book was never looked up.
+    expect(searched()).not.toContain("10.1000/book");
+  });
+
+  // Only the DOIs still unmatched go back to PubMed: the ones already saved are
+  // settled, and left alone.
+  it("lists an entry once however often the file is imported, and looks its DOI up again", async () => {
+    const id = folder("Twice");
+    await importFile(id, LIBRARY);
+    await settled(id);
+    pubmed.forgetCalls();
+
+    await importFile(id, LIBRARY);
+    await settled(id);
+    expect(await entries(id)).toHaveLength(3);
+    expect(searched().sort()).toEqual(["10.1000/twice", "10.1000/unknown"]);
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
+  });
+
+  // A reader imports their library again after adding to it. What they dealt
+  // with last time — an entry saved by hand, one removed — stays dealt with.
+  it("leaves out of the next import what the reader saved or removed", async () => {
+    const id = folder("Imported again");
+    await importFile(id, LIBRARY);
+    await settled(id);
+    const byTitle = async (title: string) => (await entries(id)).find((e) => e.title === title)!.id;
+    await send(`/bookmark-imports/${await byTitle("Hand-entered long ago")}/pmid`, "POST", { pmid: GIVEN_BY_HAND });
+    await send(`/bookmark-imports/${await byTitle("Not indexed")}`, "DELETE");
+    pubmed.forgetCalls();
+
+    await importFile(id, LIBRARY);
+    await settled(id);
+    expect((await entries(id)).map((e) => e.title)).toEqual(["Filed twice"]);
+    expect(searched()).toEqual(["10.1000/twice"]);
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI, GIVEN_BY_HAND]);
+  });
+
+  // Its reference manager found the DOI since. The entry is the one listed
+  // last time, and is looked up by what it has now.
+  it("takes over an entry's row when it has gained a DOI", async () => {
+    const before = "TY  - JOUR\nTI  - Hand-entered long ago\nAU  - Roe, R\nT2  - Small Journal\nPY  - 1987\n";
+    const id = folder("Gained a DOI");
+    await importFile(id, `${before}ER  - `);
+    await settled(id);
+    expect((await entries(id)).map((e) => e.reason)).toEqual(["no-identifier"]);
+
+    await importFile(id, `${before}DO  - 10.1000/found\nER  - `);
+    await settled(id);
+    expect(await entries(id)).toEqual([]);
+    expect(bookmarked(id)).toEqual([FOUND_BY_DOI]);
+
+    // One the reader removed stays removed, DOI or not.
+    const removed = folder("Removed, then gained a DOI");
+    await importFile(removed, `${before}ER  - `);
+    await settled(removed);
+    await send(`/bookmark-imports/${(await entries(removed))[0].id}`, "DELETE");
+    await importFile(removed, `${before}DO  - 10.1000/found\nER  - `);
+    await settled(removed);
+    expect(await entries(removed)).toEqual([]);
+    expect(bookmarked(removed)).toEqual([]);
+  });
+
+  // A PMID that names nothing — mistyped, or withdrawn since — is no reason to
+  // ignore a good DOI beside it. One that names a paper is taken without the
+  // DOI being asked about.
+  it("looks an entry's DOI up when PubMed has no record of its PMID, and only then", async () => {
+    const id = folder("Stale PMID");
+    await importFile(
+      id,
+      [
+        "TY  - JOUR\nTI  - Stale PMID, good DOI\nAN  - 49999999\nDB  - PubMed\nDO  - 10.1000/found\nER  - ",
+        `TY  - JOUR\nTI  - Good PMID\nAN  - ${FOUND_BY_PMID}\nDB  - PubMed\nDO  - 10.1000/never-asked\nER  - `,
+        "TY  - JOUR\nTI  - Neither found\nAN  - 49999998\nDB  - PubMed\nDO  - 10.1000/unknown\nER  - ",
+      ].join("\n")
+    );
+    expect(await settled(id)).toMatchObject({ state: "done", matched: 2, unmatched: 1 });
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
+    expect(searched().sort()).toEqual(["10.1000/found", "10.1000/unknown"]);
+    expect((await entries(id)).map(({ title, reason }) => ({ title, reason }))).toEqual([
+      { title: "Neither found", reason: "not-in-pubmed" },
+    ]);
+  });
+
+  it("refuses a file that is neither RIS nor PubMed's format", async () => {
+    const { status: code, body } = await importFile(folder("BibTeX"), "@article{k, title={T}}");
+    expect(code).toBe(400);
+    expect(body.error).toMatch(/isn’t one this can read/);
+  });
+
+  it("leaves what a PubMed failure stopped it reaching, to be looked up again", async () => {
+    const id = folder("Offline");
+    pubmed.fail = true;
+    await importFile(id, LIBRARY);
+    const failed = await settled(id);
+    expect(failed.state).toBe("error");
+    expect(failed.error).toMatch(/Couldn’t reach PubMed/);
+    expect((await entries(id)).filter((e) => e.status === "pending")).toHaveLength(4);
+    expect(bookmarked(id)).toEqual([]);
+
+    pubmed.fail = false;
+    expect((await send(`/bookmark-folders/${id}/imports/run`, "POST")).status).toBe(202);
+    expect(await settled(id)).toMatchObject({ state: "done", matched: 2 });
+    expect(bookmarked(id)).toEqual([FOUND_BY_PMID, FOUND_BY_DOI]);
+  });
+
+  it("stops when its folder is deleted part way, and stores nothing after", async () => {
+    const id = folder("Deleted mid-lookup");
+    let release!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+
+    expect((await send(`/bookmark-folders/${id}`, "DELETE")).status).toBe(204);
+    release();
+    await vi.waitFor(async () => expect((await status(id)).state).toBe("idle"));
+    expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
+  });
+
+  // Reset deletes the folder and its entries with everything else, so there is
+  // nothing for the lookup to finish, and a long one held the button off for
+  // as long as it ran.
+  it("is stopped by a library reset, and stores nothing after", async () => {
+    const id = folder("Mid-reset");
+    let release!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+
+    expect((await send("/data/reset", "POST")).status).toBe(200);
+    release();
+    await vi.waitFor(async () => expect((await status(id)).state).toBe("idle"));
+    // Let the stopped run reach the point where it would have written.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
+  });
+
+  // Both of the above cancel the run as they delete. Deleted under it with no
+  // word to it, it still stops before its writes, which would store papers
+  // nothing holds and bookmark them into a folder that's gone.
+  it("stops when its folder is gone without its being cancelled, and stores nothing", async () => {
+    const id = folder("Gone unannounced");
+    let release!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+
+    db.db.prepare("DELETE FROM bookmark_folders WHERE id = ?").run(id);
+    release();
+    const stopped = await settled(id);
+    expect(stopped.error).toBeUndefined();
+    expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
+  });
+
+  // The lookup took its rows when it started; the reader can settle one by
+  // hand while it runs, and that is the entry's last word.
+  it("leaves an entry removed or saved by hand while it ran", async () => {
+    const id = folder("Settled by hand");
+    let release!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+
+    const listed = await entries(id);
+    const byTitle = (title: string) => listed.find((e) => e.title === title)!.id;
+    expect((await send(`/bookmark-imports/${byTitle("Found by its PMID")}`, "DELETE")).status).toBe(204);
+    const saved = await send(`/bookmark-imports/${byTitle("Found by its DOI")}/pmid`, "POST", {
+      pmid: GIVEN_BY_HAND,
+    });
+    expect(saved.status).toBe(200);
+
+    release();
+    expect(await settled(id)).toMatchObject({ state: "done" });
+    expect(bookmarked(id)).toEqual([GIVEN_BY_HAND]);
+  });
+});
+
+describe("an unmatched entry", () => {
+  async function unmatched(title: string): Promise<{ folderId: number; entryId: number }> {
+    const folderId = folder(`For ${title}`);
+    await importFile(folderId, LIBRARY);
+    await settled(folderId);
+    const entry = (await entries(folderId)).find((e) => e.title === title)!;
+    return { folderId, entryId: entry.id };
+  }
+
+  it("shows the paper a PMID names before anything is saved", async () => {
+    const { folderId, entryId } = await unmatched("Hand-entered long ago");
+    const res = await send(`/bookmark-imports/${entryId}/lookup`, "POST", { pmid: GIVEN_BY_HAND });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ pmid: GIVEN_BY_HAND, title: `Paper ${GIVEN_BY_HAND}` });
+    expect(bookmarked(folderId)).not.toContain(GIVEN_BY_HAND);
+    expect(db.existingPmids([GIVEN_BY_HAND]).size).toBe(0);
+  });
+
+  it("is saved as the paper it is given, and leaves the list", async () => {
+    const { folderId, entryId } = await unmatched("Not indexed");
+    const res = await send(`/bookmark-imports/${entryId}/pmid`, "POST", { pmid: GIVEN_BY_HAND });
+    expect(res.status).toBe(200);
+    expect((await res.json()).title).toBe(`Paper ${GIVEN_BY_HAND}`);
+    expect(bookmarked(folderId)).toContain(GIVEN_BY_HAND);
+    expect((await entries(folderId)).map((e) => e.title)).not.toContain("Not indexed");
+  });
+
+  it("stays listed when the PMID it is given names nothing", async () => {
+    const { folderId, entryId } = await unmatched("Not indexed");
+    for (const [method, path] of [
+      ["POST", "lookup"],
+      ["POST", "pmid"],
+    ]) {
+      const res = await send(`/bookmark-imports/${entryId}/${path}`, method, { pmid: "49999999" });
+      expect(res.status).toBe(422);
+    }
+    expect((await entries(folderId)).map((e) => e.title)).toContain("Not indexed");
+  });
+
+  // The list is the owner's reference library, and the gate lets every GET
+  // through, so the route has to refuse a viewer itself.
+  it("is listed to the owner only", async () => {
+    const { folderId } = await unmatched("Not indexed");
+    const res = await fetch(`${base}/api/bookmark-folders/${folderId}/imports`);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "Admin access required.", code: ADMIN_TOKEN_REJECTED });
+  });
+
+  it("can be removed, one at a time or all together", async () => {
+    const { folderId, entryId } = await unmatched("Not indexed");
+    expect((await send(`/bookmark-imports/${entryId}`, "DELETE")).status).toBe(204);
+    expect(await entries(folderId)).toHaveLength(2);
+
+    const res = await send(`/bookmark-folders/${folderId}/imports/unmatched`, "DELETE");
+    expect(await res.json()).toEqual({ removed: 2 });
+    expect(await entries(folderId)).toEqual([]);
+  });
+});

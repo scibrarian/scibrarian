@@ -1,6 +1,7 @@
 // Small formatting helpers shared across components.
 
 import type { ClearedCache, LibraryStats, ParsedRefView, ProPushResult } from "../types";
+import { plural } from "../../../shared/format";
 
 /**
  * One copy-up sweep's counts, as a sentence.
@@ -169,17 +170,9 @@ function listContents(s: LibraryStats): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
-// "3 papers", "1 topic", "1,204 papers" — the pluralisation rule, spelled once.
-//
-// Separated thousands because every caller is reporting a quantity to a person
-// rather than printing an id, and a library large enough to make the separator
-// matter is exactly the one where the number is worth reading carefully. It is
-// here rather than at the call sites so two messages about the same rows cannot
-// disagree about how to write them — which is what "1,204 papers" from a reset
-// beside "1204 papers" from a collection removal was.
-export function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
-}
+// In shared/, since the email alerts count the same way; offered here too,
+// beside the other helpers the components take from this file.
+export { plural };
 
 // The same, and "" for none — the empty string is what drops the entry from the
 // list above. Only listContents wants that; everywhere else a zero is a number

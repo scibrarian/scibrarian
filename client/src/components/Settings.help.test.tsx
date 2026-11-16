@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { Settings } from "./Settings";
+import { createSources, SourcesContext, type SourcesApi } from "../lib/sources";
 import type { ViewerCache } from "../lib/viewerCache";
 import type { AppSettings } from "../types";
 
@@ -26,6 +28,13 @@ const api = vi.hoisted(() => ({
 
 vi.mock("../api", () => ({ api }));
 
+// Settings lists the topics from the sources store, which these tests leave
+// empty.
+const sources = createSources(api as unknown as SourcesApi);
+const withSources = ({ children }: { children: ReactNode }) => (
+  <SourcesContext.Provider value={sources}>{children}</SourcesContext.Provider>
+);
+
 // A shared server, so the Sharing panel shows its addresses and Open Library.
 const SHARED: AppSettings = {
   ncbi_email: "",
@@ -33,6 +42,13 @@ const SHARED: AppSettings = {
   poll_enabled: false,
   library_open: false,
   has_api_key: false,
+  alert_email_enabled: false,
+  alert_email_to: "",
+  smtp_host: "",
+  smtp_port: "",
+  smtp_user: "",
+  smtp_from: "",
+  has_smtp_pass: false,
   share_urls: ["http://192.168.1.50:3001"],
   desktop: false,
 };
@@ -57,16 +73,13 @@ async function renderSettings(settings: AppSettings = SHARED) {
     <Settings
       pro={null}
       viewerCache={NO_CACHE}
-      topics={[]}
-      topicsError={null}
       onAddTopic={() => {}}
       onEditTopic={() => {}}
-      onDataChanged={() => {}}
       onPairingChanged={() => {}}
       onSharingChanged={() => {}}
       onPapersRemoved={() => {}}
-      onLibraryReset={() => {}}
-    />
+    />,
+    { wrapper: withSources }
   );
   await screen.findByRole("switch", { name: "Scheduled polling" });
 }

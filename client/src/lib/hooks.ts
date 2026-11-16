@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { errorMessage } from "./format";
 import { commitWithFade } from "./transition";
 
@@ -124,11 +124,17 @@ export function useReveal(ready: boolean, key = ""): boolean {
 // `hasMore`) scrolls into view — rootMargin preloads the next page before the
 // user hits the very end. A `resetKey` change (new source, search, reload)
 // snaps back to the first page.
+//
+// The sentinel is held through a callback ref, so the observer is set up when
+// it mounts, whenever that is. Inside a dialog that is a render after the list:
+// Radix's portal waits for its own mount before rendering its content, and an
+// effect that read an object ref on the list's render found nothing there and
+// never looked again.
 const PAGE_SIZE = 50;
 
 export function useIncrementalList<T>(items: T[], resetKey: string) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const [sentinel, sentinelRef] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
@@ -138,17 +144,16 @@ export function useIncrementalList<T>(items: T[], resetKey: string) {
   const hasMore = visibleCount < items.length;
 
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el || !hasMore) return;
+    if (!sentinel || !hasMore) return;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) setVisibleCount((c) => c + PAGE_SIZE);
       },
       { rootMargin: "800px 0px" }
     );
-    io.observe(el);
+    io.observe(sentinel);
     return () => io.disconnect();
-  }, [hasMore, items.length]);
+  }, [sentinel, hasMore, items.length]);
 
   return { shown, hasMore, sentinelRef };
 }

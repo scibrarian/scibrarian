@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { deleteBlobs, existingBlobHashes } from "./blobstore.js";
-import { DB_PATH, SETTING_DEFAULTS } from "./config.js";
+import { DB_PATH, SETTING_DEFAULTS, type Settings } from "./config.js";
 import { FTS_TOKENIZE, toFtsQuery } from "./fts-query.js";
 import { searchIdentifiers } from "./identifiers.js";
 import {
@@ -18,10 +18,11 @@ import { errMessage } from "./util.js";
 import type {
   Article,
   BookmarkEntry,
-  BookmarkFolder,
-  Collection,
-  CollectionFile,
-  Topic,
+  StoredBookmarkFolder,
+  BookmarkImport,
+  StoredCollection,
+  StoredCollectionFile,
+  StoredTopic,
   TopicRemovalResult,
   Journal,
   JournalRemovalResult,
@@ -33,9 +34,8 @@ import type {
   MeshHeading,
   MeshSearchResult,
   Paper,
-  Settings,
   TopicSuggestion,
-} from "./types.js";
+} from "../../shared/types.js";
 
 // Ensure the data directory exists before opening the database.
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -352,6 +352,39 @@ db.exec(`
     FOREIGN KEY (pmid) REFERENCES articles(pmid) ON DELETE CASCADE
   );
 
+  -- Entries read from a reference file imported into a folder (see
+  -- reference-file.ts). 'pending' until the import has looked it up on PubMed,
+  -- then 'settled' the moment it becomes a bookmark, or left 'unmatched' with
+  -- the reason, for the reader to give it a PMID or remove it — which settles
+  -- it too. title/authors/journal/year are only for showing it in that list;
+  -- the paper's own record comes from PubMed.
+  --
+  -- A settled row is listed nowhere and looked up never again. It is kept so
+  -- that importing the library again, as a reader does after adding to it,
+  -- leaves alone what they have already dealt with: an entry saved by hand
+  -- would otherwise come back unmatched, and one removed would come back.
+  --
+  -- key is the entry's identity within its folder — its PMID, else its DOI,
+  -- else its title, year, journal and first author — so importing the same
+  -- file twice doesn't list an entry twice. A new table, so CREATE ... IF NOT
+  -- EXISTS is its migration: an existing database gains it at the next start.
+  CREATE TABLE IF NOT EXISTS bookmark_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    authors TEXT NOT NULL DEFAULT '',
+    journal TEXT NOT NULL DEFAULT '',
+    year TEXT NOT NULL DEFAULT '',
+    doi TEXT,                                  -- lowercased
+    pmid TEXT,                                 -- as the file gave it; not yet a stored paper
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending|unmatched|settled
+    reason TEXT NOT NULL DEFAULT '',           -- no-identifier|not-in-pubmed|ambiguous-doi
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (folder_id, key),
+    FOREIGN KEY (folder_id) REFERENCES bookmark_folders(id) ON DELETE CASCADE
+  );
+
   -- Two collections (or two bookmark folders) sharing a name are
   -- indistinguishable in the picker, so names are unique case-insensitively
   -- within each. An index rather than an inline UNIQUE because only an index
@@ -554,10 +587,9 @@ const UNHELD_ARTICLES = `pmid NOT IN (SELECT pmid FROM article_topics)
 // matched to a PMID with no row, which hides it from every holdings query (see
 // ensureArticle in pro-storage.ts).
 //
-// So it runs only when nothing is in that gap, which is its callers' to know:
-// at startup (index.ts), where nothing can be and an import cut short asks
-// PubMed again, and after a removal that finds the server idle (sweepUnheld in
-// routes.ts).
+// So it runs only when nothing is in that gap, which is its caller's to know:
+// holding.ts, at startup, where nothing can be and an import cut short asks
+// PubMed again, and after a removal that finds the server idle.
 export function dropUnheldArticles(): number {
   return Number(db.prepare(`DELETE FROM articles WHERE ${UNHELD_ARTICLES}`).run().changes);
 }
@@ -565,6 +597,7 @@ export function dropUnheldArticles(): number {
 // ---------- settings ----------
 
 const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+const allSettingsStmt = db.prepare("SELECT key, value FROM settings");
 const setSettingStmt = db.prepare(
   "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 );
@@ -579,11 +612,14 @@ export function setSetting(key: keyof Settings, value: string): void {
 }
 
 // Derived from the defaults' key set so a newly added setting can't be
-// persisted but read back as "" because this list wasn't updated.
+// persisted but read back as "" because this list wasn't updated. One query
+// for the lot: PubMed's client reads these before every request it makes.
 export function getSettings(): Settings {
+  const rows = allSettingsStmt.all() as { key: string; value: string }[];
+  const stored = new Map(rows.map((r) => [r.key, r.value]));
   const out = {} as Settings;
   for (const key of Object.keys(SETTING_DEFAULTS) as (keyof Settings)[]) {
-    out[key] = getSetting(key);
+    out[key] = stored.get(key) ?? "";
   }
   return out;
 }
@@ -606,7 +642,7 @@ const TOPIC_SELECT = `SELECT t.id, t.name, t.term, t.all_pubmed, t.last_polled_a
 
 // A topics row as selected: all_pubmed still SQLite's 1/0, and neither its
 // headings nor its journals read yet.
-type TopicRow = Omit<Topic, "headings" | "all_pubmed" | "journalCount"> & { all_pubmed: number };
+type TopicRow = Omit<StoredTopic, "headings" | "all_pubmed" | "journalCount"> & { all_pubmed: number };
 
 const topicHeadingsStmt = db.prepare(
   "SELECT ui, name FROM topic_terms WHERE topic_id = ? ORDER BY position"
@@ -617,7 +653,7 @@ const topicJournalCountStmt = db.prepare(
 
 // One query a topic rather than a join: a join would repeat the topic's row
 // for every heading and need regrouping, and there are tens of topics at most.
-function toTopic(row: TopicRow): Topic {
+function toTopic(row: TopicRow): StoredTopic {
   return {
     ...row,
     all_pubmed: row.all_pubmed === 1,
@@ -626,12 +662,12 @@ function toTopic(row: TopicRow): Topic {
   };
 }
 
-export function listTopics(): Topic[] {
+export function listTopics(): StoredTopic[] {
   const rows = db.prepare(`${TOPIC_SELECT} ORDER BY t.id ASC`).all() as unknown as TopicRow[];
   return rows.map(toTopic);
 }
 
-export function getTopic(id: number): Topic | undefined {
+export function getTopic(id: number): StoredTopic | undefined {
   const row = db.prepare(`${TOPIC_SELECT} WHERE t.id = ?`).get(id) as TopicRow | undefined;
   return row && toTopic(row);
 }
@@ -641,7 +677,7 @@ export function getTopic(id: number): Topic | undefined {
 // the same set always yields the same term whatever order it was picked in;
 // NOCASE also catches an equivalent legacy/seed term. The scope is no part of
 // it: the same headings searched somewhere else are still the same topic.
-export function topicByTerm(term: string): Topic | undefined {
+export function topicByTerm(term: string): StoredTopic | undefined {
   const row = db.prepare(`${TOPIC_SELECT} WHERE t.term = ? COLLATE NOCASE`).get(term) as
     | TopicRow
     | undefined;
@@ -655,7 +691,7 @@ export function topicByTerm(term: string): Topic | undefined {
 // second topic in for one set of headings. Asked first, with the term still
 // asked after it: a topic from before headings were recorded has no rows in
 // topic_terms, and its term is all that says what it is.
-export function topicByHeadings(uis: string[]): Topic | undefined {
+export function topicByHeadings(uis: string[]): StoredTopic | undefined {
   if (uis.length === 0) return undefined;
   const row = db
     .prepare(
@@ -737,7 +773,7 @@ export const createTopic = transaction(
     term: string,
     headings: MeshDescriptorRef[] = [],
     scope: TopicScope = NO_JOURNALS
-  ): Topic => {
+  ): StoredTopic => {
     const info = db
       .prepare("INSERT INTO topics (name, term, all_pubmed) VALUES (?, ?, ?)")
       .run(name, term, Number(scope.allPubmed));
@@ -754,7 +790,7 @@ export const createTopic = transaction(
 // collections and bookmark folders are unique by name. Checked by the routes
 // rather than by a unique index, which topics never had: while a topic was one
 // heading, its name was the heading and the term check above covered both.
-export function topicByName(name: string): Topic | undefined {
+export function topicByName(name: string): StoredTopic | undefined {
   const row = db.prepare(`${TOPIC_SELECT} WHERE t.name = ? COLLATE NOCASE`).get(name) as
     | TopicRow
     | undefined;
@@ -773,8 +809,8 @@ export function renameTopic(id: number, name: string): void {
 // copies) or a bookmark. Saving a paper is what makes it the user's, so it
 // outlives the feed it was found in; a bookmark whose paper vanished would be
 // a silently empty row (the FK would cascade it away). The confirm-dialog
-// count and the destructive DELETE share this fragment so they can't disagree.
-// Binds the topic id twice.
+// count and the count a removal answers with share this fragment so they can't
+// disagree. Binds the topic id twice.
 //
 // CORRECTNESS ASSUMPTION: article_topics is complete with respect to each
 // topic's *current* match criteria — every stored paper that matches a topic
@@ -801,16 +837,18 @@ export function countTopicArticles(id: number): number {
   ).c;
 }
 
-// Remove a topic: papers exclusive to it (and neither bookmarked nor saved in
-// the library) are permanently deleted; papers that also appear under other
-// topics survive with those links intact. Deleting a topic's articles is
-// recoverable in principle — re-adding the topic re-seeds from an all-time
-// PubMed scan. article_topics rows cascade via both foreign keys, and the
-// topic's list goes with it, taking any journal only it listed.
-export const removeTopicWithArticles = transaction((id: number): TopicRemovalResult => {
-  const deletedArticles = Number(
-    db.prepare(`DELETE FROM articles WHERE ${DELETABLE_TOPIC_ARTICLES}`).run(id, id).changes
-  );
+// Remove a topic. Papers exclusive to it (and neither bookmarked nor saved in
+// the library) are left holding nothing, and the sweep that follows the
+// removal deletes them (letGoOfTopic in holding.ts) — not this, for the reason
+// dropUnheldArticles gives: a scan can have read one as stored and be about to
+// match a file to it. They are counted here, while the links that mark them
+// are still there, and the count is the removal's answer. Papers that also
+// appear under other topics survive with those links intact. Deleting a
+// topic's articles is recoverable in principle — re-adding the topic re-seeds
+// from an all-time PubMed scan. article_topics rows cascade via both foreign
+// keys, and the topic's list goes with it, taking any journal only it listed.
+export const removeTopic = transaction((id: number): TopicRemovalResult => {
+  const deletedArticles = countTopicArticles(id);
   db.prepare("DELETE FROM topics WHERE id = ?").run(id);
   db.exec(DROP_UNLISTED_JOURNALS);
   return { deletedArticles };
@@ -942,7 +980,7 @@ const TOPIC_LINKS = `SELECT at.pmid FROM article_topics at
 // dropped journals rather than for "outside the list": that would sweep those
 // papers out on every edit, including one that only added a journal.
 function leavingLinks(
-  topic: Topic,
+  topic: StoredTopic,
   current: Journal[],
   next: ScopeIds
 ): { sql: string; params: (string | number)[] } | null {
@@ -983,8 +1021,9 @@ export function countScopeLeaving(topicId: number, next: ScopeIds): number {
 // Change what a topic searches.
 //
 // What the new scope no longer covers leaves the feed (leavingLinks), and of
-// those papers the ones in no other feed that nothing saved points at are
-// deleted — the rule a topic's own removal applies.
+// those papers the ones in no other feed that nothing saved points at are left
+// for the sweep that follows to delete — the rule a topic's own removal
+// applies.
 //
 // What the new scope adds is listed on the next poll, which is the other half
 // of DELETABLE_TOPIC_ARTICLES' assumption. A journal new to the list starts
@@ -1014,18 +1053,19 @@ export const setTopicScope = transaction(
           c: number;
         }
       ).c;
-      // Deleted first, while the links that mark them are still there (theirs
-      // cascade); then the links left over are removed — to saved papers, and
-      // to papers another topic keeps.
-      deletedArticles = Number(
+      // The papers this leaves holding nothing, counted first, while the links
+      // that mark them are still there; then the links are removed. The sweep
+      // that follows the change deletes those papers, as it does a removed
+      // topic's (see removeTopic).
+      deletedArticles = (
         db
           .prepare(
-            `DELETE FROM articles WHERE pmid IN (${leaving.sql})
+            `SELECT COUNT(*) AS c FROM articles WHERE pmid IN (${leaving.sql})
                AND pmid NOT IN (SELECT pmid FROM article_topics WHERE topic_id != ?)
                AND ${UNSAVED_ARTICLES}`
           )
-          .run(...leaving.params, topicId).changes
-      );
+          .get(...leaving.params, topicId) as { c: number }
+      ).c;
       db.prepare(`DELETE FROM article_topics WHERE topic_id = ? AND pmid IN (${leaving.sql})`).run(
         topicId,
         ...leaving.params
@@ -1123,6 +1163,28 @@ export function getArticleAbstracts(pmids: string[]): { pmid: string; abstract: 
     pmids,
     (ph) => `SELECT pmid, abstract FROM articles WHERE pmid IN (${ph})`
   );
+}
+
+// What the scheduled-poll email prints of each paper it lists (see alerts.ts).
+// Unknown pmids are simply absent, as above.
+export interface AlertArticle {
+  pmid: string;
+  title: string;
+  journal_name: string;
+  pub_date: string;
+  pub_date_display: string;
+  authors: string[];
+  url: string;
+}
+
+export function alertArticles(pmids: string[]): AlertArticle[] {
+  const rows = queryByIds<Omit<AlertArticle, "authors"> & { authors: string }>(
+    pmids,
+    (ph) =>
+      `SELECT pmid, title, journal_name, pub_date, pub_date_display, authors, url
+       FROM articles WHERE pmid IN (${ph})`
+  );
+  return rows.map((r) => ({ ...r, authors: safeParseAuthors(r.authors) }));
 }
 
 const upsertArticleStmt = db.prepare(`
@@ -2132,23 +2194,23 @@ function safeParseRefs(raw: string): string[] {
 
 const FOLDER_SELECT = "SELECT id, name, created_at FROM bookmark_folders";
 
-export function listBookmarkFolders(): BookmarkFolder[] {
-  return db.prepare(`${FOLDER_SELECT} ORDER BY id ASC`).all() as unknown as BookmarkFolder[];
+export function listBookmarkFolders(): StoredBookmarkFolder[] {
+  return db.prepare(`${FOLDER_SELECT} ORDER BY id ASC`).all() as unknown as StoredBookmarkFolder[];
 }
 
-export function getBookmarkFolder(id: number): BookmarkFolder | undefined {
-  return db.prepare(`${FOLDER_SELECT} WHERE id = ?`).get(id) as BookmarkFolder | undefined;
+export function getBookmarkFolder(id: number): StoredBookmarkFolder | undefined {
+  return db.prepare(`${FOLDER_SELECT} WHERE id = ?`).get(id) as StoredBookmarkFolder | undefined;
 }
 
 // Used to reject a create/rename that would duplicate a name. NOCASE matches
 // the unique index, so this finds exactly what the index would refuse.
-export function bookmarkFolderByName(name: string): BookmarkFolder | undefined {
+export function bookmarkFolderByName(name: string): StoredBookmarkFolder | undefined {
   return db.prepare(`${FOLDER_SELECT} WHERE name = ? COLLATE NOCASE`).get(name) as
-    | BookmarkFolder
+    | StoredBookmarkFolder
     | undefined;
 }
 
-export function createBookmarkFolder(name: string): BookmarkFolder {
+export function createBookmarkFolder(name: string): StoredBookmarkFolder {
   const info = db.prepare("INSERT INTO bookmark_folders (name) VALUES (?)").run(name);
   return getBookmarkFolder(Number(info.lastInsertRowid))!;
 }
@@ -2218,6 +2280,147 @@ export function linkedPapersByPmids(pmids: string[]): LinkedPaperRow[] {
   );
 }
 
+// ---------- bookmark imports (entries read from a reference file) ----------
+
+export interface BookmarkImportInsert {
+  key: string;
+  /**
+   * Keys the same entry would have had with less to go on, most specific first:
+   * its DOI's beside a PMID, its title's beside either. A reference manager
+   * fills those in over time, and the entry is still the one listed last time.
+   */
+  formerKeys: string[];
+  title: string;
+  authors: string;
+  journal: string;
+  year: string;
+  doi: string | null;
+  pmid: string | null;
+}
+
+const IMPORT_SELECT = `SELECT id, folder_id, title, authors, journal, year, doi, pmid, status, reason, added_at
+                       FROM bookmark_imports`;
+
+// An entry with nothing to look it up by is unmatched from the start; no lookup
+// would ever change that.
+//
+// Importing a file again meets the entries it listed last time. One still
+// unmatched with a DOI or PMID goes back to pending, because a paper PubMed had
+// no record of then may be indexed now; one with neither stays as it is, and a
+// settled one stays settled. Either way it stays one row.
+const insertImportStmt = db.prepare(`
+  INSERT INTO bookmark_imports (folder_id, key, title, authors, journal, year, doi, pmid, status, reason)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (folder_id, key) DO UPDATE SET status = 'pending', reason = ''
+    WHERE status = 'unmatched' AND (pmid IS NOT NULL OR doi IS NOT NULL)
+`);
+const importKeyTakenStmt = db.prepare("SELECT 1 FROM bookmark_imports WHERE folder_id = ? AND key = ?");
+// The row an entry was listed under before it had the identifier it has now:
+// it takes the new key and identifiers, and keeps its status, so the insert
+// that follows meets it as the same entry.
+const rekeyImportStmt = db.prepare(
+  "UPDATE bookmark_imports SET key = ?, doi = ?, pmid = ? WHERE folder_id = ? AND key = ?"
+);
+
+export const addBookmarkImports = transaction((folderId: number, entries: BookmarkImportInsert[]): void => {
+  for (const e of entries) {
+    if (!importKeyTakenStmt.get(folderId, e.key)) {
+      for (const former of e.formerKeys) {
+        if (Number(rekeyImportStmt.run(e.key, e.doi, e.pmid, folderId, former).changes) > 0) break;
+      }
+    }
+    const lookable = e.pmid != null || e.doi != null;
+    insertImportStmt.run(
+      folderId,
+      e.key,
+      e.title,
+      e.authors,
+      e.journal,
+      e.year,
+      e.doi,
+      e.pmid,
+      lookable ? "pending" : "unmatched",
+      lookable ? "" : "no-identifier"
+    );
+  }
+});
+
+// The entries still listed: pending or unmatched. Settled rows are the import's
+// memory, and nobody's to see.
+export function listBookmarkImports(folderId: number): BookmarkImport[] {
+  return db
+    .prepare(`${IMPORT_SELECT} WHERE folder_id = ? AND status <> 'settled' ORDER BY id`)
+    .all(folderId) as unknown as BookmarkImport[];
+}
+
+export function pendingBookmarkImports(folderId: number): BookmarkImport[] {
+  return db
+    .prepare(`${IMPORT_SELECT} WHERE folder_id = ? AND status = 'pending' ORDER BY id`)
+    .all(folderId) as unknown as BookmarkImport[];
+}
+
+/** A listed entry; undefined for one that is settled, as for one never there. */
+export function getBookmarkImport(id: number): BookmarkImport | undefined {
+  return db.prepare(`${IMPORT_SELECT} WHERE id = ? AND status <> 'settled'`).get(id) as
+    | BookmarkImport
+    | undefined;
+}
+
+// Removing an entry from the list settles it, so the next import of the same
+// file leaves it out.
+export function dismissBookmarkImport(id: number): void {
+  db.prepare("UPDATE bookmark_imports SET status = 'settled', reason = '' WHERE id = ?").run(id);
+}
+
+// The unmatched dialog's "Remove all". Pending rows are left: they are still
+// waiting on a lookup, and are listed and removed apart from these.
+export function dismissUnmatchedBookmarkImports(folderId: number): number {
+  return Number(
+    db
+      .prepare(
+        "UPDATE bookmark_imports SET status = 'settled', reason = '' WHERE folder_id = ? AND status = 'unmatched'"
+      )
+      .run(folderId).changes
+  );
+}
+
+const settleImportStmt = db.prepare(
+  "UPDATE bookmark_imports SET status = 'settled', reason = '' WHERE id = ? AND status <> 'settled'"
+);
+// Only a row still pending: one the reader settled while the lookup ran stays
+// settled.
+const missImportStmt = db.prepare(
+  "UPDATE bookmark_imports SET status = 'unmatched', reason = ? WHERE id = ? AND status = 'pending'"
+);
+
+/**
+ * Settle one round of an import's lookup: the entries PubMed found become
+ * bookmarks and their rows settled, and the ones it didn't are marked unmatched
+ * with the reason. Returns the PMIDs newly bookmarked, for warming their
+ * citations.
+ *
+ * The papers found must already be stored — the caller upserts them in the
+ * same tick, with nothing awaited in between, so the sweep of papers nothing
+ * holds can't take one before its bookmark exists.
+ *
+ * A lookup works from the rows it read when it started, and a long one runs
+ * for minutes, in which the reader may remove an entry or save it as a paper
+ * they named. Such a row is settled by the time its round does, and is left
+ * as it is: what the lookup found for it is not bookmarked. A paper stored for
+ * it alone is then one nothing holds, which the next sweep takes.
+ */
+export const settleBookmarkImports = transaction(
+  (folderId: number, found: { id: number; pmid: string }[], missed: { id: number; reason: string }[]) => {
+    const added: string[] = [];
+    for (const f of found) {
+      if (Number(settleImportStmt.run(f.id).changes) === 0) continue;
+      if (Number(insertBookmarkStmt.run(folderId, f.pmid).changes) > 0) added.push(f.pmid);
+    }
+    for (const m of missed) missImportStmt.run(m.reason, m.id);
+    return added;
+  }
+);
+
 const deleteBookmarkStmt = db.prepare("DELETE FROM bookmarks WHERE folder_id = ? AND pmid = ?");
 
 // Un-saving something that isn't saved is likewise a no-op, so the toggle can
@@ -2255,26 +2458,26 @@ export function bookmarkCounts(): Record<number, number> {
 
 // ---------- collections (local PDF libraries) ----------
 
-export function listCollections(): Collection[] {
+export function listCollections(): StoredCollection[] {
   return db
     .prepare("SELECT id, name, created_at FROM collections ORDER BY id ASC")
-    .all() as unknown as Collection[];
+    .all() as unknown as StoredCollection[];
 }
 
-export function getCollection(id: number): Collection | undefined {
+export function getCollection(id: number): StoredCollection | undefined {
   return db
     .prepare("SELECT id, name, created_at FROM collections WHERE id = ?")
-    .get(id) as Collection | undefined;
+    .get(id) as StoredCollection | undefined;
 }
 
 // The collection-side counterpart of bookmarkFolderByName.
-export function collectionByName(name: string): Collection | undefined {
+export function collectionByName(name: string): StoredCollection | undefined {
   return db
     .prepare("SELECT id, name, created_at FROM collections WHERE name = ? COLLATE NOCASE")
-    .get(name) as Collection | undefined;
+    .get(name) as StoredCollection | undefined;
 }
 
-export function createCollection(name: string): Collection {
+export function createCollection(name: string): StoredCollection {
   const info = db.prepare("INSERT INTO collections (name) VALUES (?)").run(name);
   return getCollection(Number(info.lastInsertRowid))!;
 }
@@ -2304,15 +2507,22 @@ export function deleteCollection(id: number): void {
 // The CASE is not there to skip nulls (COUNT DISTINCT already does) but so the
 // custody predicate is named rather than inlined: heldFileSql changing has to move
 // this count with it, which is the whole point of one spelling.
-export function collectionCounts(): Record<number, { files: number; matched: number; held: number }> {
+//
+// Of every collection, or of the one named: a rename answers with its own
+// counts, and has no reason to read every other collection's files for them.
+export function collectionCounts(
+  only?: number
+): Record<number, { files: number; matched: number; held: number }> {
+  const where = only === undefined ? "" : "WHERE collection_id = ?";
+  const params = only === undefined ? [] : [only];
   const rows = db
     .prepare(
       `SELECT collection_id, COUNT(*) AS files,
               SUM(CASE WHEN match_status = 'matched' THEN 1 ELSE 0 END) AS matched,
               COUNT(DISTINCT CASE WHEN ${heldFileSql()} THEN pmid END) AS held
-       FROM collection_files GROUP BY collection_id`
+       FROM collection_files ${where} GROUP BY collection_id`
     )
-    .all() as { collection_id: number; files: number; matched: number; held: number }[];
+    .all(...params) as { collection_id: number; files: number; matched: number; held: number }[];
   const out: Record<number, { files: number; matched: number; held: number }> = {};
   for (const r of rows) {
     out[r.collection_id] = { files: r.files, matched: r.matched ?? 0, held: r.held ?? 0 };
@@ -2461,10 +2671,10 @@ function hashesForCollection(collectionId: number): string[] {
 const FILE_COLS =
   "id, collection_id, content_hash, file_name, pmid, match_status, match_method, match_error, added_at";
 
-export function listCollectionFiles(collectionId: number): CollectionFile[] {
+export function listCollectionFiles(collectionId: number): StoredCollectionFile[] {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? ORDER BY file_name ASC`)
-    .all(collectionId) as unknown as CollectionFile[];
+    .all(collectionId) as unknown as StoredCollectionFile[];
 }
 
 // The two halves of "matched": by evidence the scanner found, or by a person
@@ -2509,25 +2719,25 @@ export function collectionManualMatchCount(collectionId: number): number {
 export function collectionFileByHash(
   collectionId: number,
   hash: string
-): CollectionFile | undefined {
+): StoredCollectionFile | undefined {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE collection_id = ? AND content_hash = ?`)
-    .get(collectionId, hash) as CollectionFile | undefined;
+    .get(collectionId, hash) as StoredCollectionFile | undefined;
 }
 
-export function pendingCollectionFiles(collectionId: number): CollectionFile[] {
+export function pendingCollectionFiles(collectionId: number): StoredCollectionFile[] {
   return db
     .prepare(
       `SELECT ${FILE_COLS} FROM collection_files
        WHERE collection_id = ? AND match_status = 'pending' ORDER BY file_name ASC`
     )
-    .all(collectionId) as unknown as CollectionFile[];
+    .all(collectionId) as unknown as StoredCollectionFile[];
 }
 
-export function getCollectionFile(fileId: number): CollectionFile | undefined {
+export function getCollectionFile(fileId: number): StoredCollectionFile | undefined {
   return db
     .prepare(`SELECT ${FILE_COLS} FROM collection_files WHERE id = ?`)
-    .get(fileId) as CollectionFile | undefined;
+    .get(fileId) as StoredCollectionFile | undefined;
 }
 
 export function setFileMatched(fileId: number, pmid: string, method: "pmid" | "doi" | "manual"): void {

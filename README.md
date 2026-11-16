@@ -18,6 +18,11 @@ on your laptop or on a server you control.
   desktop app, a stopped container, a rebooted host — the next startup runs that
   poll a few seconds in. How long counts as "missed" comes from your own cron, so
   a weekly schedule stays weekly.
+- **Email alerts** (server builds; off by default): one email after each
+  scheduled check that finds new papers or hits a problem, covering every topic,
+  with a paper two topics both found listed once. Set the address and your mail
+  provider's SMTP server under Settings → Configure email alerts, and send a test
+  from there. A manual check never sends one, and neither does the desktop app.
 - Reference data keeps itself current. The NLM journal catalog (re-downloaded
   every 30 days) and the MeSH vocabulary are checked on startup and once a day.
   OpenAlex impact metrics are fetched for a journal when it appears in journal

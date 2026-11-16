@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import { article } from "./unheld-sweep-fixture.js";
 
 // Deleting a collection while its PDFs are being scanned.
@@ -22,11 +23,10 @@ const HEADERS = { "x-admin-token": "collection-delete-import-token" };
 
 // Each PDF read is held until the test lets it finish, so the delete can land
 // part way through one: the window the text used to come back in. PubMed and
-// iCite answer from here, so nothing touches the network.
+// iCite are faked, so nothing touches the network.
 const scan = vi.hoisted(() => ({
   finishRead: null as (() => void) | null,
   reads: 0,
-  fetched: [] as string[][],
 }));
 vi.mock("./pdf-text.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pdf-text.js")>();
@@ -40,21 +40,8 @@ vi.mock("./pdf-text.js", async (importOriginal) => {
     },
   };
 });
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    fetchArticles: async (pmids: string[]) => {
-      scan.fetched.push(pmids);
-      return pmids.map(article);
-    },
-    resolveDoiToPmid: async () => null,
-  };
-});
-vi.mock("./icite.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./icite.js")>();
-  return { ...actual, ensureCitations: async () => {} };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+vi.mock("./icite.js", () => import("./test-pubmed.js"));
 
 // What every PDF in this file says it is.
 const READ_PMID = "40000001";
@@ -64,6 +51,7 @@ let server: Server;
 let base: string;
 let blobPath: (hash: string) => string;
 let importer: typeof import("./importer.js");
+let jobs: typeof import("./jobs.js");
 
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
@@ -91,6 +79,7 @@ beforeAll(async () => {
   db = await openTempDb("collection-delete-stops-import");
   ({ blobPath } = await import("./blobstore.js"));
   importer = await import("./importer.js");
+  jobs = await import("./jobs.js");
   // index.ts builds the app at module scope and only listens inside start(),
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
@@ -110,8 +99,8 @@ afterAll(async () => {
 beforeEach(() => {
   scan.finishRead = null;
   scan.reads = 0;
-  scan.fetched = [];
   db.db.exec("DELETE FROM articles");
+  pubmed.add(article(READ_PMID));
 });
 
 describe("deleting a collection part way through its scan", () => {
@@ -123,14 +112,14 @@ describe("deleting a collection part way through its scan", () => {
     expect((await deleteCollection(shelf.id)).status).toBe(204);
     // The read the delete landed in the middle of now finishes.
     scan.finishRead!();
-    await vi.waitFor(() => expect(importer.getImportStatus(shelf.id)).toBeNull());
+    await vi.waitFor(() => expect(jobs.jobStatus("scan", shelf.id)).toBeNull());
 
     expect(textStored(shelf.hashes[0])).toBe(false);
     // Nor did it go on: not to the second PDF, and not to PubMed with the first.
     expect(scan.reads).toBe(1);
-    expect(scan.fetched).toEqual([]);
+    expect(pubmed.calls("fetchArticles")).toEqual([]);
     expect(db.existingPmids([READ_PMID]).size).toBe(0);
-    expect(importer.anyImportRunning()).toBe(false);
+    expect(jobs.anyJobRunning("scan")).toBe(false);
   });
 
   it("sweeps the papers the collection held once the scan has stopped", async () => {
@@ -162,7 +151,7 @@ describe("deleting a file while the scan is reading it", () => {
     const shelf = pendingShelf("File deleted mid-read", 2);
     importer.startImport(shelf.id, "File deleted mid-read");
     await vi.waitFor(() => expect(scan.finishRead).not.toBeNull());
-    const reading = importer.getImportStatus(shelf.id)!.currentFile;
+    const reading = jobs.jobStatus("scan", shelf.id)!.currentFile;
     const file = db.listCollectionFiles(shelf.id).find((f) => f.file_name === reading)!;
 
     const res = await fetch(`${base}/api/collections/files/${file.id}`, {
@@ -173,7 +162,7 @@ describe("deleting a file while the scan is reading it", () => {
     scan.finishRead!();
     await vi.waitFor(() => expect(scan.reads).toBe(2));
     scan.finishRead!();
-    await vi.waitFor(() => expect(importer.isImportRunning(shelf.id)).toBe(false));
+    await vi.waitFor(() => expect(jobs.isJobRunning("scan", shelf.id)).toBe(false));
 
     expect(textStored(file.content_hash)).toBe(false);
     const rest = shelf.hashes.find((h) => h !== file.content_hash)!;

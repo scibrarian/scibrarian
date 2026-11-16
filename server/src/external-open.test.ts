@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
-import type { CacheStats, ClearedCache } from "./types.js";
+import type { CacheStats, ClearedCache } from "../../shared/types.js";
 
 // Every entry point in external-open.ts refuses unless this is the desktop
 // build, so the tests are one. Set before openTempDb, which is what first pulls

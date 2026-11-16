@@ -2,19 +2,21 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 import type { LibraryStats } from "../../shared/types.js";
 
 // POST /api/data/reset — the route around the deletion, rather than the
 // deletion itself.
 //
-// reset.test.ts already pins what resetLibrary leaves behind. What is untested
-// below that is everything the *handler* decides, and all of it is invisible to
-// tsc: which concurrent writers it refuses, what it answers them, and the order
-// it runs its own tail in. Each is a branch whose failure is silent — a refusal
-// that stops happening reads exactly like one that was never reached, and a
-// tail that runs early reports numbers nobody can tell are wrong.
+// reset.test.ts already pins what resetLibrary leaves behind, and
+// holding.test.ts what deleteAllData refuses to run alongside. What is left for
+// the route is what it answers, and what only a real writer can show: that a
+// transfer and the MeSH backfill are each seen as the writers they are. Each is
+// a branch whose failure is silent — a refusal that stops happening reads
+// exactly like one that was never reached, and a tail that runs early reports
+// numbers nobody can tell are wrong.
 //
-// The ordering case is the one worth the HTTP round trip. clearImportJobs and
+// The ordering case is the one worth the HTTP round trip. clearJobs and
 // resetProContent run *after* the response value has been computed, because
 // they are tidying up around a deletion that already happened and neither is
 // allowed to change what it reported. Moving either above the resetLibrary call
@@ -30,29 +32,13 @@ process.env.ADMIN_TOKEN = "reset-route-token";
 // and where it spends that time is ensureArticle's PubMed lookup. Parking that
 // one call holds a real storePulledFile open at a real await, without a network
 // round trip and without touching global fetch — which the requests below need.
-const ncbi = vi.hoisted(() => ({ park: null as Promise<unknown> | null }));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    fetchArticles: async (pmids: string[]) => {
-      if (ncbi.park) await ncbi.park;
-      return actual.fetchArticles(pmids);
-    },
-    fetchArticleXml: async (pmids: string[]) => {
-      if (ncbi.park) await ncbi.park;
-      return actual.fetchArticleXml(pmids);
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
 const HEADERS = { "x-admin-token": "reset-route-token" };
 
 let db: Db;
 let server: Server;
 let base: string;
-let withPollLock: typeof import("./poller.js").withPollLock;
-let startImport: typeof import("./importer.js").startImport;
-let clearImportJobs: typeof import("./importer.js").clearImportJobs;
+let clearJobs: typeof import("./jobs.js").clearJobs;
 let registerPro: typeof import("./pro-hooks.js").registerPro;
 let storage: typeof import("./pro-storage.js");
 let backfillArticleMesh: typeof import("./mesh-index.js").backfillArticleMesh;
@@ -89,8 +75,7 @@ beforeAll(async () => {
   // index.ts builds the app at module scope and only listens inside start(),
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
-  ({ withPollLock } = await import("./poller.js"));
-  ({ startImport, clearImportJobs } = await import("./importer.js"));
+  ({ clearJobs } = await import("./jobs.js"));
   ({ registerPro } = await import("./pro-hooks.js"));
   storage = await import("./pro-storage.js");
   ({ backfillArticleMesh } = await import("./mesh-index.js"));
@@ -125,7 +110,7 @@ beforeEach(() => {
 
 afterEach(() => {
   registerPro(null);
-  clearImportJobs();
+  clearJobs();
 });
 
 describe("who may press it", () => {
@@ -142,31 +127,13 @@ describe("who may press it", () => {
 });
 
 describe("what it refuses to run alongside", () => {
-  it("refuses while an import is running, and deletes nothing", async () => {
-    seed();
-    // A real job in the real map, which is what anyImportRunning reads. The
-    // collection has no pending files, so runImport settles immediately and
-    // cannot race the flag back to "done" underneath the request; the state is
-    // then set deliberately, since what is being pinned is the route's reading
-    // of it rather than the importer's own bookkeeping.
-    const job = startImport(db.createCollection("Importing").id, "Importing");
-    await Promise.resolve();
-    job.state = "running";
-
-    const res = await reset();
-
-    expect(res.status).toBe(409);
-    expect((await res.json()).error).toMatch(/still importing/i);
-    expect(count("articles")).toBe(1);
-  });
-
   it("refuses while a paired node is mid-transfer, and deletes nothing", async () => {
     seed();
     const collectionId = db.createCollection("Inbox").id;
     // Held inside ensureArticle's lookup — the network round trip that makes
     // this window wide enough to lose a race in.
     let failLookup!: (err: Error) => void;
-    ncbi.park = new Promise((_resolve, reject) => (failLookup = reject));
+    pubmed.hold("fetchArticles", new Promise((_resolve, reject) => (failLookup = reject)));
 
     // Deliberately a PMID no test seeded, so ensureArticle has to go and ask.
     const transfer = storage.storePulledFile({
@@ -183,13 +150,11 @@ describe("what it refuses to run alongside", () => {
     expect((await res.json()).error).toMatch(/being copied into this library/i);
     expect(count("articles")).toBe(1);
 
-    // Rejected rather than released, so the lookup never reaches the real
-    // PubMed: these tests don't touch the network. storePulledFile's finally
-    // still runs, which is the half being pinned by the test after this one.
+    // Rejected, so the transfer ends as a lookup that failed and stores
+    // nothing. storePulledFile's finally still runs, which is the half being
+    // pinned by the test after this one.
     failLookup(new Error("test stopped the lookup"));
-    ncbi.park = null;
     await transfer.catch(() => {});
-    expect(storage.anyTransferInFlight()).toBe(false);
   });
 
   it("takes the reset once that transfer has settled", async () => {
@@ -209,7 +174,7 @@ describe("what it refuses to run alongside", () => {
     // could land inside that window and leave the insert violating the key.
     seed();
     let failLookup!: (err: Error) => void;
-    ncbi.park = new Promise((_resolve, reject) => (failLookup = reject));
+    pubmed.hold("fetchArticleXml", new Promise((_resolve, reject) => (failLookup = reject)));
 
     // Called exactly as its schedulers call it — bare. The lock is taken inside,
     // which is the whole of what this test is for: wrapping it here instead would
@@ -225,26 +190,7 @@ describe("what it refuses to run alongside", () => {
     expect(count("articles")).toBe(1);
 
     failLookup(new Error("test stopped the lookup"));
-    ncbi.park = null;
     await backfill;
-  });
-
-  it("refuses while a refresh holds the poll lock, and deletes nothing", async () => {
-    seed();
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    const holding = withPollLock(async () => {
-      await held;
-    });
-
-    const res = await reset();
-
-    expect(res.status).toBe(409);
-    expect((await res.json()).error).toMatch(/refresh is running/i);
-    expect(count("articles")).toBe(1);
-
-    release();
-    await holding;
   });
 });
 

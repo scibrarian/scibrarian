@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTerm } from "./pubmed-parse.js";
 import { closeTempDb, openTempDb, type Db } from "./test-db.js";
+import { pubmed } from "./test-pubmed.js";
 
 // Where a topic searches, and what changing that takes out.
 //
@@ -17,43 +18,22 @@ import { closeTempDb, openTempDb, type Db } from "./test-db.js";
 // so every case below asserts both, and that they agree.
 //
 // Which searches a scope leads to is poll-journal-reseed.test.ts. Here the
-// deletion and the routes are asserted by what is left in the database.
+// deletion, adding and changing a topic, and the routes are asserted by what is
+// left in the database. Adding and changing are asked of topic-definition.ts
+// directly, and the routes through HTTP.
 
 // config.ts reads ADMIN_TOKEN at import time and vitest shares one process
 // across files, so this is set rather than assumed — see reset-route.test.ts.
 process.env.ADMIN_TOKEN = "topic-scope-token";
 const HEADERS = { "x-admin-token": "topic-scope-token", "content-type": "application/json" };
 
-const ncbi = vi.hoisted(() => ({
-  calls: [] as { term: string; since: string | undefined }[],
-  // The MEDLINE checks asked for, and what each answers.
-  indexingAsked: [] as string[],
-  indexed: true as boolean | null,
-  // The recent-paper samples journal suggestions asked for.
-  sampled: [] as string[],
-  // What a MEDLINE check waits on before it answers, when a test has to act
-  // while one is out.
-  held: null as Promise<void> | null,
-}));
-vi.mock("./pubmed.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./pubmed.js")>();
-  return {
-    ...actual,
-    searchWithTotal: async (term: string, mhdaSince?: string) => {
-      ncbi.calls.push({ term, since: mhdaSince });
-      return { ids: [], total: 0 };
-    },
-    isMedlineIndexed: async (nlmId: string) => {
-      ncbi.indexingAsked.push(nlmId);
-      await ncbi.held;
-      return ncbi.indexed;
-    },
-    searchRecent: async (term: string) => {
-      ncbi.sampled.push(term);
-      return [];
-    },
-  };
-});
+vi.mock("./pubmed.js", () => import("./test-pubmed.js"));
+// The searches made, each with its MeSH-date bound.
+const searched = () => pubmed.calls("searchWithTotal").map(([term, since]) => ({ term, since }));
+// The MEDLINE checks asked for.
+const indexingAsked = () => pubmed.calls("isMedlineIndexed").map(([nlmId]) => nlmId);
+// The recent-paper samples journal suggestions asked for.
+const sampled = () => pubmed.calls("searchRecent").map(([term]) => term);
 
 // The vocabulary is seeded below (seedMesh), and that is all of it there is to
 // load. Left alone, the first route to read a heading asks NLM which MeSH year
@@ -72,6 +52,8 @@ let server: Server;
 let base: string;
 let withPollLock: typeof import("./poller.js").withPollLock;
 let pollTopic: typeof import("./poller.js").pollTopic;
+let addTopic: typeof import("./topic-definition.js").addTopic;
+let changeTopic: typeof import("./topic-definition.js").changeTopic;
 
 const TERM = '"Adipose Tissue"[MeSH]';
 const ADIPOSE = { ui: "D000273", name: "Adipose Tissue" };
@@ -143,6 +125,7 @@ beforeAll(async () => {
   // so importing it gives the whole middleware stack with nothing running.
   const { app } = await import("./index.js");
   ({ withPollLock, pollTopic } = await import("./poller.js"));
+  ({ addTopic, changeTopic } = await import("./topic-definition.js"));
   server = app.listen(0);
   await new Promise<void>((resolve, reject) => {
     server.once("listening", resolve);
@@ -160,11 +143,8 @@ beforeEach(() => {
   for (const table of ["topics", "journals", "articles", "bookmark_folders", "collections"]) {
     db.db.exec(`DELETE FROM ${table}`);
   }
-  ncbi.calls = [];
-  ncbi.indexingAsked = [];
-  ncbi.indexed = true;
-  ncbi.sampled = [];
-  ncbi.held = null;
+  // NLM indexes both journals the routes here ask about.
+  for (const j of [LANCET, BMJ]) pubmed.medline.set(j.nlmId, true);
 });
 
 // The count ahead of a change and the change itself, which must agree on what
@@ -178,7 +158,7 @@ function change(topicId: number, next: ReturnType<typeof list> | typeof ALL_PUBM
 }
 
 describe("dropping a journal from a topic's list", () => {
-  it("deletes its unsaved papers, and takes saved ones out of the feed", () => {
+  it("lets go of its unsaved papers, and takes saved ones out of the feed", () => {
     const t = db.createTopic("Adipose Tissue", TERM, [], list(LANCET, BMJ)).id;
     db.saveArticles(
       [
@@ -194,8 +174,10 @@ describe("dropping a journal from a topic's list", () => {
     db.setFileMatched(db.listCollectionFiles(shelf)[0].id, "3", "pmid");
     db.addBookmarks(db.createBookmarkFolder("Later").id, ["4"]);
 
-    // Three leave the feed, saved ones included; one of them is deleted.
+    // Three leave the feed, saved ones included; one of them is left holding
+    // nothing, and the sweep that follows the change (holding.ts) deletes it.
     expect(change(t, list(BMJ))).toEqual({ deletedArticles: 1, removedFromInterests: 3 });
+    db.dropUnheldArticles();
 
     expect(["1", "2", "3", "4"].map((p) => [p, exists(p)])).toEqual([
       ["1", true],
@@ -273,14 +255,10 @@ describe("changing a topic from all of PubMed to a list", () => {
     // In no feed at all, so nothing this topic's polls brought in.
     db.upsertArticles([article("5", ELSEWHERE)]);
 
+    // Counted as the two it let go of, not three: the one in no feed was never
+    // the topic's to count.
     expect(change(t, list(LANCET))).toEqual({ deletedArticles: 2, removedFromInterests: 2 });
-    expect(["1", "2", "3", "5"].map((p) => [p, exists(p)])).toEqual([
-      ["1", true],
-      ["2", false],
-      ["3", false],
-      ["5", true],
-    ]);
-    expect(topicsOf("1")).toEqual([t]);
+    expect([topicsOf("1"), topicsOf("2"), topicsOf("3")]).toEqual([[t], [], []]);
     expect(db.getTopic(t)).toMatchObject({ all_pubmed: false, journalCount: 1 });
   });
 
@@ -307,7 +285,7 @@ describe("removing a topic", () => {
   it("forgets the journals only it listed", () => {
     const a = db.createTopic("Adipose Tissue", TERM, [], list(LANCET, BMJ)).id;
     db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(BMJ));
-    db.removeTopicWithArticles(a);
+    db.removeTopic(a);
     expect(journalRows()).toEqual(["BMJ"]);
   });
 });
@@ -341,13 +319,171 @@ describe("two journals that go by one name", () => {
     const b = db.createTopic("Obesity", '"Obesity"[MeSH]', [], list(NAMESAKE)).id;
     await pollTopic(a);
     await pollTopic(b);
-    expect(ncbi.calls.map((c) => c.term)).toEqual([
+    expect(searched().map((c) => c.term)).toEqual([
       `(${TERM}) AND ("${NURSING.nlmId}"[jid])`,
       `("Obesity"[MeSH]) AND ("${NAMESAKE.nlmId}"[jid])`,
     ]);
   });
 });
 
+describe("adding a topic", () => {
+  const add = (body: Record<string, unknown>) => addTopic({ headings: [ADIPOSE.ui], ...body });
+
+  it("resolves a list against the catalog", async () => {
+    for (const j of [LANCET, BMJ]) pubmed.medline.set(j.nlmId, false);
+    const topic = await add({ allPubmed: false, journals: [LANCET.nlmId, BMJ.nlmId] });
+    expect(topic).toMatchObject({ all_pubmed: false, journalCount: 2 });
+    // Named as the catalog abbreviates them, and carrying what NLM said about
+    // each — which is how the dialog knows to warn about one that can't match.
+    expect(topic.journals.map((j) => [j.name, j.medline_indexed])).toEqual([
+      ["BMJ", false],
+      ["Lancet", false],
+    ]);
+    expect(indexingAsked().sort()).toEqual([LANCET.nlmId, BMJ.nlmId].sort());
+  });
+
+  it("doesn't ask NLM again about a journal another topic already lists", async () => {
+    db.createTopic("Obesity", '"Obesity"[MeSH]', [OBESITY], list(LANCET));
+    await add({ allPubmed: false, journals: [LANCET.nlmId] });
+    expect(indexingAsked()).toEqual([]);
+    expect(journalRows()).toEqual(["Lancet"]);
+  });
+
+  it("gives it nowhere to search when no scope is sent", async () => {
+    expect(await add({})).toMatchObject({ all_pubmed: false, journalCount: 0 });
+  });
+
+  // A journal new to the library is asked about at NLM, and another topic can
+  // be made during that wait. So a name or headings already taken are refused
+  // before it, costing no request, and asked about again after it.
+  it("refuses a taken name or headings before asking NLM anything", async () => {
+    db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED);
+    await expect(add({ name: "Fat", allPubmed: false, journals: [LANCET.nlmId] })).rejects.toMatchObject({
+      status: 409,
+      message: "A topic named “Fat” already exists.",
+    });
+    db.createTopic("Adipose", TERM, [ADIPOSE], ALL_PUBMED);
+    await expect(add({ allPubmed: false, journals: [LANCET.nlmId] })).rejects.toMatchObject({
+      status: 409,
+      message: "These headings are already a topic (“Adipose”).",
+    });
+    expect(indexingAsked()).toEqual([]);
+  });
+
+  // While NLM is asked about a journal, another topic is made taking `taken`.
+  async function addingWhileAnotherIsMade(body: Record<string, unknown>, taken: () => void) {
+    let answer!: () => void;
+    pubmed.hold("isMedlineIndexed", new Promise<void>((r) => (answer = r)));
+    const adding = add({ allPubmed: false, journals: [LANCET.nlmId], ...body });
+    await vi.waitFor(() => expect(indexingAsked()).toEqual([LANCET.nlmId]));
+    taken();
+    answer();
+    return adding;
+  }
+
+  it("refuses a name another topic took while the journals were being resolved", async () => {
+    const adding = addingWhileAnotherIsMade({ name: "Fat" }, () =>
+      db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED)
+    );
+    await expect(adding).rejects.toMatchObject({
+      status: 409,
+      message: "A topic named “Fat” already exists.",
+    });
+    expect(db.listTopics().map((t) => t.name)).toEqual(["Fat"]);
+    expect(journalRows()).toEqual([]);
+  });
+
+  it("refuses headings another topic took while the journals were being resolved", async () => {
+    const adding = addingWhileAnotherIsMade({}, () => db.createTopic("Adipose", TERM, [ADIPOSE], ALL_PUBMED));
+    await expect(adding).rejects.toMatchObject({
+      status: 409,
+      message: "These headings are already a topic (“Adipose”).",
+    });
+    expect(db.listTopics().map((t) => t.name)).toEqual(["Adipose"]);
+    expect(journalRows()).toEqual([]);
+  });
+});
+
+describe("changing a topic", () => {
+  it("refuses a list that names no journals, and changes nothing", async () => {
+    // Half a scope used to be completed as an empty list, which took every
+    // paper out of the topic with no count shown ahead of it.
+    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
+    db.saveArticles([article("2", LANCET.nlmId)], t);
+
+    await expect(changeTopic(t, { name: "Fat", allPubmed: false })).rejects.toMatchObject({ status: 400 });
+    expect(exists("2")).toBe(true);
+    // Not half applied: the name that came with the refused scope isn't taken.
+    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
+
+    // Nor is a list written as something that isn't one: null is what a client
+    // with no list to send often writes, and it was completed the same way.
+    for (const journals of [null, "", "2985213R", {}]) {
+      await expect(changeTopic(t, { allPubmed: false, journals })).rejects.toMatchObject({ status: 400 });
+      await expect(changeTopic(t, { journals })).rejects.toMatchObject({ status: 400 });
+    }
+    expect(exists("2")).toBe(true);
+    expect(db.getTopic(t)).toMatchObject({ journalCount: 1 });
+
+    // An empty list asked for by name is a scope like any other.
+    await changeTopic(t, { allPubmed: false, journals: [] });
+    expect(db.getTopic(t)).toMatchObject({ all_pubmed: false, journalCount: 0 });
+    // Taken by the sweep, behind the change.
+    await vi.waitFor(() => expect(exists("2")).toBe(false));
+  });
+
+  it("refuses a change of scope while a poll holds the lock, and changes nothing", async () => {
+    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
+    db.saveArticles([article("2", LANCET.nlmId)], t);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const holding = withPollLock(async () => {
+      await held;
+    });
+
+    try {
+      await expect(changeTopic(t, { name: "Fat", allPubmed: false, journals: [] })).rejects.toMatchObject({
+        status: 409,
+      });
+      expect(exists("2")).toBe(true);
+      // Not half applied: the name that came with the refused scope isn't taken.
+      expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
+      // A name alone changes nothing a poll reads, and waits on nothing.
+      expect((await changeTopic(t, { name: "Fat" })).topic.name).toBe("Fat");
+    } finally {
+      // Whatever happened, or the lock outlives this test and fails the next.
+      release();
+      await holding;
+    }
+  });
+
+  it("refuses a name another topic took while the journals were being resolved", async () => {
+    // A journal new to the library is asked about at NLM, and the name used to
+    // be asked about only before that wait. A topic created meanwhile left two
+    // of one name, which the picker can't tell apart.
+    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED).id;
+    let answer!: () => void;
+    pubmed.hold("isMedlineIndexed", new Promise<void>((r) => (answer = r)));
+    const changing = changeTopic(t, {
+      name: "Fat",
+      allPubmed: false,
+      journals: [LANCET.nlmId],
+    });
+    await vi.waitFor(() => expect(indexingAsked()).toEqual([LANCET.nlmId]));
+    db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED);
+    answer();
+
+    await expect(changing).rejects.toMatchObject({
+      status: 409,
+      message: "A topic named “Fat” already exists.",
+    });
+    // Not half applied: the scope that came with the refused name isn't taken.
+    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", all_pubmed: true, journalCount: 0 });
+  });
+});
+
+// What each route sends: the status, and the body a topic or a refusal comes
+// back as. The rules behind them are the two describes above.
 describe("the routes", () => {
   const create = (body: Record<string, unknown>) =>
     request("POST", "/topics", { headings: [ADIPOSE.ui], ...body });
@@ -360,40 +496,12 @@ describe("the routes", () => {
     expect(journalRows()).toEqual([]);
   });
 
-  it("create a topic with a list, resolved against the catalog", async () => {
-    ncbi.indexed = false;
-    const res = await create({ allPubmed: false, journals: [LANCET.nlmId, BMJ.nlmId] });
-    expect(res.status).toBe(201);
-    const topic = await res.json();
-    expect(topic).toMatchObject({ all_pubmed: false, journalCount: 2 });
-    // Named as the catalog abbreviates them, and carrying what NLM said about
-    // each — which is how the dialog knows to warn about one that can't match.
-    expect(topic.journals.map((j: { name: string; medline_indexed: boolean }) => [j.name, j.medline_indexed])).toEqual([
-      ["BMJ", false],
-      ["Lancet", false],
-    ]);
-    expect(ncbi.indexingAsked.sort()).toEqual([LANCET.nlmId, BMJ.nlmId].sort());
-  });
-
-  it("don't ask NLM again about a journal another topic already lists", async () => {
-    db.createTopic("Obesity", '"Obesity"[MeSH]', [OBESITY], list(LANCET));
-    const res = await create({ allPubmed: false, journals: [LANCET.nlmId] });
-    expect(res.status).toBe(201);
-    expect(ncbi.indexingAsked).toEqual([]);
-    expect(journalRows()).toEqual(["Lancet"]);
-  });
-
   it("refuse a journal the catalog doesn't have, and store nothing", async () => {
     const res = await create({ allPubmed: false, journals: [LANCET.nlmId, "0000000"] });
     expect(res.status).toBe(422);
     expect((await res.json()).error).toContain("0000000");
     expect(db.listTopics()).toEqual([]);
     expect(journalRows()).toEqual([]);
-  });
-
-  it("create a topic with nowhere to search when no scope is sent", async () => {
-    const topic = await (await create({})).json();
-    expect(topic).toMatchObject({ all_pubmed: false, journalCount: 0 });
   });
 
   it("return one topic with its journals, and 404 for one that isn't there", async () => {
@@ -422,7 +530,8 @@ describe("the routes", () => {
     expect(body.removed).toEqual({ deletedArticles: 1, removedFromInterests: 1 });
     expect(body.topic).toMatchObject({ all_pubmed: false, journalCount: 1 });
     expect(body.topic.journals.map((j: { name: string }) => j.name)).toEqual(["BMJ"]);
-    expect(exists("2")).toBe(false);
+    // Taken by the sweep, behind the reply.
+    await vi.waitFor(() => expect(exists("2")).toBe(false));
   });
 
   it("change a name and a scope together", async () => {
@@ -431,92 +540,16 @@ describe("the routes", () => {
     expect((await res.json()).topic).toMatchObject({ name: "Fat", all_pubmed: true });
   });
 
-  it("refuse a list that names no journals, and change nothing", async () => {
-    // Half a scope used to be completed as an empty list, which took every
-    // paper out of the topic with no count shown ahead of it.
-    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
-    db.saveArticles([article("2", LANCET.nlmId)], t);
-
-    const res = await request("PATCH", `/topics/${t}`, { name: "Fat", allPubmed: false });
-    expect(res.status).toBe(400);
-    expect(exists("2")).toBe(true);
-    // Not half applied: the name that came with the refused scope isn't taken.
-    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
-
-    // Nor is a list written as something that isn't one: null is what a client
-    // with no list to send often writes, and it was completed the same way.
-    for (const journals of [null, "", "2985213R", {}]) {
-      const half = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals });
-      expect(half.status).toBe(400);
-      expect((await request("PATCH", `/topics/${t}`, { journals })).status).toBe(400);
-    }
-    expect(exists("2")).toBe(true);
-    expect(db.getTopic(t)).toMatchObject({ journalCount: 1 });
-
-    // An empty list asked for by name is a scope like any other.
-    const emptied = await request("PATCH", `/topics/${t}`, { allPubmed: false, journals: [] });
-    expect(emptied.status).toBe(200);
-    expect(db.getTopic(t)).toMatchObject({ all_pubmed: false, journalCount: 0 });
-    expect(exists("2")).toBe(false);
-  });
-
-  it("refuse a change of scope while a poll holds the lock, and change nothing", async () => {
-    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], list(LANCET)).id;
-    db.saveArticles([article("2", LANCET.nlmId)], t);
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    const holding = withPollLock(async () => {
-      await held;
-    });
-
-    try {
-      const res = await request("PATCH", `/topics/${t}`, { name: "Fat", allPubmed: false, journals: [] });
-      expect(res.status).toBe(409);
-      expect(exists("2")).toBe(true);
-      // Not half applied: the name that came with the refused scope isn't taken.
-      expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", journalCount: 1 });
-      // A name alone changes nothing a poll reads, and waits on nothing.
-      expect((await request("PATCH", `/topics/${t}`, { name: "Fat" })).status).toBe(200);
-    } finally {
-      // Whatever happened, or the lock outlives this test and fails the next.
-      release();
-      await holding;
-    }
-  });
-
-  it("refuse a name another topic took while the journals were being resolved", async () => {
-    // A journal new to the library is asked about at NLM, and the name used to
-    // be asked about only before that wait. A topic created meanwhile left two
-    // of one name, which the picker can't tell apart.
-    const t = db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED).id;
-    let answer!: () => void;
-    ncbi.held = new Promise<void>((r) => (answer = r));
-    const changing = request("PATCH", `/topics/${t}`, {
-      name: "Fat",
-      allPubmed: false,
-      journals: [LANCET.nlmId],
-    });
-    await vi.waitFor(() => expect(ncbi.indexingAsked).toEqual([LANCET.nlmId]));
-    db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED);
-    answer();
-
-    const res = await changing;
-    expect(res.status).toBe(409);
-    expect((await res.json()).error).toBe("A topic named “Fat” already exists.");
-    // Not half applied: the scope that came with the refused name isn't taken.
-    expect(db.getTopic(t)).toMatchObject({ name: "Adipose Tissue", all_pubmed: true, journalCount: 0 });
-  });
-
   it("suggest journals for the headings asked about, to the owner alone", async () => {
     const path = `/journals/suggest?ui=${ADIPOSE.ui}&ui=${OBESITY.ui}`;
     expect((await request("GET", path, undefined, {})).status).toBe(401);
-    expect(ncbi.sampled).toEqual([]);
+    expect(sampled()).toEqual([]);
 
     const res = await request("GET", path);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ results: [] });
     // Mainly about both first; then, with nothing recent that is, about both.
-    expect(ncbi.sampled).toEqual([
+    expect(sampled()).toEqual([
       '"Adipose Tissue"[majr] AND "Obesity"[majr]',
       '"Adipose Tissue"[MeSH] AND "Obesity"[MeSH]',
     ]);
@@ -534,7 +567,7 @@ describe("the routes", () => {
       const res = await request("GET", `/journals/suggest?ui=${ADIPOSE.ui}`);
       expect(res.status).toBe(200);
       // Under the name the topic recorded, which is what it polls.
-      expect(ncbi.sampled[0]).toBe('"Adipose Tissue"[majr]');
+      expect(sampled()[0]).toBe('"Adipose Tissue"[majr]');
       // An id no topic carries is still refused, and a retired heading is not
       // one a new topic can be made from.
       expect((await request("GET", "/journals/suggest?ui=D000000")).status).toBe(422);
@@ -549,14 +582,14 @@ describe("the routes", () => {
     const res = await request("POST", "/refresh");
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/no journals are chosen/i);
-    expect(ncbi.calls).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 
   it("check a topic across all of PubMed with no journals anywhere", async () => {
     db.createTopic("Adipose Tissue", TERM, [ADIPOSE], ALL_PUBMED);
     const res = await request("POST", "/refresh");
     expect(res.status).toBe(200);
-    expect(ncbi.calls).toEqual([{ term: buildTerm(TERM, []), since: undefined }]);
+    expect(searched()).toEqual([{ term: buildTerm(TERM, []), since: undefined }]);
   });
 
   it("say why a topic asked for by name can't be checked", async () => {
@@ -565,6 +598,6 @@ describe("the routes", () => {
     const res = await request("POST", `/refresh?topic=${unset}`);
     expect(res.status).toBe(200);
     expect((await res.json()).results[0].error).toMatch(/no journals are chosen/i);
-    expect(ncbi.calls).toEqual([]);
+    expect(searched()).toEqual([]);
   });
 });

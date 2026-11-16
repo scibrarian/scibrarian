@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { CollectionView } from "./CollectionView";
-import { createImportJobs, type ImportJobs } from "../lib/import-jobs";
+import { createSources, SourcesContext, type Sources, type SourcesApi } from "../lib/sources";
+import { dataTransfer, fileEntry, folderEntry } from "../lib/test-drops";
 import type { CollectionFile, ImportJob } from "../types";
 
 // The collection shell around an import: what it says when a scan finishes,
@@ -14,23 +15,26 @@ const api = vi.hoisted(() => ({
   uploadFiles: vi.fn(),
   startImport: vi.fn(),
   setFilePmid: vi.fn(),
+  getCollections: vi.fn(),
 }));
 
 vi.mock("../api", () => ({ api }));
 
-// App's half: the scans it follows, and what it is told when one ends.
-let jobs: ImportJobs;
-const settled = vi.fn();
+// The store's half: the scans it follows, and the refresh it makes when one
+// ends or a file changes — counted by how far the collection's token has moved.
+let sources: Sources;
+const refreshes = (id: number) => sources.tokenFor({ collection: id });
 
 beforeEach(() => {
   api.getCollectionFiles.mockResolvedValue({ files: [] });
   api.getImportStatus.mockResolvedValue({ state: "idle" });
-  jobs = createImportJobs(api.getImportStatus, settled);
+  api.getCollections.mockResolvedValue([]);
+  sources = createSources(api as unknown as SourcesApi);
 });
 
 afterEach(() => {
   cleanup();
-  jobs.stop();
+  sources.stop();
   vi.useRealTimers();
   vi.resetAllMocks();
 });
@@ -74,30 +78,13 @@ function job(over: Partial<ImportJob>): ImportJob {
   };
 }
 
-function View({
-  id,
-  reloadToken = 0,
-  onChanged = () => {},
-  isAdmin = true,
-}: {
-  id: number;
-  reloadToken?: number;
-  onChanged?: () => void;
-  isAdmin?: boolean;
-}) {
+function View({ id, isAdmin = true }: { id: number; isAdmin?: boolean }) {
   return (
-    <CollectionView
-      collectionId={id}
-      isAdmin={isAdmin}
-      summary="1 paper"
-      stamp={null}
-      reloadToken={reloadToken}
-      importJobs={jobs}
-      onChanged={onChanged}
-      onDeleted={() => {}}
-    >
-      <div />
-    </CollectionView>
+    <SourcesContext.Provider value={sources}>
+      <CollectionView collectionId={id} name="Cardiology" isAdmin={isAdmin} summary="1 paper" stamp={null}>
+        <div />
+      </CollectionView>
+    </SourcesContext.Provider>
   );
 }
 
@@ -127,12 +114,12 @@ describe("a scan that ends after its collection has been left", () => {
 
     api.getImportStatus.mockResolvedValue(job({ total: 2, processed: 2, matched: 1, unmatched: 1 }));
     await tick();
-    expect(settled).toHaveBeenCalledWith(id);
+    // The collection's token moved on, so coming back to it fetches the list
+    // the scan left rather than painting the cached one.
+    expect(refreshes(id)).toBe(1);
 
-    // What App does with that: the collection's token moves on, so coming back
-    // to it fetches the list the scan left rather than painting the cached one.
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "unmatched")] });
-    render(<View id={id} reloadToken={1} />);
+    render(<View id={id} />);
     const dialog = await openUnmatched(1);
     expect(api.getCollectionFiles).toHaveBeenCalledTimes(2);
     expect(within(dialog).getByText("paper-2.pdf")).toBeTruthy();
@@ -144,13 +131,12 @@ describe("a scan that ends after its collection has been left", () => {
     api.getCollectionFiles.mockResolvedValue({ files: [row(3, id, "pending")] });
     // The server restarted mid-job: no job, and the row is still pending.
     api.getImportStatus.mockResolvedValue({ state: "idle" });
-    const onChanged = vi.fn();
-    render(<View id={id} onChanged={onChanged} />);
+    render(<View id={id} />);
     const dialog = await openFiles("1 not scanned");
 
     const group = within(dialog).getByRole("region", { name: /Not scanned/ });
     expect(within(group).getByText("paper-3.pdf")).toBeTruthy();
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(refreshes(id)).toBe(0);
     expect(api.getCollectionFiles).toHaveBeenCalledTimes(1);
   });
 });
@@ -161,19 +147,20 @@ describe("a scan that ends while the view is open", () => {
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending")] });
     api.getImportStatus.mockResolvedValue(job({ state: "running", total: 1, processed: 0, matched: 0 }));
-    const { rerender } = render(<View id={id} />);
+    render(<View id={id} />);
     await settle();
     expect(screen.getByText(/Scanning 0 \/ 1/)).toBeTruthy();
 
+    let land!: (files: { files: CollectionFile[] }) => void;
+    api.getCollectionFiles.mockReturnValue(new Promise((resolve) => (land = resolve)));
     api.getImportStatus.mockResolvedValue(job({ total: 1, processed: 1, matched: 0, unmatched: 1 }));
     await tick();
-    expect(settled).toHaveBeenCalledWith(id);
+    expect(refreshes(id)).toBe(1);
     // Over, but the row on screen is still the pre-scan one, and not an answer.
     expect(screen.queryByText(/Scanning/)).toBeNull();
     expect(unmatchedLink()).toBeNull();
 
-    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "unmatched")] });
-    rerender(<View id={id} reloadToken={1} />);
+    await act(async () => land({ files: [row(1, id, "unmatched")] }));
     const dialog = await openUnmatched(1);
     expect(within(dialog).queryByText(/never scanned/)).toBeNull();
   });
@@ -189,36 +176,42 @@ describe("a scan that ends while the view is open", () => {
     await tick(5000);
     expect(screen.getByText(/Lost contact with the import job/)).toBeTruthy();
     expect(screen.queryByText(/Scanning/)).toBeNull();
-    expect(settled).not.toHaveBeenCalled();
+    expect(refreshes(id)).toBe(0);
   });
 });
 
 describe("what a finished scan says", () => {
   const pdf = (name: string) => new File(["%PDF-1.4"], name, { type: "application/pdf" });
 
-  // Pick files and let a scan that is over before the first poll settle.
+  // Pick files and let a scan that is over before the first poll settle: its
+  // start answers with it finished.
   async function scan(files: File[], finished: ImportJob) {
     const id = nextId++;
     const added = files.filter((f) => f.name.endsWith(".pdf")).length;
-    api.getImportStatus.mockResolvedValueOnce({ state: "idle" }).mockResolvedValueOnce(finished);
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
     api.uploadFiles.mockResolvedValue({ added, skipped: 0 });
-    api.startImport.mockResolvedValue({ jobId: "job", total: added });
+    api.startImport.mockResolvedValue(finished);
     const { container } = render(<View id={id} />);
     await settle();
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files } });
-    await waitFor(() => expect(api.getImportStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
     await settle();
-    return container;
+    return { container, id };
   }
 
-  it("says nothing when everything matched", async () => {
-    const container = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
+  it("says nothing when everything matched, and has the store refresh what it changed", async () => {
+    const { container, id } = await scan([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")], job({}));
     expect(container.querySelector(".banner")).toBeNull();
+    // Once, for the scan's end, which takes in the files the upload added: over
+    // before anything could poll it, so its start is where it ends.
+    expect(refreshes(id)).toBe(1);
+    // Followed from the start's answer, with nothing asked after it.
+    expect(api.getImportStatus).toHaveBeenCalledTimes(1);
   });
 
   it("says nothing about files it couldn't match or read, which the summary line counts", async () => {
     const files = [pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")];
-    const container = await scan(files, job({ matched: 1, unmatched: 1, errors: 1 }));
+    const { container } = await scan(files, job({ matched: 1, unmatched: 1, errors: 1 }));
     expect(container.querySelector(".banner")).toBeNull();
   });
 
@@ -233,6 +226,227 @@ describe("what a finished scan says", () => {
     const picked = [pdf("a.pdf"), pdf("b.pdf"), text("notes.txt"), text("todo.txt")];
     await scan(picked, job({ total: 2, processed: 2, matched: 2 }));
     expect(screen.getByText("Ignored 2 files that aren't PDFs.")).toBeTruthy();
+  });
+
+  // The upload's own error says what the selection left behind, so the scan —
+  // over at its start, which reports it at once — has nothing left to say.
+  it("names what the selection left behind once when the upload fails", async () => {
+    const id = nextId++;
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
+    api.uploadFiles.mockRejectedValue(new Error("Couldn't upload."));
+    api.startImport.mockResolvedValue(job({ total: 0, processed: 0, matched: 0 }));
+    const { container } = render(<View id={id} />);
+    await settle();
+    const files = [pdf("a.pdf"), new File(["x"], "notes.txt", { type: "text/plain" })];
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files } });
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    await settle();
+    expect(screen.getByText(/Couldn't upload\./)).toBeTruthy();
+    expect(screen.getAllByText(/Ignored 1 file/)).toHaveLength(1);
+  });
+});
+
+describe("files dropped onto a collection", () => {
+  // The view, with uploads that take whatever is sent and a scan that is over
+  // before the first poll. Returns the element drops land on.
+  async function view({ isAdmin = true } = {}): Promise<HTMLElement> {
+    api.getImportStatus.mockResolvedValue({ state: "idle" });
+    api.uploadFiles.mockImplementation(async (_id: number, files: File[]) => ({
+      added: files.length,
+      skipped: 0,
+    }));
+    api.startImport.mockResolvedValue(job({}));
+    const { container } = render(<View id={nextId++} isAdmin={isAdmin} />);
+    await settle();
+    return container.firstElementChild as HTMLElement;
+  }
+
+  const sent = () =>
+    api.uploadFiles.mock.calls.flatMap((call) => (call[1] as File[]).map((f) => f.name)).sort();
+  const overlay = () => screen.queryByText("Drop PDFs or folders to add them to “Cardiology”");
+
+  it("adds dropped PDFs at once, as picking them does", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf"), fileEntry("b.pdf")]) });
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf", "b.pdf"]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks before adding what a folder holds, naming the folder and the collection", async () => {
+    const target = await view();
+    const tree = folderEntry("Downloads", [
+      fileEntry("a.pdf"),
+      fileEntry("notes.txt"),
+      folderEntry("2024", [fileEntry("b.pdf")]),
+    ]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([tree]) });
+    const dialog = await screen.findByRole("dialog", {
+      name: "Add 2 PDFs from “Downloads” to “Cardiology”?",
+    });
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf", "b.pdf"]);
+  });
+
+  it("adds nothing when the question is turned down", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Downloads", [fileEntry("a.pdf")])]) });
+    const dialog = await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("says a dropped folder held no PDFs, without asking about it", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Notes", [fileEntry("notes.txt")])]) });
+    expect(await screen.findByText(/^No PDFs found in the selection\./)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("names what a dropped folder held that couldn't be read", async () => {
+    const target = await view();
+    const tree = folderEntry("Downloads", [fileEntry("a.pdf"), fileEntry("locked.pdf", { unreadable: true })]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([tree]) });
+    const dialog = await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    expect(await screen.findByText("Couldn't read 1 item in the dropped folders.")).toBeTruthy();
+  });
+
+  it("counts apart the PDFs dropped beside a folder, and leaves out those too big to send", async () => {
+    const target = await view();
+    const tree = folderEntry("Downloads", [fileEntry("b.pdf"), fileEntry("huge.pdf", { size: 200 * 1024 * 1024 })]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf"), tree]) });
+    const dialog = await screen.findByRole("dialog", { name: "Add 1 PDF from “Downloads” to “Cardiology”?" });
+    expect(within(dialog).getByText("The 1 PDF dropped with it will be added too.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf", "b.pdf"]);
+  });
+
+  it("doesn't ask about a folder with nothing in it to add, and adds what was dropped beside it", async () => {
+    const target = await view();
+    const tree = folderEntry("Notes", [fileEntry("notes.txt")]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf"), tree]) });
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf"]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("takes nothing more while it asks about a folder, so a yes sends that folder alone", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Downloads", [fileEntry("a.pdf")])]) });
+    const dialog = await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    // The question's backdrop covers the screen, so a second drop lands on it,
+    // and React carries it up to the view the question belongs to.
+    expect(fireEvent.drop(dialog, { dataTransfer: dataTransfer([fileEntry("b.pdf")]) })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.startImport).toHaveBeenCalled());
+    expect(sent()).toEqual(["a.pdf"]);
+    expect(api.startImport).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't show a quick walk, whose row would push the view down and back as the question opens", async () => {
+    const target = await view();
+    fireEvent.drop(target, { dataTransfer: dataTransfer([folderEntry("Downloads", [fileEntry("a.pdf")])]) });
+    // The walk is under way, waiting on the folder's first batch.
+    await settle();
+    expect(screen.queryByText(/Looking for PDFs/)).toBeNull();
+    await screen.findByRole("dialog", { name: /^Add 1 PDF from/ });
+    expect(screen.queryByText(/Looking for PDFs/)).toBeNull();
+  });
+
+  it("counts what a folder's walk has got through, and stops it on Cancel", async () => {
+    const target = await view();
+    const tree = folderEntry("Home", [fileEntry("a.pdf"), folderEntry("mounted", [], { stuck: true })]);
+    fireEvent.drop(target, { dataTransfer: dataTransfer([tree]) });
+    expect(await screen.findByText(/Looking for PDFs in the dropped folders… 1 found in 1 folder/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Add files/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText(/Looking for PDFs/)).toBeNull());
+    expect((screen.getByRole("button", { name: /Add files/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("takes nothing dropped on a dialog the view has open", async () => {
+    await view();
+    fireEvent.click(screen.getByRole("button", { name: "Delete collection" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete collection?" });
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(dialog, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    expect(fireEvent.drop(dialog, { dataTransfer: dt })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("takes nothing while a scan is running, whose scan would turn the new files away", async () => {
+    fakePoll();
+    api.getImportStatus.mockResolvedValue(job({ state: "running", processed: 1, matched: 1 }));
+    const { container } = render(<View id={nextId++} />);
+    await settle();
+    const target = container.firstElementChild as HTMLElement;
+    expect((screen.getByRole("button", { name: /Add files/ }) as HTMLButtonElement).disabled).toBe(true);
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    expect(fireEvent.drop(target, { dataTransfer: dt })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("shows where the drop goes for as long as files are over the view", async () => {
+    const target = await view();
+    const inside = target.querySelector(".source-head")!;
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).not.toBeNull();
+    // Crossing into something inside the view leaves the view's own box, and
+    // isn't leaving the view.
+    fireEvent.dragEnter(inside, { dataTransfer: dt });
+    fireEvent.dragLeave(target, { dataTransfer: dt });
+    expect(overlay()).not.toBeNull();
+    fireEvent.dragLeave(inside, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+  });
+
+  it("goes on showing where a drop goes for a drag already over the view when it can take one", async () => {
+    const target = await view();
+    const inside = target.querySelector(".source-head")!;
+    let finish = () => {};
+    api.uploadFiles.mockImplementationOnce(
+      (_id: number, files: File[]) =>
+        new Promise((resolve) => (finish = () => resolve({ added: files.length, skipped: 0 })))
+    );
+    fireEvent.drop(target, { dataTransfer: dataTransfer([fileEntry("a.pdf")]) });
+    await screen.findByText(/^Uploading 0 \/ 1/);
+    // More files dragged in while that one goes up: nothing to take them yet.
+    const dt = dataTransfer([fileEntry("b.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    finish();
+    await waitFor(() => expect(overlay()).not.toBeNull());
+    fireEvent.dragEnter(inside, { dataTransfer: dt });
+    fireEvent.dragLeave(target, { dataTransfer: dt });
+    expect(overlay()).not.toBeNull();
+    fireEvent.dragLeave(inside, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+  });
+
+  it("takes nothing from a viewer, and leaves the drop to be turned away", async () => {
+    const target = await view({ isAdmin: false });
+    const dt = dataTransfer([fileEntry("a.pdf")]);
+    fireEvent.dragEnter(target, { dataTransfer: dt });
+    expect(overlay()).toBeNull();
+    // Not cancelled here, which is what tells refuseStrayDrops it is its to refuse.
+    expect(fireEvent.drop(target, { dataTransfer: dt })).toBe(true);
+    await settle();
+    expect(api.uploadFiles).not.toHaveBeenCalled();
   });
 });
 
@@ -309,16 +523,13 @@ describe("the unmatched files dialog", () => {
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "unmatched")] });
     api.setFilePmid.mockResolvedValue({});
-    const onChanged = vi.fn();
-    const { rerender } = render(<View id={id} onChanged={onChanged} />);
+    render(<View id={id} />);
     const dialog = await openUnmatched(1);
 
+    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "matched")] });
     fireEvent.change(within(dialog).getByPlaceholderText("PMID"), { target: { value: "30000002" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Match" }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    // What App does with onChanged.
-    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "matched"), row(2, id, "matched")] });
-    rerender(<View id={id} reloadToken={1} onChanged={onChanged} />);
+    await waitFor(() => expect(refreshes(id)).toBe(1));
     await settle();
     expect(unmatchedDialog()).toBeNull();
     expect(unmatchedLink()).toBeNull();
@@ -327,7 +538,8 @@ describe("the unmatched files dialog", () => {
     api.getCollectionFiles.mockResolvedValue({
       files: [row(1, id, "matched"), row(2, id, "matched"), row(3, id, "unmatched")],
     });
-    rerender(<View id={id} reloadToken={2} onChanged={onChanged} />);
+    api.startImport.mockResolvedValue(job({ total: 1, processed: 1, matched: 0, unmatched: 1 }));
+    await act(() => sources.scanCollection(id));
     await settle();
     expect(unmatchedLink()).not.toBeNull();
     expect(unmatchedDialog()).toBeNull();
@@ -349,15 +561,27 @@ describe("the unmatched files dialog", () => {
     fakePoll();
     const id = nextId++;
     api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending"), row(2, id, "pending")] });
-    api.startImport.mockResolvedValue({ jobId: "job", total: 2 });
+    api.startImport.mockResolvedValue(job({ state: "running", total: 2, processed: 0, matched: 0 }));
     render(<View id={id} />);
     const dialog = await openFiles("2 not scanned");
 
-    api.getImportStatus.mockResolvedValue(job({ state: "running", total: 2, processed: 0, matched: 0 }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Scan them" }));
     await waitFor(() => expect(unmatchedDialog()).toBeNull());
     expect(api.startImport).toHaveBeenCalledWith(id);
     expect(screen.getByText(/Scanning 0 \/ 2/)).toBeTruthy();
+  });
+
+  it("has the store refresh a scan that was over by the time it started", async () => {
+    const id = nextId++;
+    api.getCollectionFiles.mockResolvedValue({ files: [row(1, id, "pending")] });
+    api.startImport.mockResolvedValue(job({ total: 1, processed: 1, matched: 1 }));
+    render(<View id={id} />);
+    const dialog = await openFiles("1 not scanned");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Scan them" }));
+    await waitFor(() => expect(refreshes(id)).toBe(1));
+    await settle();
+    expect(refreshes(id)).toBe(1);
   });
 
   it("says so inside itself when the scan won't start", async () => {

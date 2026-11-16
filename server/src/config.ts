@@ -94,7 +94,25 @@ export const SETTING_DEFAULTS = {
   // Deliberately a UI setting (not env): the instance owner, not whoever
   // deploys the server, must be the one making that call.
   library_open: "0",
+  // One email after each unattended poll that found something; see alerts.ts.
+  // Server builds only — the desktop app never sends one.
+  alert_email_enabled: "0",
+  alert_email_to: "",
+  // The mail server the alerts go out through. A blank port means 587.
+  smtp_host: "",
+  smtp_port: "",
+  smtp_user: "",
+  smtp_pass: "",
+  smtp_from: "",
 };
+
+// The settings table as the server reads it. The client is served the settings
+// response, which never carries the API key. The key set derives from
+// SETTING_DEFAULTS, so adding a setting there forces the save's rules
+// (SETTING_RULES in settings.ts) to cover it — the compiler catches a forgotten
+// branch instead of the toggle silently round-tripping 200 without persisting.
+// The settings table stores strings, so the booleans are "1"/"0".
+export type Settings = Record<keyof typeof SETTING_DEFAULTS, string>;
 
 // Path to the built client (used in production / `npm start`). Overridable
 // because PROJECT_ROOT is only meaningful when the server runs from a checkout:

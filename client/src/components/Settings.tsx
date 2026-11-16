@@ -3,6 +3,7 @@ import { Share2, Check, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useReveal } from "../lib/hooks";
+import { useSources, useTopics, useTopicsError } from "../lib/sources";
 import {
   describeCacheCleared,
   describeResetDone,
@@ -12,6 +13,7 @@ import {
 } from "../lib/format";
 import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
+import { alertSettingsOf, EmailAlertsDialog } from "./EmailAlertsDialog";
 import { InfoTip } from "./InfoTip";
 import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
 import { ProPanel } from "./ProPanel";
@@ -54,6 +56,9 @@ const HELP = {
   polling:
     "When on, every topic is checked for new papers on the schedule below; “Check for new " +
     "papers” works either way. A topic with no journals chosen is skipped.",
+  alerts:
+    "One email after each scheduled check that finds something, covering every topic. " +
+    "Needs scheduled polling on.",
   email:
     "Optional but recommended. Sent to NCBI and OpenAlex so they can contact you before " +
     "blocking access if requests ever exceed their limits.",
@@ -75,18 +80,21 @@ function scopeLine(t: Topic): string {
   return t.articleCount == null ? scope : `${scope} · ${plural(t.articleCount, "paper")}`;
 }
 
+// What the email alerts are set to, beside the button that changes them.
+function alertsLine(s: AppSettings): string {
+  if (!s.alert_email_enabled) return "Off";
+  if (!s.poll_enabled) return "On, but scheduled polling is off, so none are sent";
+  return `On · sent to ${s.alert_email_to}`;
+}
+
 export function Settings({
   pro,
   viewerCache,
-  topics,
-  topicsError,
   onAddTopic,
   onEditTopic,
-  onDataChanged,
   onPairingChanged,
   onSharingChanged,
   onPapersRemoved,
-  onLibraryReset,
 }: {
   // Null in a free build, which is the only thing gating the shared-holdings
   // panel — there is no separate feature flag to keep in step with it.
@@ -95,22 +103,11 @@ export function Settings({
   // from the same reading this panel prints, and either can clear it. Inert on
   // every other build, where the section that uses it is not drawn.
   viewerCache: ViewerCache;
-  // The topics, which are the shell's: its section bar draws from the same
-  // list, and one reading can't disagree with itself. Adding and editing go to
-  // the shell's dialog for the same reason — there is one, wired once. This
-  // panel used to keep a list and a dialog of its own, and every save fetched
+  // Adding and editing a topic go to the shell's dialog: there is one, wired
+  // once. This panel used to keep a dialog of its own, and every save fetched
   // the topics twice.
-  topics: Topic[];
-  // Why the shell's last reading of them failed, or null when it didn't. The
-  // list above is then whatever the reading before it left: with a topic just
-  // removed still on it, or empty because nothing has been read at all. This
-  // panel reported that when the list was its own, and went quiet when it
-  // stopped being.
-  topicsError: string | null;
   onAddTopic: () => void;
   onEditTopic: (topic: Topic) => void;
-  // Read the topics again: after a removal here, and when asked to try again.
-  onDataChanged: () => void;
   // This instance connected to an organization's library or left one, so the
   // `pro` block above is now stale. Passed straight through to the panel that
   // does it — Settings has no opinion on it beyond being in the way.
@@ -120,20 +117,19 @@ export function Settings({
   // icon and badge from, and nothing else. Carries the panel's fresh reading of
   // those stamps, or null if it couldn't take one; see ProPanel.
   onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
-  // Papers left the Interests feeds (a topic removed): the app refreshes the
-  // paper views and reports the count.
+  // Papers left the Interests feeds (a topic removed), for the shell to report
+  // the count. A reset reports nothing there: what it destroyed is reported in
+  // the panel the button is in, beside the button, rather than in a notice at
+  // the top of a page the reader has scrolled to the bottom of.
   onPapersRemoved: (count: number) => void;
-  // The library was deleted outright. Separate from onPapersRemoved, which the
-  // panel could otherwise have reused: that one describes papers leaving the
-  // topic feeds, and the shell answers it by reloading them. Here every source
-  // is gone — folders and collections included — so the selections pointing at
-  // them have to be dropped too, and only the shell can do that.
-  //
-  // Carries nothing, because the shell has nothing to say: what was destroyed is
-  // reported in the panel the button is in, beside the button, rather than in a
-  // notice at the top of a page the reader has scrolled to the bottom of.
-  onLibraryReset: () => void;
 }) {
+  // The topics, the same list the section bar draws from, and why the last
+  // reading of them failed, or null when it didn't. The list is then whatever
+  // the reading before it left: with a topic just removed still on it, or
+  // empty because nothing has been read at all.
+  const sources = useSources();
+  const topics = useTopics();
+  const topicsError = useTopicsError();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The last-persisted settings, held so the "Save settings" button can tell
   // whether the form has unsaved edits. Kept in step with `settings` wherever
@@ -151,6 +147,7 @@ export function Settings({
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [editingAlerts, setEditingAlerts] = useState(false);
   // The topic warning depends on an article count fetched *before* the dialog
   // opens, so the pending removal carries its message along.
   const [topicToRemove, setTopicToRemove] = useState<{ topic: Topic; message: string } | null>(null);
@@ -239,8 +236,7 @@ export function Settings({
     if (!topicToRemove) return;
     setTopicToRemove(null);
     try {
-      const res = await api.deleteTopic(topicToRemove.topic.id);
-      onDataChanged();
+      const res = await sources.deleteTopic(topicToRemove.topic.id);
       if (res.deletedArticles > 0) onPapersRemoved(res.deletedArticles);
     } catch (err) {
       setError(errorMessage(err));
@@ -267,15 +263,15 @@ export function Settings({
     setResetResult(null);
     setResetting(true);
     try {
-      const deleted = await api.resetLibrary();
+      // The store empties and reads again the topics listed here and every
+      // other view of all of it.
+      const deleted = await sources.resetLibrary();
       setResetResult({ kind: "info", message: describeResetDone(deleted) });
-      // ProPanel first, which is counting over collections that went with
-      // them, then the shell, which owns the topics listed here and every other
-      // view of all of it. Nothing of this panel's own: the settings are what a
-      // reset keeps, and reading them again would only put the stored copy back
-      // over an edit not yet saved.
+      // And ProPanel, which is counting over collections that went with them.
+      // Nothing of this panel's own: the settings are what a reset keeps, and
+      // reading them again would only put the stored copy back over an edit
+      // not yet saved.
       setProReloadToken((n) => n + 1);
-      onLibraryReset();
     } catch (err) {
       setResetResult({ kind: "error", message: errorMessage(err) });
     } finally {
@@ -314,6 +310,15 @@ export function Settings({
       setSettings(before);
       setError(errorMessage(err));
     }
+  }
+
+  // The email alerts dialog saved its own keys. Patched in rather than taken
+  // whole, as the Open Library switch is, so an unsaved edit in the form stays.
+  function alertsSaved(updated: AppSettings) {
+    const alerts = alertSettingsOf(updated);
+    setSettings((s) => (s ? { ...s, ...alerts } : updated));
+    setBaseline((b) => (b ? { ...b, ...alerts } : updated));
+    setSavedMsg("Email alerts saved.");
   }
 
   async function saveSettings(e: FormEvent) {
@@ -413,7 +418,7 @@ export function Settings({
                     Couldn’t load the topics: {topicsError}
                   </span>
                   <div className="list-actions">
-                    <button className="link-btn" onClick={onDataChanged}>
+                    <button className="link-btn" onClick={() => void sources.loadTopics()}>
                       Try again
                     </button>
                   </div>
@@ -482,6 +487,37 @@ export function Settings({
               />
               <span className="hint">{CRON_HINT}</span>
             </label>
+            {/* Server builds only, on `=== false` for Sharing's reason. The
+                desktop app sends nothing: it polls while its window is open,
+                so the reader is already looking at what an email would say. */}
+            {settings.desktop === false && (
+              <div className="field alerts-row">
+                <span className="label-line">
+                  <span>Email alerts</span>
+                  <InfoTip id="settings-alerts-help" text={HELP.alerts} />
+                </span>
+                <span className="switch-row">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    aria-describedby="settings-alerts-state settings-alerts-help"
+                    onClick={() => setEditingAlerts(true)}
+                    // Alerts left on can always be turned off.
+                    disabled={!settings.poll_enabled && !settings.alert_email_enabled}
+                  >
+                    Configure email alerts…
+                  </button>
+                  <span
+                    id="settings-alerts-state"
+                    className={
+                      settings.alert_email_enabled && !settings.poll_enabled ? "hint warn" : "hint"
+                    }
+                  >
+                    {alertsLine(settings)}
+                  </span>
+                </span>
+              </div>
+            )}
             <div className="field">
               <span className="label-line">
                 <label htmlFor="settings-ncbi-email">Contact email</label>
@@ -740,6 +776,14 @@ export function Settings({
         />
       </section>
 
+      {settings?.desktop === false && (
+        <EmailAlertsDialog
+          open={editingAlerts}
+          settings={settings}
+          onSaved={alertsSaved}
+          onClose={() => setEditingAlerts(false)}
+        />
+      )}
       <ConfirmDialog
         open={topicToRemove != null}
         title={topicToRemove ? `Remove "${topicToRemove.topic.name}"?` : ""}

@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Bookmark, ChevronDown } from "lucide-react";
 import { errorMessage } from "../lib/format";
-import type { Bookmarking } from "../lib/bookmarking";
+import { useSources } from "../lib/sources";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { FolderMenuContent } from "./FolderMenu";
 import { MAX_BULK_BOOKMARK_PMIDS, MAX_NAME_CHARS } from "../../../shared/limits";
@@ -24,7 +24,6 @@ type Target = { kind: "existing"; id: number; name: string } | { kind: "new"; na
 export function SaveAllButton({
   pmids,
   total,
-  bookmarking,
   onError,
   onDone,
 }: {
@@ -32,10 +31,10 @@ export function SaveAllButton({
   // The same list before the filters ran. Only read when `pmids` is empty, to
   // tell the two reasons for that apart — see below.
   total: number;
-  bookmarking: Bookmarking;
   onError: (message: string) => void;
   onDone: (message: string) => void;
 }) {
+  const sources = useSources();
   const [naming, setNaming] = useState(false);
   const [target, setTarget] = useState<Target | null>(null);
   const [busy, setBusy] = useState(false);
@@ -90,8 +89,8 @@ export function SaveAllButton({
     setBusy(true);
     try {
       const folder =
-        to.kind === "new" ? await bookmarking.createFolder(to.name) : { id: to.id, name: to.name };
-      const { added, alreadySaved } = await bookmarking.addMany(folder.id, pmids);
+        to.kind === "new" ? await sources.createFolder(to.name) : { id: to.id, name: to.name };
+      const { added, alreadySaved } = await sources.addBookmarks(folder.id, pmids);
       // Report what actually landed rather than the number asked for — with
       // overlapping saves those differ, and claiming the larger figure would
       // misrepresent what's in the folder.
@@ -116,7 +115,6 @@ export function SaveAllButton({
         </DropdownMenu.Trigger>
 
         <FolderMenuContent
-          folders={bookmarking.folders}
           onNewFolder={() => setNaming(true)}
           renderFolder={(f) => (
             <DropdownMenu.Item

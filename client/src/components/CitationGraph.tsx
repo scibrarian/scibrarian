@@ -5,7 +5,6 @@ import { FileText, ExternalLink, X } from "lucide-react";
 import { api } from "../api";
 import { useCachedFetch, useDebounced, usePrefersDark, type FetchCache } from "../lib/hooks";
 import { openTitle, usePaperOpener, type PaperAccess } from "../lib/openPaper";
-import type { Bookmarking } from "../lib/bookmarking";
 import { bounds, inYearRange, sourceKey, type PaperFilterState } from "../lib/papers";
 import type { GraphNode, GraphResponse, PaperSource } from "../types";
 import { clusterGraph, NEUTRAL_COLOR, type ClusteringResult } from "../lib/clustering";
@@ -102,12 +101,12 @@ export function CitationGraph({
   libraryOpen,
   onAuthRefreshed,
   filters,
-  bookmarking,
+  bookmarkable,
 }: PaperAccess & {
   source: PaperSource;
   reloadToken: number;
   filters: PaperFilterState;
-  bookmarking: Bookmarking | null;
+  bookmarkable: boolean;
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -479,14 +478,13 @@ export function CitationGraph({
         loading={showLoading}
         facets={facets}
         action={
-          bookmarking && (
+          bookmarkable && (
             // visiblePmids, not the filter row's set: in this view clusters can
             // be hidden and a focus pinned, and the button must mean the same
             // thing as the "N of M papers" readout it sits beside.
             <SaveAllButton
               pmids={visiblePmids}
               total={data?.nodes.length ?? 0}
-              bookmarking={bookmarking}
               onError={setActionError}
               onDone={setNotice}
             />
@@ -808,10 +806,9 @@ export function CitationGraph({
             <a href={selected.url} target="_blank" rel="noreferrer">
               PubMed <ExternalLink size={13} className="inline-icon" aria-hidden />
             </a>
-            {bookmarking && (
+            {bookmarkable && (
               <BookmarkMenu
                 pmid={selected.pmid}
-                bookmarking={bookmarking}
                 onError={setActionError}
                 onNewFolder={() => setNamingFor(selected.pmid)}
               />
@@ -838,10 +835,9 @@ export function CitationGraph({
       {/* Outside the paper dialog rather than inside it: the prompt outlives
           nothing here, but stacking it as a sibling keeps the two dialogs'
           focus handling independent. */}
-      {bookmarking && (
+      {bookmarkable && (
         <NewFolderDialog
           pmid={namingFor}
-          bookmarking={bookmarking}
           onError={setActionError}
           onClose={() => setNamingFor(null)}
         />

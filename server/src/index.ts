@@ -13,7 +13,8 @@ import {
   PORT,
   setBoundPort,
 } from "./config.js";
-import { db, dropUnheldArticles, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
+import { db, holdingsByPmids } from "./db.js"; // importing also initializes schema + seed on startup
+import { sweepAtStartup } from "./holding.js";
 import { api, isAdminRequest } from "./routes.js";
 import { loadPro, proInstalled } from "./pro-hooks.js";
 import {
@@ -179,10 +180,15 @@ if (fs.existsSync(CLIENT_DIST)) {
 
 // Uncaught route errors land here as the JSON shape the client's error handling
 // expects, instead of Express's default HTML error page. The raw message is
-// always logged for the operator, but only returned to the client when it was
-// explicitly marked safe to expose — client-facing 4xx (body-parser's parse
-// errors, our httpError()s). Everything else gets a generic body, so internal
-// detail (fs paths, upstream/library strings, stack messages) never leaks in 5xx.
+// only returned to the client when it was explicitly marked safe to expose —
+// client-facing 4xx (body-parser's parse errors, our httpError()s). Everything
+// else gets a generic body, so internal detail (fs paths, upstream/library
+// strings, stack messages) never leaks in 5xx.
+//
+// Only a 5xx is logged, with its raw message, for the operator. A 4xx is a
+// refusal whose reason is the reply: a mistyped cron, a name already taken, a
+// check already running. Once routes threw their refusals here rather than
+// sending them, logging every error put each of those in the log as a failure.
 app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (res.headersSent) return next(err);
   const e = err as { status?: unknown; statusCode?: unknown; expose?: unknown } | null;
@@ -192,7 +198,7 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
       : typeof e?.statusCode === "number"
         ? e.statusCode
         : 500;
-  console.warn(`[server] ${errMessage(err)}`);
+  if (status >= 500) console.warn(`[server] ${errMessage(err)}`);
   // http-errors (body-parser) sets expose=true on its safe 4xx; treat any 4xx as
   // exposable unless explicitly flagged otherwise, plus anything we deliberately
   // marked via httpError().
@@ -303,22 +309,8 @@ export async function start(options: StartOptions = {}): Promise<{ port: number;
     );
   }
 
-  // The papers nothing holds any longer, taken now because now is when nothing
-  // is half way through storing one: before the bind, so no import or manual
-  // match can be running, and before loadPro, which arms Pro's sweep and its
-  // pulls. See dropUnheldArticles.
-  //
-  // It can't fail the start, as it can't fail a removal (sweepUnheld in
-  // routes.ts): what a failed sweep leaves behind is rows nobody can see, and
-  // the next removal to find the server idle, or the next start, takes them.
-  try {
-    const papers = dropUnheldArticles();
-    if (papers > 0) {
-      console.log(`[db] removed at startup — stored papers nothing held: ${papers}`);
-    }
-  } catch (err) {
-    console.warn(`[db] sweeping papers nothing holds failed at startup: ${errMessage(err)}`);
-  }
+  // Here, before the bind and before loadPro: see sweepAtStartup.
+  sweepAtStartup();
 
   // Before the bind, so no request can arrive at a half-registered Pro router.
   // A module that fails to load is fatal rather than a silent downgrade to the

@@ -1,10 +1,11 @@
-// Shapes shared verbatim between the server (DB/API layer) and the client.
-// The client extends some of these with fields its API responses add — see
-// client/src/types.ts.
+// Shapes shared verbatim between the server and the client: what the server
+// stores, and every reply it sends. Where a reply adds to what is stored — a
+// count, say — the stored shape is named Stored*, and the reply takes the plain
+// name the client reads it by.
 
-import type { OrgHolding } from "./pro.js";
+import type { OrgHolding, ProStatus } from "./pro.js";
 
-export interface Topic {
+export interface StoredTopic {
   id: number;
   name: string;
   term: string;
@@ -25,11 +26,16 @@ export interface Topic {
   created_at: string;
 }
 
+// A topic as GET /topics lists it, with how many papers its feed holds.
+export interface Topic extends StoredTopic {
+  articleCount: number;
+}
+
 // A topic with the journals it lists, as GET /topics/:id returns it for the
 // dialog that edits them. The list rides only here: the picker and the Settings
 // rows need the count, and every topic's journals in one response is the
 // payload nobody reads.
-export interface TopicDetail extends Topic {
+export interface TopicDetail extends StoredTopic {
   journals: Journal[];
 }
 
@@ -41,6 +47,12 @@ export interface TopicRemovalResult {
 // of headings makes, and how many papers it matches across all of PubMed.
 export interface TopicPreviewResponse {
   term: string;
+  count: number;
+}
+
+// How many papers: a topic's feed holds (GET /topics/:id/article-count), or a
+// change of its scope would take out of it (POST /topics/:id/scope/preview).
+export interface PaperCountResponse {
   count: number;
 }
 
@@ -69,6 +81,31 @@ export interface Journal {
   // was. Null while the catalog doesn't say, and then medline_indexed is all
   // there is to go by.
   medline: MedlineStatus | null;
+}
+
+// A journal in NLM's catalog, as the topic dialog searches it to add to a list.
+export interface JournalSearchResult {
+  nlm_id: string; // the journal identity key — used to dedupe against added journals
+  title: string;
+  abbr: string;
+  issn: string;
+  metric: number | null; // OpenAlex 2-yr mean citedness
+  // What MEDLINE has to do with the journal; null while the catalog doesn't
+  // say. Never 'never' from a search, which leaves those out.
+  medline: MedlineStatus | null;
+}
+
+export interface JournalSearchResponse {
+  results: JournalSearchResult[];
+  // Journals the search matched and left out of `results`: ones MEDLINE has
+  // never indexed, whose papers carry no MeSH headings and can't match a topic.
+  neverIndexed: number;
+}
+
+// What /api/journals/suggest ("Auto") returns for a set of headings: catalog
+// journals, in the catalog search's own shape.
+export interface JournalSuggestResponse {
+  results: JournalSearchResult[];
 }
 
 export interface Article {
@@ -157,10 +194,15 @@ export interface MeshSearchResponse {
 // A user-created bookmark folder: the Bookmarks section's counterpart to a
 // topic or a collection. Holds papers saved out of Interests (membership lives
 // in the bookmarks table), so unlike a collection it has no files behind it.
-export interface BookmarkFolder {
+export interface StoredBookmarkFolder {
   id: number;
   name: string;
   created_at: string;
+}
+
+// A folder as the routes send it, with how many papers it holds.
+export interface BookmarkFolder extends StoredBookmarkFolder {
+  paperCount: number;
 }
 
 // One saved paper, as GET /api/bookmarks returns it. The client holds the whole
@@ -173,15 +215,35 @@ export interface BookmarkEntry {
   pmid: string;
 }
 
-export interface Collection {
+// What saving papers into a folder did (POST /bookmark-folders/:id/papers).
+export interface AddBookmarksResponse {
+  added: number; // saved by this request
+  alreadySaved: number; // the folder already held them
+  missing: number; // not stored, so not saved
+}
+
+// How many a removal took out: bookmarks from a folder, or the unmatched
+// entries of its imports.
+export interface RemovedResponse {
+  removed: number;
+}
+
+export interface StoredCollection {
   id: number;
   name: string;
   created_at: string;
 }
 
+// A collection as the routes send it, with what its files come to.
+export interface Collection extends StoredCollection {
+  fileCount: number;
+  matchedCount: number; // uploads that found a paper — files, and what the picker badge draws
+  heldCount: number; // distinct papers held, the count the papers views actually list
+}
+
 export type CollectionFileStatus = "pending" | "matched" | "unmatched" | "error";
 
-export interface CollectionFile {
+export interface StoredCollectionFile {
   id: number;
   collection_id: number;
   content_hash: string; // sha256 hex, key into the blob store
@@ -193,8 +255,34 @@ export interface CollectionFile {
   added_at: string;
 }
 
+// A file as the routes send it. The API strips content_hash (blob-store key)
+// from what viewers can see.
+export interface CollectionFile extends Omit<StoredCollectionFile, "content_hash"> {
+  exists: boolean; // whether the stored PDF is still present
+}
+
+export interface CollectionFilesResponse {
+  files: CollectionFile[];
+}
+
+export interface UploadResponse {
+  added: number; // new file rows inserted
+  skipped: number; // already in the collection (or not a PDF)
+}
+
+// What ticking papers out of a collection took: its files for them, and the
+// distinct papers those were.
+export interface CollectionRemovalResponse {
+  removed: number;
+  papers: number;
+}
+
 // A live PDF-import job's status, tracked server-side and streamed to the
 // client while the scan runs.
+//
+// A folder's reference-file import reports in the same shape, so the client
+// follows both with one store (lib/import-jobs): there `total` and `processed`
+// count entries looked up on PubMed, `errors` stays 0 and `currentFile` null.
 export interface ImportJob {
   jobId: string;
   state: "running" | "done" | "error";
@@ -486,6 +574,42 @@ export interface AddLinksResponse {
   truncated: number;
 }
 
+// Why an imported entry didn't become a bookmark: it named no paper at all, or
+// named one PubMed has no single record for.
+export type ImportReason = "no-identifier" | "not-in-pubmed" | "ambiguous-doi" | "";
+
+// One entry from an imported reference file that is not a bookmark yet — see
+// bookmark_imports in db.ts. 'pending' until the import has looked it up.
+export interface BookmarkImport {
+  id: number;
+  folder_id: number;
+  title: string;
+  authors: string;
+  journal: string;
+  year: string;
+  doi: string | null;
+  pmid: string | null;
+  status: "pending" | "unmatched";
+  reason: ImportReason;
+  added_at: string;
+}
+
+// What POST /bookmark-folders/:id/imports read out of the file, and the lookup
+// it started over what it kept.
+export interface FolderImportResponse {
+  // Entries in the file.
+  read: number;
+  // Left out because their type says they aren't journal articles.
+  notArticles: number;
+  // Left out for carrying nothing to look up or show: no title, DOI or PMID.
+  blank: number;
+  // Kept, and still to be looked up.
+  queued: number;
+  // Kept with no DOI or PMID, so listed as unmatched straight away.
+  noIdentifier: number;
+  status: ImportStatus;
+}
+
 // A minted expiring download link for one stored PDF. `path` is relative so
 // the client can prepend whichever origin it reached the server on.
 export interface ShareLinkResponse {
@@ -504,6 +628,11 @@ export interface PollResult {
   // since the feed then looks complete and simply isn't.
   truncated?: number;
   error?: string;
+}
+
+export interface RefreshResponse {
+  results: PollResult[];
+  polledAt: string;
 }
 
 // What a change to a topic's journal scope took out.
@@ -574,6 +703,52 @@ export interface ClearedCache {
   bytes: number; // what they were occupying
   unsaved: number; // left behind: their changes are not in the library
   blocked: number; // left behind: the library has their contents, the unlink failed
+}
+
+// What /api/settings exposes: never the API key itself, just whether one is set.
+export interface AppSettings {
+  ncbi_email: string;
+  poll_cron: string;
+  poll_enabled: boolean;
+  library_open: boolean;
+  has_api_key: boolean;
+  // Email alerts after scheduled checks, and the mail server they go out
+  // through. Server builds only; see EmailAlertsDialog.
+  alert_email_enabled: boolean;
+  alert_email_to: string;
+  smtp_host: string;
+  smtp_port: string;
+  smtp_user: string;
+  smtp_from: string;
+  has_smtp_pass: boolean;
+  // URLs where other machines can reach this server; empty when bound to loopback.
+  share_urls: string[];
+  // True in the desktop build, which is loopback-only by construction — so
+  // share_urls is always empty there and can never be filled in.
+  desktop: boolean;
+}
+
+// What a test email answers once the mail server has taken it.
+export interface TestEmailResponse {
+  ok: true;
+}
+
+// What /api/auth reports: whether this browser's requests count as admin,
+// whether an ADMIN_TOKEN is configured at all (false = tokenless single-user
+// mode, where stored PDFs stay openly fetchable), and whether the owner has
+// opened the Library so viewers can download PDFs without a share link.
+export interface AuthStatus {
+  admin: boolean;
+  token_required: boolean;
+  library_open: boolean;
+  // The Pro module's report, or null in a free build — which is what every
+  // piece of Pro UI keys off. Optional so a response from an older server
+  // (or a test stub) doesn't have to carry it.
+  pro?: ProStatus | null;
+  // True in the desktop build. The same fact AppSettings.desktop carries, here
+  // as well because the shell needs it and only the owner's Settings panel
+  // loads that one. Optional for the reason `pro` is.
+  desktop?: boolean;
 }
 
 export interface GraphNode {
@@ -668,4 +843,11 @@ export interface WorkspaceContentsResponse {
  */
 export interface WorkspacesResponse {
   workspaces: Workspace[];
+}
+
+// What switching workspace answers: whether the app is about to restart into
+// the new one, or has to be relaunched by hand.
+export interface WorkspaceSwitchResponse {
+  ok: true;
+  restarting: boolean;
 }

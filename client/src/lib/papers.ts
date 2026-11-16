@@ -239,7 +239,7 @@ export function selectionOnScreen(
  * and the wait had no other way out.
  *
  * Held for exactly one reload: the one the removal itself started, which is the
- * token it recorded plus the single bump handleCollectionChanged makes to this
+ * token it recorded plus the single bump the sources store makes to this
  * source's key (bumpSource and bumpAll each move tokenFor by one). Past that,
  * something else refreshed the list, and the removal's wait is over whatever
  * that list shows.

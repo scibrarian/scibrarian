@@ -261,10 +261,11 @@ function Covered({
 
 // Mirrors the Polling & NCBI stacked form so the panel doesn't move when the
 // settings arrive: a switch, then three inputs, the first with its format
-// printed under it, then the save button. Each group is the element the form
-// uses there — a .field, or for the cron field a <label> — so the stylesheet
-// spaces both alike, and each control is Covered. A label's bar sits in a block
-// of its own, whose one line of 13px text at 1.5 is the label's height.
+// printed under it and the email alerts button after it, then the save button.
+// Each group is the element the form uses there — a .field, or for the cron
+// field a <label> — so the stylesheet spaces both alike, and each control is
+// Covered. A label's bar sits in a block of its own, whose one line of 13px
+// text at 1.5 is the label's height.
 //
 // `cronHint` is that format line, passed from the form that prints it, for
 // FilterSkeleton's reason: under the bar it is the real sentence, so it wraps
@@ -294,6 +295,16 @@ export function StackedFormSkeleton({ cronHint }: { cronHint: ReactNode }) {
           <span className="hint">{cronHint}</span>
         </Covered>
       </label>
+      {/* Stood in for on every build, as the Sharing panel is. The desktop app
+          has no such row, and loses this one in the reveal. */}
+      <div className="field">
+        {label}
+        <Covered radius={8} style={{ alignSelf: "flex-start" }}>
+          <button type="button" className="secondary-btn">
+            Configure email alerts…
+          </button>
+        </Covered>
+      </div>
       {[0, 1].map((i) => (
         <div key={i} className="field">
           {label}

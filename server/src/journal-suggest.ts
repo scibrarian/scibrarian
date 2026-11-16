@@ -1,5 +1,5 @@
 import { findCatalogByNlmId } from "./db.js";
-import type { MeshDescriptorRef } from "./types.js";
+import type { MeshDescriptorRef } from "../../shared/types.js";
 import { attachMetrics } from "./journal-catalog.js";
 import {
   rankCandidates,
