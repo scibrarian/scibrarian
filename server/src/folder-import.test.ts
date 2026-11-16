@@ -263,6 +263,23 @@ describe("importing a reference file into a folder", () => {
     expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
   });
 
+  // Both of the above cancel the run as they delete. Deleted under it with no
+  // word to it, it still stops before its writes, which would store papers
+  // nothing holds and bookmark them into a folder that's gone.
+  it("stops when its folder is gone without its being cancelled, and stores nothing", async () => {
+    const id = folder("Gone unannounced");
+    let release!: () => void;
+    pubmed.hold("pmidsForDoi", new Promise<void>((resolve) => (release = resolve)));
+    await importFile(id, LIBRARY);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+
+    db.db.prepare("DELETE FROM bookmark_folders WHERE id = ?").run(id);
+    release();
+    const stopped = await settled(id);
+    expect(stopped.error).toBeUndefined();
+    expect(db.existingPmids([FOUND_BY_PMID, FOUND_BY_DOI]).size).toBe(0);
+  });
+
   // The lookup took its rows when it started; the reader can settle one by
   // hand while it runs, and that is the entry's last word.
   it("leaves an entry removed or saved by hand while it ran", async () => {

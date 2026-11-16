@@ -58,8 +58,10 @@ async function lookUp(
   });
 
   // --- writes: nothing is awaited from here on ---
-  // Gone without being cancelled — the whole library reset, say, which refuses
-  // to start while this runs but can't see one that starts after it.
+  // Gone without being cancelled. Nothing does that now: deleting the folder
+  // and a reset both cancel the run in the tick they delete (holding.ts). But
+  // writing for a folder that's gone would store papers nothing holds and fail
+  // the bookmarks' foreign key, so it is asked rather than assumed.
   if (!getBookmarkFolder(folderId)) control.stop();
   upsertArticles(fetched);
   // Re-read rather than taken from `stored`: a paper stored before the lookups
