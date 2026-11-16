@@ -352,6 +352,56 @@ describe("adding a topic", () => {
   it("gives it nowhere to search when no scope is sent", async () => {
     expect(await add({})).toMatchObject({ all_pubmed: false, journalCount: 0 });
   });
+
+  // A journal new to the library is asked about at NLM, and another topic can
+  // be made during that wait. So a name or headings already taken are refused
+  // before it, costing no request, and asked about again after it.
+  it("refuses a taken name or headings before asking NLM anything", async () => {
+    db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED);
+    await expect(add({ name: "Fat", allPubmed: false, journals: [LANCET.nlmId] })).rejects.toMatchObject({
+      status: 409,
+      message: "A topic named “Fat” already exists.",
+    });
+    db.createTopic("Adipose", TERM, [ADIPOSE], ALL_PUBMED);
+    await expect(add({ allPubmed: false, journals: [LANCET.nlmId] })).rejects.toMatchObject({
+      status: 409,
+      message: "These headings are already a topic (“Adipose”).",
+    });
+    expect(indexingAsked()).toEqual([]);
+  });
+
+  // While NLM is asked about a journal, another topic is made taking `taken`.
+  async function addingWhileAnotherIsMade(body: Record<string, unknown>, taken: () => void) {
+    let answer!: () => void;
+    pubmed.hold("isMedlineIndexed", new Promise<void>((r) => (answer = r)));
+    const adding = add({ allPubmed: false, journals: [LANCET.nlmId], ...body });
+    await vi.waitFor(() => expect(indexingAsked()).toEqual([LANCET.nlmId]));
+    taken();
+    answer();
+    return adding;
+  }
+
+  it("refuses a name another topic took while the journals were being resolved", async () => {
+    const adding = addingWhileAnotherIsMade({ name: "Fat" }, () =>
+      db.createTopic("Fat", '"Obesity"[MeSH]', [OBESITY], ALL_PUBMED)
+    );
+    await expect(adding).rejects.toMatchObject({
+      status: 409,
+      message: "A topic named “Fat” already exists.",
+    });
+    expect(db.listTopics().map((t) => t.name)).toEqual(["Fat"]);
+    expect(journalRows()).toEqual([]);
+  });
+
+  it("refuses headings another topic took while the journals were being resolved", async () => {
+    const adding = addingWhileAnotherIsMade({}, () => db.createTopic("Adipose", TERM, [ADIPOSE], ALL_PUBMED));
+    await expect(adding).rejects.toMatchObject({
+      status: 409,
+      message: "These headings are already a topic (“Adipose”).",
+    });
+    expect(db.listTopics().map((t) => t.name)).toEqual(["Adipose"]);
+    expect(journalRows()).toEqual([]);
+  });
 });
 
 describe("changing a topic", () => {
