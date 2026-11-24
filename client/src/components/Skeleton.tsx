@@ -279,7 +279,7 @@ function SaveButtonSkeleton({ label }: { label: string }) {
   );
 }
 
-// The Polling form: a switch, then the schedule with its format printed under
+// The Automatic checks form: a switch, then the schedule with its format printed under
 // it and the email alerts button, then the save button.
 //
 // With the switch on, which hides the two between. The one who turned it on is

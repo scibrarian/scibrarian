@@ -8,11 +8,11 @@ import { ModalShell } from "./Dialogs";
 import type { AppSettings, MailSettingsDraft } from "../types";
 
 // The email alerts and the mail server they go out through, opened from the
-// Polling form. Its own dialog, and its own save, rather than six more fields
+// Automatic checks form. Its own dialog and save, rather than six more fields
 // in that form: a mail server is set up once and then left alone, and the form
 // is what someone opens to change the schedule.
 //
-// Saves on its own, with only its own keys, so an edit waiting in the Polling
+// Saves on its own, with only its own keys, so an edit waiting in that
 // form is neither sent with it nor overwritten by its answer — the parent
 // patches in the fields this dialog owns, the way the Open Library switch does.
 export function EmailAlertsDialog({

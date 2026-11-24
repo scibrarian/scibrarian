@@ -9,7 +9,7 @@ import type { AppSettings } from "../types";
 
 afterEach(cleanup);
 
-// The email alerts row in the Polling form, and the dialog it opens.
+// The email alerts row in the Automatic checks form, and the dialog it opens.
 //
 // The dialog saves on its own, with only its own keys, while the form around
 // the button is saved by Save schedule. So what's pinned is the seam between
@@ -90,7 +90,7 @@ async function openDialog() {
 }
 
 describe("where the row is", () => {
-  it("is in a server build's Polling form", async () => {
+  it("is in a server build's Automatic checks form", async () => {
     renderSettings();
     expect(await configure()).toBeTruthy();
     expect(screen.getByText("Off")).toBeTruthy();
@@ -120,7 +120,7 @@ describe("where the row is", () => {
       alert_email_to: "reader@example.org",
     });
     renderSettings();
-    fireEvent.click(await screen.findByRole("switch", { name: "Scheduled polling" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Check for new papers automatically" }));
     expect(((await configure()) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText("On · sent to reader@example.org")).toBeTruthy();
     expect(api.updateSettings).not.toHaveBeenCalled();

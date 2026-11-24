@@ -157,12 +157,12 @@ describe("an info icon's help", () => {
     // description instead of as part of its name.
     render(
       <div>
-        <label htmlFor="f">Scheduled polling</label>
+        <label htmlFor="f">Check for new papers automatically</label>
         <InfoTip id="f-help" text={TEXT} />
         <input id="f" type="checkbox" role="switch" aria-describedby="f-help" />
       </div>
     );
-    expect(screen.getByRole("switch", { name: "Scheduled polling", description: TEXT })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Check for new papers automatically", description: TEXT })).toBeTruthy();
   });
 
   it("is all that Escape closes inside a dialog, which the next Escape closes", () => {

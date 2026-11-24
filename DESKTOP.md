@@ -63,13 +63,13 @@ rm -rf ~/Library/Application\ Support/Scibrarian   # macOS
 rm -rf ~/.config/Scibrarian                        # Linux
 ```
 
-### Scheduled polling on a machine that sleeps
+### Automatic checks on a machine that sleeps
 
 A cron schedule only fires while the app is running, so a desktop app that is
-closed most of the day would miss every scheduled poll. When scheduled polling
-is enabled, a start that finds the schedule was missed runs that poll a few
-seconds later. It respects the same **Scheduled polling** setting as the timer:
-turn that off and startups poll nothing.
+closed most of the day would miss every scheduled check. When automatic checks
+are on, a start that finds the schedule was missed runs that check a few
+seconds later. It respects the same **Check for new papers automatically**
+setting as the timer: turn that off and startups check nothing.
 
 This is not desktop-specific — the server does it too, since a stopped container
 or a rebooted host misses schedules the same way. It just matters most here,

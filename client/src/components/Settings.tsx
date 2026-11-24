@@ -179,7 +179,7 @@ export function Settings({
   const { cache, clearing: clearingCache } = viewerCache;
   // Reported in this panel rather than through savedMsg or the shell's notice,
   // for the reason resetResult is: both of those draw far from the button that
-  // caused them — savedMsg under the Polling or NCBI heading, panels up — and a
+  // caused them — savedMsg under the Automatic checks or NCBI heading, panels up — and a
   // result the reader never sees reads as a click that did nothing.
   const [cacheResult, setCacheResult] = useState<{
     kind: "info" | "error";
@@ -485,7 +485,7 @@ export function Settings({
           it would read as governed too. They aren't — "Check for new papers"
           uses them with the switch off. */}
       <section className="panel">
-        <h2>Polling</h2>
+        <h2>Automatic checks</h2>
         <Banner
           kind="success"
           message={savedMsg?.form === "schedule" ? savedMsg.text : null}
@@ -501,7 +501,7 @@ export function Settings({
                 description. */}
             <div className="field">
               <span className="label-line">
-                <label htmlFor="settings-poll-enabled">Scheduled polling</label>
+                <label htmlFor="settings-poll-enabled">Check for new papers automatically</label>
                 <InfoTip id="settings-poll-enabled-help" text={HELP.polling} />
               </span>
               <input
@@ -520,7 +520,7 @@ export function Settings({
                 view, to be turned off, the moment there are checks to report. */}
             {settings.poll_enabled && (
               <label>
-                Poll schedule (cron)
+                Schedule (cron)
                 <input
                   value={settings.poll_cron}
                   onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
@@ -791,7 +791,7 @@ export function Settings({
         <h2>Delete all data</h2>
         <p className="hint">
           Permanently deletes everything in this library: every paper, topic, journal, saved
-          folder, collection, and every stored PDF. Your polling and NCBI settings are kept,
+          folder, collection, and every stored PDF. Your schedule and NCBI settings are kept,
           and so are the MeSH and journal reference lists — so the pickers still work when you
           start again.
           {pro && " Your organization pairing and license are kept too."} This cannot be

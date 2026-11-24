@@ -9,7 +9,7 @@ import type { AppSettings } from "../types";
 
 afterEach(cleanup);
 
-// The Polling and NCBI forms: two panels, each saved by its own button.
+// The Automatic checks and NCBI forms: two panels, each saved by its own button.
 //
 // What's pinned is what each Save sends. The polling switch hides the schedule
 // while it is off, and a hidden field must not ride along: an edit to it is not
@@ -78,11 +78,12 @@ async function renderSettings(settings: AppSettings = SAVED) {
     />,
     { wrapper: withSources }
   );
-  await screen.findByRole("switch", { name: "Scheduled polling" });
+  await screen.findByRole("switch", { name: POLL_SWITCH });
 }
 
-const pollSwitch = () => screen.getByRole("switch", { name: "Scheduled polling" });
-const schedule = () => screen.queryByRole("textbox", { name: /^Poll schedule/ }) as HTMLInputElement | null;
+const POLL_SWITCH = "Check for new papers automatically";
+const pollSwitch = () => screen.getByRole("switch", { name: POLL_SWITCH });
+const schedule = () => screen.queryByRole("textbox", { name: /^Schedule/ }) as HTMLInputElement | null;
 const email = () => screen.getByRole("textbox", { name: "Contact email" }) as HTMLInputElement;
 const saveSchedule = () => screen.getByRole("button", { name: "Save schedule" }) as HTMLButtonElement;
 const saveNcbi = () => screen.getByRole("button", { name: "Save NCBI settings" }) as HTMLButtonElement;

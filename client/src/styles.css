@@ -2866,7 +2866,7 @@ button.info-tip:focus-visible {
   margin-right: auto;
 }
 
-/* The button in the Polling form that opens the dialog. Outlined rather than
+/* The button in the Automatic checks form that opens the dialog. Outlined rather than
    filled, so Save schedule stays the one accent button in that form. */
 .stacked-form button.secondary-btn {
   background: var(--panel);

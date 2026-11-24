@@ -12,11 +12,11 @@ on your laptop or on a server you control.
   searches either all of PubMed or a list of journals of its own. Add one from
   the Interests picker, and edit it from the pencil beside its name or from
   **Settings** (the gear icon in the header).
-- **Check for new papers** polls on demand; optional scheduled polling (off by
-  default) runs on a cron expression you set in Settings. A cron only fires while
+- **Check for new papers** runs on demand, and can also run automatically (off by
+  default) on a cron expression you set in Settings. A cron only fires while
   the process is up, so if a schedule was missed while it was down — a closed
   desktop app, a stopped container, a rebooted host — the next startup runs that
-  poll a few seconds in. How long counts as "missed" comes from your own cron, so
+  check a few seconds in. How long counts as "missed" comes from your own cron, so
   a weekly schedule stays weekly.
 - **Email alerts** (server builds; off by default): one email after each
   scheduled check that finds new papers or hits a problem, covering every topic,
@@ -79,7 +79,7 @@ image.
 Two separate places, split by who owns the value:
 
 - **App settings** live in the UI (gear icon) and are stored in the database:
-  topics and their journals, the polling schedule, an NCBI API key (higher rate limit),
+  topics and their journals, the check schedule, an NCBI API key (higher rate limit),
   your contact email, and the sharing options. Nothing here belongs in a file.
 - **Deploy settings** live in `server/.env` — copy `.env.example` to start.
   These cover `PORT`, `HOST`, `DB_PATH`, `BLOBS_DIR`, and `ADMIN_TOKEN`.

@@ -81,10 +81,11 @@ async function renderSettings(settings: AppSettings = SHARED) {
     />,
     { wrapper: withSources }
   );
-  await screen.findByRole("switch", { name: "Scheduled polling" });
+  await screen.findByRole("switch", { name: POLL_SWITCH });
 }
 
-const pollSwitch = () => screen.getByRole("switch", { name: "Scheduled polling" }) as HTMLInputElement;
+const POLL_SWITCH = "Check for new papers automatically";
+const pollSwitch = () => screen.getByRole("switch", { name: POLL_SWITCH }) as HTMLInputElement;
 
 describe("a click meant for the help", () => {
   it("leaves the polling switch alone, on the icon or on the line around it", async () => {
@@ -96,7 +97,7 @@ describe("a click meant for the help", () => {
     fireEvent.click(icon.parentElement!);
     expect(pollSwitch().checked).toBe(false);
     // The words are still the switch's label.
-    fireEvent.click(screen.getByText("Scheduled polling"));
+    fireEvent.click(screen.getByText(POLL_SWITCH));
     expect(pollSwitch().checked).toBe(true);
   });
 
@@ -117,7 +118,7 @@ describe("a click meant for the help", () => {
 
 describe("where the help is", () => {
   it("prints what a reader copies, rather than hiding it behind an icon", async () => {
-    // Polling on, which is when the schedule and its format line are shown.
+    // Checks on, which is when the schedule and its format line are shown.
     await renderSettings({ ...SHARED, share_urls: [], poll_enabled: true });
     expect(screen.getByText(/Format: min hour day month weekday/)).toBeTruthy();
     expect(screen.getByText("ADMIN_TOKEN")).toBeTruthy();
@@ -130,7 +131,7 @@ describe("where the help is", () => {
       screen.getByRole("textbox", { name: "Contact email", description: /^Optional but recommended/ })
     ).toBeTruthy();
     expect(pollSwitch()).toBe(
-      screen.getByRole("switch", { name: "Scheduled polling", description: /^When on, every topic/ })
+      screen.getByRole("switch", { name: POLL_SWITCH, description: /^When on, every topic/ })
     );
   });
 
