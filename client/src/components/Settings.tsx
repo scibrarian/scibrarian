@@ -15,7 +15,7 @@ import { Banner } from "./Banner";
 import { ConfirmDialog } from "./Dialogs";
 import { alertSettingsOf, EmailAlertsDialog } from "./EmailAlertsDialog";
 import { InfoTip } from "./InfoTip";
-import { ListRowSkeleton, SkeletonBar, StackedFormSkeleton } from "./Skeleton";
+import { ListRowSkeleton, NcbiFormSkeleton, ScheduleFormSkeleton, SkeletonBar } from "./Skeleton";
 import { ProPanel } from "./ProPanel";
 import type { ViewerCache } from "../lib/viewerCache";
 import type {
@@ -56,9 +56,7 @@ const HELP = {
   polling:
     "When on, every topic is checked for new papers on the schedule below; “Check for new " +
     "papers” works either way. A topic with no journals chosen is skipped.",
-  alerts:
-    "One email after each scheduled check that finds something, covering every topic. " +
-    "Needs scheduled polling on.",
+  alerts: "One email after each scheduled check that finds something, covering every topic.",
   email:
     "Optional but recommended. Sent to NCBI and OpenAlex so they can contact you before " +
     "blocking access if requests ever exceed their limits.",
@@ -66,7 +64,7 @@ const HELP = {
 };
 
 // The cron field's format line. A constant because the form's stand-in prints
-// it too, unseen, to take the room it will (see StackedFormSkeleton).
+// it too, unseen, to take the room it will (see ScheduleFormSkeleton).
 const CRON_HINT = (
   <>
     Default <code>0 6 * * *</code> = daily at 6am. Format: min hour day month weekday.
@@ -83,9 +81,12 @@ function scopeLine(t: Topic): string {
 // What the email alerts are set to, beside the button that changes them.
 function alertsLine(s: AppSettings): string {
   if (!s.alert_email_enabled) return "Off";
-  if (!s.poll_enabled) return "On, but scheduled polling is off, so none are sent";
   return `On · sent to ${s.alert_email_to}`;
 }
+
+// The two forms, each saved by its own button, and so where a save's report is
+// printed: under the heading of the one it answers.
+type SettingsForm = "schedule" | "ncbi";
 
 export function Settings({
   pro,
@@ -145,7 +146,7 @@ export function Settings({
 
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [savedMsg, setSavedMsg] = useState<{ form: SettingsForm; text: string } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [editingAlerts, setEditingAlerts] = useState(false);
   // The topic warning depends on an article count fetched *before* the dialog
@@ -178,7 +179,7 @@ export function Settings({
   const { cache, clearing: clearingCache } = viewerCache;
   // Reported in this panel rather than through savedMsg or the shell's notice,
   // for the reason resetResult is: both of those draw far from the button that
-  // caused them — savedMsg under the Polling heading, three panels up — and a
+  // caused them — savedMsg under the Polling or NCBI heading, panels up — and a
   // result the reader never sees reads as a click that did nothing.
   const [cacheResult, setCacheResult] = useState<{
     kind: "info" | "error";
@@ -318,41 +319,68 @@ export function Settings({
     const alerts = alertSettingsOf(updated);
     setSettings((s) => (s ? { ...s, ...alerts } : updated));
     setBaseline((b) => (b ? { ...b, ...alerts } : updated));
-    setSavedMsg("Email alerts saved.");
+    setSavedMsg({ form: "schedule", text: "Email alerts saved." });
   }
 
-  async function saveSettings(e: FormEvent) {
-    e.preventDefault();
+  // Saves one of the two forms, and takes back from the answer only the keys it
+  // names, for the Open Library switch's reason: an edit waiting in the other
+  // form stays where it is. True when it saved.
+  async function save(
+    form: SettingsForm,
+    payload: Partial<AppSettings> & { ncbi_api_key?: string },
+    keys: (keyof AppSettings)[]
+  ): Promise<boolean> {
     setError(null);
     setSavedMsg(null);
-    if (!settings) return;
     try {
-      const payload: Partial<AppSettings> & { ncbi_api_key?: string } = {
-        ncbi_email: settings.ncbi_email,
-        poll_cron: settings.poll_cron,
-        poll_enabled: settings.poll_enabled,
-      };
-      if (apiKey.trim()) payload.ncbi_api_key = apiKey.trim();
       const updated = await api.updateSettings(payload);
-      setSettings(updated);
-      setBaseline(updated);
-      setApiKey("");
-      setSavedMsg("Settings saved.");
+      const saved: Partial<AppSettings> = Object.fromEntries(keys.map((k) => [k, updated[k]]));
+      setSettings((s) => (s ? { ...s, ...saved } : updated));
+      setBaseline((b) => (b ? { ...b, ...saved } : updated));
+      setSavedMsg({ form, text: "Settings saved." });
+      return true;
     } catch (err) {
       setError(errorMessage(err));
+      return false;
     }
   }
 
-  // Enable "Save settings" only when the form differs from what's persisted.
-  // The API key is write-only (never read back from the server), so any entry
-  // there always counts as a change.
-  const settingsDirty =
+  // The schedule is sent only while it is on the page. Hidden behind the switch,
+  // an edit to it is not what the reader is saving, and if it were not a valid
+  // cron line the save would fail on a field they cannot see. It waits in the
+  // form instead, there again when the switch is.
+  function saveSchedule(e: FormEvent) {
+    e.preventDefault();
+    if (!settings) return;
+    const payload: Partial<AppSettings> = settings.poll_enabled
+      ? { poll_enabled: true, poll_cron: settings.poll_cron }
+      : { poll_enabled: false };
+    void save("schedule", payload, Object.keys(payload) as (keyof AppSettings)[]);
+  }
+
+  async function saveNcbi(e: FormEvent) {
+    e.preventDefault();
+    if (!settings) return;
+    const payload: Partial<AppSettings> & { ncbi_api_key?: string } = {
+      ncbi_email: settings.ncbi_email,
+    };
+    if (apiKey.trim()) payload.ncbi_api_key = apiKey.trim();
+    if (await save("ncbi", payload, ["ncbi_email", "has_api_key"])) setApiKey("");
+  }
+
+  // Each Save button is enabled only when what its form shows differs from
+  // what's persisted — the schedule, then, only while it is shown, as it is
+  // only then that it is sent. The API key is write-only (never read back from
+  // the server), so any entry there always counts as a change.
+  const scheduleDirty =
     settings != null &&
     baseline != null &&
-    (settings.ncbi_email !== baseline.ncbi_email ||
-      settings.poll_cron !== baseline.poll_cron ||
-      settings.poll_enabled !== baseline.poll_enabled ||
-      apiKey.trim() !== "");
+    (settings.poll_enabled !== baseline.poll_enabled ||
+      (settings.poll_enabled && settings.poll_cron !== baseline.poll_cron));
+  const ncbiDirty =
+    settings != null &&
+    baseline != null &&
+    (settings.ncbi_email !== baseline.ncbi_email || apiKey.trim() !== "");
 
   // Every panel waits for the slowest of them.
   //
@@ -452,12 +480,20 @@ export function Settings({
         </ul>
       </section>
 
+      {/* Two panels, each its own form, rather than one: the switch at the top
+          hides what it governs, and in a single form the NCBI fields left under
+          it would read as governed too. They aren't — "Check for new papers"
+          uses them with the switch off. */}
       <section className="panel">
-        <h2>Polling & NCBI</h2>
-        <Banner kind="success" message={savedMsg} onDismiss={() => setSavedMsg(null)} />
-        {!ready && <StackedFormSkeleton cronHint={CRON_HINT} />}
+        <h2>Polling</h2>
+        <Banner
+          kind="success"
+          message={savedMsg?.form === "schedule" ? savedMsg.text : null}
+          onDismiss={() => setSavedMsg(null)}
+        />
+        {!ready && <ScheduleFormSkeleton cronHint={CRON_HINT} />}
         {ready && settings && (
-          <form className="stacked-form" onSubmit={saveSettings}>
+          <form className="stacked-form" onSubmit={saveSchedule}>
             {/* A field with an info icon is a div whose <label> holds only the
                 words, and the icon sits beside it. Inside the label, a click
                 that missed the icon by a pixel would land on the label and flip
@@ -478,19 +514,24 @@ export function Settings({
                 onChange={(e) => setSettings({ ...settings, poll_enabled: e.target.checked })}
               />
             </div>
-            <label>
-              Poll schedule (cron)
-              <input
-                value={settings.poll_cron}
-                onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
-                disabled={!settings.poll_enabled}
-              />
-              <span className="hint">{CRON_HINT}</span>
-            </label>
+            {/* Only while the switch is on — as it stands in the form, not as
+                saved — since these two are what it turns on. Email alerts left
+                on while it is off stay on and send nothing, and are back in
+                view, to be turned off, the moment there are checks to report. */}
+            {settings.poll_enabled && (
+              <label>
+                Poll schedule (cron)
+                <input
+                  value={settings.poll_cron}
+                  onChange={(e) => setSettings({ ...settings, poll_cron: e.target.value })}
+                />
+                <span className="hint">{CRON_HINT}</span>
+              </label>
+            )}
             {/* Server builds only, on `=== false` for Sharing's reason. The
                 desktop app sends nothing: it polls while its window is open,
                 so the reader is already looking at what an email would say. */}
-            {settings.desktop === false && (
+            {settings.poll_enabled && settings.desktop === false && (
               <div className="field alerts-row">
                 <span className="label-line">
                   <span>Email alerts</span>
@@ -502,22 +543,32 @@ export function Settings({
                     className="secondary-btn"
                     aria-describedby="settings-alerts-state settings-alerts-help"
                     onClick={() => setEditingAlerts(true)}
-                    // Alerts left on can always be turned off.
-                    disabled={!settings.poll_enabled && !settings.alert_email_enabled}
                   >
                     Configure email alerts…
                   </button>
-                  <span
-                    id="settings-alerts-state"
-                    className={
-                      settings.alert_email_enabled && !settings.poll_enabled ? "hint warn" : "hint"
-                    }
-                  >
+                  <span id="settings-alerts-state" className="hint">
                     {alertsLine(settings)}
                   </span>
                 </span>
               </div>
             )}
+            <button type="submit" disabled={!scheduleDirty}>
+              Save schedule
+            </button>
+          </form>
+        )}
+      </section>
+
+      <section className="panel">
+        <h2>NCBI access</h2>
+        <Banner
+          kind="success"
+          message={savedMsg?.form === "ncbi" ? savedMsg.text : null}
+          onDismiss={() => setSavedMsg(null)}
+        />
+        {!ready && <NcbiFormSkeleton />}
+        {ready && settings && (
+          <form className="stacked-form" onSubmit={saveNcbi}>
             <div className="field">
               <span className="label-line">
                 <label htmlFor="settings-ncbi-email">Contact email</label>
@@ -546,8 +597,8 @@ export function Settings({
                 placeholder={settings.has_api_key ? "•••••• (leave blank to keep)" : "optional"}
               />
             </div>
-            <button type="submit" disabled={!settingsDirty}>
-              Save settings
+            <button type="submit" disabled={!ncbiDirty}>
+              Save NCBI settings
             </button>
           </form>
         )}

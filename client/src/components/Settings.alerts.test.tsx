@@ -12,7 +12,7 @@ afterEach(cleanup);
 // The email alerts row in the Polling form, and the dialog it opens.
 //
 // The dialog saves on its own, with only its own keys, while the form around
-// the button is saved by Save settings. So what's pinned is the seam between
+// the button is saved by Save schedule. So what's pinned is the seam between
 // them: a save in the dialog sends nothing of the form's, and leaves an edit
 // waiting in the form exactly where it was — the bug the Open Library switch
 // was written to avoid. And the row is a server build's: the desktop app sends
@@ -99,19 +99,20 @@ describe("where the row is", () => {
   it("isn't in the desktop app", async () => {
     api.getSettings.mockResolvedValue({ ...SAVED, desktop: true });
     renderSettings();
-    await screen.findByRole("button", { name: "Save settings" });
+    await screen.findByRole("button", { name: "Save schedule" });
     expect(screen.queryByRole("button", { name: "Configure email alerts…" })).toBeNull();
   });
 
-  it("is greyed out while scheduled polling is off", async () => {
+  it("isn't there while polling is off", async () => {
     api.getSettings.mockResolvedValue({ ...SAVED, poll_enabled: false });
     renderSettings();
-    expect(((await configure()) as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByRole("button", { name: "Save schedule" });
+    expect(screen.queryByRole("button", { name: "Configure email alerts…" })).toBeNull();
   });
 
-  // Turning polling back on to reach the switch would resume the very emails
-  // the reader came to stop.
-  it("still opens while polling is off, if alerts are on", async () => {
+  // Turning polling on in the form, unsaved, is what brings the row back, so it
+  // can be reached without resuming the emails the reader came to stop.
+  it("comes back with the switch, still on if it was left on", async () => {
     api.getSettings.mockResolvedValue({
       ...SAVED,
       poll_enabled: false,
@@ -119,8 +120,10 @@ describe("where the row is", () => {
       alert_email_to: "reader@example.org",
     });
     renderSettings();
+    fireEvent.click(await screen.findByRole("switch", { name: "Scheduled polling" }));
     expect(((await configure()) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByText("On, but scheduled polling is off, so none are sent")).toBeTruthy();
+    expect(screen.getByText("On · sent to reader@example.org")).toBeTruthy();
+    expect(api.updateSettings).not.toHaveBeenCalled();
   });
 });
 
@@ -163,7 +166,7 @@ describe("the dialog", () => {
     // The form's edit is still there, and still unsaved.
     expect(cron.value).toBe("0 7 * * *");
     expect(
-      (screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement).disabled
+      (screen.getByRole("button", { name: "Save schedule" }) as HTMLButtonElement).disabled
     ).toBe(false);
     expect(screen.getByText("On · sent to reader@example.org")).toBeTruthy();
   });

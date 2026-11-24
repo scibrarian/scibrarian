@@ -117,7 +117,8 @@ describe("a click meant for the help", () => {
 
 describe("where the help is", () => {
   it("prints what a reader copies, rather than hiding it behind an icon", async () => {
-    await renderSettings({ ...SHARED, share_urls: [] });
+    // Polling on, which is when the schedule and its format line are shown.
+    await renderSettings({ ...SHARED, share_urls: [], poll_enabled: true });
     expect(screen.getByText(/Format: min hour day month weekday/)).toBeTruthy();
     expect(screen.getByText("ADMIN_TOKEN")).toBeTruthy();
     expect(screen.getByText("server/.env")).toBeTruthy();

@@ -10,7 +10,7 @@ import type { AppSettings, Topic, TopicDetail } from "../types";
 
 afterEach(cleanup);
 
-// What the Polling & NCBI form keeps while it holds edits not yet saved.
+// What the NCBI form keeps while it holds edits not yet saved.
 //
 // The form is saved by its own button, and the Topics panel above it changes
 // things on its own: a topic saved or removed changes its list. The panel used
@@ -91,7 +91,7 @@ beforeEach(() => {
 });
 
 const email = () => screen.getByRole("textbox", { name: "Contact email" }) as HTMLInputElement;
-const saveSettings = () => screen.getByRole("button", { name: "Save settings" }) as HTMLButtonElement;
+const saveSettings = () => screen.getByRole("button", { name: "Save NCBI settings" }) as HTMLButtonElement;
 
 // The dialog that edits the topics is the shell's, so this stands in for the
 // shell: it reads the topics on mount, as App's first load does, and puts the

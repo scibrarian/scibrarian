@@ -1517,7 +1517,7 @@ input:focus {
 }
 
 /* Matches the app's other disabled buttons (e.g. .refresh-btn): dimmed, no
-   pointer affordance. Used by "Save settings" when the form has no edits. */
+   pointer affordance. Used by a form's Save button when it has no edits. */
 .stacked-form button:disabled {
   opacity: 0.6;
   cursor: default;
@@ -1546,7 +1546,7 @@ input:focus {
 /* "Delete all data", at the foot of Settings.
 
    .accent-btn's shape in --danger rather than --accent, because it is a peer of
-   "Add topic…" and "Save settings" and should sit at the same size and
+   "Add topic…" and the Save buttons and should sit at the same size and
    weight as them — the red is the whole of what differs, and making it also
    bigger or louder would be saying the same thing twice.
 
@@ -2867,7 +2867,7 @@ button.info-tip:focus-visible {
 }
 
 /* The button in the Polling form that opens the dialog. Outlined rather than
-   filled, so Save settings stays the one accent button in that form. */
+   filled, so Save schedule stays the one accent button in that form. */
 .stacked-form button.secondary-btn {
   background: var(--panel);
   color: var(--text);
@@ -4583,7 +4583,7 @@ html {
    Every other control in Settings is styled and these were not: nothing in the
    stylesheet named them, so Connect, Sync now, Save license, Create code, Copy,
    Share, Disconnect and Revoke all rendered as raw UA chrome inside a panel
-   sitting directly under "Add topic…" and "Save settings". The two
+   sitting directly under "Add topic…" and the Save buttons. The two
    className="primary" and className="danger" hints already in the markup named
    variants that existed nowhere.
 

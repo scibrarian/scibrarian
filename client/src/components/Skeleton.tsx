@@ -259,35 +259,49 @@ function Covered({
   );
 }
 
-// Mirrors the Polling & NCBI stacked form so the panel doesn't move when the
-// settings arrive: a switch, then three inputs, the first with its format
-// printed under it and the email alerts button after it, then the save button.
-// Each group is the element the form uses there — a .field, or for the cron
-// field a <label> — so the stylesheet spaces both alike, and each control is
-// Covered. A label's bar sits in a block of its own, whose one line of 13px
-// text at 1.5 is the label's height.
+// Settings' two stacked forms, mirrored so neither panel moves when the
+// settings arrive. Each group is the element the form uses there — a .field,
+// or for the cron field a <label> — so the stylesheet spaces both alike, and
+// each control is Covered. A label's bar sits in a block of its own, whose one
+// line of 13px text at 1.5 is the label's height.
+const FIELD_LABEL = (
+  <div>
+    <SkeletonBar w={140} h={14} />
+  </div>
+);
+
+// A form's Save button, by the name it carries, which is what makes it as wide.
+function SaveButtonSkeleton({ label }: { label: string }) {
+  return (
+    <Covered radius={8} style={{ alignSelf: "flex-start" }}>
+      <button type="button">{label}</button>
+    </Covered>
+  );
+}
+
+// The Polling form: a switch, then the schedule with its format printed under
+// it and the email alerts button, then the save button.
+//
+// With the switch on, which hides the two between. The one who turned it on is
+// the one opening this page from then on, and it is the first visit, with the
+// switch still off, that has the panel close up on the reveal.
 //
 // `cronHint` is that format line, passed from the form that prints it, for
 // FilterSkeleton's reason: under the bar it is the real sentence, so it wraps
 // where the form's does in a narrow window, and a rewording can't leave the
 // stand-in a line short.
-export function StackedFormSkeleton({ cronHint }: { cronHint: ReactNode }) {
-  const label = (
-    <div>
-      <SkeletonBar w={140} h={14} />
-    </div>
-  );
+export function ScheduleFormSkeleton({ cronHint }: { cronHint: ReactNode }) {
   return (
-    <div className="stacked-form" aria-busy="true" aria-label="Loading settings">
+    <div className="stacked-form" aria-busy="true" aria-label="Loading the schedule">
       <div className="field">
-        {label}
+        {FIELD_LABEL}
         {/* As wide as the switch, not the column, as the switch is. */}
         <Covered w={38} h={22} radius={11} center style={{ alignSelf: "flex-start" }}>
           <input type="checkbox" className="switch" />
         </Covered>
       </div>
       <label>
-        {label}
+        {FIELD_LABEL}
         <Covered>
           <input />
         </Covered>
@@ -298,24 +312,31 @@ export function StackedFormSkeleton({ cronHint }: { cronHint: ReactNode }) {
       {/* Stood in for on every build, as the Sharing panel is. The desktop app
           has no such row, and loses this one in the reveal. */}
       <div className="field">
-        {label}
+        {FIELD_LABEL}
         <Covered radius={8} style={{ alignSelf: "flex-start" }}>
           <button type="button" className="secondary-btn">
             Configure email alerts…
           </button>
         </Covered>
       </div>
+      <SaveButtonSkeleton label="Save schedule" />
+    </div>
+  );
+}
+
+// The NCBI form: two inputs, then the save button.
+export function NcbiFormSkeleton() {
+  return (
+    <div className="stacked-form" aria-busy="true" aria-label="Loading NCBI settings">
       {[0, 1].map((i) => (
         <div key={i} className="field">
-          {label}
+          {FIELD_LABEL}
           <Covered>
             <input />
           </Covered>
         </div>
       ))}
-      <Covered radius={8} style={{ alignSelf: "flex-start" }}>
-        <button type="button">Save settings</button>
-      </Covered>
+      <SaveButtonSkeleton label="Save NCBI settings" />
     </div>
   );
 }
