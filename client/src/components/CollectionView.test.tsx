@@ -109,7 +109,7 @@ describe("a scan that ends after its collection has been left", () => {
     api.getImportStatus.mockResolvedValue(job({ state: "running", processed: 0, matched: 0 }));
     const first = render(<View id={id} />);
     await settle();
-    // Over to Interests: the view goes, and the poll stays.
+    // Over to Feeds: the view goes, and the poll stays.
     first.unmount();
 
     api.getImportStatus.mockResolvedValue(job({ total: 2, processed: 2, matched: 1, unmatched: 1 }));

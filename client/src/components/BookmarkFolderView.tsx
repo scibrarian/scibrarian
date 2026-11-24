@@ -36,7 +36,7 @@ function leftOutNote(res: FolderImportResponse): string {
 // papers come from /api/papers?folder=<id> like any other source, so there is
 // no listing of them to fetch here. "Add papers" stands where "Add files" does
 // in a collection, with two ways in behind it: Add links, for a paper found
-// outside Interests, and a reference manager's whole library imported as a
+// outside Feeds, and a reference manager's whole library imported as a
 // file. The import is the one thing here with a job behind it: the file's
 // entries are looked up on PubMed for minutes after it is sent, and the ones
 // not found stay listed, for a PMID from the reader, behind a count in the

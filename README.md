@@ -4,13 +4,13 @@ A self-hosted web app that watches the medical topics you choose and keeps a
 **per-topic feed** of the most recent research, pulled from PubMed/NCBI. Runs
 on your laptop or on a server you control.
 
-- Two workspaces: **Interests** (topics you follow) and **Library** (papers you
+- Two workspaces: **Feeds** (topics you follow) and **Library** (papers you
   already have), each with a picker for the topic or collection in view.
 - Every workspace renders three ways — **Table** (sortable), **Timeline**
   (reverse-chronological), and **Graph** — switched from the header.
 - A topic is one or more MeSH headings — a paper has to carry all of them — and
   searches either all of PubMed or a list of journals of its own. Add one from
-  the Interests picker, and edit it from the pencil beside its name or from
+  the Feeds picker, and edit it from the pencil beside its name or from
   **Settings** (the gear icon in the header).
 - **Check for new papers** runs on demand, and can also run automatically (off by
   default) on a cron expression you set in Settings. A cron only fires while
@@ -51,7 +51,7 @@ npm run dev        # starts the API (http://localhost:3001) and the UI (http://l
 
 Then open the UI URL printed by Vite (default http://localhost:5173).
 
-1. Switch to **Interests** and choose **Add topic…** from the dropdown.
+1. Switch to **Feeds** and choose **Add topic…** from the dropdown.
 2. Pick the topic's **MeSH headings** — search the vocabulary and pick one or more
    (typing a synonym like `type 2 diabetes` or `NIDDM` finds the official term
    `Diabetes Mellitus, Type 2`). The dialog shows how many papers they match together.

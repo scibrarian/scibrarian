@@ -2881,7 +2881,7 @@ button.info-tip:focus-visible {
   margin: 0;
 }
 
-/* ---------- section nav (Interests / Library) ---------- */
+/* ---------- section nav (Feeds / Library) ---------- */
 
 .gear-btn {
   display: inline-flex;
@@ -2917,7 +2917,7 @@ html {
 }
 
 /* Pinned to the top of the viewport: which section you're in is exactly what
-   you lose track of while scrolling a few hundred papers, and Interests and
+   you lose track of while scrolling a few hundred papers, and Feeds and
    Bookmarks render the same table, so the nav is the only thing telling them
    apart. It has to carry a background of its own, since the rows scroll
    underneath it. High enough to clear anything positioned that scrolls past,
@@ -3387,7 +3387,7 @@ html {
 }
 
 /* "Remove N selected" — the Library's and Bookmarks' bulk action, in the slot
-   the bulk save occupies in Interests. Shares .save-all-btn's box because
+   the bulk save occupies in Feeds. Shares .save-all-btn's box because
    it lands in the same place and must not change the filter row's height when
    the section changes.
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
-  Search,
+  Radar,
   Library,
   Bookmark,
   ChevronDown,
@@ -71,9 +71,9 @@ interface Picker {
 // describing it here is a type error instead of an undefined at render. Module
 // scope because it never varies — this component re-renders on every id, banner
 // and refresh change, and rebuilding a constant each time is waste.
-export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
+export const MODES: Record<Mode, { label: string; icon: typeof Radar }> = {
   papers: { label: "Library", icon: Library },
-  interests: { label: "Interests", icon: Search },
+  interests: { label: "Feeds", icon: Radar },
   bookmarks: { label: "Bookmarks", icon: Bookmark },
 };
 
@@ -82,7 +82,7 @@ export const MODES: Record<Mode, { label: string; icon: typeof Search }> = {
 // than repeating the three names in a second list that could fall behind.
 const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
 
-// Where the switch breaks into two pills. The Library stands alone; Interests
+// Where the switch breaks into two pills. The Library stands alone; Feeds
 // and Bookmarks are both about deciding what is worth keeping, so they read as
 // one thing, and the gap between the groups is what says so.
 //
@@ -94,7 +94,7 @@ const MODE_ORDER = Object.entries(MODES) as [Mode, (typeof MODES)[Mode]][];
 const GROUPED_AFTER = 1;
 const MODE_GROUPS = [MODE_ORDER.slice(0, GROUPED_AFTER), MODE_ORDER.slice(GROUPED_AFTER)];
 
-// Two-part navigation: a Library / Interests / Bookmarks mode switch, plus a
+// Two-part navigation: a Library / Feeds / Bookmarks mode switch, plus a
 // dropdown that picks the active topic (MeSH search), bookmark folder, or
 // collection within that mode. The dropdown replaces per-item tabs so a long
 // list never clutters the header. Radix DropdownMenu owns the open state and
@@ -337,7 +337,7 @@ export function SectionNav({
                   and the trigger is the part of the nav that changes — without
                   the icon the three render identically. The label carries the
                   same thing for a screen reader, which gets nothing from the
-                  icon: the trigger's name reads "Interests, Cardiac Imaging,
+                  icon: the trigger's name reads "Feeds, Cardiac Imaging,
                   240", so it stands apart from its namesakes when read on its
                   own, away from the pressed button in the switch. */}
               <ModeIcon size={16} className="picker-mode-icon" aria-hidden />

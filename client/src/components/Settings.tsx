@@ -29,14 +29,14 @@ import { canPoll } from "../../../shared/topic";
 // What "Delete all data" is asking about, in the terms the app is navigated in.
 //
 // Fixed text rather than counts. The three sections are what someone actually
-// holds a picture of — the Library, Interests and Bookmarks in the header — so
+// holds a picture of — the Library, Feeds and Bookmarks in the header — so
 // naming them says what will be missing afterwards in the words the UI already
 // uses, which a row of totals does not. It is also the same sentence every
 // time, which is what makes it possible to have read it once and know what the
 // button does.
 const RESET_WARNING =
-  "All papers saved to library, interests, and bookmarks will be deleted. " +
-  "All library collections, interest topics, and bookmark folders will also be deleted. " +
+  "All papers saved to library, feeds, and bookmarks will be deleted. " +
+  "All library collections, feed topics, and bookmark folders will also be deleted. " +
   "This cannot be undone.";
 
 // The help behind an info icon: how a thing works, read once and in the way
@@ -49,7 +49,7 @@ const RESET_WARNING =
 // A bubble that closes when the pointer moves is the wrong place for either.
 const HELP = {
   topics:
-    "Each topic appears under Interests. A topic is one or more MeSH headings, and a paper " +
+    "Each topic has its own feed under Feeds. A topic is one or more MeSH headings, and a paper " +
     "has to carry all of them to appear — typing a synonym (e.g. type 2 diabetes or NIDDM) " +
     "finds the official term (Diabetes Mellitus, Type 2). Each topic searches all of PubMed, " +
     "or journals of its own.",
@@ -118,7 +118,7 @@ export function Settings({
   // icon and badge from, and nothing else. Carries the panel's fresh reading of
   // those stamps, or null if it couldn't take one; see ProPanel.
   onSharingChanged: (stamps: ProCollectionStamp[] | null) => void;
-  // Papers left the Interests feeds (a topic removed), for the shell to report
+  // Papers left the feeds (a topic removed), for the shell to report
   // the count. A reset reports nothing there: what it destroyed is reported in
   // the panel the button is in, beside the button, rather than in a notice at
   // the top of a page the reader has scrolled to the bottom of.

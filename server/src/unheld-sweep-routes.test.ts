@@ -120,7 +120,7 @@ describe("a removal, with the server idle", () => {
   });
 
   it("is not given a turn by the one-paper toggle", async () => {
-    // The toggle in Interests, where a paper is in a feed and stays held.
+    // The toggle in Feeds, where a paper is in a feed and stays held.
     expect((await request("DELETE", `/bookmark-folders/${folder}/papers/${SAVED}`)).status).toBe(204);
     expect(db.listBookmarks()).toEqual([]);
     expect(stored()).toEqual(ALL);

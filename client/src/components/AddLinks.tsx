@@ -10,7 +10,7 @@ import { ModalShell } from "./Dialogs";
 // The modal's title.
 export const ADD_LINKS_TITLE = "Add links";
 
-// "Add links" — a bookmark folder's way in for a paper found outside Interests.
+// "Add links" — a bookmark folder's way in for a paper found outside Feeds.
 //
 // The same paste box as Check holdings, reading lines by the same rules on the
 // server: a DOI (bare, a doi.org link, or inside a publisher's URL) or a PubMed

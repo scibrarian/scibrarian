@@ -938,7 +938,7 @@ api.post("/bookmark-folders/:id/papers", (req, res) => {
 });
 
 // Save papers into a folder from pasted DOIs and PubMed links — the way into a
-// folder for a paper found outside Interests. One answer per line, in order,
+// folder for a paper found outside Feeds. One answer per line, in order,
 // like /have; see bookmark-links.ts. A POST, so admin-only like every other
 // change to a folder.
 //
@@ -1124,14 +1124,14 @@ api.delete("/bookmark-imports/:entryId", (req, res) => {
   res.status(204).end();
 });
 
-// The toggle in Interests, which gives the sweep no turn: see letGoOfFolderPaper.
+// The toggle in Feeds, which gives the sweep no turn: see letGoOfFolderPaper.
 api.delete("/bookmark-folders/:id/papers/:pmid", (req, res) => {
   letGoOfFolderPaper(Number(req.params.id), String(req.params.pmid));
   res.status(204).end();
 });
 
 // Take papers out of a folder — the folder table's "Remove selected". The
-// one-paper DELETE above stays for the toggle in Interests; this is the same
+// one-paper DELETE above stays for the toggle in Feeds; this is the same
 // operation for a ticked set, in one request so it either happens or doesn't.
 //
 // Shaped like the collection removal further down, for the reasons given there:

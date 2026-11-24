@@ -188,7 +188,7 @@ export function letGoOfFolderPapers(folderId: number, pmids: string[]): Released
 }
 
 // One paper off a folder, with no sweep after it. It is the toggle in
-// Interests, pressed a paper at a time, and a paper listed there is in a
+// Feeds, pressed a paper at a time, and a paper listed there is in a
 // topic's feed: taking it off a folder leaves it held.
 export function letGoOfFolderPaper(folderId: number, pmid: string): void {
   removeBookmark(folderId, pmid);

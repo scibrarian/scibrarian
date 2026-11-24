@@ -5,7 +5,7 @@ import type { ImportStatus } from "../types";
 // rather than for as long as a collection is on screen.
 //
 // The poll used to belong to CollectionView, and went when it did. A scan that
-// finished after the reader had moved on — to Interests, to another collection —
+// finished after the reader had moved on — to Feeds, to another collection —
 // then had nothing to refresh what it changed, and the collection came back
 // painting its pre-scan file list from cache: every row still 'pending', with
 // nothing scanning them. App makes one of these and is told, through

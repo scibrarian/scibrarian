@@ -89,7 +89,7 @@ const picked = () => document.querySelector(".picker-current")?.textContent;
 // What the page says in place of a source, when it has none to show.
 const noSource = () => document.querySelector("main > .empty")?.textContent ?? null;
 
-function section(name: "Library" | "Interests" | "Bookmarks") {
+function section(name: "Library" | "Feeds" | "Bookmarks") {
   fireEvent.click(screen.getByRole("button", { name }));
 }
 
@@ -125,7 +125,7 @@ describe("where each section opens", () => {
     server.addCollection("Grants");
     await boot();
     expect(picked()).toBe("Thesis");
-    section("Interests");
+    section("Feeds");
     expect(picked()).toBe("Asthma");
     section("Bookmarks");
     expect(picked()).toBe("Reading");
@@ -184,7 +184,7 @@ describe("when the list under a selection changes", () => {
 
   it("selects the first topic once there is one", async () => {
     await boot();
-    section("Interests");
+    section("Feeds");
     expect(noSource()).toMatch(/^No topics yet/);
     await act(async () => {
       server.addTopic("Asthma");
@@ -258,7 +258,7 @@ describe("where a topic leaves the reader", () => {
   it("goes to a topic made from the section bar", async () => {
     server.addTopic("Gout");
     await boot();
-    section("Interests");
+    section("Feeds");
     openPicker();
     fireEvent.click(await screen.findByRole("menuitem", { name: "Add topic…" }));
     await makeTopic("Asthma");
@@ -273,7 +273,7 @@ describe("where a topic leaves the reader", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add topic…" }));
     await makeTopic("Asthma");
     expect(await screen.findByText("Asthma")).toBeTruthy();
-    section("Interests");
+    section("Feeds");
     expect(picked()).toBe("Gout");
   });
 
@@ -281,7 +281,7 @@ describe("where a topic leaves the reader", () => {
     server.addTopic("Asthma");
     server.addTopic("Gout");
     await boot();
-    section("Interests");
+    section("Feeds");
     expect(picked()).toBe("Asthma");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     const row = await waitFor(() => {
@@ -294,7 +294,7 @@ describe("where a topic leaves the reader", () => {
     fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(server.library.topics.map((t) => t.name)).toEqual(["Gout"]));
-    section("Interests");
+    section("Feeds");
     await waitFor(() => expect(picked()).toBe("Gout"));
   });
 });

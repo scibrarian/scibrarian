@@ -28,7 +28,7 @@ export function bumpSource(tokens: ReloadTokens, key: string): ReloadTokens {
 }
 
 // A change no single source owns: a poll across every topic, papers removed
-// from Interests wholesale, or a source deleted.
+// from Feeds wholesale, or a source deleted.
 export function bumpAll(tokens: ReloadTokens): ReloadTokens {
   return { ...tokens, all: tokens.all + 1 };
 }

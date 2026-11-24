@@ -186,7 +186,7 @@ describe("dropping a journal from a topic's list", () => {
       ["4", true],
     ]);
     expect([topicsOf("1"), topicsOf("3"), topicsOf("4")]).toEqual([[t], [], []]);
-    // Out of Interests, still in its folder.
+    // Out of Feeds, still in its folder.
     expect(db.listBookmarks().map((b) => b.pmid)).toEqual(["4"]);
   });
 

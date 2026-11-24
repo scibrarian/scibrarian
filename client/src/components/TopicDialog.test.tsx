@@ -842,7 +842,7 @@ describe("what a save has to say", () => {
   it("warns that a journal MEDLINE has never indexed adds nothing", () => {
     expect(describeTopicSave(TOPIC, { ...QUIET, unindexed: ["Cureus"] })).toBe(
       "MEDLINE has never indexed Cureus. Its papers carry no MeSH headings, " +
-        "so it can't match a topic and won't add anything to Interests."
+        "so it can't match a topic and won't add anything to Feeds."
     );
     expect(describeTopicSave(TOPIC, { ...QUIET, unindexed: ["Cureus", "bioRxiv"] })).toMatch(
       /never indexed Cureus, bioRxiv\. Their papers carry no MeSH headings, so they can't/

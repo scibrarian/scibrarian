@@ -192,7 +192,7 @@ export interface MeshSearchResponse {
 }
 
 // A user-created bookmark folder: the Bookmarks section's counterpart to a
-// topic or a collection. Holds papers saved out of Interests (membership lives
+// topic or a collection. Holds papers saved out of Feeds (membership lives
 // in the bookmarks table), so unlike a collection it has no files behind it.
 export interface StoredBookmarkFolder {
   id: number;

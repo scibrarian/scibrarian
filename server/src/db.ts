@@ -2190,7 +2190,7 @@ function safeParseRefs(raw: string): string[] {
   }
 }
 
-// ---------- bookmarks (papers saved out of Interests, grouped into folders) ----------
+// ---------- bookmarks (papers saved out of Feeds, grouped into folders) ----------
 
 const FOLDER_SELECT = "SELECT id, name, created_at FROM bookmark_folders";
 

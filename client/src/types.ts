@@ -114,7 +114,7 @@ export type MailSettingsDraft = Pick<AppSettings, MailField> & { smtp_pass?: str
 // A settings save. Patch semantics: only the keys sent are changed.
 export type SettingsUpdate = Partial<AppSettings> & { ncbi_api_key?: string; smtp_pass?: string };
 
-// Which paper set a view reads from: an Interests topic, a Bookmarks folder, a
+// Which paper set a view reads from: a Feeds topic, a Bookmarks folder, a
 // Library collection, or every collection at once. Every analysis module
 // (table, timeline, graph) takes one. Defined in shared/source.ts alongside its
 // predicates and its wire format, because the server dispatches on the same

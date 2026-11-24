@@ -171,7 +171,7 @@ describe("letting go, with nothing attaching", () => {
   });
 
   it("gives the sweep no turn for the one-paper toggle", async () => {
-    // The toggle in Interests, where a paper is in a feed and stays held.
+    // The toggle in Feeds, where a paper is in a feed and stays held.
     holding.letGoOfFolderPaper(folder, SAVED);
     await new Promise((resolve) => setImmediate(resolve));
     expect(db.listBookmarks()).toEqual([]);

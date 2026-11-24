@@ -15,7 +15,7 @@ import { errMessage, httpError } from "./util.js";
 import type { LinkAnswer, LinkedPaper } from "../../shared/types.js";
 
 // "Add links" — saving papers into a bookmark folder from pasted DOIs and
-// PubMed links, for a paper found somewhere other than Interests.
+// PubMed links, for a paper found somewhere other than Feeds.
 //
 // The lines are read by the same parser as Check holdings (citation-ref.ts), so
 // the two boxes take the same paste and refuse the same things. A line becomes

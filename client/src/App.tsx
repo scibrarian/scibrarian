@@ -95,7 +95,7 @@ export default function App() {
   const [chosenFolderId, setChosenFolderId] = useState<number | null>(null);
   const [chosenCollectionId, setChosenCollectionId] = useState<CollectionSelection | null>(null);
   // Each section remembers its own view, and every one of them opens on
-  // Table. Interests used to open on Timeline, on the grounds that what it is
+  // Table. Feeds used to open on Timeline, on the grounds that what it is
   // for — reading what's new — is the one question a date axis answers. That
   // held for the view in isolation and not for moving between views: switching
   // section changed the shape of the page as well as its contents, so the
@@ -695,7 +695,7 @@ export default function App() {
   // land is decided by how long the *previous* list happened to be.
   //
   // Keyed on the source rather than the mode so picking another topic within
-  // Interests resets too — same carried-over offset, same non-reason — and on
+  // Feeds resets too — same carried-over offset, same non-reason — and on
   // showSettings, which swaps the list for a page of a completely different
   // height while the source underneath it stays put. The gear can't reach that
   // state from a scrolled page (it rides in the non-sticky header, so you're
@@ -798,7 +798,7 @@ export default function App() {
   };
 
   // Bookmarking is offered where a paper is still a candidate, which is
-  // Interests: save what the search turned up. Not the Library — those are
+  // Feeds: save what the search turned up. Not the Library — those are
   // papers you already own, not ones you're deciding about. Not Bookmarks
   // either: every paper there is already saved, so the control's one job in a
   // folder was taking papers back out, a menu and a click per paper. The
@@ -1056,7 +1056,7 @@ export default function App() {
             onPairingChanged={handlePairingChanged}
             onSharingChanged={handleSharingChanged}
             onPapersRemoved={(count) =>
-              setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Interests.`)
+              setStatus(`Removed ${count} paper${count === 1 ? "" : "s"} from Feeds.`)
             }
           />
         ) : !source ? (

@@ -214,7 +214,7 @@ export type Sources = {
   // once rather than a skeleton on the way there (see seedEmptySource).
   createFolder: (name: string) => Promise<BookmarkFolder>;
   // The bookmark toggle. The saved map is patched in place of reading it
-  // again — in Interests the rows don't change, only the icon, and refetching
+  // again — in Feeds the rows don't change, only the icon, and refetching
   // a few thousand papers per click would be absurd. The folder is the
   // exception: its membership *is* its paper list, so each toggle makes that
   // one folder stale, on screen or not.
@@ -235,7 +235,7 @@ export type Sources = {
   // The rest of what changes a folder. Each answers once the server has, and
   // reads again behind it what it made stale. A folder that gained or lost
   // papers has three things stale — its list, its count in the picker, and
-  // the saved map, which fills the bookmark icon on every paper in Interests.
+  // the saved map, which fills the bookmark icon on every paper in Feeds.
   renameFolder: (folderId: number, name: string) => Promise<void>;
   // Taken off the list at once, so App's selection moves off it without
   // waiting for the reads.
@@ -264,11 +264,11 @@ export type Sources = {
 
   // Data under a papers view changed (poll, import, match, file delete, a paper
   // saved): invalidate that source's caches so the next look at it refetches.
-  // What moved isn't always what's on screen — saving from Interests has to
+  // What moved isn't always what's on screen — saving from Feeds has to
   // leave the folder's list stale while the topic being read stays cached.
   reloadSource: (source: PaperSource) => void;
   // The changes no single source owns: a poll across every topic, papers
-  // removed from Interests wholesale, or a deleted source — that last one
+  // removed from Feeds wholesale, or a deleted source — that last one
   // because SQLite may hand the dead id to the next source created, which
   // would then inherit its cache entries.
   reloadEverything: () => void;

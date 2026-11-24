@@ -90,7 +90,7 @@ export function describeTopicSave(topic: Pick<Topic, "name">, outcome: TopicSave
     parts.push(
       `MEDLINE has never indexed ${outcome.unindexed.join(", ")}. ` +
         `${one ? "Its papers carry" : "Their papers carry"} no MeSH headings, so ` +
-        `${one ? "it" : "they"} can't match a topic and won't add anything to Interests.`
+        `${one ? "it" : "they"} can't match a topic and won't add anything to Feeds.`
     );
   }
   return parts.length > 0 ? parts.join(" ") : null;

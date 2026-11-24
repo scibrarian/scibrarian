@@ -314,7 +314,7 @@ export function PapersTable({
   // The share-link column only exists for the owner of a token-mode instance;
   // viewers and tokenless single-user setups get the plain table.
   const showShareCol = isAdmin && tokenRequired;
-  // Whether saving is offered at all is App's call (only Interests gets it,
+  // Whether saving is offered at all is App's call (only Feeds gets it,
   // and not for viewers); the column follows from that rather than re-deciding
   // it.
   const showBookmarkCol = bookmarkable;
